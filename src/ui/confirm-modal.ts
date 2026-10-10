@@ -30,6 +30,7 @@ export type ConfirmFlow = 'sync' | 'force' | 'retry' | 'scan';
 
 /** Данные для рендера — main.ts собирает их из ConfirmSyncInfo/scan. */
 export interface ConfirmSections {
+        blockedDeletions?: number;
         /** Скачиваний всего (NEW + MODIFIED + MISSING_LOCAL). */
         toDownload?: number;
         /** Из них обновлений (MODIFIED). */
@@ -44,7 +45,7 @@ export interface ConfirmSections {
         deleteFull?: number;
         /** Перезаписей локальных версий при конфликте на уровне full. */
         overwrite?: number;
-        /** Локально-только файлов под удаление (orphans). */
+        /** Previously synced files absent remotely that will be retained locally. */
         orphans?: number;
         /** Суммарный объём скачивания, байт. */
         downloadBytes?: number;
@@ -97,7 +98,6 @@ function hasDeletes(s: ConfirmSections): boolean {
         return (
                 (s.deleteLight ?? 0) > 0 ||
                 (s.deleteFull ?? 0) > 0 ||
-                (s.orphans ?? 0) > 0 ||
                 (s.overwrite ?? 0) > 0
         );
 }
@@ -133,6 +133,9 @@ export class ConfirmModalView {
 
                 // Секции: только ненулевые (zero → не показываем).
                 const sectionsEl = el('div', { cls: 'cfm-sections' });
+                if ((sections.blockedDeletions ?? 0) > 0) {
+                        sectionsEl.append(el('div', { cls: 'cfm-sec', text: t.sectionBlocked(sections.blockedDeletions!) }));
+                }
                 if ((sections.toDownload ?? 0) > 0) {
                         sectionsEl.append(el('div', { cls: 'cfm-sec cfm-sec-download', text: t.sectionDownload(sections.toDownload!) }));
                         if ((sections.downloadBytes ?? 0) > 0) {

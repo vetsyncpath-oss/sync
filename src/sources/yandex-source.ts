@@ -107,6 +107,7 @@ interface ListingItem {
 
 export class YandexSource implements SyncSource {
         readonly kind = 'yandex' as const;
+        readonly deletionSafety = 'unverified' as const;
         /** [Phase 5.1] пер-файлового лимита нет: облачный диск (см. SyncSource). */
         readonly maxFileSizeBytes?: number;
 
@@ -281,9 +282,9 @@ export class YandexSource implements SyncSource {
                                         queue.push({ apiPath: item.path, prefix: prefix + item.name + '/' });
                                 } else if (item.type === 'file') {
                                         this.appendFileEntry(item, prefix, entries);
+                                } else {
+                                        throw new Error(this.messages.structureChanged());
                                 }
-                                // Прочие значения type пропускаются: контракт (наличие
-                                // name+type) соблюдён, семантика значения — на совести API.
                         }
 
                         collected += embedded.items.length;

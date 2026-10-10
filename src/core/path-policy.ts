@@ -31,6 +31,8 @@ export interface PathPolicyOptions {
         ignoredFolders: string;    // многострочник
         allowPlugins: boolean;
         allowSnippets: boolean;
+        /** Local runtime/state directories excluded independently of user presets. */
+        protectedPaths?: readonly string[];
 }
 
 /** Расширения, не синхронизируемые никогда (порт из main.ts). */
@@ -47,7 +49,7 @@ const SCRIPT_EXTENSIONS: readonly string[] = ['.js', '.mjs', '.wasm'];
 /**
  * [3-8а] Windows-зарезервированные имена устройств: 'CON.md' или папка
  * 'notes/aux' на Windows либо не создаётся, либо резолвится в устройство —
- * запись падает с невнятной ошибкой. Проверяется базовое имя (до последней
+ * запись падает с невнятной ошибкой. Проверяется базовое имя (до первой
  * точки) КАЖДОГО сегмента пути, без учёта регистра.
  */
 const WINDOWS_RESERVED_NAMES: ReadonlySet<string> = new Set([
@@ -60,7 +62,7 @@ const WINDOWS_RESERVED_NAMES: ReadonlySet<string> = new Set([
 function hasWindowsReservedName(path: string): boolean {
         return path.split('/').some((segment) => {
                 if (!segment) return false;
-                const dot = segment.lastIndexOf('.');
+                const dot = segment.indexOf('.');
                 const base = dot > 0 ? segment.slice(0, dot) : segment;
                 return WINDOWS_RESERVED_NAMES.has(base.toUpperCase());
         });
@@ -76,8 +78,9 @@ export class PathPolicy {
         constructor(opts: PathPolicyOptions) {
                 // Защитная копия: политика фиксирует снимок настроек на момент
                 // создания (в main.ts isPathAllowed читал живой this.settings).
-                this.opts = { ...opts };
+                this.opts = { ...opts, protectedPaths: [...(opts.protectedPaths ?? [])] };
         }
+        snapshot(): PathPolicy { return new PathPolicy(this.opts); }
 
         /**
          * Структурная безопасность: '..', null-byte, абсолютный путь, 'C:',
@@ -106,6 +109,7 @@ export class PathPolicy {
          */
         isPathAllowed(rawPath: string): boolean {
                 const path = this.normalize(rawPath);
+                if (this.isProtectedPath(path)) return false;
                 // [3-8б] Конфликт-копии не синхронизируются ни в одну сторону —
                 // проверка ПЕРВОЙ, до любых флагов и режимов (дизайн §9.4).
                 if (this.isConflictCopy(path)) return false;
@@ -134,6 +138,15 @@ export class PathPolicy {
                         return false;
                 }
                 return true;
+        }
+
+        /** Runtime protection covers case/Unicode aliases on portable vaults. */
+        isProtectedPath(rawPath: string): boolean {
+                const path = this.normalize(rawPath).normalize('NFC').toLowerCase();
+                return (this.opts.protectedPaths ?? []).some(raw => {
+                        const protectedPath = this.normalize(raw).normalize('NFC').toLowerCase();
+                        return protectedPath !== '' && (path === protectedPath || path.startsWith(protectedPath + '/'));
+                });
         }
 
         /** Конфликт-копия: имя файла (сегмент пути) содержит '.conflict-'. */

@@ -9,18 +9,14 @@
 //     Многие WebDAV-серверы не поддерживают Depth=infinity (RFC 4918
 //     разрешает); поэтому идём через Depth=1 + явный обход коллекций.
 //     [P0/C4] href из XML хранится RAW (percent-encoded, как отдал
-//     сервер) и декодируется РОВНО ОДИН раз (в hrefToPath, с
-//     try/catch); URL для GET/очереди строится из raw-href — имена
+//     сервер) и декодируется РОВНО ОДИН раз в resolveDavResource;
+//     URL для GET/очереди строится из raw-href — имена
 //     с '#'/'?' не разваливаются на fragment/query.
 //     [P0/C3] при исчерпании бюджета коллекций — throw (паритет с
 //     git treeTruncated): молчаливое усечение манифеста при живом
 //     зеркале = потеря данных.
-//   - fetch: GET безусловный (Coordinator и так знает, что нужно
-//     скачивать; если в будущем NetLayer.fetchBufferConditional будет
-//     принимать If-None-Match — можно добавить).
-//   - HashAlg: 'sha256' (но реально хэш — это ETag или synthesized
-//     size+mtime). Аналогично gdrive-source — конфликт-резолвер видит
-//     несоответствие → триггерит conflict при remote change.
+//   - fetch: GET with If-Match for a strong ETag; redirects are forbidden.
+//   - HashAlg: 'etag' or 'weak'; neither claims a content digest.
 //   - Auth: Basic (user:pass) из схемы; capabilities.auth=true.
 //   - Capabilities: auth=true, etag=true, mtime=true, incremental=true,
 //     testConnection=false.
@@ -34,6 +30,7 @@
 
 import type { NetTransport, RemoteEntry, SyncSource, HashAlg, NetRequest, NetResponse } from './types';
 import { FetchTransport } from '../adapters/fetch-transport';
+import { parseMultiStatus, resolveDavResource, type WebDavResource } from './webdav-xml';
 
 const REQUEST_TIMEOUT_MS = 60000;
 const MAX_RETRY_ATTEMPTS = 5;
@@ -146,90 +143,7 @@ function urlForLog(url: string): string {
         }
 }
 
-/**
- * Минимальный парсер PROPFIND multistatus XML. Извлекаем:
- *   - <D:href> — относительный путь ресурса
- *   - <D:getetag> — ETag (если есть)
- *   - <D:getcontentlength> — размер
- *   - <D:getlastmodified> — mtime (RFC1123)
- *   - <D:resourcetype><D:collection/> — признак коллекции (папки)
- *
- * Намеренно упрощён: не использует DOMParser (его нет в чистом TS-юните
-// без jsdom). Регэкспы работают на типичном WebDAV-ответе (RFC 4918).
- */
-interface WebDavResource {
-        href: string;
-        etag: string | null;
-        size: number | null;
-        lastModified: string | null;
-        isCollection: boolean;
-}
-
-function parseMultiStatus(xml: string): WebDavResource[] {
-        const resources: WebDavResource[] = [];
-        // <D:response> или <response> (зависит от неймспейса)
-        const responseRegex = /<(?:D:|d:|)?response[^>]*>([\s\S]*?)<\/(?:D:|d:|)?response>/g;
-        let m: RegExpExecArray | null;
-        while ((m = responseRegex.exec(xml)) !== null) {
-                const block = m[1];
-                const href = extractTag(block, 'href');
-                const etag = extractTag(block, 'getetag');
-                const sizeStr = extractTag(block, 'getcontentlength');
-                const lastMod = extractTag(block, 'getlastmodified');
-                const isCollection = block.includes('<collection') || block.includes('<D:collection') || block.includes('<d:collection');
-                if (href === null) continue;
-                resources.push({
-                        // [P0/C4] RAW href (как в XML, percent-encoded): decode
-                        // происходит РОВНО ОДИН раз — в hrefToPath. URL для
-                        // GET/очереди строится тоже из raw (ниже в getManifest).
-                        href: href,
-                        etag: etag,
-                        size: sizeStr !== null ? Number(sizeStr) : null,
-                        lastModified: lastMod,
-                        isCollection,
-                });
-        }
-        return resources;
-}
-
-/** Извлечение текста из <tag>...</tag> (namespace-agnostic). */
-function extractTag(block: string, localName: string): string | null {
-        const re = new RegExp(`<(?:D:|d:)?${localName}[^>]*>([^<]*)<\\/(?:D:|d:)?${localName}>`, 'i');
-        const m = re.exec(block);
-        return m ? m[1].trim() : null;
-}
-
-/** [P0/C4] Безопасный decode: malformed-последовательности ('%.txt')
- * не валят getManifest — возвращаем исходную строку. */
-function safeDecode(s: string): string {
-        try {
-                return decodeURIComponent(s);
-        } catch {
-                return s;
-        }
-}
-
-/** Нормализация WebDAV href → POSIX-относительный путь в vault.
- *  [P0/C4] РОВНО ОДИН decode (раньше был двойной: parseMultiStatus +
- *  здесь — литеральный '%20' в имени файла получал неверный путь);
- *  basePath приходит УЖЕ декодированным (см. getManifest) — иначе
- *  не-ASCII baseUrl/rootPath не матчится по startsWith. */
-function hrefToPath(rawHref: string, basePath: string): string {
-        let p = safeDecode(rawHref);
-        // Убираем базовый путь (например, /dav/vault/notes → notes)
-        if (basePath && p.startsWith(basePath)) {
-                p = p.slice(basePath.length);
-        }
-        // Убираем ведущий /
-        p = p.replace(/^\/+/, '');
-        // Убираем завершающий / (для коллекций)
-        p = p.replace(/\/+$/, '');
-        // Заменяем \ на / (Windows-серверы)
-        p = p.replace(/\\/g, '/');
-        return p;
-}
-
-/** WebDAV ошибка с HTTP-статусом (для retry-классификации). */
+/** HTTP error with retry classification. XML parsing lives in webdav-xml.ts. */
 class WebDavError extends Error {
         constructor(public status: number, message: string) {
                 super(message);
@@ -258,6 +172,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 export class WebDavSource implements SyncSource {
         readonly kind = 'webdav' as const;
+        readonly deletionSafety = 'unverified' as const;
         readonly maxFileSizeBytes = WEBDAV_MAX_FILE_SIZE;
 
         private readonly config: () => { baseUrl: string; username: string; password: string; rootPath?: string };
@@ -287,16 +202,6 @@ export class WebDavSource implements SyncSource {
                 const entries: RemoteEntry[] = [];
 
                 const startUrl = this.normalizeUrl(baseUrl, rootPath);
-                let basePath: string;
-                try {
-                        // [P0/C4] basePath приводим к декодированному виду — в том же
-                        // пространстве, что и href после ОДНОГО decode в hrefToPath
-                        // (иначе кириллический baseUrl/rootPath не матчится).
-                        basePath = safeDecode(new URL(startUrl).pathname);
-                } catch {
-                        throw new Error(this.messages.propfindFailed(0));
-                }
-
                 // [P0/C3] Бюджет УНИКАЛЬНЫХ коллекций: при живом зеркале молчаливое
                 // усечение = «файлы исчезли из источника» → корзина → throw
                 // (паритет с git treeTruncated / yandex structureChanged).
@@ -318,20 +223,24 @@ export class WebDavSource implements SyncSource {
                         }
 
                         const resources = await this.propfind(url, signal);
+                        if (!resources.some(resource => resource.isCollection && this.isSelfRef(resource.href, url))) {
+                                throw new Error(this.messages.invalidXml('collection response is missing'));
+                        }
                         let skippedSelf = false;
                         for (const r of resources) {
+                                const resolved = resolveDavResource(r.href, url, startUrl);
                                 if (!skippedSelf && this.isSelfRef(r.href, url)) {
                                         skippedSelf = true;
                                         continue;
                                 }
 
-                                const path = hrefToPath(r.href, basePath);
+                                const path = resolved.path;
                                 if (!path) continue;
 
                                 if (r.isCollection) {
                                         // [P0/C4] URL из RAW-href: percent-encoding сервера
                                         // сохраняется, '#'/'?' в именах не разваливаются.
-                                        queue.push(new URL(r.href, url).toString());
+                                        queue.push(resolved.url);
                                         continue;
                                 }
 
@@ -363,7 +272,8 @@ export class WebDavSource implements SyncSource {
                                         if (Number.isFinite(t)) modified = t;
                                 }
 
-                                this.pathToMeta.set(path, { etag: r.etag, fullPath: new URL(r.href, url).toString() });
+                                if (this.pathToMeta.has(path)) throw new Error(`WebDAV path collision: ${path}`);
+                                this.pathToMeta.set(path, { etag: r.etag, fullPath: resolved.url });
                                 entries.push({ path, hash, hashAlg, size: r.size, modified });
                         }
                 }
@@ -379,8 +289,9 @@ export class WebDavSource implements SyncSource {
                 }
                 const headers: Record<string, string> = { 'accept': 'application/octet-stream' };
                 this.applyAuth(headers);
+                if (cached.etag && !/^W\//i.test(cached.etag)) headers['if-match'] = cached.etag;
                 const buffer = await this.fetchWithRetry(cached.fullPath, 'GET', headers, undefined, signal);
-                if (entry.size > 0 && buffer.byteLength !== entry.size) {
+                if (buffer.byteLength !== entry.size) {
                         throw new Error(`WebDAV: size mismatch for ${entry.path}: ${buffer.byteLength} != ${entry.size}`);
                 }
                 return buffer;
@@ -440,7 +351,7 @@ export class WebDavSource implements SyncSource {
                                 await sleep(RETRY_BACKOFF_MS[idx], signal);
                         }
                         try {
-                                const req: NetRequest = { method, headers, body: body as BodyInit, signal };
+                                const req: NetRequest = { method, headers, body: body as BodyInit, signal, redirect: 'error' };
                                 const res: NetResponse = await this.transport.fetch(url, req);
                                 const status = res.status;
                                 // [overhaul S4 / S3-review #1] discard-паритет с NetLayer: ветки,
@@ -453,7 +364,7 @@ export class WebDavSource implements SyncSource {
                                         discardBody();
                                         throw new WebDavError(404, this.messages.fileNotFound(urlForLog(url)));
                                 }
-                                if (status < 200 || status >= 300) {
+                                if (status !== (method === 'PROPFIND' ? 207 : 200)) {
                                         discardBody();
                                         throw new WebDavError(status, `${method} HTTP ${status}`);
                                 }
@@ -486,17 +397,20 @@ export class WebDavSource implements SyncSource {
         }
 
         private normalizeUrl(baseUrl: string, rootPath?: string): string {
-                let url = baseUrl.replace(/\/+$/, '');
-                if (rootPath && rootPath.trim() !== '') {
-                        const rp = rootPath.trim().replace(/^\/+/, '').replace(/\/+$/, '');
-                        url = `${url}/${rp}`;
+                const url = new URL(baseUrl);
+                if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+                        throw new Error('Invalid WebDAV root URL');
                 }
-                return url;
+                let path = url.pathname.replace(/\/+$/, '');
+                if (rootPath && rootPath.trim() !== '') {
+                        const relative = rootPath.trim().replace(/^\/+|\/+$/g, '');
+                        if (relative.split('/').some(segment => segment === '.' || segment === '..')) throw new Error('Invalid WebDAV root path');
+                        path += '/' + relative;
+                }
+                url.pathname = path + '/';
+                return url.toString();
         }
 
-        /**
-         * Проверка: href PROPFIND — это сама запрошенная коллекция?
-         */
         private isSelfRef(href: string, url: string): boolean {
                 try {
                         const hrefUrl = new URL(href, url).toString().replace(/\/+$/, '');

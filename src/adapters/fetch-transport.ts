@@ -41,6 +41,7 @@ export class FetchTransport implements NetTransport {
         }
 
         async fetch(url: string, options: NetRequest = {}): Promise<NetResponse> {
+                if (options.signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
                 const timeoutController = new AbortController();
                 let timer: ReturnType<typeof setTimeout> | undefined;
                 const arm = (ms: number): void => {
@@ -67,6 +68,7 @@ export class FetchTransport implements NetTransport {
                                 headers: options.headers,
                                 body: options.body,
                                 signal: timeoutController.signal,
+                                redirect: options.redirect,
                         });
                         // Заголовки — в нижний регистр (контракт NetResponse).
                         const headers: Record<string, string> = {};
@@ -88,6 +90,8 @@ export class FetchTransport implements NetTransport {
                                 discard: (): void => {
                                         if (discarded) return;
                                         discarded = true;
+                                        timeoutController.abort();
+                                        void response.body?.cancel().catch(() => {});
                                         finish();
                                 },
                                 arrayBuffer: (): Promise<ArrayBuffer> => {

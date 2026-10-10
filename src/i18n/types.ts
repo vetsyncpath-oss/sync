@@ -31,6 +31,8 @@ export interface JournalLabels {
         statConflicts: (n: number) => string;
         statSkipped: (n: number) => string;
         statErrors: (n: number) => string;
+        statDeferred: (n: number) => string;
+        statBlocked: (n: number) => string;
         topErrors: string;
         durationSec: (s: number) => string;
         durationMs: (ms: number) => string;
@@ -88,6 +90,7 @@ export interface ConfirmLabels {
         sectionDeleteFull: (n: number) => string;
         sectionOverwrite: (n: number) => string;
         sectionOrphan: (n: number) => string;
+        sectionBlocked: (n: number) => string;
         bytesLine: (bytes: string) => string;
         pathsTitle: string;
         pathsMore: (n: number) => string;
@@ -317,6 +320,7 @@ export interface Translations {
         noticeNoMissingFiles: string;
         /** [W4-T02] Auto-сессия отложила N опасных удалений. */
         noticeDeletionsDeferred: (n: number) => string;
+        noticeDeletionsBlocked: (n: number) => string;
         noticeRepoUrlEmpty: string;
         noticeInvalidUrl: string;
         noticeConnected: (msg: string) => string;

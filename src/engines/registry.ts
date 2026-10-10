@@ -49,6 +49,11 @@ import { YandexSource } from '../sources/yandex-source';
 import { ZipUrlSource } from '../sources/zip-url-source';
 import { GDriveSource } from '../sources/gdrive-source';
 import { WebDavSource } from '../sources/webdav-source';
+import type { GitSourceMessages } from '../sources/git-source';
+import type { YandexSourceMessages } from '../sources/yandex-source';
+import type { ZipUrlSourceMessages } from '../sources/zip-url-source';
+import type { GDriveSourceMessages } from '../sources/gdrive-source';
+import type { WebDavSourceMessages } from '../sources/webdav-source';
 
 // ────────────────────────────────────────────────────────────────────────
 // Контекст создания движка
@@ -82,7 +87,7 @@ export interface EngineCtx {
          * Тип宽松: каждый движок ожидает свой GitSourceMessages/YandexSourceMessages/
          * ZipUrlSourceMessages; main.ts формирует их через i18n.t.* и type-cast'ит.
          */
-        messages?: Record<string, (...args: unknown[]) => string>;
+        messages?: Partial<GitSourceMessages & YandexSourceMessages & ZipUrlSourceMessages & GDriveSourceMessages & WebDavSourceMessages>;
         /**
          * [W3-T03] Прогресс скачивания архива (только zip-url). В main.ts
          * транслируется в statusBar.setState('syncing', { bytesTransferred, totalBytes }).

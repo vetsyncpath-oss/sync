@@ -159,6 +159,7 @@ function abortedError(): Error & { aborted: boolean } {
 
 export class GDriveSource implements SyncSource {
         readonly kind = 'gdrive' as const;
+        readonly deletionSafety = 'unverified' as const;
         readonly maxFileSizeBytes = GDRIVE_MAX_FILE_SIZE;
 
         private readonly config: () => { apiKey: string; folderId?: string; includeDocs?: boolean };
@@ -333,7 +334,7 @@ export class GDriveSource implements SyncSource {
                 // передавался весь url — с `key=<apiKey>` — и секрет персистился
                 // в FailedFile.reason → data.json → topErrors журнала → UI.
                 const buffer = await this.fetchBuffer(url, signal, id);
-                if (entry.size > 0 && buffer.byteLength !== entry.size) {
+                if (buffer.byteLength !== entry.size) {
                         throw new Error(`GDrive: size mismatch for ${entry.path}: ${buffer.byteLength} != ${entry.size}`);
                 }
                 return buffer;
@@ -358,7 +359,7 @@ export class GDriveSource implements SyncSource {
         private buildListUrl(apiKey: string, folderId: string, _includeDocs: boolean, pageToken: string | undefined): string {
                 const params = new URLSearchParams();
                 params.set('key', apiKey);
-                params.set('fields', 'files(id,name,mimeType,size,modifiedTime,sha256Checksum,md5Checksum),nextPageToken');
+                params.set('fields', 'files(id,name,mimeType,size,modifiedTime,sha256Checksum,md5Checksum),nextPageToken,incompleteSearch');
                 params.set('pageSize', '200');
                 params.set('q', `trashed=false and '${folderId}' in parents`);
                 if (pageToken) {
@@ -400,6 +401,7 @@ export class GDriveSource implements SyncSource {
                         throw new Error(this.messages.invalidResponse('not an object'));
                 }
                 const obj = json as Record<string, unknown>;
+                if (obj.incompleteSearch === true) throw new Error(this.messages.manifestTruncated());
                 if (!Array.isArray(obj.files)) {
                         throw new Error(this.messages.invalidResponse('files is not an array'));
                 }

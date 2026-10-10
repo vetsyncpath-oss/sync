@@ -144,6 +144,14 @@ export function isFolderCovered(model: MirrorModel, folderPath: string): boolean
         }
 }
 
+/** An excluded parent can contain an explicitly selected child subtree. */
+export function shouldTraverseFolder(model: MirrorModel, folderPath: string): boolean {
+        const path = normalizePolicyPath(folderPath);
+        if (isFolderCovered(model, path)) return true;
+        const prefix = path ? path + '/' : '';
+        return Object.entries(model.folders).some(([child, rule]) => child.startsWith(prefix) && child !== path && rule.state !== 'off');
+}
+
 /**
  * Охват ФАЙЛА: цепочка родительских папок (запись на пути самого файла
  * не матчится — записи бывают только на папках).
@@ -320,6 +328,10 @@ export function planMirrorDeletions(model: MirrorModel, input: MirrorPlanInput):
         // ── 1. orphan: ex-synced ключи кэша, которых нет в источнике ──
         for (const key of cacheSet) {
                 if (manifestSet.has(key)) continue; // ещё в источнике
+                if (input.isPathEligible && !input.isPathEligible(key)) {
+                        stats.skippedIneligible++;
+                        continue;
+                }
                 if (isMirrorProtected(key)) { stats.skippedProtected++; continue; }
                 // [overhaul v4 / Этап 2] fileExclusions — защита от mirror-удаления.
                 // Файл, попадающий под glob-исключение, не удаляется как orphan.

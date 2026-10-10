@@ -25,6 +25,9 @@ import { NodeArchiveDownloader, NodeZipRangeTransport } from './src/adapters/arc
 import { i18n, setLocale, resolveLabel, type Locale } from './src/i18n';
 import type { ZipRangeTransport } from './src/sources/zip-test-connection';
 import { Coordinator } from './src/core/coordinator';
+import { OperationStore } from './src/core/operation-store';
+import { RecoveryStore } from './src/core/recovery-store';
+import { DurableMutations } from './src/core/durable-mutations';
 import { Scheduler, type SchedulerInterval, type SchedulerSnapshot } from './src/core/scheduler';
 import { FetchTransport } from './src/adapters/fetch-transport';
 import { BufferArchiveReader } from './src/core/archive';
@@ -688,12 +691,17 @@ function mergeFileExclusions(
 // ============================================================
 
 export default class GitSyncPlugin extends Plugin {
-        settings!: GitSyncSettings;
+        declare settings: GitSyncSettings;
 
         private settingsManager!: SettingsManager;
         private statusBar!: StatusBarManager;
         private gitSource!: GitSource;
         private coordinator!: Coordinator;
+        private sessionOwned = false;
+        private builtEngineConfigKey = '';
+        private configurationEpoch = 0;
+        private configurationKey = '';
+        private preparedConfigRevision = 0;
         // [W4-T01] планировщик авто-синхронизации: создается в onload (после buildEngine),
         // интервал из settings.autoSyncInterval; снимается в onunload.
         private scheduler?: Scheduler;
@@ -1075,6 +1083,7 @@ export default class GitSyncPlugin extends Plugin {
                 // со старым git_<djb2(repoUrl)> / <kind>_<djb2(vaultUrl)>).
                 this.builtKind = this.desiredSourceKind();
                 this.builtSourceId = this.makeSourceId(this.builtKind);
+                this.builtEngineConfigKey = JSON.stringify(this.engineValues(this.builtKind));
                 // [W3-T03] gitSource поле оставлено для migrateLegacyShas (git-only
                 // шаг в prepareSession); инстанс строится через реестр как и любой другой.
                 const initialSource: import('./src/sources/types').SyncSource =
@@ -1143,6 +1152,8 @@ export default class GitSyncPlugin extends Plugin {
                 });
 
                 this.coordinator = new Coordinator({
+                        mutations: new DurableMutations(new OperationStore(this.fsAdapter),
+                                new RecoveryStore(this.makeVaultAdapter(), this.recoveryDirectory()), this.makeVaultAdapter()),
                         source: initialSource,
                         vault: this.makeVaultAdapter(),
                         cache: this.cache,
@@ -1170,6 +1181,7 @@ export default class GitSyncPlugin extends Plugin {
                                 // автоповторы прекращены — внятный путь лечения в Notice.
                                 retryParked: (n) => i18n.t.noticeRetryParked(n),
                                 deletionsDeferred: (n) => i18n.t.noticeDeletionsDeferred(n),
+                                deletionsBlocked: (n) => i18n.t.noticeDeletionsBlocked(n),
                                 // [P2/3.2] фазы конвейера — текст статус-бара на границах фаз
                                 // (словарь pop.* общий с popover-полосой — единый источник).
                                 phaseManifest: i18n.t.pop.phaseManifest,
@@ -1180,6 +1192,8 @@ export default class GitSyncPlugin extends Plugin {
                                 phaseFinalize: i18n.t.pop.phaseFinalize,
                         },
                         options: {
+                                configurationRevision: () => this.getConfigurationRevision(),
+                                preparedRevision: () => this.preparedConfigRevision,
                                 // [W1-T07 / BUG-5] Единый вход модели удалений — уровень
                                 // зеркала (deleteMissing-тумблер из логики умер).
                                 mirrorLevel: () => this.currentMirrorLevel(),
@@ -1197,6 +1211,7 @@ export default class GitSyncPlugin extends Plugin {
                         // data.json = undefined = legacy-режим (ничего не меняется).
                         syncPolicy: this.settings.syncPolicies?.[this.builtSourceId],
                 });
+                this.preparedConfigRevision = this.getConfigurationRevision();
         }
 
         /** Разовая миграция lastSyncShas (data.json) в файл кэша (дизайн §8.1). */
@@ -1561,7 +1576,26 @@ export default class GitSyncPlugin extends Plugin {
                         ignoredFolders: hasPolicy ? '' : this.settings.ignoredFolders,
                         allowPlugins: this.settings.allowPlugins,
                         allowSnippets: this.settings.allowSnippets,
+                        protectedPaths: [this.pluginDir()],
                 });
+        }
+
+        private recoveryDirectory(): string {
+                const directory = this.pluginDir();
+                if (!directory) throw new Error('Plugin directory unavailable; operation state cannot be protected');
+                return `${directory}/recovery-v2`;
+        }
+
+        /** Semantic epoch stays in memory. No credential/fingerprint is written to the ledger. */
+        private getConfigurationRevision(): number {
+                const kind = this.desiredSourceKind();
+                const config = JSON.stringify({ kind, values: this.engineValues(kind), mirror: this.currentMirrorLevel(),
+                        policy: this.settings.syncPolicies?.[this.makeSourceId(kind)], syncMode: this.settings.syncMode,
+                        allowed: this.settings.allowedFolders, ignored: this.settings.ignoredFolders,
+                        plugins: this.settings.allowPlugins, snippets: this.settings.allowSnippets,
+                        conflict: this.settings.conflictStrategy, light: this.settings.lightConflictStrategy, trash: this.settings.useTrash });
+                if (config !== this.configurationKey) { this.configurationKey = config; this.configurationEpoch++; }
+                return this.configurationEpoch;
         }
 
         /** Свежесть движка перед сессией: политика, стратегия, источник, sourceId. */
@@ -1571,6 +1605,7 @@ export default class GitSyncPlugin extends Plugin {
                 // (без потери данных, но с лишними перекачками); настройки сохранены —
                 // следующий вход подхватит их
                 if (this.coordinator.isRunning()) return;
+                const preparingRevision = this.getConfigurationRevision();
                 // [W2-T02 / Д13=1] настройки могли смениться с прошлой сессии —
                 // чип уровня зеркала обновляется перед каждой сессией.
                 this.statusBar.setMirrorLevel(this.currentMirrorLevel());
@@ -1579,19 +1614,23 @@ export default class GitSyncPlugin extends Plugin {
                 if (this.builtKind === 'git') await this.migrateLegacyShas();
                 const kind = this.desiredSourceKind();
                 const sourceId = this.makeSourceId(kind);
-                if (kind !== this.builtKind || sourceId !== this.builtSourceId) {
+                const values = this.engineValues(kind), engineKey = JSON.stringify(values);
+                if (kind !== this.builtKind || sourceId !== this.builtSourceId || engineKey !== this.builtEngineConfigKey) {
                         // [W3-T03] сменился тип источника или URL: новый инстанс через реестр.
-                        this.builtKind = kind;
-                        this.builtSourceId = sourceId;
                         const nextSource: import('./src/sources/types').SyncSource =
-                                EngineRegistry.create(kind, this.engineValues(kind), this.engineCtx());
+                                EngineRegistry.create(kind, values, this.engineCtx());
                         if (kind === 'git') {
                                 this.gitSource = nextSource as import('./src/sources/git-source').GitSource;
                         }
                         await this.coordinator.setSource(nextSource);
-                        this.cache = new ManifestCache(this.fsAdapter, sourceId);
-                        await this.cache.load();
-                        this.coordinator.setCache(this.cache);
+                        if (sourceId !== this.builtSourceId) {
+                                this.cache = new ManifestCache(this.fsAdapter, sourceId);
+                                await this.cache.load();
+                                this.coordinator.setCache(this.cache);
+                        }
+                        this.builtKind = kind;
+                        this.builtSourceId = sourceId;
+                        this.builtEngineConfigKey = engineKey;
                         await gcManifestCaches(this.fsAdapter, this.gcKeepSet(sourceId));
                 }
                 // [overhaul S2/M-5] PathPolicy строится ПОСЛЕ возможного свапа
@@ -1607,6 +1646,8 @@ export default class GitSyncPlugin extends Plugin {
                 // возможного свапа источника/кэша перечитываем её
                 // (каждую сессию: пользователь мог сохранить новую в modal).
                 this.coordinator.setSyncPolicy(this.settings.syncPolicies?.[this.builtSourceId]);
+                if (preparingRevision !== this.getConfigurationRevision()) throw new Error('Configuration changed while preparing sync; run it again');
+                this.preparedConfigRevision = preparingRevision;
         }
 
         // ============================================================
@@ -1866,10 +1907,8 @@ export default class GitSyncPlugin extends Plugin {
         }
 
         async forceResync(): Promise<void> {
-                // [W2-T04] единый confirm-modal (flow='force'): noRecovery предупреждение
-                // если корзина выключена. Имя движка — this.builtKind (BUG-10: не хардкод GitHub).
                 const confirmed = await showConfirmModal(
-                        this.app, 'force', { noRecovery: !this.settings.useTrash }, this.builtKind,
+                        this.app, 'force', {}, this.builtKind,
                 );
                 if (!confirmed) return;
                 await this.runSession('force', async () => {
@@ -1879,32 +1918,21 @@ export default class GitSyncPlugin extends Plugin {
         }
 
         async scanAndRestoreMissing(): Promise<void> {
-                const t = i18n.t;
-                // [overhaul S1/H-3+M-4] гейт ДО трафика (collectMissing зовёт
-                // getManifest до runSession) и ДО setStatus('syncing').
-                if (!this.assertNetworkAllowed()) return;
-                this.statusBar.setState('syncing', { progressText: '...' });
-                new Notice(t.noticeCheckingSource);
-                // [4-review-fix] скан тоже под fresh-политикой и под защитой:
-                // сетевой сбой/отмена больше не оставляют статус-бар в 'syncing'
-                // и не дают unhandled rejection из команды
-                try {
+                await this.runSession('scan', async () => {
+                        const t = i18n.t;
                         await this.prepareSession();
+                        this.statusBar.setState('syncing', { progressText: '...' });
+                        new Notice(t.noticeCheckingSource);
                         const missing = await this.coordinator.collectMissing();
-                        if (missing === null) { this.statusBar.setState('idle'); return; }
-                        if (missing.length === 0) { new Notice(t.noticeNoMissingFiles); this.statusBar.setState('idle'); return; }
-                        // [W2-T04] scan-flow: toRestore + список путей топ-10.
-                        const confirmed = await showConfirmModal(
-                                this.app, 'scan', { toRestore: missing.length, paths: missing }, this.builtKind,
-                        );
-                        if (!confirmed) { this.statusBar.setState('idle'); return; }
-                        await this.runSession('scan', async () => {
-                                return await this.coordinator.sync({ forcedPaths: new Set(missing) });
-                        });
-                } catch (e: any) {
-                        this.statusBar.setState('error');
-                        new Notice(t.noticeScanFailed(e?.message ?? String(e)));
-                }
+                        if (missing === null || missing.length === 0) {
+                                this.statusBar.setState('idle');
+                                if (missing?.length === 0) new Notice(t.noticeNoMissingFiles);
+                                return null;
+                        }
+                        const confirmed = await showConfirmModal(this.app, 'scan', { toRestore: missing.length, paths: missing }, this.builtKind);
+                        if (!confirmed) { this.statusBar.setState('idle'); return null; }
+                        return this.coordinator.sync({ forcedPaths: new Set(missing) });
+                });
         }
 
         /** [overhaul S1/H-3] Гейт внесессионного сетевого трафика: testConnection,
@@ -1938,6 +1966,13 @@ export default class GitSyncPlugin extends Plugin {
          *  Coordinator владеет outcome (W1-T01: флаги отмены видны ему);
          *  здесь — только старт/длительность/триггер/движок и top-3 ошибок. */
         private async runSession(trigger: 'manual' | 'auto' | 'retry' | 'scan' | 'force', fn: () => Promise<import('./src/sources/types').SyncStats | null>): Promise<import('./src/sources/types').SyncStats | null> {
+                if (this.sessionOwned || this.coordinator?.isRunning()) { new Notice(i18n.t.noticeSyncInProgress); return null; }
+                this.sessionOwned = true;
+                try { return await this.runOwnedSession(trigger, fn); }
+                finally { this.sessionOwned = false; }
+        }
+
+        private async runOwnedSession(trigger: 'manual' | 'auto' | 'retry' | 'scan' | 'force', fn: () => Promise<import('./src/sources/types').SyncStats | null>): Promise<import('./src/sources/types').SyncStats | null> {
                 // [VAM] гейт «работы, требующей входа» (§5, fail-closed): единая
                 // точка для ВСЕХ сессий — manual/auto/retry/scan/force (аналог
                 // гейта AI-запросов донора: AIEngine.processText/chat/embeddings).
@@ -2142,6 +2177,8 @@ export default class GitSyncPlugin extends Plugin {
                         conflicts: stats.conflicts,
                         skipped: stats.skipped,
                         errors: stats.failed,
+                        deferredDeletions: stats.deferredDeletions ?? 0,
+                        blockedDeletions: stats.blockedDeletions ?? 0,
                         topErrors: topErrorsFrom(this.queue.all().map((f) => f.reason)),
                 };
                 try {
@@ -2278,6 +2315,29 @@ export default class GitSyncPlugin extends Plugin {
                         exists: (p) => adapter.exists(norm(p)),
                         readBinary: (p) => adapter.readBinary(norm(p)),
                         writeBinary: (p, data) => timed(`write ${data.byteLength}B`, p, () => adapter.writeBinary(norm(p), data)),
+                        compareAndWrite: async (p, data, expected, signal) => {
+                                let previous: string;
+                                let next: string;
+                                try {
+                                        const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+                                        previous = decoder.decode(expected);
+                                        next = decoder.decode(data);
+                                } catch { return undefined; }
+                                const file = this.app.vault.getFileByPath(norm(p));
+                                if (!file || file.extension !== 'md') return undefined;
+                                const changed = new Error('Local file changed before atomic replacement');
+                                try {
+                                        await this.app.vault.process(file, current => {
+                                                signal?.throwIfAborted();
+                                                if (current !== previous) throw changed;
+                                                return next;
+                                        });
+                                        return true;
+                                } catch (error) {
+                                        if (error === changed) return false;
+                                        throw error;
+                                }
+                        },
                         mkdir: (p) => timed('mkdir', p, () => adapter.mkdir(norm(p))),
                         remove: (p) => timed('remove', p, () => adapter.remove(norm(p))),
                         rename: (from, to) => timed(`rename "${from}" ->`, to, () => adapter.rename(norm(from), norm(to))),
@@ -2440,6 +2500,7 @@ export default class GitSyncPlugin extends Plugin {
                                         orphans: info.orphans,
                                         downloadBytes: info.downloadBytes,
                                         noRecovery: info.noRecovery,
+                                        blockedDeletions: info.blockedDeletions,
                                 }, this.builtKind);
                         },
                         confirmRetry: async (count) => {

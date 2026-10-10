@@ -89,11 +89,19 @@ export class ManifestCache {
         private readonly fs: FileSystem;
         private readonly sourceId: string;
         private cache: CacheEntries = {};
+        private ioChain: Promise<void> = Promise.resolve();
+
+        private serialize<T>(operation: () => Promise<T>): Promise<T> {
+                const result = this.ioChain.then(operation);
+                this.ioChain = result.then(() => {}, () => {});
+                return result;
+        }
 
         constructor(fs: FileSystem, sourceId: string) {
                 this.fs = fs;
                 this.sourceId = sourceId;
         }
+        get namespace(): string { return this.sourceId; }
 
         /** manifest-<sourceId>.json */
         private get finalPath(): string {
@@ -160,10 +168,13 @@ export class ManifestCache {
                         version: CACHE_VERSION,
                         sourceId: this.sourceId,
                         generatedAt: Date.now(),
-                        entries: this.cache,
+                        entries: this.entries(),
                 };
-                await this.fs.write(this.tmpPath, JSON.stringify(file));
-                await this.fs.rename(this.tmpPath, this.finalPath);
+                const json = JSON.stringify(file);
+                await this.serialize(async () => {
+                        await this.fs.write(this.tmpPath, json);
+                        await this.fs.rename(this.tmpPath, this.finalPath);
+                });
         }
 
         /**

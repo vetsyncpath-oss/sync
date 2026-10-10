@@ -62,6 +62,8 @@ export interface JournalEntry {
         conflicts: number;
         skipped: number;
         errors: number;
+        deferredDeletions?: number;
+        blockedDeletions?: number;
         /** Топ-3 частых ошибок сессии (см. topErrorsFrom); чистая сессия → []. */
         topErrors: Array<{ message: string; count: number }>;
 }
@@ -133,6 +135,8 @@ function coerceEntry(raw: unknown): JournalEntry | null {
                 conflicts: num(r.conflicts),
                 skipped: num(r.skipped),
                 errors: num(r.errors),
+                deferredDeletions: num(r.deferredDeletions),
+                blockedDeletions: num(r.blockedDeletions),
                 topErrors,
         };
 }

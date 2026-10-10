@@ -176,6 +176,9 @@ export class JournalModalView {
 		if (e.conflicts > 0) parts.push(t.statConflicts(e.conflicts));
 		if (e.skipped > 0) parts.push(t.statSkipped(e.skipped));
 		if (e.errors > 0) parts.push(t.statErrors(e.errors));
+		const deferred = (e.deferredDeletions ?? 0) - (e.blockedDeletions ?? 0);
+		if (deferred > 0) parts.push(t.statDeferred(deferred));
+		if ((e.blockedDeletions ?? 0) > 0) parts.push(t.statBlocked(e.blockedDeletions!));
 		return parts.join(' · ');
 	}
 

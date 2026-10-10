@@ -4,11 +4,9 @@
 //   acquire-мьютекс → guards → manifest → PathPolicy → diff →
 //   confirm → pMap-загрузка (ConflictResolver) → удаления →
 //   кэш-flush → статистика.
-// Закрывает: Б-11 (forceResync = честный reset кэша с .bak и
-// восстановлением при отмене на guard'ах), Б-20 (guards едины
-// для всех входов), Б-10 (retry: дозревание nextRetryAt +
-// удаление удавшихся, слияние без потерь), С-10 (однопоточный
-// конвейер — параллельных писателей нет).
+// Force downloads retain the baseline; retries respect their due times.
+// Session ownership includes final persistence and source disposal.
+// A durable operation journal and vault-wide runner belong to the next stage.
 // Все тексты/модалки/статус-бар — за SyncUI; ядро чистое от
 // obsidian/i18n (В5-1).
 // ============================================================
@@ -25,7 +23,7 @@ import type {
 import { ManifestCache } from './manifest-cache';
 import { FailedQueue } from './queue';
 import { PathPolicy } from './path-policy';
-import { ConflictResolver } from './conflict';
+import { ConflictResolver, buildStampedPath, bytesEqual, formatConflictTimestamp } from './conflict';
 import { DirLock } from './dirlock';
 import { diff } from './diff';
 import { applyPolicy, EMPTY_POLICY, type SyncPolicy } from './policy';
@@ -36,7 +34,7 @@ import { applyPolicy, EMPTY_POLICY, type SyncPolicy } from './policy';
 // теперь policyResult.mirrorPlan.
 import {
                 isAutoExcluded,
-                isFolderCovered,
+                shouldTraverseFolder,
                 levelOf,
                 normalizeMirrorModel,
                 scanVaultTree,
@@ -52,6 +50,11 @@ import { formatBytes, formatDuration } from '../utils/format';
 // так же»: деливерабл не содержал собранного main.js, а логи были
 // неотличимы от старой версии).
 import { BUILD_TAG } from './build';
+import { validateManifest, verifyRemoteData } from './source-validation';
+import { createOperationPlan, type OperationPlan, type PlannedMove } from './operation-plan';
+import { assertLocal, MISSING, versionOf, type LocalVersion } from './local-version';
+import { crc32Hex, gitBlobSha1Hex } from './hasher';
+import type { DurableMutations } from './durable-mutations';
 
 /** Локализуемые сообщения конвейера (инъекция из main.ts). */
 export interface CoordinatorMessages {
@@ -76,6 +79,7 @@ export interface CoordinatorMessages {
         retryParked: (parked: number) => string;
         /** [W4-T02] Auto-сессия отложила N опасных удалений до ручного повтора. */
         deletionsDeferred: (n: number) => string;
+        deletionsBlocked?: (n: number) => string;
         /** [P2/3.2] Фазы конвейера — текст статус-бара на границах фаз
          *  (манифест → политика → дифф → удаления → загрузки → финализация).
          *  Popover рисует полосу по индексу фазы (SyncProgress.phase), эти
@@ -88,8 +92,11 @@ export interface CoordinatorMessages {
         phaseFinalize: string;
 }
 
-/** Динамические опции (читаются на каждой сессии, не снапшотятся). */
+/** Policy options are captured per session; liveness and revision checks stay live. */
 export interface CoordinatorOptions {
+        /** In-memory semantic configuration epoch; credentials are never persisted here. */
+        configurationRevision?(): number;
+        preparedRevision?(): number;
         /** [W1-T07 / BUG-5] Глобальный уровень зеркала из настроек
          *  (fetch/light/full). Единственный вход модели удалений;
          *  легаси-тумблер deleteMissing умер (семантика миграции §2.4:
@@ -119,6 +126,7 @@ export interface CoordinatorOptions {
 }
 
 export interface CoordinatorDeps {
+        mutations?: DurableMutations;
         source: import('../sources/types').SyncSource;
         vault: VaultAdapter;
         cache: ManifestCache;
@@ -147,11 +155,34 @@ export class Coordinator {
         // [7-d] журнал §7.5: сколько записей источника отброшено как небезопасные
         private skippedUnsafeCount = 0;
         private readonly dirLock = new DirLock();
+        private persistChain: Promise<void> = Promise.resolve();
+        private failedDeletions = 0;
+        private activeDeps?: CoordinatorDeps;
+        private sessionRevision?: number;
+        private plan?: OperationPlan;
+        private get current(): CoordinatorDeps { return this.activeDeps ?? this.deps; }
+
+        private captureSession(): void {
+                const deps = this.deps, options = deps.options;
+                const mirror = options.mirrorLevel(), trash = options.useTrash();
+                this.sessionRevision = options.preparedRevision?.() ?? options.configurationRevision?.();
+                this.activeDeps = { ...deps, policy: deps.policy.snapshot(), conflict: deps.conflict.snapshot(),
+                        syncPolicy: deps.syncPolicy && structuredClone(deps.syncPolicy), messages: { ...deps.messages },
+                        options: { ...options, mirrorLevel: () => mirror, useTrash: () => trash } };
+        }
+        private guard(path?: string, incoming = false): void {
+                this.controller?.signal.throwIfAborted();
+                if (this.sessionRevision !== this.deps.options.configurationRevision?.()) {
+                        this.cancel(); throw new DOMException('Configuration changed during sync', 'AbortError');
+                }
+                if (path && (!this.current.policy.isPathSafe(path) || this.current.policy.isProtectedPath(path)
+                        || (incoming ? !this.current.policy.isConflictCopy(path) : !this.current.policy.isPathAllowed(path)))) throw new Error(`Protected mutation path: ${path}`);
+        }
 
         /** [P2/B6] Диагностический лог конвейера — только при verboseLogs().
          *  Аномалии (warn) и ошибки (error) — всегда, без гейта. */
         private debugLog(msg: string): void {
-                if (this.deps.options.verboseLogs?.()) console.log(`[VaultSync] ${msg}`);
+                if (this.current.options.verboseLogs?.()) console.log(`[VaultSync] ${msg}`);
         }
 
         /**
@@ -164,12 +195,12 @@ export class Coordinator {
          *   conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=… duration=…ms
          */
         private sessionEndLog(stats: SyncStats): string {
-                const parked = this.deps.queue.poisonedCount();
+                const parked = this.current.queue.poisonedCount();
                 return (
                         `session end (build=${BUILD_TAG}): outcome=${stats.outcome ?? 'unknown'} ` +
                         `downloaded=${stats.downloaded} deleted=${stats.deleted} ` +
                         `conflicts=${stats.conflicts} skipped=${stats.skipped} ` +
-                        `failed=${stats.failed} queue=${this.deps.queue.size()} parked=${parked} ` +
+                        `failed=${stats.failed} queue=${this.current.queue.size()} parked=${parked} ` +
                         `bytes=${stats.bytesTransferred} duration=${stats.duration}ms`
                 );
         }
@@ -196,7 +227,9 @@ export class Coordinator {
          * посередине (кэш отражает только реально записанное).
          */
         async sync(opts: { forcedPaths?: Set<string>; forceAll?: boolean; trigger?: 'manual' | 'auto' } = {}): Promise<SyncStats | null> {
-                const { ui, messages: m, options: o } = this.deps;
+                opts = { ...opts, forcedPaths: opts.forcedPaths && new Set(opts.forcedPaths) };
+                const { ui, messages: m } = this.current;
+                let o = this.current.options;
 
                 if (this.running) { ui.notify(m.alreadyInProgress); return null; }
                 if (!o.isOnline()) { ui.notify(m.offline); ui.setStatus('offline'); return null; }
@@ -205,6 +238,7 @@ export class Coordinator {
                 this.running = true;
                 this.shouldCancel = false;
                 this.checkpointCounter = 0;
+                this.failedDeletions = 0;
                 this.abortedThisSession = false;
                 this.skippedUnsafeCount = 0;
                 const controller = new AbortController();
@@ -223,11 +257,28 @@ export class Coordinator {
                                 `forced=${opts.forcedPaths?.size ?? 0}, forceAll=${String(Boolean(opts.forceAll))}`,
                 );
 
-                ui.setStatus('syncing', { phase: 0, progressText: m.phaseManifest });
-
                 try {
+                        this.captureSession();
+                        o = this.current.options;
+                        this.guard();
+                        ui.setStatus('syncing', { phase: 0, progressText: m.phaseManifest });
+                        const mutations = this.current.mutations;
+                        if (mutations) {
+                                const recovered = await mutations.recover(this.current.cache.namespace);
+                                mutations.projectCache(this.current.cache.namespace, this.current.cache);
+                                for (const record of recovered) {
+                                        const effect = record.effect;
+                                        if (effect?.kind === 'set') {
+                                                const failed = this.current.queue.all().find(file => file.path === effect.remote.path && file.hash === effect.remote.hash);
+                                                if (failed) this.current.queue.delete(failed.path);
+                                        }
+                                }
+                        }
                         const manifestStart = Date.now();
-                        const manifest = await this.deps.source.getManifest(controller.signal);
+                        const inventory = await this.current.source.getManifest(controller.signal);
+                        validateManifest(inventory);
+                        const manifest = inventory.map(entry => Object.freeze({ ...entry }));
+                        if (manifest.some(entry => !this.current.policy.isPathSafe(entry.path))) throw new Error('Unsafe source inventory');
                         const safeEntries = manifest.filter((e) => this.filterRemoteEntry(e));
                         this.debugLog(`manifest: ${manifest.length} записей (${Date.now() - manifestStart}ms), после path-policy: ${safeEntries.length}`);
 
@@ -238,7 +289,7 @@ export class Coordinator {
                         // пользователь не меняет поведение). Записи, чей ЛОКАЛЬНЫЙ
                         // путь не прошёл валидацию (битые цели rename) или дал
                         // коллизию, выпадают с unsafeCount — видимы в §7.5-notice.
-                        const syncPolicy = this.deps.syncPolicy;
+                        const syncPolicy = this.current.syncPolicy;
                         const hasPolicy = syncPolicy !== undefined;
 
                         // [W1-T07] Модель зеркала сессии: глобальный уровень из
@@ -262,17 +313,17 @@ export class Coordinator {
                                 mirrorModel.level === 'full' ||
                                 Object.values(mirrorModel.folders).some((r) => r.state === 'custom' && r.level === 'full');
                         let scan: Awaited<ReturnType<typeof scanVaultTree>> | undefined;
-                        if (fullActive && !opts.forcedPaths && !opts.forceAll && typeof this.deps.vault.list === 'function') {
-                                scan = await scanVaultTree(this.deps.vault, {
+                        if (fullActive && !opts.forcedPaths && !opts.forceAll && typeof this.current.vault.list === 'function') {
+                                scan = await scanVaultTree(this.current.vault, {
                                         signal: controller.signal,
                                         // Прун поддеревьев: автоисключения (.trash, File Recovery)
-                                        // и off-папки (Е2) — скан внутрь не заходит, папка →
+                                        // и off-папки без выбранных потомков — папка →
                                         // blocked (выживающий потомок защищает родителя
                                         // от extra-удаления). Не-допустимые ПОЛИТИКОЙ ПУТЕЙ
                                         // файлы (.git/*, отключённые плагины) скан видит, но
                                         // planMirrorDeletions их не удаляет (isPathEligible).
                                         pruneFolder: (f) =>
-                                                isAutoExcluded(f) || !isFolderCovered(mirrorModel, f),
+                                                isAutoExcluded(f) || this.current.policy.isProtectedPath(f) || !shouldTraverseFolder(mirrorModel, f),
                                 });
                                 this.debugLog(`mirror-scan: файлов=${scan.files.length}, папок=${scan.folders.length}, ` +
                                         `обрезано=${scan.blocked.length} (full активен)`);
@@ -281,17 +332,11 @@ export class Coordinator {
                         const policyResult = applyPolicy(
                                 safeEntries,
                                 syncPolicy ?? EMPTY_POLICY,
-                                this.deps.policy,
-                                Object.keys(this.deps.cache.entries()),
+                                this.current.policy,
+                                Object.keys(this.current.cache.entries()),
                                 {
                                         mirrorLevel: mirrorModel.level,
                                         scan,
-                                        // [P1/BUG-13] хэш-матчинг смены rename-цели: путь кэша
-                                        // → "alg:hash" (см. policy.ts шаг 3).
-                                        cacheHashes: new Map(
-                                                Object.entries(this.deps.cache.entries())
-                                                        .map(([p, c]) => [p, `${c.alg}:${c.h}`] as const),
-                                        ),
                                 },
                         );
                         this.skippedUnsafeCount += policyResult.unsafeCount;
@@ -305,16 +350,8 @@ export class Coordinator {
                                         `ineligible=${mp.skippedIneligible}/fileExcl=${mp.skippedExcluded}`);
                         }
 
-                        // Phase A (дизайн §5.4): переименования ДО diff — кэш и
-                        // трансформированный манифест согласованы по ключам,
-                        // переименованные файлы НЕ перекачиваются. Идемпотентно:
-                        // повторная сессия не найдёт старых ключей кэша в toMove.
-                        if (policyResult.toMove.length > 0) {
-                                this.debugLog(`renames: ${policyResult.toMove.length} — ` +
-                                        policyResult.toMove.slice(0, 10).map((m2) => `${m2.from} -> ${m2.to}`).join('; ') +
-                                        (policyResult.toMove.length > 10 ? ' …' : ''));
-                                await this.processRenames(policyResult.toMove);
-                        }
+                        // Validate the plan before the preview; perform moves only after acceptance.
+                        if (policyResult.unsafeCount > 0) throw new Error('Unsafe or ambiguous local mapping');
 
                         // [POLICY Phase 2] Обратная карта local→remote: source.fetch
                         // по-прежнему получает REMOTE-путь (источник не знает о
@@ -326,20 +363,11 @@ export class Coordinator {
                         }
 
                         const entries = policyResult.transformedManifest;
+                        validateManifest(entries);
 
                         let toDownload: RemoteEntry[];
                         let toDelete: string[] = [];
                         let orphans: string[] = [];
-                        // [overhaul S2/M-1] cacheCleanup откладывается ДО решения
-                        // пользователя (confirm / headless-отложение): раньше ключи
-                        // чистились сразу после diff — отмена confirm не откатывала
-                        // in-memory-мутацию, а finally{persist('checkpoint')} фиксировал
-                        // её на диске. Файл, удалённый из источника, оставался на диске,
-                        // но кэш-запись погибала → light-зеркало больше НИКОГДА не
-                        // признавало его orphan (orphan-детекция строится из cacheKeys)
-                        // — контракт «Лёгкого зеркала» молча нарушался после каждой
-                        // отменённой сессии. Применение — сразу после точки решения.
-                        let pendingCacheCleanup: string[] = [];
                         // [W1-T07] удаления с уровнями/причинами (confirm-секции,
                         // журнал) и лишние папки к удалению целиком.
                         let mirrorDeletions: MirrorDeletion[] = [];
@@ -358,10 +386,10 @@ export class Coordinator {
                                 // policy.mirror» умерла; diff зовётся всегда с
                                 // deleteMissing:false и отдаёт только загрузки,
                                 // кэш-чистку и orphans (для предупреждения).
-                                const d = await diff(this.deps.cache.entries(), entries, {
+                                const d = await diff(this.current.cache.entries(), entries, {
                                         deleteMissing: false,
-                                        isAllowed: (p) => this.deps.policy.isPathAllowed(p),
-                                        exists: (p) => this.deps.vault.exists(p),
+                                        isAllowed: (p) => this.current.policy.isPathAllowed(p),
+                                        exists: (p) => this.current.vault.exists(p),
                                 });
                                 this.debugLog(`diff: к загрузке=${d.toDownload.length} (up-to-date=${d.upToDate}), ` +
                                         `удалить=${policyResult.mirrorPlan.deletions.length + policyResult.mirrorPlan.extraFolders.length}, ` +
@@ -382,104 +410,112 @@ export class Coordinator {
                                         }
                                         // forced-файлы, бывшие up-to-date, не считаем дважды
                                         stats.skipped = Math.max(0, d.upToDate - forcedUpToDate);
-                                        // [P1/BUG-12] кэш-хвосты чистятся и в forced-сессии:
-                                        // раньше cacheCleanup применялся только в else-ветке,
-                                        // и orphan-ключи (файл исчез из источника) жили
-                                        // до следующей ОБЫЧНОЙ сессии — retry/scan их
-                                        // продлевали бесконечно.
-                                        for (const p of d.cacheCleanup) this.deps.cache.delete(p);
+                                        // Forced download is not permission to forget unresolved orphans.
                                 } else {
                                         toDownload = d.toDownload;
                                         mirrorDeletions = policyResult.mirrorPlan.deletions;
                                         extraFolders = policyResult.mirrorPlan.extraFolders;
-                                        // Лишние папки — ПЕРВЫМИ (одно корзинное действие на
-                                        // папку; файлы внутри уже поглощены и не дублируются).
+                                        // Enumerate file removals; never recursively delete a directory.
                                         toDelete = [
-                                                ...extraFolders.map((f) => f.path),
+                                                ...extraFolders.flatMap((f) => f.filesInside),
                                                 ...mirrorDeletions.map((x) => x.path),
                                         ];
                                         orphans = d.orphans;
-                                        // [overhaul S2/M-1] НЕ применяем сразу — до решения
-                                        // пользователя (см. объявление pendingCacheCleanup).
-                                        pendingCacheCleanup = d.cacheCleanup;
                                 }
                         }
 
+                        const observations = new Map<string, LocalVersion>();
+                        const localDigests = new Map<string, string>();
+                        const entryByPath = new Map(entries.map(entry => [entry.path, entry]));
+                        const paths = new Set([...toDownload.map(entry => entry.path),
+                                ...entries.filter(entry => levelOf(mirrorModel, entry.path) === 'full').map(entry => entry.path), ...toDelete,
+                                ...policyResult.toMove.flatMap(move => [move.from, move.to])]);
+                        const observed = await pMap([...paths], async path => {
+                                this.guard();
+                                if (!(await this.current.vault.exists(path))) { observations.set(path, MISSING); return; }
+                                const bytes = await this.current.vault.readBinary(path);
+                                const version = await versionOf(bytes); observations.set(path, version);
+                                const entry = entryByPath.get(path);
+                                if (entry?.hashAlg === 'sha256' && version.kind === 'file') localDigests.set(path, version.sha256);
+                                else if (entry?.hashAlg === 'git-sha1') localDigests.set(path, await gitBlobSha1Hex(bytes));
+                                else if (entry?.hashAlg === 'crc32') localDigests.set(path, crc32Hex(bytes));
+                        }, DEFAULT_CONCURRENCY);
+                        const observationError = observed.find(result => result instanceof Error);
+                        if (observationError instanceof Error) throw observationError;
+                        this.guard();
+                        // A full rule checks actual local content, even when remote metadata did not change.
+                        for (const entry of entries) if (levelOf(mirrorModel, entry.path) === 'full' && !toDownload.some(file => file.path === entry.path)) {
+                                const actual = observations.get(entry.path)!;
+                                const baseline = mutations?.store.baseline(this.current.cache.namespace, entry.path);
+                                const digest = localDigests.get(entry.path);
+                                const matches = digest !== undefined ? digest.toLowerCase() === entry.hash.toLowerCase()
+                                        : actual.kind === 'file' && baseline?.localSha256 === actual.sha256
+                                                && baseline.remote.hashAlg === entry.hashAlg && baseline.remote.hash === entry.hash;
+                                if (!matches) { toDownload.push(entry); stats.skipped = Math.max(0, stats.skipped - 1); }
+                        }
+                        const failures = new Map(this.current.queue.all().map(file => [file.path, file]));
+                        toDownload = toDownload.filter(file => {
+                                const failed = failures.get(file.path);
+                                if (!failed || opts.forceAll || opts.forcedPaths?.has(file.path)) return true;
+                                if (failed.hash !== file.hash) return true;
+                                return !failed.poisoned && failed.nextRetryAt <= Date.now();
+                        });
+
+                        const levels = new Map(entries.map(entry => [entry.path, levelOf(mirrorModel, entry.path)]));
+                        for (const [path, level] of this.deletionLevelsOf(extraFolders, mirrorDeletions)) levels.set(path, level);
+                        const plan = createOperationPlan({ id: globalThis.crypto.randomUUID(), revision: this.sessionRevision,
+                                downloads: toDownload, deletions: toDelete, moves: policyResult.toMove,
+                                observations, levels, cache: this.current.cache.entries(), remotePaths: localToRemote,
+                                immutableInventory: this.current.source.deletionSafety === 'immutable', trigger: opts.trigger ?? 'manual' });
+                        this.plan = plan;
+                        toDownload = plan.downloads.map(file => ({ ...file.entry }));
+                        toDelete = plan.deletions.map(file => file.path);
+                        stats.blockedDeletions = plan.summary.blocked;
+                        stats.deferredDeletions = plan.summary.deferred;
                         stats.totalFiles = toDownload.length + toDelete.length;
-                        this.debugLog(`сессия: источник=${this.deps.source.kind}, кэш=${Object.keys(this.deps.cache.entries()).length} записей, ` +
+                        this.debugLog(`сессия: источник=${this.current.source.kind}, кэш=${Object.keys(this.current.cache.entries()).length} записей, ` +
                                 `к загрузке=${toDownload.length}, к удалению=${toDelete.length}, orphans=${orphans.length}`);
 
-                        if (toDownload.length === 0 && toDelete.length === 0) {
-                                // [overhaul S2/M-1] нечего ждать от пользователя: решения не
-                                // будет — чистка безопасна (орфаны уровня fetch остаются на
-                                // диске по матрице §2.2, их ключи кэша корректно утилизируются).
-                                for (const p of pendingCacheCleanup) this.deps.cache.delete(p);
+                        if (toDownload.length === 0 && toDelete.length === 0 && plan.moves.length === 0 && !stats.deferredDeletions) {
+                                // Preserve ownership until a successful deletion or explicit dismissal.
                                 if (orphans.length > 0) ui.notifyVerbose?.(m.orphanWarning(orphans.length), 10000);
-                                stats.outcome = 'ok';
+                                stats.failed = this.current.queue.size();
+                                stats.outcome = stats.failed > 0 ? 'error' : 'ok';
                                 stats.duration = Date.now() - startTime;
                                 await this.persist('session-end');
                                 ui.setLastSyncTime(Date.now());
-                                ui.setStatus('idle');
-                                ui.notify(m.upToDate);
+                                ui.setStatus(stats.failed > 0 ? 'error' : 'idle', { pendingCount: stats.failed });
+                                ui.notify(stats.failed > 0 ? m.syncedWithErrors(stats.failed) : m.upToDate);
                                 return stats;
                         }
 
                         if (!opts.forcedPaths && !opts.forceAll) {
-                                // [REV-P4] классификация скачивания для разбивки в confirm-модалке:
-                                // [overhaul S4 / S3-review #9] порядок после M-2:
-                                // NEW/alg/MODIFIED (в порядке манифеста), затем MISSING_LOCAL
-                                // (exists-проверки отдельным pMap-проходом). Подсчёт от
-                                // порядка не зависит — считается по cache.get.
-                                let newCount = 0;
-                                let updatedCount = 0;
-                                let restoredCount = 0;
-                                for (const e of toDownload) {
-                                        const c = this.deps.cache.get(e.path);
-                                        if (!c) newCount++;
-                                        else if (c.alg !== e.hashAlg || c.h !== e.hash) updatedCount++;
-                                        else restoredCount++;
-                                }
-                                // [W2-T08] журнал: обновления считаются всегда,
-                                // не только при показе confirm-модалки.
+                                const { newFiles: newCount, updates: updatedCount, restores: restoredCount } = plan.summary;
                                 stats.updated = updatedCount;
                                 const info: ConfirmSyncInfo = {
                                         toDownload: toDownload.length,
                                         toDelete: toDelete.length,
-                                        orphans: orphans.length,
+                                        orphans: stats.blockedDeletions ? 0 : orphans.filter(path => !toDelete.includes(path)).length,
+                                        blockedDeletions: stats.blockedDeletions,
                                         downloadBytes: toDownload.reduce((s, e) => s + e.size, 0),
                                         newCount,
                                         updatedCount,
                                         restoredCount,
-                                        movedCount: hasPolicy ? policyResult.toMove.length : 0,
+                                        movedCount: plan.moves.length,
                                         // [W1-T07] секции по уровням (матрица §2.2):
                                         // «Удалено (Лёгкое): N · (Полное): M» + лишние
                                         // папки; Д3 — честность про корзину.
-                                        deleteLight: mirrorDeletions.filter((x) => x.level === 'light').length,
-                                        deleteFull: mirrorDeletions.filter((x) => x.level === 'full').length + extraFolders.length,
-                                        extraFolders: extraFolders.length,
-                                        noRecovery: !o.useTrash(),
+                                        deleteLight: plan.summary.deleteLight,
+                                        deleteFull: plan.summary.deleteFull,
+                                        extraFolders: 0,
+                                        noRecovery: false,
                                 };
 
-                                // [W4-T02] Headless-режим (auto-сессия):
-                                //   - confirm-модалка НЕ показывается (решение В11=2);
-                                //   - mirrorLevel fetch/light → опасные удаления ДРОПАЮТСЯ
-                                //     (mirrorDeletions/extraFolders/toDelete = []), но
-                                //     записываются в stats.deferredDeletions для журнала
-                                //     и popover «ожидают ручного подтверждения» (А1).
-                                //   - mirrorLevel full → удаления ВЫПОЛНЯЮТСЯ (А1: пользователь
-                                //     сознательно выбрал уровень; защиты — useTrash + красный чип).
                                 const trigger = opts.trigger ?? 'manual';
                                 if (trigger === 'auto') {
-                                        if (mirrorModel.level !== 'full') {
-                                                stats.deferredDeletions = toDelete.length;
-                                                toDelete = [];
-                                                mirrorDeletions = [];
-                                                extraFolders = [];
-                                                if (stats.deferredDeletions > 0) {
-                                                        ui.notify(m.deletionsDeferred(stats.deferredDeletions));
-                                                }
-                                        }
-                                        // full-level: подтверждения нет, но удаления исполняются.
+                                        // Background deletion awaits explicit per-rule permission in the new runner.
+                                        stats.deferredDeletions = (stats.deferredDeletions ?? 0) + toDelete.length;
+                                        toDelete = [];
                                 } else {
                                         if (!(await ui.confirmSync(info))) {
                                                 ui.notify(m.cancelled);
@@ -489,38 +525,22 @@ export class Coordinator {
                                 }
                         }
 
-                        // [overhaul S2/M-1] ТОЧКА РЕШЕНИЯ пройдена (confirm дан / auto
-                        // решил). Применяем чистку только если удаления НЕ отложены:
-                        // при deferredDeletions ключи кэша обязаны жить — иначе
-                        // отложенные зеркальные удаления не найдут orphan'ов при
-                        // ручном повторе. Forced-ветка выше чистит свои хвосты сама
-                        // (BUG-12: retry/scan без confirm — решение уже получено).
-                        {
-                                const trigger = opts.trigger ?? 'manual';
-                                const deletionsDeferred = trigger === 'auto'
-                                        && mirrorModel.level !== 'full'
-                                        && (stats.deferredDeletions ?? 0) > 0;
-                                if (!deletionsDeferred) {
-                                        for (const p of pendingCacheCleanup) this.deps.cache.delete(p);
-                                }
-                        }
-
-                        // [P2/3.2] фаза 3 — удаления (лишние папки + зеркальные).
-                        if (toDelete.length > 0) {
-                                ui.setStatus('syncing', { phase: 3, progressText: m.phaseDeletions });
-                                ui.notify(m.deletingFiles(toDelete.length));
-                                await this.processDeletions(toDelete, stats, this.deletionLevelsOf(extraFolders, mirrorDeletions));
-                                // [W1-T07] журнал/статус: сколько папок ушло целиком
-                                // (best-effort — как stats.deleted, ошибки удаления
-                                // логируются processDeletions и не молчат).
-                                stats.extraFoldersDeleted = extraFolders.length;
-                        }
+                        this.guard();
+                        if (plan.moves.length > 0) await this.processRenames(plan.moves);
 
                         // [P2/3.2] фаза 4 — загрузки (пофайловый прогресс ниже докладывает
                         // bytes/fileCount в ту же фазу).
                         if (toDownload.length > 0) {
                                 ui.setStatus('syncing', { phase: 4, progressText: m.phaseDownloads });
                                 await this.processDownloads(toDownload, stats, controller.signal, localToRemote, mirrorModel);
+                        }
+
+                        // Failed/unverified payloads cannot authorize unrelated destructive work.
+                        if (toDelete.length > 0 && stats.failed === 0 && this.current.queue.size() === 0 && !this.shouldCancel) {
+                                ui.setStatus('syncing', { phase: 3, progressText: m.phaseDeletions });
+                                await this.processDeletions(toDelete, stats, this.deletionLevelsOf(extraFolders, mirrorDeletions));
+                        } else if (toDelete.length > 0) {
+                                stats.deferredDeletions = (stats.deferredDeletions ?? 0) + toDelete.length;
                         }
 
                         // [P2/3.2] фаза 5 — финализация (persist/journal/статус).
@@ -553,12 +573,18 @@ export class Coordinator {
                         // [4-review-fix] паритет со старым кодом: lastSyncTime
                         // обновляется и для частично-неудачной сессии
                         ui.setLastSyncTime(Date.now());
-                        const failed = this.deps.queue.size();
-                        stats.failed = failed;
-                        if (failed > 0) {
+                        const failed = this.current.queue.size();
+                        stats.failed = failed + this.failedDeletions;
+                        if (stats.failed > 0) {
                                 stats.outcome = 'error';
-                                ui.setStatus('error', { pendingCount: failed });
-                                ui.notify(m.syncedWithErrors(failed), 10000);
+                                ui.setStatus('error', { pendingCount: stats.failed });
+                                ui.notify(m.syncedWithErrors(stats.failed), 10000);
+                        } else if ((stats.deferredDeletions ?? 0) > 0) {
+                                stats.outcome = 'error';
+                                ui.setStatus('error', { pendingCount: stats.deferredDeletions });
+                                ui.notify(stats.blockedDeletions
+                                        ? (m.deletionsBlocked?.(stats.blockedDeletions) ?? m.deletionsDeferred(stats.blockedDeletions))
+                                        : m.deletionsDeferred(stats.deferredDeletions!), 10000);
                         } else if (stats.conflicts > 0) {
                                 stats.outcome = 'ok';
                                 // [W2-T02 / BUG-8] конфликты видны в статус-баре:
@@ -590,7 +616,7 @@ export class Coordinator {
                                 ui.setStatus('error');
                                 ui.notify(m.syncFailed(error?.message ?? String(error)));
                         }
-                        stats.failed = this.deps.queue.size();
+                        stats.failed = this.current.queue.size() + this.failedDeletions;
                         stats.duration = Date.now() - startTime;
                         // [overhaul S6] итог сессии — всегда в консоль: нештатное
                         // завершение обязано оставлять след в логе (симптом «всё
@@ -598,13 +624,21 @@ export class Coordinator {
                         console.info(this.sessionEndLog(stats));
                         return stats;
                 } finally {
-                        this.running = false;
-                        this.shouldCancel = false;
-                        this.controller = null;
-                        // Кэш всегда консистентен записанному (урок Б-02)
-                        try { await this.persist('checkpoint'); } catch { /* ignore */ }
-                        // [5-1] tmp-архивы и прочие сессионные ресурсы источника
-                        try { await this.deps.source.dispose?.(); } catch { /* ignore */ }
+                        try {
+                                try { await this.persist('checkpoint'); } catch (error) {
+                                        stats.outcome = 'error';
+                                        ui.setStatus('error');
+                                        ui.notify(m.syncFailed(error instanceof Error ? error.message : String(error)));
+                                }
+                                try { await this.current.source.dispose?.(); } catch { /* resource release is best effort */ }
+                        } finally {
+                                this.activeDeps = undefined;
+                                this.plan = undefined;
+                                this.sessionRevision = undefined;
+                                this.running = false;
+                                this.shouldCancel = false;
+                                this.controller = null;
+                        }
                 }
         }
 
@@ -618,7 +652,7 @@ export class Coordinator {
          * наращивает retryCount через add(), удавшиеся удаляются после.
          */
         async retryFailed(): Promise<SyncStats | null> {
-                const { ui, messages: m } = this.deps;
+                const { ui, messages: m } = this.current;
                 // [P1/BUG-20] guard ДО confirm-модалки: при идущей синхронизации
                 // пользователь раньше сначала отвечал на confirm, а уже потом
                 // получал «уже выполняется» от sync(). Модалка — за guard'ом.
@@ -627,21 +661,21 @@ export class Coordinator {
                 // [overhaul S6 / D-4] двойная защита: parked-записи не «дозревают»
                 // (nextRetryAt = MAX_SAFE_INTEGER) И исключаются явно — ни скачок
                 // часов, ни иная логика выбора now не может вернуть их в оборот.
-                const due = this.deps.queue.all().filter((f) => f.nextRetryAt <= now && f.poisoned !== true);
+                const due = this.current.queue.all().filter((f) => f.nextRetryAt <= now && f.poisoned !== true);
                 if (due.length === 0) {
                         // [overhaul S6 / D-4] parked-записи не «дозревают» никогда
                         // (nextRetryAt = MAX_SAFE_INTEGER): молчаливое «нечего
                         // повторять» при непустой очереди сбивало с толку. Теперь
                         // причина называется явно, с путём лечения.
-                        const parked = this.deps.queue.poisonedCount();
+                        const parked = this.current.queue.poisonedCount();
                         if (parked > 0) {
                                 ui.notify(m.retryParked(parked), 10000);
                                 return null;
                         }
-                        ui.notify(this.deps.queue.size() > 0 ? m.retryNotDue(this.deps.queue.size()) : m.nothingToRetry);
+                        ui.notify(this.current.queue.size() > 0 ? m.retryNotDue(this.current.queue.size()) : m.nothingToRetry);
                         return null;
                 }
-                if (this.deps.ui.confirmRetry && !(await this.deps.ui.confirmRetry(due.length))) return null;
+                if (this.current.ui.confirmRetry && !(await this.current.ui.confirmRetry(due.length))) return null;
 
                 const forced = new Set(due.map((f) => f.path));
                 // [4-review-fix] очередь обслуживается ТОЛЬКО самолечением в
@@ -653,32 +687,18 @@ export class Coordinator {
                 // [overhaul S6 / D-4] финал retry-сессии: если что-то припарковалось
                 // за этот прогон (или было припарковано ранее) — прямо сказать,
                 // что автоповторы для этих файлов прекращены.
-                const parkedAfter = this.deps.queue.poisonedCount();
+                const parkedAfter = this.current.queue.poisonedCount();
                 if (stats !== null && parkedAfter > 0) {
                         ui.notify(m.retryParked(parkedAfter), 10000);
                 }
-                await this.persist('checkpoint');
                 return stats;
         }
 
-        /**
-         * Полный resync (фикс Б-11): кэш сбрасывается в .bak, качается всё.
-         * Отмена на guard'ах (null) → восстановление из .bak. Отмена
-         * посередине → честный частичный кэш (лучше старого поведения,
-         * которое теряло всё).
-         */
+        /** Re-download selected source files while retaining the last applied baseline. */
         async forceResync(): Promise<SyncStats | null> {
-                // [P1/BUG-20-class] guard ДО cache.reset(): при идущей сессии
-                // бэкап-сброс выполнялся до того, как sync() отклонял запрос
-                // (restoreBackup спасал, но это лишний цикл сброс/восстановление
-                // на диске под ногами ЖИВОЙ сессии).
-                if (this.running) { this.deps.ui.notify(this.deps.messages.alreadyInProgress); return null; }
-                await this.deps.cache.reset();
-                const stats = await this.sync({ forceAll: true });
-                if (stats === null) {
-                        await this.deps.cache.restoreBackup();
-                }
-                return stats;
+                if (this.running) { this.current.ui.notify(this.current.messages.alreadyInProgress); return null; }
+                // Refresh payloads without destroying ownership or local baselines.
+                return this.sync({ forceAll: true });
         }
 
         /**
@@ -686,7 +706,7 @@ export class Coordinator {
          * возвращает пути из манифеста, которых нет на диске.
          */
         async collectMissing(): Promise<string[] | null> {
-                const { ui, messages: m, options: o } = this.deps;
+                const { ui, messages: m, options: o } = this.current;
                 if (this.running) { ui.notify(m.alreadyInProgress); return null; }
                 if (!o.isOnline()) { ui.notify(m.offline); ui.setStatus('offline'); return null; }
                 if (!o.isConfigured()) { ui.notify(m.notConfigured); ui.setStatus('unconfigured'); return null; }
@@ -695,7 +715,11 @@ export class Coordinator {
                 try {
                         const controller = new AbortController();
                         this.controller = controller;
-                        const manifest = await this.deps.source.getManifest(controller.signal);
+                        this.captureSession(); this.guard();
+                        const inventory = await this.current.source.getManifest(controller.signal);
+                        validateManifest(inventory);
+                        const manifest = inventory.map(entry => Object.freeze({ ...entry }));
+                        this.guard();
                         const safeEntries = manifest.filter((e) => this.filterRemoteEntry(e));
                         // [POLICY Phase 2] scan-missing тоже уважает политику:
                         // exclusions и renames применяются к списку. toMove здесь
@@ -705,16 +729,16 @@ export class Coordinator {
                         // перекачивать его заново.
                         const pr = applyPolicy(
                                 safeEntries,
-                                this.deps.syncPolicy ?? EMPTY_POLICY,
-                                this.deps.policy,
-                                Object.keys(this.deps.cache.entries()),
+                                this.current.syncPolicy ?? EMPTY_POLICY,
+                                this.current.policy,
+                                Object.keys(this.current.cache.entries()),
                         );
                         const entries = pr.transformedManifest;
                         // [W1-T02] pMap кладёт исключение мапера В РЕЗУЛЬТАТ —
                         // тип слота: boolean | Error.
                         const flags: Array<boolean | Error> = await pMap(
                                 entries,
-                                async (e): Promise<boolean | Error> => this.deps.vault.exists(e.path),
+                                async (e): Promise<boolean | Error> => this.current.vault.exists(e.path),
                                 8
                         );
                         // [W1-T02] pMap НЕ пробрасывает исключение мапера, а кладёт
@@ -736,11 +760,15 @@ export class Coordinator {
                         if (existsFailed > 0) {
                                 console.warn(`[VaultSync] collectMissing: exists() упал для ${existsFailed} из ${entries.length} записей — включены в missing-набор`);
                         }
+                        this.guard();
                         return missing;
                 } finally {
+                        try { await this.current.source.dispose?.(); } catch { /* ignore */ }
+                        this.activeDeps = undefined;
+                        this.sessionRevision = undefined;
                         this.running = false;
+                        this.shouldCancel = false;
                         this.controller = null;
-                        try { await this.deps.source.dispose?.(); } catch { /* ignore */ }
                 }
         }
 
@@ -750,7 +778,7 @@ export class Coordinator {
         }
 
         clearFailed(): void {
-                this.deps.queue.clear();
+                this.current.queue.clear();
         }
 
         // ============================================================
@@ -758,12 +786,12 @@ export class Coordinator {
         // ============================================================
 
         private filterRemoteEntry(e: RemoteEntry): boolean {
-                if (!this.deps.policy.isPathSafe(e.path)) {
+                if (!this.current.policy.isPathSafe(e.path)) {
                         console.warn('[VaultSync] Skipping unsafe path:', e.path);
                         this.skippedUnsafeCount++; // [7-d] видимость в UI (§7.5)
                         return false;
                 }
-                return this.deps.policy.isPathAllowed(e.path);
+                return this.current.policy.isPathAllowed(e.path);
         }
 
         private async processDownloads(
@@ -773,18 +801,19 @@ export class Coordinator {
                 localToRemote?: Map<string, string>,
                 mirrorModel?: MirrorModel,
         ): Promise<void> {
-                const { ui, messages: m, options: o, cache, conflict, queue, source, vault } = this.deps;
+                const { ui, messages: m, options: o, cache, conflict, queue, source, vault } = this.current;
                 // [Phase 5.1] пер-движковый лимит: override → движок → безлимит.
                 // Git жёстко ограничен GitHub (~100 МБ); облачные диски и ZIP
                 // пер-файловых лимитов не имеют — 99-МБ coordinator-дефолт
                 // был протечкой git-ограничения в облачные движки.
                 const maxFileSize = o.maxFileSizeBytes ?? source.maxFileSizeBytes ?? Infinity;
                 const maxFileSizeLabel = formatBytes(maxFileSize);
-                const concurrency = o.concurrency ?? DEFAULT_CONCURRENCY;
+                const concurrency = Number.isSafeInteger(o.concurrency) && o.concurrency! > 0
+                        ? o.concurrency! : DEFAULT_CONCURRENCY;
                 const totalBytes = files.reduce((s, f) => s + f.size, 0);
                 let transferred = 0;
 
-                await pMap(files, async (file) => {
+                const results = await pMap(files, async (file) => {
                         // [W1-T01 / BUG-4] ранний выход мапера обязан маркировать
                         // сессию отменённой: иначе отмена «между файлами» (без
                         // in-flight fetch → без AbortError) репортилась успехом.
@@ -793,6 +822,8 @@ export class Coordinator {
                                 return;
                         }
                         try {
+                                const previousFailure = queue.all().find(f => f.path === file.path);
+                                if (previousFailure && previousFailure.hash !== file.hash) queue.delete(file.path);
                                 if (file.size > maxFileSize) {
                                         queue.add(file, m.fileTooLarge(formatBytes(file.size), maxFileSizeLabel), Date.now());
                                         stats.failed++;
@@ -801,17 +832,47 @@ export class Coordinator {
                                 // [POLICY Phase 2] fetch — по REMOTE-пути (источник мапит
                                 // файлы по нему); запись и кэш — по LOCAL.
                                 const remotePath = localToRemote?.get(file.path);
-                                const buffer = await source.fetch(
+                                const buffer = (await source.fetch(
                                         remotePath === undefined ? file : { ...file, path: remotePath },
                                         signal,
-                                );
+                                )).slice(0);
+                                await verifyRemoteData(file, buffer);
+                                signal.throwIfAborted();
                                 await this.dirLock.ensure(vault, file.path);
                                 // Матрица §9.1 (фиксы Б-01/Б-02): кэш-хэш = применённая версия.
                                 // [W1-T06/T07] Per-файловый уровень зеркала: конфликты
                                 // в light/full разрешаются матрицей §2.2 (стратегия —
-                                // только для fetch), локаль при full — в корзину (Е1-а).
+                                // только для fetch); replacement preserves a recovery copy first.
                                 const fileLevel = mirrorModel ? levelOf(mirrorModel, file.path) : undefined;
-                                const outcome = await conflict.safeWrite(file, buffer, cache.get(file.path)?.h, fileLevel);
+                                const planned = this.plan!.downloads.find(operation => operation.entry.path === file.path)!;
+                                const mutations = this.current.mutations;
+                                const namespace = cache.namespace;
+                                const transaction = {
+                                        appliedLocalSha256: mutations?.store.baseline(namespace, file.path)?.localSha256,
+                                        write: async (path: string, data: ArrayBuffer, _expected: ArrayBuffer | null, incoming = false) => {
+                                                const expected = incoming ? MISSING : planned.expected;
+                                                const guard = () => this.guard(path, incoming);
+                                                guard();
+                                                if (mutations) await mutations.write(namespace, {
+                                                        id: incoming ? `${planned.id}-incoming` : planned.id, planId: this.plan!.id, path, before: expected,
+                                                        effect: { kind: 'set', remote: { ...planned.entry }, remotePath: planned.remotePath, mode: incoming ? 'incoming' : 'applied' }, guard,
+                                                }, data, signal);
+                                                else {
+                                                        await assertLocal(vault, path, expected); guard();
+                                                        if (expected.kind === 'file') {
+                                                                const before = await vault.readBinary(path);
+                                                                if (bytesEqual(before, data)) return;
+                                                                if (vault.compareAndWrite) {
+                                                                        const result = await vault.compareAndWrite(path, data, before, signal);
+                                                                        if (result === false) throw new Error('Local file changed before replacement');
+                                                                        if (result === true) return;
+                                                                }
+                                                        }
+                                                        await assertLocal(vault, path, expected); guard(); await vault.writeBinary(path, data);
+                                                }
+                                        },
+                                };
+                                const outcome = await conflict.safeWrite(file, buffer, cache.get(file.path)?.h, fileLevel, signal, transaction);
                                 if (outcome.kind === 'conflict') {
                                         stats.conflicts++;
                                         if (outcome.mirror === 'full') {
@@ -833,7 +894,7 @@ export class Coordinator {
                                 }
                                 await this.checkpoint();
                         } catch (e: any) {
-                                if (e?.aborted || this.shouldCancel) {
+                                if (e?.aborted || e?.name === 'AbortError' || this.shouldCancel) {
                                         this.abortedThisSession = true;
                                         return;
                                 }
@@ -854,22 +915,24 @@ export class Coordinator {
                                 totalBytes,
                         });
                 }, concurrency);
+                const unexpected = results.find(result => result instanceof Error);
+                if (unexpected instanceof Error) throw unexpected;
         }
 
         /** [W2-T08] Карта путь → уровень для журнальных счётчиков исполненных
          *  удалений (матрица §2.2: лишние папки — всегда full). */
         private deletionLevelsOf(
-                extraFolders: Array<{ path: string }>,
+                extraFolders: Array<{ path: string; filesInside: string[] }>,
                 mirrorDeletions: Array<{ path: string; level: MirrorLevel }>,
         ): Map<string, 'light' | 'full'> {
                 const levels = new Map<string, 'light' | 'full'>();
-                for (const f of extraFolders) levels.set(f.path, 'full');
+                for (const f of extraFolders) for (const path of f.filesInside) levels.set(path, 'full');
                 for (const x of mirrorDeletions) levels.set(x.path, x.level === 'full' ? 'full' : 'light');
                 return levels;
         }
 
         private async processDeletions(paths: string[], stats: SyncStats, levelOf?: Map<string, 'light' | 'full'>): Promise<void> {
-                const { vault, cache, options: o } = this.deps;
+                const { vault, cache, options: o } = this.current;
                 for (const path of paths) {
                         // [W1-T01 / BUG-4] прерванные удаления — не успех: маркируем
                         // сессию отменённой (см. честную ветку в sync()).
@@ -878,8 +941,28 @@ export class Coordinator {
                                 break;
                         }
                         try {
-                                if (o.useTrash() && vault.trash) await vault.trash(path);
-                                else await vault.remove(path);
+                                const planned = this.plan!.deletions.find(operation => operation.path === path)!;
+                                this.guard(path);
+                                await assertLocal(vault, path, planned.expected);
+                                if (!this.current.policy.isPathSafe(path) || !this.current.policy.isPathAllowed(path)) throw new Error('Protected deletion path');
+                                if (planned.expected.kind === 'missing') {
+                                        if (this.current.mutations) await this.current.mutations.delete(cache.namespace, {
+                                                id: planned.id, planId: this.plan!.id, path, before: planned.expected, effect: { kind: 'delete', path }, guard: () => this.guard(path),
+                                        }, o.useTrash());
+                                        cache.delete(path); continue;
+                                }
+                                const local = await vault.readBinary(path);
+                                const recoveryPath = await buildStampedPath(path, 'conflict', formatConflictTimestamp(Date.now()), candidate => vault.exists(candidate));
+                                this.controller?.signal.throwIfAborted();
+                                await vault.writeBinary(recoveryPath, local);
+                                const current = await vault.readBinary(path);
+                                if (!bytesEqual(current, local)) throw new Error('Local file changed before deletion');
+                                this.controller?.signal.throwIfAborted();
+                                if (this.current.mutations) await this.current.mutations.delete(cache.namespace, {
+                                        id: planned.id, planId: this.plan!.id, path, before: planned.expected, effect: { kind: 'delete', path }, guard: () => this.guard(path),
+                                }, o.useTrash());
+                                else { this.guard(path); await assertLocal(vault, path, planned.expected); this.guard(path);
+                                        if (o.useTrash() && vault.trash) await vault.trash(path); else await vault.remove(path); }
                                 cache.delete(path);
                                 stats.deleted++;
                                 // [W2-T08] журнальные счётчики по уровням (только исполненные)
@@ -887,36 +970,18 @@ export class Coordinator {
                                 if (lvl === 'full') stats.deleteFull = (stats.deleteFull ?? 0) + 1;
                                 else if (lvl === 'light') stats.deleteLight = (stats.deleteLight ?? 0) + 1;
                         } catch (e: any) {
+                                if (this.shouldCancel || e?.name === 'AbortError') { this.abortedThisSession = true; break; }
+                                stats.failed++;
+                                this.failedDeletions++;
                                 console.error(`[VaultSync] Failed to delete ${path}:`, e?.message ?? e);
                         }
                 }
-                if (paths.length > 0) await this.cleanupEmptyDirectories(paths);
-        }
-
-        private async cleanupEmptyDirectories(deletedPaths: string[]): Promise<void> {
-                const { vault, options: o } = this.deps;
-                if (!vault.list) return; // адаптер без list (тесты) — пропускаем
-                const dirsToCheck = new Set<string>();
-                for (const path of deletedPaths) {
-                        const lastSlash = path.lastIndexOf('/');
-                        if (lastSlash > 0) dirsToCheck.add(path.substring(0, lastSlash));
-                }
-                // Глубокие primero
-                const sortedDirs = Array.from(dirsToCheck).sort((a, b) => b.split('/').length - a.split('/').length);
-                for (const dir of sortedDirs) {
-                        try {
-                                if (!(await vault.exists(dir))) continue;
-                                const listed = await vault.list(dir);
-                                if (listed.files.length === 0 && listed.folders.length === 0) {
-                                        if (o.useTrash() && vault.trash) await vault.trash(dir);
-                                        else await vault.remove(dir);
-                                }
-                        } catch { /* ignore */ }
-                }
+                // Empty-directory cleanup needs a host non-recursive primitive. A list/remove
+                // pair can otherwise remove files created after the listing.
         }
 
         private async checkpoint(): Promise<void> {
-                const interval = this.deps.options.checkpointInterval ?? DEFAULT_CHECKPOINT;
+                const interval = this.current.options.checkpointInterval ?? DEFAULT_CHECKPOINT;
                 this.checkpointCounter++;
                 if (this.checkpointCounter >= interval) {
                         this.checkpointCounter = 0;
@@ -925,35 +990,45 @@ export class Coordinator {
         }
 
         /** Кэш на диск + состояние настроек (очередь, счётчики). */
-        private async persist(kind: 'checkpoint' | 'session-end' | 'success-end'): Promise<void> {
-                await this.deps.cache.flush();
-                await this.deps.options.persistState?.(kind);
+        private persist(kind: 'checkpoint' | 'session-end' | 'success-end'): Promise<void> {
+                const cache = this.current.cache;
+                const persistState = this.current.options.persistState;
+                const result = this.persistChain.then(async () => {
+                        await cache.flush();
+                        await persistState?.(kind);
+                });
+                this.persistChain = result.catch(() => {});
+                return result;
         }
 
         /** [4-2] Горячая замена политики (настройки могли измениться). */
         setPolicy(policy: PathPolicy): void {
+                if (this.running) this.cancel();
                 this.deps.policy = policy;
         }
 
         /** [4-2] Смена sourceId (пользователь поменял repoUrl) — новый файл кэша. */
         setCache(cache: ManifestCache): void {
+                if (this.running) throw new Error('Cannot replace cache during an active session');
                 this.deps.cache = cache;
         }
 
         /** [5-g] Горячая смена источника (git ↔ zip-url и смена URL). Старый — освобождается. */
         async setSource(source: import('../sources/types').SyncSource): Promise<void> {
-                const old = this.deps.source;
+                if (this.running) throw new Error('Cannot replace source during an active session');
+                const old = this.current.source;
                 this.deps.source = source;
                 try { await old.dispose?.(); } catch { /* ignore */ }
         }
 
         /** [POLICY Phase 3] Текущий источник (для модалки структуры-политики). */
         getCurrentSource(): import('../sources/types').SyncSource {
-                return this.deps.source;
+                return this.current.source;
         }
 
         /** [POLICY Phase 2] Горячая замена структуры-политики (modal Save / смена источника). */
         setSyncPolicy(policy: SyncPolicy | undefined): void {
+                if (this.running) this.cancel();
                 this.deps.syncPolicy = policy;
         }
 
@@ -965,22 +1040,28 @@ export class Coordinator {
          *   3. DirLock.ensure(цель) → vault.rename(from→to) → переложить ключи
          *      кэша И записи failed-очереди (иначе retry-сессия не найдёт файл,
          *      а add() сбросил бы retryCount — mergeBack сохраняет статус).
-         * Ошибка отдельного move НЕ валит сессию: файл остаётся на старом пути,
-         * diff скачает его на новый (кэш-ключ старого пути чистится cacheCleanup).
+         * A failed move stops the session; it cannot silently authorize later deletions.
          */
-        private async processRenames(moves: Array<{ from: string; to: string }>): Promise<void> {
-                const { vault, cache, queue } = this.deps;
-                for (const { from, to } of moves) {
+        private async processRenames(moves: readonly PlannedMove[]): Promise<void> {
+                const { vault, cache, queue } = this.current;
+                for (const { from, to, expected, id } of moves) {
                         // [W1-T01 / BUG-4] прерванные переименования — не успех.
                         if (this.shouldCancel) {
                                 this.abortedThisSession = true;
                                 break;
                         }
                         try {
-                                if (!(await vault.exists(from))) continue;
-                                if (await vault.exists(to)) continue;
+                                if (!this.current.policy.isPathSafe(from) || !this.current.policy.isPathAllowed(from)
+                                        || !this.current.policy.isPathSafe(to) || !this.current.policy.isPathAllowed(to)) throw new Error('Protected rename path');
+                                this.guard(from); this.guard(to);
+                                await assertLocal(vault, from, expected); await assertLocal(vault, to, MISSING);
                                 await this.dirLock.ensure(vault, to);
-                                await vault.rename(from, to);
+                                this.controller?.signal.throwIfAborted();
+                                if (this.current.mutations) await this.current.mutations.move(cache.namespace, {
+                                        id, planId: this.plan!.id, path: to, before: expected,
+                                        effect: { kind: 'move', from, to, entry: cache.get(from) }, guard: () => { this.guard(from); this.guard(to); },
+                                }, from);
+                                else { await assertLocal(vault, from, expected); await assertLocal(vault, to, MISSING); this.guard(to); await vault.rename(from, to); }
                                 const entry = cache.get(from);
                                 if (entry) {
                                         cache.delete(from);
@@ -993,6 +1074,7 @@ export class Coordinator {
                                 }
                         } catch (e: any) {
                                 console.error(`[VaultSync] rename FAILED ${from} → ${to}: ${e?.message ?? e}`);
+                                throw e;
                         }
                 }
         }

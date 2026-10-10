@@ -173,13 +173,12 @@ export interface ZipUrlSourceOptions {
          * загрузка»).
          *
          * >0 — «аренда» сессии: dispose() становится мягким, ставит таймер
-         * на TTL мс. В пределах TTL последующие ensureSession/getManifest/fetch
-         * ПЕРЕИСПОЛЬЗУЮТ кэш (reader + zipEntries), НЕ скачивают заново. После
+         * на TTL мс. fetch может использовать reader текущего снимка;
+         * getManifest всегда открывает свежий снимок. После
          * истечения таймера — реальный release reader (tmp-файл удаляется).
          *
-         * Типичный сценарий: retry/scan/policy-modal/test в пределах одного
-         * пользовательского цикла синхронизации (≈5 минут) → 1 скачивание вместо
-         * до 4× полных скачиваний (оптимизация №1 аудита, §7.1).
+         * A subsequent listing needs a fresh archive, including retry/scan/policy
+         * previews. Downloads within the current snapshot share its reader.
          *
          * Реальный release (без ожидания таймера) — forceDispose(), который
          * main.ts вызывает в onunload (плагин выключается → tmp вычищается).
@@ -239,6 +238,7 @@ function toArrayBuffer(data: Uint8Array | ArrayBuffer): ArrayBuffer {
 
 export class ZipUrlSource implements SyncSource {
         readonly kind = 'zip-url' as const;
+        readonly deletionSafety = 'immutable' as const;
         /** [Phase 5.1] пер-файлового лимита нет: архив скачивается целиком (см. SyncSource). */
         readonly maxFileSizeBytes?: number;
 
@@ -278,6 +278,9 @@ export class ZipUrlSource implements SyncSource {
                 if (signal.aborted) {
                         throw abortedError();
                 }
+                if (this.activeOps > 0) throw new Error('Archive snapshot is in use');
+                // A resource lease does not establish freshness for a new listing.
+                await this.forceDispose();
                 const { cache } = await this.ensureSession(signal);
                 const entries: RemoteEntry[] = [];
                 for (const e of cache.values()) {
@@ -328,10 +331,9 @@ export class ZipUrlSource implements SyncSource {
          * «dispose = следующая сессия скачивает заново».
          *
          * При sessionTtlMs>0 — SOFT release: ставит таймер на TTL мс. В пределах
-         * TTL последующие ensureSession/getManifest/fetch переиспользуют кэш
-         * (reader + zipEntries), НЕ скачивая архив заново. Это оптимизация №1
-         * аудита (§7.1): retry/scan/policy-modal/test в пределах пользовательского
-         * цикла (≈5 минут) → 1 скачивание вместо до 4× полных.
+         * TTL fetch может переиспользовать reader текущего снимка.
+         * Новый getManifest всегда скачивает архив заново: аренда ресурсов
+         * не доказывает свежесть списка файлов.
          *
          * Реальный release (без ожидания таймера) — forceDispose(), который
          * main.ts вызывает в onunload.
@@ -486,6 +488,7 @@ export class ZipUrlSource implements SyncSource {
                         cache = new Map<string, ZipEntry>();
                         for (const e of entries) {
                                 if (!e.isDir) {
+                                        if (cache.has(e.name)) throw new Error(`Archive path collision: ${e.name}`);
                                         cache.set(e.name, e);
                                 }
                         }

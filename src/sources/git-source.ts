@@ -78,6 +78,7 @@ const DEFAULT_MESSAGES: GitSourceMessages = {
 
 export class GitSource implements SyncSource {
         readonly kind = 'git' as const;
+        readonly deletionSafety = 'immutable' as const;
         /** GitHub жёстко блокирует blob'ы ~100 МБ (пуш и Blobs API);
          *  99 МБ — защитный запас (паритет прежнего coordinator-лимита). */
         readonly maxFileSizeBytes = 99 * 1024 * 1024;
@@ -136,25 +137,8 @@ export class GitSource implements SyncSource {
                 const { owner, repo } = this.parseUrlOrThrow();
                 const apiUrl = `${this.apiBase()}/repos/${owner}/${repo}/git/blobs/${entry.hash}`;
                 const buffer = await this.fetchBuffer(apiUrl, true, signal);
-                // GitHub может вернуть JSON c base64 даже при raw-Accept — различаем по форме.
-                if (buffer.byteLength > 0 && new TextDecoder().decode(buffer.slice(0, 1)) === '{') {
-                        try {
-                                const data = JSON.parse(new TextDecoder().decode(buffer));
-                                if (data && data.encoding === 'base64' && typeof data.content === 'string') {
-                                        const binaryString = atob(data.content.replace(/\n/g, ''));
-                                        const bytes = new Uint8Array(binaryString.length);
-                                        for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-                                        if (entry.size > 0 && bytes.byteLength !== entry.size) {
-                                                throw new Error(`Blob size mismatch for ${entry.hash}: ${bytes.byteLength} != ${entry.size}`);
-                                        }
-                                        return bytes.buffer;
-                                }
-                        } catch (e: any) {
-                                if (String(e?.message).includes('size mismatch')) throw e;
-                                // не JSON-блоб — падаем в raw-ветку ниже
-                        }
-                }
-                if (entry.size > 0 && buffer.byteLength !== entry.size) {
+                // Raw media type is the contract; a JSON-looking file is still raw content.
+                if (buffer.byteLength !== entry.size) {
                         throw new Error(`Blob size mismatch for ${entry.hash}: ${buffer.byteLength} != ${entry.size}`);
                 }
                 return buffer;

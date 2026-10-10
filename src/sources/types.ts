@@ -47,6 +47,8 @@ export interface RemoteEntry {
  */
 export interface SyncSource {
         readonly kind: 'git' | 'yandex' | 'zip-url' | 'gdrive' | 'webdav';
+        /** Only validated immutable inventories may currently authorize mirror deletion. */
+        readonly deletionSafety?: 'immutable' | 'unverified';
         /**
          * Движковый лимит размера ОДНОГО файла, байт; undefined — лимита нет.
          * Это свойство хранилища, а не настройка: GitHub жёстко ограничивает
@@ -107,6 +109,8 @@ export interface VaultAdapter {
         exists(path: string): Promise<boolean>;
         readBinary(path: string): Promise<ArrayBuffer>;
         writeBinary(path: string, data: ArrayBuffer): Promise<void>;
+        /** Optional host atomic text replacement; undefined means unsupported binary/path. */
+        compareAndWrite?(path: string, data: ArrayBuffer, expected: ArrayBuffer, signal?: AbortSignal): Promise<boolean | undefined>;
         mkdir(path: string): Promise<void>;
         remove(path: string): Promise<void>;
         rename(from: string, to: string): Promise<void>;
@@ -132,6 +136,7 @@ export interface NetRequest {
          * (по умолчанию — undefined = нет тела, как в 2.3.3).
          */
         body?: BodyInit;
+        redirect?: RequestRedirect;
 }
 
 export interface NetResponse {
@@ -173,7 +178,7 @@ export type ConflictStrategy = 'remote-wins' | 'local-wins' | 'keep-both' | 'ask
  *    на уровне light.
  *
  * Не включает 'remote-overwrites' и 'ask' (упрощённое предложение A):
- * full mirror уже умеет перезаписывать через trash; ask добавляет
+ * full mirror перезаписывает после создания восстановительной копии; ask добавляет
  * модалки и сложность — отложено до будущих волн.
  */
 export type LightConflictStrategy = 'keep-local' | 'keep-both';
@@ -241,18 +246,12 @@ export type WriteOutcome =
         | {
                         kind: 'conflict';
                         updateCache: true;
-                        /**
-                         * Путь конфликт-КОПИИ, если она создана. [W1-T06] Стал
-                         * опциональным: full-зеркало с корзиной кладёт локаль в trash —
-                         * копии нет (правка Е1-а). Всегда есть у fetch-keep-both, light
-                         * и full-fallback.
-                         */
+                        /** Recovery/conflict copy path; optional for legacy callers. */
                         conflictPath?: string;
                         /** [W1-T06] Уровень зеркала, породивший конфликт (матрица §2.2);
                          *  отсутствует = fetch — конфликт по стратегии настроек (§9.1). */
                         mirror?: 'light' | 'full';
-                        /** [W1-T06] full: истинная судьба локали — true = корзина,
-                         *  false = fallback-конфликт-копия (trash-адаптер недоступен). */
+                        /** @deprecated Replacement now uses a recovery copy before writing. */
                         trashedLocal?: boolean;
                 };
 
@@ -290,8 +289,7 @@ export interface SyncStats {
         bytesTransferred: number;
         duration: number;
         conflicts: number;
-        /** [W1-T07] Из них конфликтов, разрешённых перезаписью на уровне
-         *  full (локальная версия — в корзину; Е1-а). Для журнала/статуса. */
+        /** Full-level conflict replacements; local bytes are saved in a recovery copy. */
         overwritten?: number;
         /** [W1-T07] Лишние папки, удалённые целиком (только full). */
         extraFoldersDeleted?: number;
@@ -307,16 +305,18 @@ export interface SyncStats {
          *  Coordinator — единственный честный свидетель (W1-T01: флаги
          *  отмены видны ему; main.ts после return их не достаёт). */
         outcome?: 'ok' | 'cancelled' | 'error';
-        /** [W4-T02] Auto+fetch/light удалил опасные операции (mirror deletions +
-         *  extra folders) для исполнения вручную. Журнал/popover показывают
-         *  «ожидают ручного подтверждения». 0 / undefined = ничего не отложено. */
+        /** All deferred file deletions, including unverified-inventory blocks. */
         deferredDeletions?: number;
+        blockedDeletions?: number;
 }
 
 /** Сводка изменений для модалки подтверждения (дизайн §16). */
 export interface ConfirmSyncInfo {
+        /** Deletions suppressed because this source cannot prove a complete snapshot. */
+        blockedDeletions?: number;
         toDownload: number;
         toDelete: number;
+        /** Previously synced files absent remotely that will be retained locally. */
         orphans: number;
         /** Суммарный объём скачивания, байт (для тяжёлых мобильных кейсов). */
         downloadBytes: number;
