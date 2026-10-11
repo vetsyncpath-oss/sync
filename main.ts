@@ -1,3 +1,5 @@
+import { renderFileRulesEditor } from './src/ui/file-rules-editor';
+import { validateFileRules, type FileRule } from './src/core/file-rules';
 import {
         App,
         Notice,
@@ -1047,6 +1049,7 @@ export default class GitSyncPlugin extends Plugin {
                                                 ...base,
                                                 mirror: existing?.mirror ?? false,
                                                 mirrorFolders: existing?.mirrorFolders,
+                                                fileRules: existing?.fileRules,
                                                 // [overhaul v4 / Этап 4] сохраняем кастомные user exclusions
                                                 fileExclusions: mergeFileExclusions(
                                                         base.fileExclusions ?? [],
@@ -1739,6 +1742,7 @@ export default class GitSyncPlugin extends Plugin {
                         // [P2/M4] охват зеркала сохраняется (раньше затирался —
                         // смена пресета снимала защиту off-папок от full-зеркала).
                         mirrorFolders: existing?.mirrorFolders,
+                        fileRules: existing?.fileRules,
                         // [overhaul v4 / Этап 4] fileExclusions: берём из base (новый
                         // пресет со стандартными machine-specific исключениями) И
                         // ДОБАВЛЯЕМ существующие пользовательские исключения, которых
@@ -1751,6 +1755,27 @@ export default class GitSyncPlugin extends Plugin {
                 };
                 await this.saveSettingsImmediate();
                 this.coordinator?.setSyncPolicy(this.settings.syncPolicies[this.builtSourceId]);
+        }
+
+        async saveFileRules(sourceId: string, rules: FileRule[]): Promise<void> {
+                if (!sourceId || sourceId !== this.builtSourceId) throw new Error('Source changed; reopen settings');
+                validateFileRules(rules);
+                const policies = this.settings.syncPolicies ??= {};
+                const previous = policies[sourceId];
+                // Introducing rules must not widen a legacy config-only / folder-filtered scope.
+                const legacy = previous ?? migrateSettingsToV3({
+                        settings: { ...this.settings, migratedV3: false }, syncPolicies: {},
+                        currentSourceId: sourceId, pluginDir: this.pluginDir(),
+                }).syncPolicies[sourceId] ?? { version: 1 as const, mirror: false, folders: [] };
+                const policy: SyncPolicy = { ...legacy, fileRules: structuredClone(rules) };
+                policies[sourceId] = policy;
+                try { await this.saveSettingsImmediate(); }
+                catch (error) {
+                        if (previous) policies[sourceId] = previous;
+                        else delete policies[sourceId];
+                        throw error;
+                }
+                if (sourceId === this.builtSourceId) this.coordinator?.setSyncPolicy(policy);
         }
 
         /** [POLICY Phase 3] Модалка структуры-политики: дерево local+remote, чекбоксы, rename/move. */
@@ -2880,6 +2905,15 @@ class GitSyncSettingTab extends PluginSettingTab {
                                                 this.plugin.conflictResolver.setLightStrategy(v as LightConflictStrategy);
                                                 await this.plugin.saveSettingsImmediate();
                                         }));
+                }
+
+                {
+                        const sourceId = this.plugin.builtSourceId;
+                        if (sourceId) renderFileRulesEditor(containerEl, {
+                                ru: this.plugin.settings.language === 'ru',
+                                rules: this.plugin.settings.syncPolicies?.[sourceId]?.fileRules,
+                                save: async rules => { await this.plugin.saveFileRules(sourceId, rules); this.display(); },
+                        });
                 }
 
                 // --- Security: плагины/сниппеты ---

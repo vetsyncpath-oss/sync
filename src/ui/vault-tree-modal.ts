@@ -1,3 +1,5 @@
+import { i18n } from '../i18n';
+import type { WriteMode } from '../core/file-rules';
 // src/ui/vault-tree-modal.ts — модалка структуры-политики vault
 // (Phase 4: вкладки «Источник»/«Текущий vault» с РАЗНОЙ легендой).
 //
@@ -1105,6 +1107,7 @@ export class VaultTreeModal extends Modal {
                 if (this.tab === 'remote') {
                         const st = this.editor!.remoteStatusOf(node.path);
                         switch (st.kind) {
+                                case 'rule': return this.ruleStatusSpan(st.write);
                                 case 'synced': return statusSpan('ok', t.stSynced);
                                 case 'changed': return statusSpan('warn', t.stChanged);
                                 case 'new': return statusSpan('accent', t.stNew);
@@ -1116,9 +1119,21 @@ export class VaultTreeModal extends Modal {
                 return this.localStatusSpan(st);
         }
 
+        private ruleStatusSpan(mode: WriteMode): HTMLElement {
+                const ru = i18n.getLocale() === 'ru';
+                const labels = {
+                        preserve: ru ? 'сохраняется по правилу' : 'preserved by rule',
+                        create: ru ? 'существующий файл сохраняется' : 'existing file preserved',
+                        update: ru ? 'обновление после проверки локальных правок' : 'update after checking local edits',
+                        remote: ru ? 'проверка соответствия источнику' : 'source content check',
+                };
+                return statusSpan('faint', labels[mode]);
+        }
+
         private localStatusSpan(st: LocalStatus): HTMLElement {
                 const t = this.deps.labels;
                 switch (st.kind) {
+                        case 'rule': return this.ruleStatusSpan(st.write);
                         case 'synced': return statusSpan('ok', t.stLSynced(st.t !== undefined ? formatSyncDay(st.t) : null));
                         case 'changed': return statusSpan('warn', t.stLChanged);
                         // [W2-T07 / конец BUG-1-UI] Честные статусы по уровню:

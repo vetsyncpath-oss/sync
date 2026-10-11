@@ -1,3 +1,4 @@
+import { matchesFileExclusion } from '../core/file-glob';
 // src/ui/policy-editor.ts — логика редактирования SyncPolicy в модалке
 // (Phase 3 модуля Vault Structure Sync Policy; дизайн §3.4/§3.5/§3.8/§3.9).
 //
@@ -123,7 +124,7 @@ export class PolicyEditor {
                         mirrorFolders: this.policy.mirrorFolders,
                         // [W2-T07] sync-exclude защищает от зеркальных удалений
                         // (applyPolicy фильтрует до плана) — статусы это учитывают.
-                        excludedFromSync: (p) => this.effectiveInclude(p) === 'exclude',
+                        excludedFromSync: (p) => this.effectiveInclude(p) === 'exclude' || matchesFileExclusion(p, this.policy.fileExclusions),
                         pluginDir: normalizePolicyPath(init.pluginDir),
                 };
         }
@@ -265,6 +266,7 @@ export class PolicyEditor {
 
         /** Живой снимок (уровень и mirrorFolders синхронизированы с политикой). */
         private snapshot(): StatusSnapshot {
+                this.snap.fileRules = this.policy.fileRules;
                 this.snap.mirrorLevel = this.mirrorLevel;
                 this.snap.mirrorFolders = this.policy.mirrorFolders;
                 return this.snap;
@@ -561,6 +563,8 @@ function clonePolicy(p: SyncPolicy): SyncPolicy {
                         }
                         : {}),
                 ...(p.preset ? { preset: p.preset } : {}),
+                ...(p.fileExclusions ? { fileExclusions: structuredClone(p.fileExclusions) } : {}),
+                ...(p.fileRules ? { fileRules: structuredClone(p.fileRules) } : {}),
         };
 }
 
@@ -586,7 +590,7 @@ function policyFingerprint(p: SyncPolicy): string {
         const mirror = Object.entries(p.mirrorFolders ?? {})
                 .map(([k, v]) => [k, v.state, v.level ?? null])
                 .sort();
-        return JSON.stringify([p.version, p.mirror === true, p.preset ?? null, folders, mirror]);
+        return JSON.stringify([p.version, p.mirror === true, p.preset ?? null, folders, mirror, p.fileExclusions ?? [], p.fileRules ?? []]);
 }
 
 /** Пустая политика для инициализации (реэкспорт для main.ts). */

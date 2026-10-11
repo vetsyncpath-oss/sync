@@ -28,3 +28,7 @@ npm run verify
 - Журнал и скрытое recovery-хранилище находятся в директории плагина. Повреждённое состояние, разрыв цепочки записей или неизвестная версия после сбоя останавливают исполнение; интерфейс разрешения таких случаев ещё не реализован. Лимиты: 512 MiB recovery-объектов и 10 000 записей операций. Компактация сокращает файлы журнала, сохраняя полную историю; retention и освобождение квоты ещё не реализованы.
 - Пустые папки автоматически не удаляются.
 - Проверки в настоящем Obsidian, на мобильном устройстве и с реальными аккаунтами остаются отдельным этапом. Проходящие тесты ядра не подтверждают готовность production-релиза.
+
+## File write and deletion rules
+
+Settings now supports independent rules for the entire vault, folders and individual files, with plugin code/settings quick selections. See [the rule guide](docs/file-rules.md) for precedence, compatibility and examples. Existing modes, script permissions and scheduler defaults are retained.

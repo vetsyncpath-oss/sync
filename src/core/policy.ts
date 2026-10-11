@@ -1,3 +1,4 @@
+import { validateFileRules, resolveFileRule, deletionLevel, type FileRule } from './file-rules';
 // src/core/policy.ts — политика структуры vault (Phase 1 модуля
 // Vault Structure Sync Policy; дизайн download/design-vault-structure-policy.md
 // §2 (модель данных) + §5.2/§5.7 (applyPolicy) + §6 (валидация путей)).
@@ -38,7 +39,7 @@ import { matchesFileExclusion } from './file-glob';
 // core/mirror.ts. Цикл policy↔mirror безопасен: оба модуля используют
 // экспорты друг друга ТОЛЬКО в момент вызова функций (не на этапе
 // инициализации модулей) — живые binding'и ES-модулей это позволяют.
-import { planMirrorDeletions } from './mirror';
+import { planMirrorDeletions, levelOf } from './mirror';
 import type { MirrorFolders, MirrorLevel, MirrorModel, MirrorPlan } from './mirror';
 
 // ────────────────────────────────────────────────────────────────────────
@@ -69,6 +70,8 @@ export interface FolderPolicy {
 export interface SyncPolicy {
         /** Версия схемы; менять только с миграцией (дизайн §2.4). */
         version: 1;
+        /** Independent rules on final vault paths; absent = legacy modes. */
+        fileRules?: FileRule[];
         /**
          * [W1-T05 / BUG-5] Легаси-тумблер зеркала 2.3.3. Как источник правды
          * об удалениях УМЕР (двойная система BUG-5): поле остаётся в типе
@@ -348,6 +351,7 @@ export function applyPolicy(
         const indexed = indexRules(folders, pathPolicy);
 
         // Защита от мутации входа: копия manifest-записей с новым path.
+        validateFileRules(policy.fileRules);
         const emittedLocalPaths = new Set<string>();
         // Старые remote-пути, участвующие в переименовании (для шага 4).
         const renamedOldPaths = new Set<string>();
@@ -417,7 +421,8 @@ export function applyPolicy(
         // сессия с rename. После неё кэш-ключи — ЛОКАЛЬНЫЕ пути.
         for (const cacheKey of cacheKeys) {
                 const newLocal = result.renameMap.get(cacheKey);
-                if (newLocal !== undefined) {
+                if (newLocal !== undefined && resolveFileRule(cacheKey, policy.fileRules).write === undefined
+                        && resolveFileRule(newLocal, policy.fileRules).write === undefined) {
                         result.toMove.push({ from: cacheKey, to: newLocal });
                 }
         }
@@ -486,6 +491,7 @@ export function applyPolicy(
                 // передаются в mirror.ts — там защищают orphan/local-only
                 // от удаления, считаются в skippedExcluded.
                 fileExclusions: policy.fileExclusions,
+                levelForPath: p => deletionLevel(p, policy.fileRules, levelOf(mirrorModel, p)),
         });
 
         // [W1-T05] производное поле для совместимости (см. PolicyResult):

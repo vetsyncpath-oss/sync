@@ -1,3 +1,4 @@
+import { resolveFileRule, deletionLevel, type FileRule, type WriteMode } from '../core/file-rules';
 // src/ui/status.ts — статус-движок вкладок модалки политики (Phase 4).
 //
 // ЧИСТЫЙ модуль: без obsidian/DOM. Считает статус каждой строки для ДВУХ
@@ -45,6 +46,7 @@ import type { MirrorFolders, MirrorLevel, MirrorModel } from '../core/mirror';
 // ─── Статусы ───
 
 export type RemoteStatus =
+        | { kind: 'rule'; write: WriteMode }
         | { kind: 'synced' }
         | { kind: 'changed' }
         | { kind: 'new' }
@@ -52,6 +54,7 @@ export type RemoteStatus =
         | { kind: 'excluded' };
 
 export type LocalStatus =
+        | { kind: 'rule'; write: WriteMode }
         | { kind: 'synced'; t?: number }
         | { kind: 'changed' }
         /** [W2-T07] Эффективный уровень пути (custom-цепочка/глобальный);
@@ -66,6 +69,7 @@ export type LocalStatus =
 export type StatusColor = 'ok' | 'warn' | 'accent' | 'danger' | 'faint';
 
 export const REMOTE_COLOR: Record<RemoteStatus['kind'], StatusColor> = {
+        rule: 'faint',
         synced: 'ok',
         changed: 'warn',
         new: 'accent',
@@ -74,6 +78,7 @@ export const REMOTE_COLOR: Record<RemoteStatus['kind'], StatusColor> = {
 };
 
 export const LOCAL_COLOR: Record<LocalStatus['kind'], StatusColor> = {
+        rule: 'faint',
         synced: 'ok',
         changed: 'warn',
         'local-only': 'warn',
@@ -103,6 +108,7 @@ export function localStatusColor(st: LocalStatus): StatusColor {
 // ─── Входные снимки ───
 
 export interface StatusSnapshot {
+        fileRules?: FileRule[];
         /** Манифест источника: path → entry. */
         remote: Map<string, RemoteEntry>;
         /** Кэш последнего применённого состояния: path → entry. */
@@ -142,7 +148,7 @@ function deletionLevelOf(snap: StatusSnapshot, path: string): MirrorLevel {
         if (snap.excludedFromSync?.(path) === true) return 'fetch';
         const model = mirrorModelOf(snap);
         if (!isCovered(model, path)) return 'fetch';
-        return levelOf(model, path);
+        return deletionLevel(path, snap.fileRules, levelOf(model, path));
 }
 
 /**
@@ -150,9 +156,11 @@ function deletionLevelOf(snap: StatusSnapshot, path: string): MirrorLevel {
  * эффективная включённость (та же семантика, что в applyPolicy).
  */
 export function remoteStatus(path: string, snap: StatusSnapshot, effectiveInclude: 'include' | 'exclude'): RemoteStatus {
-        if (effectiveInclude === 'exclude') return { kind: 'excluded' };
+        if (effectiveInclude === 'exclude' || snap.excludedFromSync?.(path)) return { kind: 'excluded' };
         const entry = snap.remote.get(path);
         if (!entry) return { kind: 'excluded' }; // путь не из источника
+        const mode = resolveFileRule(path, snap.fileRules).write;
+        if (mode && (mode !== 'create' || snap.local.has(path))) return { kind: 'rule', write: mode };
         const cached = snap.cache.get(path);
         if (!cached) {
                 // Нет в кэше: новый ИЛИ на диске с локальными правками (конфликт).
@@ -169,6 +177,8 @@ export function localStatus(path: string, snap: StatusSnapshot): LocalStatus {
                 return { kind: 'plugin-locked' };
         }
         if (isConflictCopyName(norm)) return { kind: 'conflict-copy' };
+        const mode = resolveFileRule(norm, snap.fileRules).write;
+        if (mode === 'preserve' || (mode && snap.remote.has(norm))) return { kind: 'rule', write: mode };
         const cached = snap.cache.get(norm);
         const remote = snap.remote.get(norm);
         if (remote && cached) {
@@ -236,6 +246,7 @@ export function folderCounters(
                 if (side === 'remote') {
                         const inc = effectiveInclude ? effectiveInclude(p) : 'include';
                         const st = remoteStatus(p, snap, inc);
+                        if (st.kind === 'rule') continue;
                         if (st.kind === 'synced') c.synced++;
                         else if (st.kind === 'changed') c.changed++;
                         else if (st.kind === 'new') c.new++;
@@ -243,6 +254,7 @@ export function folderCounters(
                         else c.excluded++;
                 } else {
                         const st = localStatus(p, snap);
+                        if (st.kind === 'rule') continue;
                         if (st.kind === 'synced') c.synced++;
                         else if (st.kind === 'changed') c.changed++;
                         else if (st.kind === 'local-only') c.localOnly++;
@@ -320,7 +332,7 @@ export function remoteFilterPass(
                 // в vault-tree-modal обещал «update+new+risk одной кнопкой», но new
                 // не проходил фильтр — новые файлы исчезали из вкладки при
                 // переключении на «Изменения».
-                case 'changes': return status.kind === 'changed' || status.kind === 'new' || status.kind === 'conflict-risk';
+                case 'changes': return status.kind === 'changed' || status.kind === 'new' || status.kind === 'conflict-risk' || (status.kind === 'rule' && (status.write === 'update' || status.write === 'remote'));
                 case 'new': return status.kind === 'new';
                 case 'excluded': return status.kind === 'excluded';
                 case 'renamed': return hasTarget;

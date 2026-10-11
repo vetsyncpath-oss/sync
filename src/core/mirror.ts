@@ -300,6 +300,7 @@ export interface MirrorPlanInput {
          * Кэш-ключи под exclusion тоже не чистятся (mirror.ts оставляет их).
          */
         fileExclusions?: readonly FileExclusion[];
+        levelForPath?: (path: string) => MirrorLevel;
 }
 
 /**
@@ -341,7 +342,7 @@ export function planMirrorDeletions(model: MirrorModel, input: MirrorPlanInput):
                         continue;
                 }
                 if (!isCovered(model, key)) { stats.skippedOff++; continue; } // Е2: off защищает всегда
-                const eff = levelOf(model, key);
+                const eff = input.levelForPath?.(key) ?? levelOf(model, key);
                 if (eff === 'fetch') { stats.skippedFetch++; continue; } // fetch: orphan остаётся
                 deletions.push({ path: key, reason: 'orphan', level: eff });
                 deletionPaths.add(key);
@@ -366,7 +367,7 @@ export function planMirrorDeletions(model: MirrorModel, input: MirrorPlanInput):
                         continue;
                 }
                 if (!isCovered(model, file)) { stats.skippedOff++; continue; }
-                const eff = levelOf(model, file);
+                const eff = input.levelForPath?.(file) ?? levelOf(model, file);
                 if (eff !== 'full') { stats.skippedFetch++; continue; } // fetch И light: never-synced остаётся
                 deletions.push({ path: file, reason: 'local-only', level: 'full' });
                 deletionPaths.add(file);

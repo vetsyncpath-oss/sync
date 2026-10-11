@@ -1,3 +1,4 @@
+import { resolveFileRule, validateFileRules } from './file-rules';
 // ============================================================
 // --- CORE/COORDINATOR (фаза 4-2) ---
 // Единственный владелец конвейера синхронизации (дизайн §16):
@@ -261,6 +262,7 @@ export class Coordinator {
                         this.captureSession();
                         o = this.current.options;
                         this.guard();
+                        validateFileRules(this.current.syncPolicy?.fileRules);
                         ui.setStatus('syncing', { phase: 0, progressText: m.phaseManifest });
                         const mutations = this.current.mutations;
                         if (mutations) {
@@ -310,7 +312,7 @@ export class Coordinator {
                         // поведения: без удалений). Отмена во время скана →
                         // Error{aborted} → честная ветка cancelled (W1-T01).
                         const fullActive =
-                                mirrorModel.level === 'full' ||
+                                syncPolicy?.fileRules?.some(r => r.delete === 'mirror') || mirrorModel.level === 'full' ||
                                 Object.values(mirrorModel.folders).some((r) => r.state === 'custom' && r.level === 'full');
                         let scan: Awaited<ReturnType<typeof scanVaultTree>> | undefined;
                         if (fullActive && !opts.forcedPaths && !opts.forceAll && typeof this.current.vault.list === 'function') {
@@ -424,11 +426,14 @@ export class Coordinator {
                                 }
                         }
 
+                        const ruleFor = (path: string) => resolveFileRule(path, syncPolicy?.fileRules);
+                        const enforceRemote = (path: string) => ruleFor(path).write === 'remote'
+                                || (ruleFor(path).write === undefined && levelOf(mirrorModel, path) === 'full');
                         const observations = new Map<string, LocalVersion>();
                         const localDigests = new Map<string, string>();
                         const entryByPath = new Map(entries.map(entry => [entry.path, entry]));
                         const paths = new Set([...toDownload.map(entry => entry.path),
-                                ...entries.filter(entry => levelOf(mirrorModel, entry.path) === 'full').map(entry => entry.path), ...toDelete,
+                                ...entries.filter(entry => enforceRemote(entry.path)).map(entry => entry.path), ...toDelete,
                                 ...policyResult.toMove.flatMap(move => [move.from, move.to])]);
                         const observed = await pMap([...paths], async path => {
                                 this.guard();
@@ -444,7 +449,7 @@ export class Coordinator {
                         if (observationError instanceof Error) throw observationError;
                         this.guard();
                         // A full rule checks actual local content, even when remote metadata did not change.
-                        for (const entry of entries) if (levelOf(mirrorModel, entry.path) === 'full' && !toDownload.some(file => file.path === entry.path)) {
+                        for (const entry of entries) if (enforceRemote(entry.path) && !toDownload.some(file => file.path === entry.path)) {
                                 const actual = observations.get(entry.path)!;
                                 const baseline = mutations?.store.baseline(this.current.cache.namespace, entry.path);
                                 const digest = localDigests.get(entry.path);
@@ -453,6 +458,13 @@ export class Coordinator {
                                                 && baseline.remote.hashAlg === entry.hashAlg && baseline.remote.hash === entry.hash;
                                 if (!matches) { toDownload.push(entry); stats.skipped = Math.max(0, stats.skipped - 1); }
                         }
+                        // Preserve remains protected even during force/retry. Create-only never replaces an existing file.
+                        toDownload = toDownload.filter(entry => {
+                                const mode = ruleFor(entry.path).write;
+                                const skip = mode === 'preserve' || (mode === 'create' && observations.get(entry.path)?.kind === 'file');
+                                if (skip) stats.skipped++;
+                                return !skip;
+                        });
                         const failures = new Map(this.current.queue.all().map(file => [file.path, file]));
                         toDownload = toDownload.filter(file => {
                                 const failed = failures.get(file.path);
@@ -872,7 +884,8 @@ export class Coordinator {
                                                 }
                                         },
                                 };
-                                const outcome = await conflict.safeWrite(file, buffer, cache.get(file.path)?.h, fileLevel, signal, transaction);
+                                const outcome = await conflict.safeWrite(file, buffer, cache.get(file.path)?.h, fileLevel, signal, transaction,
+                                        resolveFileRule(file.path, this.current.syncPolicy?.fileRules).write);
                                 if (outcome.kind === 'conflict') {
                                         stats.conflicts++;
                                         if (outcome.mirror === 'full') {

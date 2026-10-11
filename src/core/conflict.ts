@@ -1,3 +1,4 @@
+import type { WriteMode } from './file-rules';
 // src/core/conflict.ts — разрешитель конфликтов «локаль vs облако»
 // (фаза 3-5, дизайн §9.1 — матрица решений, реализована дословно).
 //
@@ -285,13 +286,16 @@ export class ConflictResolver {
                 mirror?: MirrorLevel,
                 signal?: AbortSignal,
                 transaction?: WriteTransaction,
+                writeMode?: WriteMode,
         ): Promise<WriteOutcome> {
                 signal?.throwIfAborted();
                 const { vault } = this.deps;
+                if (writeMode === 'preserve') return { kind: 'skipped', updateCache: false };
                 if (!(await vault.exists(entry.path))) {
                         await this.writeIfUnchanged(entry.path, remoteData, null, signal, transaction);
                         return { kind: 'written', updateCache: true };
                 }
+                if (writeMode === 'create') return { kind: 'skipped', updateCache: false };
                 const local = await vault.readBinary(entry.path);
                 const localHash = await this.computeLocalHash(entry.hashAlg, local);
                 signal?.throwIfAborted();
@@ -307,7 +311,8 @@ export class ConflictResolver {
                         await this.writeIfUnchanged(entry.path, remoteData, local, signal, transaction);
                         return { kind: 'written', updateCache: true };
                 }
-                return this.resolveConflict(entry, remoteData, local, mirror, signal, transaction);
+                if (writeMode === 'update') return { kind: 'skipped', updateCache: false };
+                return this.resolveConflict(entry, remoteData, local, writeMode === 'remote' ? 'full' : mirror, signal, transaction);
         }
 
         private async writeIfUnchanged(path: string, data: ArrayBuffer, expected: ArrayBuffer | null, signal?: AbortSignal, transaction?: WriteTransaction): Promise<void> {
