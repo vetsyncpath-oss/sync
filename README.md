@@ -2,7 +2,7 @@
 
 Плагин Obsidian для загрузки файлов из Git, ZIP, Яндекс.Диска, Google Drive и WebDAV в локальный vault. Направление синхронизации сейчас — **из источника в vault**. Локальные изменения не отправляются обратно.
 
-Идёт поэтапный overhaul. После защиты существующего pipeline добавлены неизменяемый план, журнал намерений, recovery-объекты и сверка операций после сбоя. Этап 2б.1 заменил перезапись всего журнала небольшими checksum-записями и адаптивными checkpoints с компактацией. Новая модель режимов ещё не включена. Изменения поведения и следующие этапы описаны в [docs/overhaul.md](docs/overhaul.md).
+Идёт поэтапный overhaul. После защиты существующего pipeline добавлены неизменяемый план, журнал намерений, recovery-объекты и сверка операций после сбоя. Этап 2б.1 заменил перезапись всего журнала небольшими checksum-записями и адаптивными checkpoints с компактацией. Режимы перенесены в профили с назначениями из дерева и выбором источника для каждого файла. Изменения поведения и следующие этапы описаны в [docs/overhaul.md](docs/overhaul.md).
 
 ## Среда разработки
 
@@ -31,4 +31,4 @@ npm run verify
 
 ## File write and deletion rules
 
-Settings now supports independent rules for the entire vault, folders and individual files, with plugin code/settings quick selections. See [the rule guide](docs/file-rules.md) for precedence, compatibility and examples. Existing modes, script permissions and scheduler defaults are retained.
+Settings provides standard/custom sync profiles and named source connections. Assign profiles in the file tree to the vault, folders or individual files, with plugin code/settings quick selections. Each file uses one source; ambiguous assignments block synchronization. See [the profile guide](docs/file-rules.md) for migration, precedence, multi-provider examples and limits. Script permissions and scheduling remain off by default.

@@ -1,7 +1,10 @@
 /** Independent, source-specific policies on final vault paths. Absence preserves legacy behaviour. */
-export type WriteMode = 'preserve' | 'create' | 'update' | 'remote';
+export type WriteMode = 'preserve' | 'create' | 'update' | 'remote' | 'changes';
 export type DeleteMode = 'keep' | 'tracked' | 'mirror';
+export type RuleConflict = 'keep-both' | 'local-wins' | 'remote-wins' | 'ask' | 'incoming';
 export interface FileRule {
+    source?: string;
+    conflict?: RuleConflict;
     scope: 'vault' | 'folder' | 'file';
     path: string;
     /** Optional exact basenames within a vault/folder, not extensions or globs. */
@@ -9,8 +12,8 @@ export interface FileRule {
     write?: WriteMode;
     delete?: DeleteMode;
 }
-export interface ResolvedFileRule { write?: WriteMode; delete?: DeleteMode; writeRule?: number; deleteRule?: number }
-const writes = ['preserve', 'create', 'update', 'remote'];
+export interface ResolvedFileRule { write?: WriteMode; delete?: DeleteMode; writeRule?: number; deleteRule?: number; source?: string; sourceRule?: number; conflict?: RuleConflict }
+const writes = ['preserve', 'create', 'update', 'remote', 'changes'];
 const deletes = ['keep', 'tracked', 'mirror'];
 function validPath(path: unknown): path is string {
     return typeof path === 'string' && path === path.trim() && !/[\\\x00-\x1f:*?"<>|]/.test(path)
@@ -27,6 +30,8 @@ export function validateFileRules(value: unknown): asserts value is FileRule[] |
         if (r.scope === 'vault' ? r.path !== '' : !validPath(r.path)) return fail();
         if (r.write !== undefined && !writes.includes(r.write)) return fail();
         if (r.delete !== undefined && !deletes.includes(r.delete)) return fail();
+        if (r.source !== undefined && (typeof r.source !== 'string' || !r.source)) return fail();
+        if (r.conflict !== undefined && !['keep-both','local-wins','remote-wins','ask','incoming'].includes(r.conflict)) return fail();
         if (r.write === undefined && r.delete === undefined) return fail();
         if (r.names !== undefined && (r.scope === 'file' || !Array.isArray(r.names) || !r.names.length
             || r.names.some((n: unknown) => !validPath(n) || n.includes('/')))) return fail();
@@ -48,6 +53,13 @@ export function resolveFileRule(path: string, rules?: readonly FileRule[]): Reso
     for (const { r, i } of matches) {
         if (r.write !== undefined) { result.write = r.write; result.writeRule = i; }
         if (r.delete !== undefined) { result.delete = r.delete; result.deleteRule = i; }
+        if (r.conflict !== undefined) result.conflict = r.conflict;
+        if (r.source !== undefined) {
+            const previous = result.sourceRule === undefined ? undefined : rules![result.sourceRule];
+            if (previous && previous.scope === r.scope && canonical(previous.path) === canonical(r.path)
+                && !!previous.names === !!r.names && result.source !== r.source) throw new Error(`Conflicting source assignments for ${path}`);
+            result.source = r.source; result.sourceRule = i;
+        }
     }
     // “Do not touch” is a protection, including when a parent requests mirroring.
     if (result.write === 'preserve') result.delete = 'keep';

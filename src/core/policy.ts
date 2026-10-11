@@ -1,3 +1,4 @@
+import type { ProfileAssignment } from './profiles';
 import { validateFileRules, resolveFileRule, deletionLevel, type FileRule } from './file-rules';
 // src/core/policy.ts — политика структуры vault (Phase 1 модуля
 // Vault Structure Sync Policy; дизайн download/design-vault-structure-policy.md
@@ -72,6 +73,7 @@ export interface SyncPolicy {
         version: 1;
         /** Independent rules on final vault paths; absent = legacy modes. */
         fileRules?: FileRule[];
+        assignments?: ProfileAssignment[];
         /**
          * [W1-T05 / BUG-5] Легаси-тумблер зеркала 2.3.3. Как источник правды
          * об удалениях УМЕР (двойная система BUG-5): поле остаётся в типе
@@ -259,7 +261,7 @@ function resolveInclude(path: string, indexed: IndexedRule[], byKey: 'remoteKey'
  *    ('notes/drafts/a.md' под правилом 'notes/drafts' move 'Archive/Drafts'
  *     → 'Archive/Drafts/a.md').
  */
-function computeLocalPath(remotePath: string, rulePath: string, rule: FolderPolicy): string {
+export function computeLocalPath(remotePath: string, rulePath: string, rule: FolderPolicy): string {
         if (!rule.target) return remotePath;
         const targetPath = normalizePolicyPath(rule.target.localPath);
         // Правило корня (rulePath === ''): remotePath.slice(0) не даёт ведущего

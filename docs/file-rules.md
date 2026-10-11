@@ -1,32 +1,48 @@
-# Write and deletion rules
+# Profiles, tree assignments and sources
 
-Settings → Write and deletion rules edits a draft for the current source. Select the entire vault, a folder (all descendants), or an exact file. Apply saves; leaving settings without applying discards the draft. Existing fetch/light/full modes remain the fallback. Auto-sync and script permissions still default to off.
+Settings contains a compact profile library and connection editor. Create a custom profile (or customize a copy of a standard profile), then assign it from the file tree to the entire vault, a folder including descendants, or an individual file. The tree supports file actions, multi-selection and Enter to open assignments. Changes stay in the tree draft until Save. Reloading inventories preserves that draft. Local discovery includes `.obsidian` through the vault adapter.
 
-Within a vault/folder rule, select all files, plugin code (`main.js`, `manifest.json`, `styles.css`), `data.json`, or comma-separated exact basenames. Names are not extension filters or glob expressions. Paths refer to final vault locations after folder mappings.
+A profile specifies writing, deletion, conflict handling and an optional named source connection. Path validation, integrity checks, recovery and permissions are mandatory safeguards, not profile toggles. Scheduling and plugin/script permissions remain off by default; profiles do not enable them.
 
-## Inheritance
+Within a vault/folder assignment, quick-select all files, plugin code (`main.js`, `manifest.json`, `styles.css`), `data.json`, or comma-separated exact basenames. These are names, not globs or extension filters. Assignments refer to final vault paths after folder mappings; selecting a remote node translates its path accordingly.
 
-Each axis resolves independently: vault < folder < nested folder < exact file. Within the same scope, a basename-filtered rule is more specific than an unfiltered rule. Last equally specific rule wins. Paths and names compare case-insensitively with Unicode NFC normalization, so portable aliases do not lose protection. The settings path checker reports the resulting write/deletion modes and rule numbers; sync exclusions and script permission checks still apply separately.
+## Inheritance and sources
 
-- Do not touch: no writes, moves or deletions, including force/retry.
-- Create missing only: install once; existing contents are retained. A concurrently created file cannot be overwritten.
-- Update if unchanged locally: accept remote changes when the saved local version still matches the last applied baseline. Existing unowned/modified files are skipped, without a conflict prompt.
-- Match source content: check local contents even when remote metadata has not changed, and restore remote bytes with the existing recovery safeguards.
+Precedence is vault < folder < nested folder < exact file. A basename filter is more specific than all files at the same scope. Each assigned profile defines both writing and deletion; its source and conflict policy may inherit. Equal-priority write/deletion settings use the last assignment. Equal-priority assignments naming different sources are errors and block synchronization, including overlaps for currently absent files. More-specific assignments can override a parent's source. Paths and basenames compare case-insensitively with Unicode NFC normalization.
 
-Deletion is independent: keep; delete previously synced files absent from the source; or delete all eligible files absent from the source. Do not touch forces keep. Exact-file and basename rules apply to deletions too. Existing folder excludes, mirror-off areas, runtime protection and script permissions remain stronger than these rules. Background deletions remain deferred; inventories without the required completeness guarantee cannot authorize deletion. Force/retry continue to perform no deletions.
+Every file has one selected source. With no explicit source it uses the primary connection. A named connection identifies an actual repository, disk or endpoint with its own configuration and credentials. The same provider can have multiple connections. If the selected source lacks a file, another provider does not supply it automatically.
 
-## Example: code updates with personal settings
+All required inventories must load and validate before any writes. The tree preview lists candidates from all configured connections and labels their origins, using separate source instances from synchronization. Preview availability is not proof that a file will be written: routing, exclusions, permissions and local conflicts still apply.
 
-1. Folder `.obsidian/plugins`, code quick selection: Match source content; Keep when absent.
-2. Same folder, `data.json`: Create missing only; Keep when absent (or Do not touch to avoid initial seeding).
-3. Optionally, exact file `.obsidian/plugins/example/data.json`: Match source content; Keep when absent.
+Routing or public connection identity changes isolate the cache and failed queue; credential rotation does not reset ownership. Primary-only configurations keep their existing namespace. A composite source allows deletion only when every member supplies the required immutable inventory guarantee. Adding Yandex, WebDAV or another unverified inventory does not grant it deletion authority.
 
-Rules do not enable script permission or scheduling. They do not fetch settings from plugins that store data under unrelated names: add explicit rules for those files.
+## Profile actions
 
-## Compatibility and limits
+- **Do not touch:** no writes, moves or deletions, including force/retry.
+- **Create missing:** install once and retain existing contents; a concurrently created file cannot be overwritten.
+- **Update unchanged local files:** update only when local bytes match the last applied baseline. Skip modified or unowned files.
+- **Match source:** check actual local contents even when remote metadata is unchanged; replace through the recovery safeguards.
+- **Update with conflict resolution:** process source changes and resolve local edits by preserving a copy, keeping local contents, or asking during manual sync. Background conflicts requiring a decision stay pending, without opening a dialog or poisoning the retry queue; deletion is deferred for that run.
 
-`SyncPolicy.fileRules` is additive. Missing/empty rules preserve legacy behaviour; existing modes and global defaults are not silently changed. Adding rules to a source without a policy retains its legacy folder/config-only scope. Structure presets, onboarding and the tree editor retain rules and exclusions. Invalid saved rules block synchronization before inventory retrieval; they are not silently discarded.
+Deletion is independent: keep files absent from the source; delete previously synced files; or delete all eligible files absent from the source. Do not touch forces keep. Exclusions, protected runtime paths and script permissions remain stronger. Background deletions are deferred, and force/retry perform no deletions.
 
-A new explicit write rule suppresses structural moves involving its source/target; the mapped destination is processed according to its rule, and the old path is retained. This avoids moving away a protected or seed-only file. Deleting that old path requires a separate deliberate policy change. Rules do not turn per-file writes into a plugin-package transaction or hot-reload plugins. Safe activation, package-level rollback and compatibility checks remain separate work. Unknown original audit defects are not claimed fixed by this change.
+## Example: GitHub plugin code, Yandex documents
 
-Older builds do not understand `fileRules`: do not downgrade a vault relying on these protections without restoring equivalent exclusions first. No live Obsidian desktop/mobile UI validation was available; tests exercise the coordinator, state model and filesystem adapters.
+1. Add named GitHub and Yandex connections in Settings → Connections.
+2. Create “Plugin code”: GitHub, Match source, Keep absent files.
+3. Assign it in the tree to `.obsidian/plugins`, quick selection Plugin code.
+4. Assign Create missing (or Do not touch) to `data.json` in that folder. Select GitHub explicitly if initial settings should come from that repository.
+5. Create “Documents”: Yandex, Update with conflict resolution, Keep absent files; assign to the documents folder.
+6. Add an individual-file assignment when a particular plugin's settings should follow the source.
+
+If repositories use different layouts, map the relevant source folders to their final vault locations first. Folder mappings remain shared across the routed source; conflicting final destinations fail plan validation.
+
+## Migration and limits
+
+Existing fetch/light/full settings are converted once to editable profiles and assignments: Receive changes; Follow source deletions; Exact source copy. Folder overrides, inline file rules, exclusions and mappings are carried over. Migration is idempotent; a failed save restores the in-memory settings for retry. Deleting a profile still referenced by any saved policy prevents saving the library; remove its assignments first. Invalid profiles or missing connections block sync rather than dropping protections.
+
+Explicit write policies suppress structural moves involving protected source/target paths. Because migrated profiles are explicit too, mapped destinations are processed under their profile while original paths can remain. Review and remove obsolete paths deliberately; migration does not silently clean them up.
+
+Profiles operate per file, not as atomic plugin-package installations. Package-level rollback, version compatibility checks and safe activation/hot reload remain separate work. Auto-sync must be enabled separately. Older builds do not understand profiles and assignments: do not downgrade a vault relying on them without restoring equivalent exclusions.
+
+Automated checks cover migration, coordinator routing, conflict safeguards, cache/queue isolation and DOM interactions with a host shim. Real Obsidian desktop/mobile and live multi-provider credentials have not been exercised by these tests.

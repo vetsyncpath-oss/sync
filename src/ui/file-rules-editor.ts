@@ -9,6 +9,7 @@ export function renderFileRulesEditor(host: HTMLElement, options: {
     const box = host.createDiv();
     const rules = structuredClone(options.rules ?? []);
     const writeLabels: Record<WriteMode, string> = {
+        changes: text('Обновлять с разрешением конфликтов', 'Update with conflict resolution'),
         preserve: text('Не трогать (включая удаления)', 'Do not touch (including deletion)'),
         create: text('Добавлять только отсутствующие', 'Create missing files only'),
         update: text('Обновлять, если нет локальных изменений', 'Update if unchanged locally'),

@@ -1,4 +1,4 @@
-import type { WriteMode } from './file-rules';
+import type { WriteMode, RuleConflict } from './file-rules';
 // src/core/conflict.ts — разрешитель конфликтов «локаль vs облако»
 // (фаза 3-5, дизайн §9.1 — матрица решений, реализована дословно).
 //
@@ -287,6 +287,8 @@ export class ConflictResolver {
                 signal?: AbortSignal,
                 transaction?: WriteTransaction,
                 writeMode?: WriteMode,
+                ruleConflict?: RuleConflict,
+                allowAsk = true,
         ): Promise<WriteOutcome> {
                 signal?.throwIfAborted();
                 const { vault } = this.deps;
@@ -312,6 +314,16 @@ export class ConflictResolver {
                         return { kind: 'written', updateCache: true };
                 }
                 if (writeMode === 'update') return { kind: 'skipped', updateCache: false };
+                if (writeMode === 'changes' && ruleConflict === 'ask' && !allowAsk) return {kind:'skipped',updateCache:false,requiresDecision:true};
+                if (writeMode === 'changes' && ruleConflict) {
+                        const resolver = this.snapshot();
+                        if (ruleConflict === 'incoming') {
+                                resolver.setLightStrategy('keep-local');
+                                return resolver.resolveConflict(entry, remoteData, local, 'light', signal, transaction);
+                        }
+                        resolver.setStrategy(ruleConflict);
+                        return resolver.resolveConflict(entry, remoteData, local, 'fetch', signal, transaction);
+                }
                 return this.resolveConflict(entry, remoteData, local, writeMode === 'remote' ? 'full' : mirror, signal, transaction);
         }
 

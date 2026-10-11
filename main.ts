@@ -1,4 +1,8 @@
-import { renderFileRulesEditor } from './src/ui/file-rules-editor';
+import { ProfileLibraryModal } from './src/ui/profile-library';
+import { compileProfiles, migrateProfilePolicy, STANDARD_PROFILES, validateProfiles, type SyncProfile, type SourceConnection } from './src/core/profiles';
+import { RoutedSource, routedNamespace } from './src/sources/routed-source';
+import { computeLocalPath } from './src/core/policy';
+import { scanVaultTree } from './src/core/mirror';
 import { validateFileRules, type FileRule } from './src/core/file-rules';
 import {
         App,
@@ -142,6 +146,9 @@ const BEFORE_SESSION_TIMEOUT_MS = 10_000;
 type SyncState = 'idle' | 'syncing' | 'error' | 'offline' | 'conflicts' | 'unconfigured';
 
 interface GitSyncSettings {
+        profiles?: SyncProfile[];
+        connections?: SourceConnection[];
+        failedQueues?: Record<string, FailedFile[]>;
         repoUrl: string;
         accessToken: string;
         branch: string;
@@ -286,7 +293,7 @@ class StatusBarManager {
         private pipelinePhase = -1;
         // [W2-T02 / Д13=1] уровень зеркала для чипа опасности;
         // display-логика — чистая statusBarView (src/ui/statusbar-view.ts).
-        private mirrorLevel: MirrorLevel = 'fetch';
+        private mirrorLevel: MirrorLevel | undefined = 'fetch';
 
         setElement(el: HTMLElement) {
                 this.statusBarEl = el;
@@ -319,7 +326,7 @@ class StatusBarManager {
 
         // [W2-T02 / Д13=1] чип уровня зеркала: вызывается при старте (onload
         // после buildEngine) и при каждой смене конфигурации (prepareSession).
-        setMirrorLevel(level: MirrorLevel) {
+        setMirrorLevel(level: MirrorLevel | undefined) {
                 this.mirrorLevel = level;
                 this.updateDisplay();
         }
@@ -851,7 +858,7 @@ export default class GitSyncPlugin extends Plugin {
                 // [W2-T02 / Д13=1] чип уровня зеркала: начальное значение после
                 // сборки движка (миграция 3.0 внутри buildEngine могла выставить
                 // mirrorLevel из legacy-полей).
-                this.statusBar.setMirrorLevel(this.currentMirrorLevel());
+                this.statusBar.setMirrorLevel(this.settings.profiles ? undefined : this.currentMirrorLevel());
 
                 // [W4-T01] планировщик авто-синхронизации: интервал из настроек
                 // (дефолт 'off' → ничего не планируется до явного выбора).
@@ -1050,6 +1057,7 @@ export default class GitSyncPlugin extends Plugin {
                                                 mirror: existing?.mirror ?? false,
                                                 mirrorFolders: existing?.mirrorFolders,
                                                 fileRules: existing?.fileRules,
+                                                assignments: existing?.assignments,
                                                 // [overhaul v4 / Этап 4] сохраняем кастомные user exclusions
                                                 fileExclusions: mergeFileExclusions(
                                                         base.fileExclusions ?? [],
@@ -1114,9 +1122,10 @@ export default class GitSyncPlugin extends Plugin {
                 // [overhaul v4 / Этап 4] гранулярная миграция: folder-exclude pluginDir
                 // → fileExclusions (data.json и т.п. точечно, main.js/manifest.json в синке).
                 await this.runV4Migration();
+                await this.ensureProfileSettings();
 
                 this.queue = new FailedQueue();
-                this.queue.mergeBack(this.settings.failedQueue ?? []);
+                this.queue.mergeBack((this.settings.failedQueues ? this.settings.failedQueues[this.cache.namespace] ?? [] : this.settings.failedQueue ?? []));
 
                 // [W2-T08] журнал сессий: IO-адаптер к configDir/vault-sync-journal.json
                 // (adapter.read: null = файла нет — первый запуск, НЕ warn).
@@ -1178,6 +1187,7 @@ export default class GitSyncPlugin extends Plugin {
                                 fileTooLarge: (sz, limit) => i18n.t.errFileTooLarge(sz, limit),
                                 conflictKeptLocal: (p) => i18n.t.noticeConflictKeptLocal(p),
                                 conflictBoth: (p) => i18n.t.noticeConflictBoth(p),
+                                conflictsDeferred: i18n.getLocale()==='ru'?'Конфликты требуют ручного запуска синхронизации':'Conflicts need a manual sync',
                                 nothingToRetry: i18n.t.noticeNoFailedFiles,
                                 retryNotDue: (n) => i18n.t.noticeRetryNotDue(n),
                                 // [overhaul S6 / D-4] припаркованные записи (retry cap):
@@ -1212,7 +1222,7 @@ export default class GitSyncPlugin extends Plugin {
                         },
                         // [POLICY Phase 2] политика текущего источника; отсутствует в
                         // data.json = undefined = legacy-режим (ничего не меняется).
-                        syncPolicy: this.settings.syncPolicies?.[this.builtSourceId],
+                        syncPolicy: this.effectiveProfilePolicy(this.builtSourceId),
                 });
                 this.preparedConfigRevision = this.getConfigurationRevision();
         }
@@ -1286,9 +1296,8 @@ export default class GitSyncPlugin extends Plugin {
                  * (transport, downloader, messages, onProgress, onRateLimitWait).
                  * Реестр передаёт ctx в конструктор движка как есть.
                  */
-                private engineCtx(): EngineCtx {
+                private engineCtx(kind = this.builtKind): EngineCtx {
                         const t = i18n.t;
-                        const kind = this.builtKind;
                         if (kind === 'git') {
                                 return {
                                         messages: {
@@ -1464,18 +1473,7 @@ export default class GitSyncPlugin extends Plugin {
 
 
         private isConfiguredForSource(): boolean {
-                return isSourceConfigured(this.desiredSourceKind(), {
-                        repoUrl: this.settings.repoUrl,
-                        accessToken: this.settings.accessToken,
-                        vaultUrl: this.settings.vaultUrl,
-                        // [W6-T03] gdrive: apiKey (secret).
-                        apiKey: this.settings.gdriveApiKey,
-                        // [W6-T05] webdav: baseUrl + username (password optional).
-                        baseUrl: this.settings.webdavBaseUrl,
-                        username: this.settings.webdavUsername,
-                        password: this.settings.webdavPassword,
-                        rootPath: this.settings.webdavRootPath,
-                });
+                return isSourceConfigured(this.desiredSourceKind(), {repoUrl:'',accessToken:'',vaultUrl:'',...this.engineValues(this.desiredSourceKind())});
         }
 
         // [W3-T03] makeGitOptions / makeZipOptions / makeYandexOptions удалены:
@@ -1559,7 +1557,7 @@ export default class GitSyncPlugin extends Plugin {
         private gcKeepSet(currentSourceId: string): Set<string> {
                 // [W3-T03] git-кэш держится всегда (возврат к git — без полного resync);
                 // sourceId считается через реестр (байт-в-байт с легаси).
-                const keep = new Set([currentSourceId]);
+                const keep = new Set([currentSourceId,...Object.keys(this.settings.failedQueues ?? {})]);
                 if (this.settings.repoUrl.trim().length > 0) {
                         keep.add(EngineRegistry.makeSourceId('git', this.engineValues('git')));
                 }
@@ -1592,7 +1590,7 @@ export default class GitSyncPlugin extends Plugin {
         /** Semantic epoch stays in memory. No credential/fingerprint is written to the ledger. */
         private getConfigurationRevision(): number {
                 const kind = this.desiredSourceKind();
-                const config = JSON.stringify({ kind, values: this.engineValues(kind), mirror: this.currentMirrorLevel(),
+                const config = JSON.stringify({ profiles:this.settings.profiles, connections:this.settings.connections, kind, values: this.engineValues(kind), mirror: this.currentMirrorLevel(),
                         policy: this.settings.syncPolicies?.[this.makeSourceId(kind)], syncMode: this.settings.syncMode,
                         allowed: this.settings.allowedFolders, ignored: this.settings.ignoredFolders,
                         plugins: this.settings.allowPlugins, snippets: this.settings.allowSnippets,
@@ -1601,61 +1599,79 @@ export default class GitSyncPlugin extends Plugin {
                 return this.configurationEpoch;
         }
 
-        /** Свежесть движка перед сессией: политика, стратегия, источник, sourceId. */
-        private async prepareSession(): Promise<void> {
-                // [7-f I-1] свап источника/кэша во время живой сессии запрещён:
-                // dispose старого источника mid-flight и потеря кэш-записей сессии
-                // (без потери данных, но с лишними перекачками); настройки сохранены —
-                // следующий вход подхватит их
-                if (this.coordinator.isRunning()) return;
-                const preparingRevision = this.getConfigurationRevision();
-                // [W2-T02 / Д13=1] настройки могли смениться с прошлой сессии —
-                // чип уровня зеркала обновляется перед каждой сессией.
-                this.statusBar.setMirrorLevel(this.currentMirrorLevel());
-                // [AUDIT A.1 fix] run legacy migration here (not in onload) —
-                // so that manifest-git.json is written only when sync actually runs.
-                if (this.builtKind === 'git') await this.migrateLegacyShas();
-                const kind = this.desiredSourceKind();
-                const sourceId = this.makeSourceId(kind);
-                const values = this.engineValues(kind), engineKey = JSON.stringify(values);
-                if (kind !== this.builtKind || sourceId !== this.builtSourceId || engineKey !== this.builtEngineConfigKey) {
-                        // [W3-T03] сменился тип источника или URL: новый инстанс через реестр.
-                        const nextSource: import('./src/sources/types').SyncSource =
-                                EngineRegistry.create(kind, values, this.engineCtx());
-                        if (kind === 'git') {
-                                this.gitSource = nextSource as import('./src/sources/git-source').GitSource;
-                        }
-                        await this.coordinator.setSource(nextSource);
-                        if (sourceId !== this.builtSourceId) {
-                                this.cache = new ManifestCache(this.fsAdapter, sourceId);
-                                await this.cache.load();
-                                this.coordinator.setCache(this.cache);
-                        }
-                        this.builtKind = kind;
-                        this.builtSourceId = sourceId;
-                        this.builtEngineConfigKey = engineKey;
-                        await gcManifestCaches(this.fsAdapter, this.gcKeepSet(sourceId));
+        async ensureProfileSettings(): Promise<void> {
+                const previous = structuredClone({profiles:this.settings.profiles,connections:this.settings.connections,
+                        syncPolicies:this.settings.syncPolicies,mirrorLevel:this.settings.mirrorLevel});
+                try {
+                const before = JSON.stringify([this.settings.profiles, this.settings.syncPolicies]);
+                const profiles = this.settings.profiles ??= structuredClone([...STANDARD_PROFILES]);
+                this.settings.connections ??= [];
+                validateProfiles(profiles, this.settings.connections);
+                const policies = this.settings.syncPolicies ??= {};
+                const id = this.makeSourceId(this.desiredSourceKind());
+                if (!policies[id]) {
+                        policies[id] = migrateSettingsToV3({settings:{...this.settings,migratedV3:false},syncPolicies:{},
+                                currentSourceId:id,pluginDir:this.pluginDir()}).syncPolicies[id] ?? {version:1,mirror:false,folders:[]};
                 }
-                // [overhaul S2/M-5] PathPolicy строится ПОСЛЕ возможного свапа
-                // источника: makePolicy() читает syncPolicies[builtSourceId] — раньше
-                // первая сессия после смены источника получала structural-фильтры по
-                // УСТАРЕВШЕМУ id (чужая политика или легаси-режим вместо свежей).
-                this.coordinator.setPolicy(this.makePolicy());
-                this.conflictResolver.setStrategy(this.settings.conflictStrategy);
-                // [overhaul v4 / Этап 3] light-стратегия тоже обновляется на каждой сессии
-                // (пользователь мог сменить её в SettingsTab без перезагрузки плагина).
-                this.conflictResolver.setLightStrategy(this.settings.lightConflictStrategy ?? 'keep-local');
-                // [POLICY Phase 2] политика следует за sourceId: после
-                // возможного свапа источника/кэша перечитываем её
-                // (каждую сессию: пользователь мог сохранить новую в modal).
-                this.coordinator.setSyncPolicy(this.settings.syncPolicies?.[this.builtSourceId]);
-                if (preparingRevision !== this.getConfigurationRevision()) throw new Error('Configuration changed while preparing sync; run it again');
-                this.preparedConfigRevision = preparingRevision;
+                for (const [key, policy] of Object.entries(policies)) policies[key] = migrateProfilePolicy(policy, profiles, key,
+                        this.currentMirrorLevel(), this.settings.conflictStrategy, this.settings.lightConflictStrategy ?? 'keep-local');
+                const legacyLevel=this.settings.mirrorLevel;this.settings.mirrorLevel='fetch';
+                if (legacyLevel!=='fetch' || before !== JSON.stringify([profiles,policies])) await this.saveSettingsImmediate();
+                } catch(e) { Object.assign(this.settings,previous); throw e; }
         }
 
-        // ============================================================
-        // --- СЕССИИ (тонкие обёртки над Coordinator) ---
-        // ============================================================
+        private effectiveProfilePolicy(id: string): SyncPolicy {
+                const policy = this.settings.syncPolicies?.[id] ?? {version:1 as const,mirror:false,folders:[]};
+                return compileProfiles(policy, this.settings.profiles ?? []);
+        }
+
+        private async routingContext(preview = false): Promise<{source:RoutedSource; namespace:string}> {
+                const kind = this.desiredSourceKind(), id = this.makeSourceId(kind);
+                const policy = this.effectiveProfilePolicy(id), rules = policy.fileRules ?? [];
+                validateProfiles(this.settings.profiles ?? [], this.settings.connections ?? []);
+                const needed = new Set(rules.flatMap(r => r.source && r.source !== 'primary' ? [r.source] : []));
+                const connections = (this.settings.connections ?? []).filter(c=>preview || needed.has(c.id));
+                const descriptors: SourceConnection[] = [{id:'primary',name:'Основной источник',kind,values:this.engineValues(kind)},...connections];
+                for (const c of descriptors) if (!isSourceConfigured(c.kind,{repoUrl:'',accessToken:'',vaultUrl:'',...c.values})) throw new Error(`Source is not configured: ${c.name}`);
+                const identity = descriptors.map(c=>({id:c.id,kind:c.kind,values:Object.fromEntries(
+                        EngineRegistry.get(c.kind).settingsSchema.filter(f=>f.type!=='secret' && !f.secret).map(f=>[f.key,c.values[f.key]]))}));
+                const namespace = needed.size ? await routedNamespace(identity,rules,policy.folders) : id;
+                const mapped = (path:string) => {
+                        const r=[...policy.folders].filter(r=>r.target && (path===r.path || !r.path || path.startsWith(r.path+'/')))
+                                .sort((a,b)=>b.path.length-a.path.length)[0];
+                        return r ? computeLocalPath(path,r.path,r) : path;
+                };
+                const members=descriptors.map(c=>({id:c.id,name:c.name,source:EngineRegistry.create(c.kind,structuredClone(c.values),this.engineCtx(c.kind))}));
+                return {source:new RoutedSource(members,structuredClone(rules),mapped),namespace};
+        }
+
+        /** Свежесть движка перед сессией: политика, стратегия, источник, sourceId. */
+        private async prepareSession(): Promise<void> {
+                if (this.coordinator.isRunning()) return;
+                await this.ensureProfileSettings();
+                const preparingRevision = this.getConfigurationRevision();
+                const kind = this.desiredSourceKind(), sourceId = this.makeSourceId(kind);
+                const {source,namespace} = await this.routingContext();
+                const nextCache=namespace===this.cache.namespace ? this.cache : new ManifestCache(this.fsAdapter,namespace);
+                try {
+                        if(nextCache!==this.cache) await nextCache.load();
+                        if(preparingRevision!==this.getConfigurationRevision()) throw new Error('Configuration changed while preparing sync');
+                } catch(e) { await source.dispose(); throw e; }
+                await this.coordinator.setSource(source);
+                if (nextCache !== this.cache) {
+                        const queues=this.settings.failedQueues ??= {};
+                        queues[this.cache.namespace]=this.queue.all();
+                        this.queue.clear(); this.queue.mergeBack(queues[namespace] ?? []);
+                        this.cache=nextCache;this.coordinator.setCache(this.cache);
+                }
+                this.builtKind=kind;this.builtSourceId=sourceId;
+                this.coordinator.setPolicy(this.makePolicy());
+                this.conflictResolver.setStrategy(this.settings.conflictStrategy);
+                this.conflictResolver.setLightStrategy(this.settings.lightConflictStrategy ?? 'keep-local');
+                this.coordinator.setSyncPolicy(this.effectiveProfilePolicy(sourceId));
+                if (preparingRevision !== this.getConfigurationRevision()) throw new Error('Configuration changed while preparing sync');
+                this.preparedConfigRevision=preparingRevision;
+        }
 
         /** [POLICY Phase 3] Сводка политики текущего источника для кнопки настроек. */
         getPolicySummaryForCurrentSource(): string {
@@ -1743,6 +1759,7 @@ export default class GitSyncPlugin extends Plugin {
                         // смена пресета снимала защиту off-папок от full-зеркала).
                         mirrorFolders: existing?.mirrorFolders,
                         fileRules: existing?.fileRules,
+                        assignments: existing?.assignments,
                         // [overhaul v4 / Этап 4] fileExclusions: берём из base (новый
                         // пресет со стандартными machine-specific исключениями) И
                         // ДОБАВЛЯЕМ существующие пользовательские исключения, которых
@@ -1754,7 +1771,7 @@ export default class GitSyncPlugin extends Plugin {
                         ),
                 };
                 await this.saveSettingsImmediate();
-                this.coordinator?.setSyncPolicy(this.settings.syncPolicies[this.builtSourceId]);
+                this.coordinator?.setSyncPolicy(this.effectiveProfilePolicy(this.builtSourceId));
         }
 
         async saveFileRules(sourceId: string, rules: FileRule[]): Promise<void> {
@@ -1778,8 +1795,27 @@ export default class GitSyncPlugin extends Plugin {
                 if (sourceId === this.builtSourceId) this.coordinator?.setSyncPolicy(policy);
         }
 
+        openProfileLibrary(sources:boolean):void {
+                void this.ensureProfileSettings().then(()=>{
+                        const revision=this.getConfigurationRevision();
+                        const modal=new ProfileLibraryModal(this.app,this.settings.profiles ?? [],this.settings.connections ?? [],async(profiles,connections)=>{
+                                if(revision!==this.getConfigurationRevision())throw new Error('Settings changed; reopen the profile library');
+                                validateProfiles(profiles,connections);
+                                for(const policy of Object.values(this.settings.syncPolicies ?? {}))compileProfiles(policy,profiles);
+                                const oldProfiles=this.settings.profiles,oldConnections=this.settings.connections;
+                                this.settings.profiles=profiles;this.settings.connections=connections;
+                                try{await this.saveSettingsImmediate();}catch(e){this.settings.profiles=oldProfiles;this.settings.connections=oldConnections;throw e;}
+                        },sources);trackModal(modal);modal.open();
+                }).catch(e=>new Notice(String(e)));
+        }
+
         /** [POLICY Phase 3] Модалка структуры-политики: дерево local+remote, чекбоксы, rename/move. */
         openVaultTreeModal(): void {
+                void this.openProfileTree().catch(e=>new Notice(String(e)));
+        }
+
+        private async openProfileTree(): Promise<void> {
+                await this.ensureProfileSettings();
                 if (!this.coordinator || !this.builtSourceId) {
                         new Notice(i18n.t.noticeConfigMissing);
                         return;
@@ -1791,24 +1827,17 @@ export default class GitSyncPlugin extends Plugin {
                 // [overhaul S1/H-3] гейт ДО открытия: fetchRemote модалки тянет
                 // манифест источника в сеть (плюс повторные вызовы из UI).
                 if (!this.assertNetworkAllowed()) return;
-                const sourceId = this.builtSourceId;
-                const source = this.coordinator.getCurrentSource();
+                const sourceId = this.makeSourceId(this.desiredSourceKind());
+                const revision=this.getConfigurationRevision();
+                const abort=new AbortController();
                 const modal = new VaultTreeModal(this.app, {
-                        getLocalSnapshot: () => {
-                                // [Phase 4.1] файлы И папки раздельно: пути TFolder
-                                // раньше становились файловыми узлами («текущий vault
-                                // показывает только файлы»). TFolder отличаем по
-                                // массиву children (без импорта типов).
-                                const files: string[] = [];
-                                const folders: string[] = [];
-                                for (const f of this.app.vault.getAllLoadedFiles()) {
-                                        if (Array.isArray((f as unknown as { children?: unknown }).children)) {
-                                                folders.push(f.path);
-                                        } else {
-                                                files.push(f.path);
-                                        }
-                                }
-                                return { files, folders };
+                        profiles:structuredClone(this.settings.profiles ?? []),
+                        connections:structuredClone(this.settings.connections ?? []),
+                        onDispose:()=>abort.abort(),
+                        getLocalSnapshot: async () => {
+                                const snapshot=await scanVaultTree(this.makeVaultAdapter(),{signal:abort.signal,
+                                        pruneFolder:path=>path==='.git'||path==='.trash'||path===`${this.pluginDir()}/recovery-v2`});
+                                return {files:snapshot.files,folders:snapshot.folders};
                         },
                         getCache: () => {
                                 const entries = this.cache.entries();
@@ -1825,31 +1854,27 @@ export default class GitSyncPlugin extends Plugin {
                         },
                         pluginDir: this.pluginDir(),
                         fetchRemote: async () => {
-                                // [overhaul S1/H-3] повторные fetch из открытой модалки —
-                                // тоже под гейтом (статус доступа мог смениться после
-                                // открытия; отказ → пустое дерево, причина — в Notice).
-                                if (!this.assertNetworkAllowed()) return [];
-                                // Сессия манифеста источника: getManifest + dispose
-                                // (tmp-архив ZIP-источника не должен переживать модалку).
+                                if (!this.assertNetworkAllowed()) throw new Error('Source access blocked');
+                                if(revision!==this.getConfigurationRevision())throw new Error('Settings changed; reopen the tree');
+                                const {source}=await this.routingContext(true);
                                 try {
-                                        return await source.getManifest(new AbortController().signal);
-                                } finally {
-                                        try { await source.dispose?.(); } catch { /* ignore */ }
-                                }
+                                        const entries=await source.previewManifest(abort.signal);
+                                        if(revision!==this.getConfigurationRevision())throw new Error('Settings changed; reopen the tree');
+                                        return entries;
+                                } finally { await source.dispose(); }
                         },
                         pathPolicy: this.makePolicy(),
-                        initialPolicy: this.settings.syncPolicies?.[sourceId]
-                                ?? { version: 1, mirror: false, folders: [] },
+                        initialPolicy: this.effectiveProfilePolicy(sourceId),
                         // [W2-T07 wiring] глобальный уровень из настроек: модалка
                         // показывает честные статусы по РЕАЛЬНОМУ уровню сессии.
                         mirrorLevel: () => this.currentMirrorLevel(),
                         isSyncRunning: () => this.coordinator?.isRunning() ?? false,
                         onSave: async (policy) => {
-                                if (!this.settings.syncPolicies) this.settings.syncPolicies = {};
-                                this.settings.syncPolicies[sourceId] = policy;
-                                await this.saveSettingsImmediate();
-                                // Горячий свап: следующая sync() уже с новой политикой.
-                                this.coordinator?.setSyncPolicy(policy);
+                                if(revision!==this.getConfigurationRevision()||this.coordinator.isRunning())throw new Error('Settings changed or sync started; reopen the tree');
+                                compileProfiles(policy,this.settings.profiles ?? []);
+                                const stored=structuredClone(policy);delete stored.fileRules;
+                                const policies=this.settings.syncPolicies ??= {},previous=policies[sourceId];policies[sourceId]=stored;
+                                try{await this.saveSettingsImmediate();}catch(e){policies[sourceId]=previous;throw e;}
                         },
                         labels: i18n.t.vts,
                 });
@@ -2026,6 +2051,7 @@ export default class GitSyncPlugin extends Plugin {
                 // таймаут 10 с не меняют вердикт; vaultSyncAuth отсутствует →
                 // поведение прежнее (W5-совместимость, optional chaining).
                 await awaitBeforeSession((window as unknown as Record<string, unknown>).vaultSyncAuth, BEFORE_SESSION_TIMEOUT_MS);
+                if (!this.assertNetworkAllowed()) { this.statusBar.setState('idle'); return null; }
                 // [W5-T01] guard: fail-closed на старте КАЖДОЙ сессии. Если
                 // governance.blocked — отказываем с внятным Notice и не идём
                 // в prepareSession (сеть/диск/manifest не трогаем). Это
@@ -2577,6 +2603,7 @@ export default class GitSyncPlugin extends Plugin {
 
         private async persistEngineState(kind: 'checkpoint' | 'session-end' | 'success-end'): Promise<void> {
                 this.settings.failedQueue = this.queue.all();
+                (this.settings.failedQueues ??= {})[this.cache.namespace] = this.queue.all();
                 if (kind === 'success-end') this.settings.totalSyncCount++;
                 await this.saveSettingsImmediate();
         }
@@ -2614,14 +2641,15 @@ class GitSyncSettingTab extends PluginSettingTab {
                 // ════════════════════════════════════════════════════════════════
                 // 1. Источник (Source) — движок + реквизиты подключения + mobile limit.
                 // ════════════════════════════════════════════════════════════════
-                containerEl.createEl('h3', { text: t.settSourceSection });
+                const connectionEl = containerEl.createEl('details');
+                connectionEl.createEl('summary', {text: this.plugin.settings.language==='ru'?'Основной источник':'Primary source'});
 
                 // [W3-T03] schema-driven рендер: dropdown options и поля — из реестра.
                 // Прежде каждый движок = новый if-каскад в display() (§8.1 аудита);
                 // теперь — цикл по EngineRegistry.all() для дропдауна и цикл по
                 // EngineDescriptor.settingsSchema для полей. Добавление движка —
                 // одна строка register() в registry.ts, без правок здесь.
-                new Setting(containerEl)
+                new Setting(connectionEl)
                         .setName(t.settSourceType).setDesc(t.settSourceTypeDesc)
                         .addDropdown(dd => {
                                 // [W3-T03] dropdown строится из реестра; порядок = порядок
@@ -2647,13 +2675,13 @@ class GitSyncSettingTab extends PluginSettingTab {
                         const kind = this.plugin.settings.sourceType;
                         const desc = EngineRegistry.get(kind);
                         const s = this.plugin.settings as unknown as Record<string, unknown>;
-                        containerEl.createEl('h3', { text: t.settConnection });
+                        connectionEl.createEl('h3', { text: t.settConnection });
 
                         // [P0/P0-6] экспериментальный движок — явное предупреждение
                         // над полями подключения (inline-стиль: styles.css ещё не
                         // входит в поставку, M14).
                         if (desc.experimental) {
-                                const warn = containerEl.createEl('p', { text: t.noticeExperimentalEngine });
+                                const warn = connectionEl.createEl('p', { text: t.noticeExperimentalEngine });
                                 warn.style.color = 'var(--text-warning)';
                                 warn.style.fontStyle = 'italic';
                                 warn.style.margin = '0 0 12px 0';
@@ -2668,7 +2696,7 @@ class GitSyncSettingTab extends PluginSettingTab {
                                 const name = `${label}${requiredMark}`;
 
                                 if (field.type === 'select') {
-                                        new Setting(containerEl)
+                                        new Setting(connectionEl)
                                                 .setName(name)
                                                 .setDesc(help)
                                                 .addDropdown(dd => {
@@ -2685,7 +2713,7 @@ class GitSyncSettingTab extends PluginSettingTab {
                                 }
 
                                 if (field.type === 'toggle') {
-                                        new Setting(containerEl)
+                                        new Setting(connectionEl)
                                                 .setName(name)
                                                 .setDesc(help)
                                                 .addToggle(toggle => toggle
@@ -2698,7 +2726,7 @@ class GitSyncSettingTab extends PluginSettingTab {
                                 }
 
                                 if (field.type === 'number') {
-                                        new Setting(containerEl)
+                                        new Setting(connectionEl)
                                                 .setName(name)
                                                 .setDesc(help)
                                                 .addText(text => text
@@ -2713,7 +2741,7 @@ class GitSyncSettingTab extends PluginSettingTab {
                                 }
 
                                 // text / url / secret — все addText (secret с password)
-                                new Setting(containerEl)
+                                new Setting(connectionEl)
                                         .setName(name)
                                         .setDesc(help)
                                         .addText(text => {
@@ -2755,7 +2783,7 @@ class GitSyncSettingTab extends PluginSettingTab {
 
                         // Test Connection — для всех движков (git имеет собственный метод;
                         // zip-url — лёгкий Range-путь; yandex — полный getManifest).
-                        new Setting(containerEl)
+                        new Setting(connectionEl)
                                 .setName(t.settTestConnection).setDesc(t.settTestConnectionDesc)
                                 .addButton(btn => btn.setButtonText(t.settTestConnectionBtn)
                                         .onClick(async () => { await this.plugin.testConnection(); }));
@@ -2765,7 +2793,7 @@ class GitSyncSettingTab extends PluginSettingTab {
                 // качают vault единым архивом). Git загружает пофайлово — для него
                 // настройка бессмысленна и не показывается.
                 if (this.plugin.settings.sourceType !== 'git') {
-                        new Setting(containerEl)
+                        new Setting(connectionEl)
                                 .setName(t.settMobileWarn).setDesc(t.settMobileWarnDesc)
                                 .addText(text => text
                                         .setPlaceholder('200')
@@ -2784,137 +2812,16 @@ class GitSyncSettingTab extends PluginSettingTab {
                 // mirrorLevel его поглотили (матрица §2.2 — light/full имеют свою
                 // семантику конфликтов, не управляются отдельным тумблером).
                 // ════════════════════════════════════════════════════════════════
-                containerEl.createEl('h3', { text: i18n.t.settBehaviorSection });
-
-                // --- Пресет охвата (Full vault / Obsidian config / Custom) + Sync Policy ---
-                // legacy syncMode-дропдаун удалён (W1-T08 миграция): его роль выполняет
-                // пресет; config-only мигрирует в пресет obsidian (см. runV3Migration).
-                {
-                        const pluginDir = this.plugin.pluginDir();
-                        const policy = this.plugin.settings.syncPolicies?.[this.plugin.builtSourceId];
-                        const currentPreset = policy
-                                ? (policy.preset ?? (policy.folders.some((f) => f.include !== 'inherit' || f.target) ? 'custom' : 'full'))
-                                : 'full';
-                        new Setting(containerEl)
-                                .setName(t.settPresetLabel).setDesc(t.settPresetDesc)
-                                .addDropdown(dd => dd
-                                        .addOption('full', t.presetFullOpt)
-                                        .addOption('obsidian', t.presetObsidianOpt)
-                                        .addOption('custom', t.presetCustomOpt)
-                                        .setValue(currentPreset)
-                                        .onChange(async (v) => {
-                                                if (v === 'custom') {
-                                                        // [P1/BUG-15] селект уже визуально прыгнул на 'custom',
-                                                        // но политика ещё НЕ сохранена — откатываем к
-                                                        // фактическому пресету (модалка — редактор;
-                                                        // отмена модалки больше не оставляет ложный
-                                                        // 'custom' в дропдауне до ре-рендера вкладки).
-                                                        dd.setValue(currentPreset);
-                                                        this.plugin.openVaultTreeModal();
-                                                        return;
-                                                }
-                                                await this.plugin.applyStructurePreset(v as 'full' | 'obsidian', pluginDir);
-                                                this.display();
-                                        }));
-                        new Setting(containerEl)
-                                .setName(t.settPolicyButton).setDesc(t.settPolicyButtonDesc)
-                                .addButton(btn => btn
-                                        .setButtonText(t.settPolicyButton + (this.plugin.getPolicySummaryForCurrentSource() || ''))
-                                        .onClick(() => this.plugin.openVaultTreeModal()));
-                }
-
-                // --- [W1-T05 / BUG-5] 3-позиционный переключатель уровня зеркала ---
-                // fetch (только скачивание) / light (зеркальное удаление удалённого
-                // в корзину) / full (точный клон: local-only и лишние папки тоже в
-                // корзину). Заменяет deleteMissing-тумблер. Матрица §2.2: light/full
-                // имеют свою семантику конфликтов — дропдаун стратегии конфликтов ниже
-                // рендерится только при level=fetch.
-                {
-                        const currentLevel = this.plugin.currentMirrorLevel();
-                        const desc = currentLevel === 'fetch' ? t.mlnFetchDesc
-                                : currentLevel === 'light' ? t.mlnLightDesc
-                                : t.mlnFullDesc;
-                        new Setting(containerEl)
-                                .setName(i18n.t.settMirrorLevelLabel)
-                                .setDesc(desc)
-                                .addDropdown(dd => dd
-                                        .addOption('fetch', t.mlnFetch)
-                                        .addOption('light', t.mlnLight)
-                                        .addOption('full', t.mlnFull)
-                                        .setValue(currentLevel)
-                                        .onChange(async v => {
-                                                const level = v as MirrorLevel;
-                                                // [overhaul v4 / Этап 5 / F4] Warning: full mirror + config-only preset.
-                                                // mirror='full' + syncMode='config-only' — избыточен: будет
-                                                // удалять только local-only файлы внутри .obsidian, что редко
-                                                // нужно. Подсказываем light как более подходящий.
-                                                if (level === 'full') {
-                                                        const policy = this.plugin.settings.syncPolicies?.[this.plugin.builtSourceId];
-                                                        const isConfigOnly = policy?.folders.some(
-                                                                (f) => f.path === '' && f.include === 'exclude',
-                                                        );
-                                                        if (isConfigOnly) {
-                                                                new Notice(t.noticeFullMirrorConfigOnlyWarning, 10000);
-                                                        }
-                                                }
-                                                this.plugin.settings.mirrorLevel = level;
-                                                await this.plugin.saveSettingsImmediate();
-                                                this.display();
-                                        }));
-                }
-
-                // --- Use Trash (всегда виден) ---
-                new Setting(containerEl)
-                        .setName(t.settUseTrash).setDesc(t.settUseTrashDesc)
-                        .addToggle(toggle => toggle.setValue(this.plugin.settings.useTrash)
-                                .onChange(v => { this.plugin.settings.useTrash = v; this.plugin.saveSettings(); }));
-
-                // --- Стратегия конфликтов: ТОЛЬКО при уровне fetch ---
-                // [W2-T05 / матрица §2.2] light → keep-both (зеркальное удаление
-                // доминирует), full → overwrite (точный клон); дропдаун активен только
-                // когда пользовательский уровень = fetch.
-                if (this.plugin.currentMirrorLevel() === 'fetch') {
-                        new Setting(containerEl)
-                                .setName(t.settConflictStrategy).setDesc(t.settConflictStrategyDesc)
-                                .addDropdown(dd => dd
-                                        .addOption('keep-both', t.settConflictKeepBoth)
-                                        .addOption('remote-wins', t.settConflictRemoteWins)
-                                        .addOption('local-wins', t.settConflictLocalWins)
-                                        .addOption('ask', t.settConflictAsk)
-                                        .setValue(this.plugin.settings.conflictStrategy)
-                                        .onChange(async v => {
-                                                this.plugin.settings.conflictStrategy = v as ConflictStrategy;
-                                                this.plugin.conflictResolver.setStrategy(v as ConflictStrategy);
-                                                await this.plugin.saveSettingsImmediate();
-                                        }));
-                }
-
-                // [overhaul v4 / Этап 3] Light mirror conflict strategy — ТОЛЬКО при уровне light.
-                // fetch игнорирует (использует глобальную conflictStrategy выше).
-                // full игнорирует (всегда trash + remote на место).
-                if (this.plugin.currentMirrorLevel() === 'light') {
-                        new Setting(containerEl)
-                                .setName(t.settLightConflictStrategy)
-                                .setDesc(t.settLightConflictStrategyDesc)
-                                .addDropdown(dd => dd
-                                        .addOption('keep-local', t.lcsKeepLocal)
-                                        .addOption('keep-both', t.lcsKeepBoth)
-                                        .setValue(this.plugin.settings.lightConflictStrategy ?? 'keep-local')
-                                        .onChange(async v => {
-                                                this.plugin.settings.lightConflictStrategy = v as LightConflictStrategy;
-                                                this.plugin.conflictResolver.setLightStrategy(v as LightConflictStrategy);
-                                                await this.plugin.saveSettingsImmediate();
-                                        }));
-                }
-
-                {
-                        const sourceId = this.plugin.builtSourceId;
-                        if (sourceId) renderFileRulesEditor(containerEl, {
-                                ru: this.plugin.settings.language === 'ru',
-                                rules: this.plugin.settings.syncPolicies?.[sourceId]?.fileRules,
-                                save: async rules => { await this.plugin.saveFileRules(sourceId, rules); this.display(); },
-                        });
-                }
+                containerEl.createEl('h3', { text: this.plugin.settings.language==='ru'?'Профили и назначения':'Profiles and assignments' });
+                new Setting(containerEl).setName(this.plugin.settings.language==='ru'?'Дерево файлов':'File tree')
+                        .setDesc(this.plugin.settings.language==='ru'?'Область синхронизации, источники и назначение профилей файлам и папкам.':'Sync scope, sources and profile assignments for files and folders.')
+                        .addButton(b=>b.setButtonText(this.plugin.settings.language==='ru'?'Открыть дерево':'Open tree').setCta().onClick(()=>this.plugin.openVaultTreeModal()));
+                new Setting(containerEl).setName(this.plugin.settings.language==='ru'?'Стандартные и пользовательские профили':'Standard and custom profiles')
+                        .addButton(b=>b.setButtonText(this.plugin.settings.language==='ru'?'Библиотека профилей':'Profile library').onClick(()=>this.plugin.openProfileLibrary(false)));
+                new Setting(containerEl).setName(this.plugin.settings.language==='ru'?'Дополнительные подключения':'Additional connections')
+                        .addButton(b=>b.setButtonText(this.plugin.settings.language==='ru'?'Подключения':'Connections').onClick(()=>this.plugin.openProfileLibrary(true)));
+                new Setting(containerEl).setName(t.settUseTrash).setDesc(t.settUseTrashDesc)
+                        .addToggle(toggle=>toggle.setValue(this.plugin.settings.useTrash).onChange(v=>{this.plugin.settings.useTrash=v;this.plugin.saveSettings();}));
 
                 // --- Security: плагины/сниппеты ---
                 const securityDiv = containerEl.createDiv({ cls: 'callout' });

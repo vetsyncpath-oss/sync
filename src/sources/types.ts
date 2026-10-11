@@ -27,6 +27,8 @@ export type HashAlg = 'sha256' | 'crc32' | 'git-sha1' | 'weak' | 'etag';
 
 /** Одна запись манифеста источника (файл в облаке / репозитории). */
 export interface RemoteEntry {
+        /** Human-readable provider origin for the tree. */
+        provider?: string;
         /** Относительный путь в vault, POSIX-разделители. */
         path: string;
         /** Хэш содержимого: hex, нижний регистр — для контентных alg
@@ -242,7 +244,7 @@ export interface ConfirmUI {
  */
 export type WriteOutcome =
         | { kind: 'written'; updateCache: true }
-        | { kind: 'skipped'; updateCache: false }
+        | { kind: 'skipped'; updateCache: false; requiresDecision?: boolean }
         | {
                         kind: 'conflict';
                         updateCache: true;
@@ -307,6 +309,7 @@ export interface SyncStats {
         outcome?: 'ok' | 'cancelled' | 'error';
         /** All deferred file deletions, including unverified-inventory blocks. */
         deferredDeletions?: number;
+        deferredConflicts?: number;
         blockedDeletions?: number;
 }
 

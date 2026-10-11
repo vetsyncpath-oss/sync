@@ -61,9 +61,9 @@ function preparationHost() {
   const values = { repoUrl: 'https://github.com/test/repo', branch: 'main', accessToken: 'old-token' };
   let source!: SyncSource, cacheSwaps = 0, authorization = '';
   const settings = { mirrorLevel: 'fetch', syncPolicies: {}, conflictStrategy: 'keep-both', lightConflictStrategy: 'keep-local',
-    syncMode: 'full-vault', allowedFolders: [] as string[], ignoredFolders: [] as string[], allowPlugins: false, allowSnippets: false, useTrash: false, lastSyncTime: 0 };
+    syncMode: 'full-vault', allowedFolders: '', ignoredFolders: '', allowPlugins: false, allowSnippets: false, useTrash: false, lastSyncTime: 0 };
   Object.assign(plugin, {
-    settings, cache: f.cache, fsAdapter: f.memory.fs, conflictResolver: f.conflict,
+    settings, pluginDir:()=>'.obsidian/plugins/sync',saveSettingsImmediate:async()=>{},queue:f.queue, cache: f.cache, fsAdapter: f.memory.fs, conflictResolver: f.conflict,
     builtKind: 'git', builtSourceId: 'test', builtEngineConfigKey: JSON.stringify(values),
     configurationEpoch: 0, configurationKey: '', preparedConfigRevision: 0,
     desiredSourceKind: () => 'git', engineValues: () => ({ ...values }), makeSourceId: () => 'test',
@@ -82,7 +82,7 @@ function preparationHost() {
 test('credential rotation rebuilds the real Git adapter without discarding the cache', async () => {
   const h = preparationHost(); h.f.own('a.md'); h.values.accessToken = 'fresh-token';
   await h.port.prepareSession();
-  await h.source().fetch(entry('a.md'), new AbortController().signal);
+  await (h.source() as any).members[0].source.fetch(entry('a.md'), new AbortController().signal);
   assert.equal(h.authorization(), 'token fresh-token'); assert.equal(h.swaps(), 0); assert.equal(h.port.cache, h.f.cache);
   assert(h.f.cache.get('a.md')); assert.equal(h.port.preparedConfigRevision, h.port.getConfigurationRevision());
 });
@@ -90,6 +90,41 @@ test('configuration revision ignores runtime counters and captures policy and cr
   const h = preparationHost(), first = h.port.getConfigurationRevision();
   h.settings.lastSyncTime = 123; assert.equal(h.port.getConfigurationRevision(), first);
   h.settings.useTrash = true; const second = h.port.getConfigurationRevision(); assert(second > first);
-  h.settings.ignoredFolders.push('private'); const third = h.port.getConfigurationRevision(); assert(third > second);
+  h.settings.ignoredFolders='private'; const third = h.port.getConfigurationRevision(); assert(third > second);
   h.values.accessToken = 'fresh-token'; assert(h.port.getConfigurationRevision() > third);
+});
+
+test('failed profile migration restores previous settings for a safe retry', async () => {
+  const h=preparationHost();const plugin=h.port as any;
+  const before=structuredClone(h.settings);plugin.saveSettingsImmediate=async()=>{throw Error('Disk full');};
+  await assert.rejects(plugin.ensureProfileSettings(),/Disk full/);
+  assert.equal(h.settings.mirrorLevel,before.mirrorLevel);assert.deepEqual(h.settings.syncPolicies,before.syncPolicies);
+  assert.equal((h.settings as any).profiles,undefined);
+  plugin.saveSettingsImmediate=async()=>{};await plugin.ensureProfileSettings();
+  assert((h.settings as any).profiles.length);assert((h.settings.syncPolicies as any).test.assignments.length);
+});
+test('routing changes isolate caches and failed queues while token rotation keeps ownership', async () => {
+  const h=preparationHost(),plugin=h.port as any;
+  await plugin.ensureProfileSettings();
+  const settings=h.settings as any;
+  settings.connections=[{id:'docs',name:'Docs',kind:'git',values:{repoUrl:'https://github.com/test/docs',branch:'main',accessToken:'secret'}}];
+  settings.profiles.push({id:'docs-profile',name:'Docs',write:'update',delete:'keep',source:'docs'});
+  h.f.queue.add({path:'old.md',hash:'a',size:1},'primary failure',1);
+  settings.syncPolicies.test.assignments.push({scope:'folder',path:'docs',profileId:'docs-profile'});
+  await plugin.prepareSession();const namespace=plugin.cache.namespace;
+  assert.match(namespace,/^routes_[0-9a-f]{64}$/);assert.equal(h.f.queue.size(),0);
+  h.f.queue.add({path:'docs/new.md',hash:'b',size:1},'route failure',1);
+  settings.connections[0].values.accessToken='rotated';await plugin.prepareSession();
+  assert.equal(plugin.cache.namespace,namespace);assert.equal(h.f.queue.size(),1);
+  settings.syncPolicies.test.assignments.pop();await plugin.prepareSession();
+  assert.equal(plugin.cache.namespace,'test');assert.equal(h.f.queue.all()[0].path,'old.md');
+  assert.equal(settings.failedQueues[namespace][0].path,'docs/new.md');
+});
+test('cache load failure never installs an empty replacement or bypasses the next load', async () => {
+  const h=preparationHost(),plugin=h.port as any;let loads=0,disposed=0;
+  plugin.routingContext=async()=>({source:{...h.f.source,dispose:async()=>{disposed++;}},namespace:'new-route'});
+  h.f.memory.fs.read=async()=>{loads++;throw Error('Disk unavailable');};
+  h.f.queue.add({path:'old.md',hash:'a',size:1},'failure',1);
+  for(let attempt=0;attempt<2;attempt++) await assert.rejects(plugin.prepareSession(),/Disk unavailable/);
+  assert.equal(loads,2);assert.equal(disposed,2);assert.equal(plugin.cache,h.f.cache);assert.equal(h.f.queue.size(),1);assert.equal(h.swaps(),0);
 });

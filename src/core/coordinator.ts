@@ -72,6 +72,7 @@ export interface CoordinatorMessages {
         fileTooLarge: (size: string, limit: string) => string;
         conflictKeptLocal: (path: string) => string;
         conflictBoth: (path: string) => string;
+        conflictsDeferred?: string;
         nothingToRetry: string;
         retryNotDue: (pending: number) => string;
         /** [overhaul S6 / D-4] N записей припаркованы после исчерпания
@@ -544,11 +545,11 @@ export class Coordinator {
                         // bytes/fileCount в ту же фазу).
                         if (toDownload.length > 0) {
                                 ui.setStatus('syncing', { phase: 4, progressText: m.phaseDownloads });
-                                await this.processDownloads(toDownload, stats, controller.signal, localToRemote, mirrorModel);
+                                await this.processDownloads(toDownload, stats, controller.signal, localToRemote, mirrorModel, opts.trigger !== 'auto');
                         }
 
                         // Failed/unverified payloads cannot authorize unrelated destructive work.
-                        if (toDelete.length > 0 && stats.failed === 0 && this.current.queue.size() === 0 && !this.shouldCancel) {
+                        if (toDelete.length > 0 && !stats.deferredConflicts && stats.failed === 0 && this.current.queue.size() === 0 && !this.shouldCancel) {
                                 ui.setStatus('syncing', { phase: 3, progressText: m.phaseDeletions });
                                 await this.processDeletions(toDelete, stats, this.deletionLevelsOf(extraFolders, mirrorDeletions));
                         } else if (toDelete.length > 0) {
@@ -597,6 +598,9 @@ export class Coordinator {
                                 ui.notify(stats.blockedDeletions
                                         ? (m.deletionsBlocked?.(stats.blockedDeletions) ?? m.deletionsDeferred(stats.blockedDeletions))
                                         : m.deletionsDeferred(stats.deferredDeletions!), 10000);
+                        } else if ((stats.deferredConflicts ?? 0) > 0) {
+                                stats.outcome='error';ui.setStatus('conflicts',{pendingCount:stats.deferredConflicts});
+                                ui.notify(m.conflictsDeferred ?? 'Conflicts need a manual sync',10000);
                         } else if (stats.conflicts > 0) {
                                 stats.outcome = 'ok';
                                 // [W2-T02 / BUG-8] конфликты видны в статус-баре:
@@ -812,6 +816,7 @@ export class Coordinator {
                 signal: AbortSignal,
                 localToRemote?: Map<string, string>,
                 mirrorModel?: MirrorModel,
+                allowAsk = true,
         ): Promise<void> {
                 const { ui, messages: m, options: o, cache, conflict, queue, source, vault } = this.current;
                 // [Phase 5.1] пер-движковый лимит: override → движок → безлимит.
@@ -885,7 +890,9 @@ export class Coordinator {
                                         },
                                 };
                                 const outcome = await conflict.safeWrite(file, buffer, cache.get(file.path)?.h, fileLevel, signal, transaction,
-                                        resolveFileRule(file.path, this.current.syncPolicy?.fileRules).write);
+                                        resolveFileRule(file.path, this.current.syncPolicy?.fileRules).write,
+                                        resolveFileRule(file.path, this.current.syncPolicy?.fileRules).conflict, allowAsk);
+                                if (outcome.kind === 'skipped' && outcome.requiresDecision) stats.deferredConflicts=(stats.deferredConflicts ?? 0)+1;
                                 if (outcome.kind === 'conflict') {
                                         stats.conflicts++;
                                         if (outcome.mirror === 'full') {
