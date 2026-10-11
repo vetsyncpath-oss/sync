@@ -1,13 +1,3 @@
-import { build } from 'esbuild';
-
-await build({
-  entryPoints: ['main.ts'],
-  outfile: 'dist/main.js',
-  bundle: true,
-  platform: 'node',
-  format: 'cjs',
-  target: 'es2022',
-  external: ['obsidian'],
-  sourcemap: true,
-  logLevel: 'info',
-});
+// Compatibility for callers of the previous build entry point.
+process.argv.push('production');
+await import('../esbuild.config.mjs');

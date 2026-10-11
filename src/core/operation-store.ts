@@ -207,7 +207,7 @@ export class OperationStore {
                 await this.load();
                 await this.serial(async () => {
                         this.assertReadable();
-                        if (!Object.hasOwn(this.state.operations, id)) throw new Error('Unknown operation');
+                        if (!Object.prototype.hasOwnProperty.call(this.state.operations, id)) throw new Error('Unknown operation');
                         if (this.state.operations[id].status === status) return;
                         await this.ensureFormat(); await this.append({ kind: 'finish', id, status });
                 });
@@ -233,10 +233,10 @@ export class OperationStore {
                 if (command.kind === 'begin') {
                         record = command.record;
                         if (!idValid(record.id)) throw new Error('Invalid operation ID');
-                        if (Object.hasOwn(this.state.operations, record.id)) throw new Error('Duplicate operation ID');
+                        if (Object.prototype.hasOwnProperty.call(this.state.operations, record.id)) throw new Error('Duplicate operation ID');
                         if (record.status !== 'committing' || record.appliedSequence !== undefined) throw new Error('New operation must be committing');
                 } else {
-                        if (!Object.hasOwn(this.state.operations, command.id)) throw new Error('Unknown operation');
+                        if (!Object.prototype.hasOwnProperty.call(this.state.operations, command.id)) throw new Error('Unknown operation');
                         const current = this.state.operations[command.id];
                         if (current.status === 'applied' || current.status === 'not-applied') throw new Error('Cannot change a terminal operation');
                         record = { ...current, status: command.status };
@@ -295,7 +295,7 @@ export class OperationStore {
                 try {
                         await this.fs.rename(temp, final); await this.read(final, sha256);
                 } catch (error) {
-                        this.fault = new Error('Operation state publication is uncertain; reload the plugin to verify it', { cause: error }); throw this.fault;
+                        this.fault = Object.assign(new Error('Operation state publication is uncertain; reload the plugin to verify it'), { cause: error }); throw this.fault;
                 }
                 return sha256;
         }

@@ -15,17 +15,21 @@ try {
     bundle: true,
     platform: 'node',
     format: 'cjs',
-    target: 'node22',
+    target: 'node18',
     alias: { obsidian: resolve('tests/obsidian-stub.ts') },
     logLevel: 'warning',
   });
   const child = spawn(process.execPath, [
-    '--test', '--test-timeout=30000', ...files.map(name => join(directory, name.replace(/\.ts$/, '.cjs'))),
+    ...(Number(process.versions.node.split('.')[0]) < 19 ? ['--experimental-global-webcrypto'] : []),
+    '--test', ...files.map(name => join(directory, name.replace(/\.ts$/, '.cjs'))),
   ], { stdio: 'inherit' });
+  const watchdog = setTimeout(() => { console.error('Tests exceeded 30 seconds'); child.kill('SIGKILL'); }, 30000);
+  watchdog.unref();
   const exitCode = await new Promise((resolveExit, reject) => {
     child.once('error', reject);
     child.once('exit', code => resolveExit(code ?? 1));
   });
+  clearTimeout(watchdog);
   process.exitCode = exitCode;
 } finally {
   await rm(directory, { recursive: true, force: true });

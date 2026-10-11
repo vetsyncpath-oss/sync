@@ -4,23 +4,25 @@
   "private": true,
   "description": "Obsidian source-to-vault synchronizer",
   "engines": {
-    "node": ">=22"
+    "node": ">=18.18.0"
   },
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "npm run typecheck && node esbuild.config.mjs production",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test.mjs",
     "bench:state": "node scripts/bench-state.mjs",
-    "verify": "npm run typecheck && npm test && npm run build"
+    "verify": "npm test && npm run build",
+    "dev": "node esbuild.config.mjs"
   },
   "dependencies": {
     "@xmldom/xmldom": "0.9.12"
   },
   "devDependencies": {
-    "@types/node": "26.6.4",
+    "@types/node": "18.19.130",
     "esbuild": "0.28.2",
     "linkedom": "0.18.12",
     "obsidian": "1.13.1",
-    "typescript": "7.0.2"
-  }
+    "typescript": "5.8.3"
+  },
+  "main": "main.js"
 }
