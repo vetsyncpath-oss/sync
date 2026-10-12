@@ -52,6 +52,7 @@ const GDRIVE_MAX_FILE_SIZE = 100 * 1024 * 1024;
 /** Локализуемые сообщения источника (инъекция из main.ts). */
 export interface GDriveSourceMessages {
         apiKeyMissing: () => string;
+        folderRequired: () => string;
         listFailed: (status: number) => string;
         downloadFailed: (status: number) => string;
         rateLimitExceedsHour: () => string;
@@ -65,15 +66,9 @@ export interface GDriveSourceMessages {
 }
 
 export interface GDriveSourceOptions {
-        /**
-         * Текущая конфигурация GDrive (читается на каждом запросе):
-         *   - apiKey: API key из Google Cloud Console (требуется для auth).
-         *   - folderId: ID папки для листинга (опционально — иначе все файлы
-         *     пользователя, что может быть медленно на больших Drive).
-         *   - includeDocs: true = включать Google Docs/Sheets/Slides (по
-         *     умолчанию false — пропускаем, т.к. для alt=media нужен export,
-         *     а не сам файл).
-         */
+        /** API key and public folder ID. Private-account OAuth and native document
+         * export are unsupported. includeDocs is retained for legacy callers only;
+         * native documents remain excluded regardless of its value. */
         config: () => { apiKey: string; folderId?: string; includeDocs?: boolean };
         transport?: NetTransport;
         onRateLimitWait?: (waitMs: number) => void;
@@ -82,6 +77,7 @@ export interface GDriveSourceOptions {
 }
 
 const DEFAULT_MESSAGES: GDriveSourceMessages = {
+        folderRequired: () => 'Specify a public Drive folder ID. An API key does not grant access to your private Drive.',
         apiKeyMissing: () => 'Google Drive API key is required.',
         listFailed: (s) => `Failed to list files: HTTP ${s}`,
         downloadFailed: (s) => `Failed to download file: HTTP ${s}`,
@@ -192,19 +188,16 @@ export class GDriveSource implements SyncSource {
         async getManifest(signal: AbortSignal): Promise<RemoteEntry[]> {
                 if (signal.aborted) throw abortedError();
                 const { apiKey, folderId, includeDocs } = this.config();
-                if (!apiKey) throw new Error(this.messages.apiKeyMissing());
+                if (!folderId?.trim() || folderId.trim()==='root') throw new Error(this.messages.folderRequired());
+                if (!apiKey.trim()) throw new Error(this.messages.apiKeyMissing());
 
                 // Очищаем кэш перед ре-листингом (старые ID могли стать невалидными).
                 this.pathToId.clear();
 
                 const entries: RemoteEntry[] = [];
 
-                // [P0/C2] BFS от корня: folderId (если задан) или 'root' —
-                // псевдоним корневой папки My Drive (Drive API v3 поддерживает
-                // 'root' как валидный parent в q). Каждый уровень — отдельный
-                // files.list-запрос; папки попадают в очередь, файлы — в манифест
-                // с путями вида dir/name.
-                const rootId = folderId && folderId.trim() !== '' ? folderId.trim() : 'root';
+                // Traverse the explicitly selected public folder.
+                const rootId = folderId.trim();
                 const queue: { id: string; path: string }[] = [{ id: rootId, path: '' }];
                 const visited = new Set<string>([rootId]);
 
@@ -318,8 +311,9 @@ export class GDriveSource implements SyncSource {
         async fetch(entry: RemoteEntry, signal: AbortSignal): Promise<ArrayBuffer> {
                 if (signal.aborted) throw abortedError();
                 // [P0/C1] Drive API требует ключ на КАЖДОМ запросе, включая alt=media.
-                const { apiKey } = this.config();
-                if (!apiKey) throw new Error(this.messages.apiKeyMissing());
+                const { apiKey, folderId } = this.config();
+                if (!folderId?.trim() || folderId.trim()==='root') throw new Error(this.messages.folderRequired());
+                if (!apiKey.trim()) throw new Error(this.messages.apiKeyMissing());
                 const id = this.pathToId.get(entry.path);
                 if (!id) {
                         // Кэш не содержит ID — getManifest не зван или файл удалён.

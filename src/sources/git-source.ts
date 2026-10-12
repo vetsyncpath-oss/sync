@@ -44,6 +44,7 @@ const DEFAULT_API_BASE = 'https://api.github.com';
 
 /** Локализуемые сообщения источника (инъекция из main.ts). */
 export interface GitSourceMessages {
+        unsupportedBranches: () => string;
         branchNotFound: (branch: string) => string;
         fetchBranch: (status: number) => string;
         fetchTree: () => string;
@@ -67,6 +68,7 @@ export interface GitSourceOptions {
 }
 
 const DEFAULT_MESSAGES: GitSourceMessages = {
+        unsupportedBranches: () => "All-branches sync is unsupported. Enter one branch name or leave it empty for the repository default.",
         branchNotFound: (b) => `Branch '${b}' not found.`,
         fetchBranch: (s) => `Failed to fetch branch: HTTP ${s}`,
         fetchTree: () => 'Failed to fetch file tree.',
@@ -115,7 +117,7 @@ export class GitSource implements SyncSource {
         /** Полный манифест репозитория: все блобы ветки (фильтрация — зона PathPolicy). */
         async getManifest(signal: AbortSignal): Promise<RemoteEntry[]> {
                 const { owner, repo } = this.parseUrlOrThrow();
-                const branch = this.repo().branch;
+                const branch = await this.resolveBranch(owner, repo, this.repo().branch, signal);
                 const tree = await this.fetchRepoTree(owner, repo, branch, signal);
                 // [W7/BUG-11] пустые блобы (size === 0) включаются в манифест:
                 // единообразие с zip-url/gdrive/webdav (спека §8: «zip-поведение
@@ -150,7 +152,7 @@ export class GitSource implements SyncSource {
                 try {
                         const { owner, repo } = this.parseUrlOrThrow();
                         const res = await this.net.fetchBuffer(
-                                `${this.apiBase()}/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`,
+                                `${this.apiBase()}/repos/${owner}/${repo}/branches/${encodeURIComponent(await this.resolveBranch(owner,repo,branch,new AbortController().signal))}`,
                                 {
                                         headers: this.getHeaders(false),
                                         retries: 1,
@@ -210,7 +212,15 @@ export class GitSource implements SyncSource {
         }
 
         private parseUrlOrThrow(): RepoInfo {
-                const repoInfo = GitSource.parseGitUrl(this.repo().repoUrl);
+                const configured=this.repo();
+                if(!configured.baseUrl?.trim()) {
+                        const raw=configured.repoUrl.trim();
+                        let host:string;
+                        try { host=raw.startsWith('git@')?raw.slice(4).split(':')[0]:new URL(raw.includes('://')?raw:`https://${raw}`).hostname; }
+                        catch { throw new Error(this.messages.invalidUrl()); }
+                        if(host.toLowerCase()!=='github.com')throw new Error(this.messages.invalidUrl());
+                }
+                const repoInfo = GitSource.parseGitUrl(configured.repoUrl);
                 if (!repoInfo) throw new Error(this.messages.invalidUrl());
                 return repoInfo;
         }
@@ -303,6 +313,15 @@ export class GitSource implements SyncSource {
                 return JSON.parse(new TextDecoder().decode(buffer));
         }
 
+        private async resolveBranch(owner:string,repo:string,value:string,signal:AbortSignal):Promise<string> {
+                const branch=value.trim();
+                if(branch==='all')throw new Error(this.messages.unsupportedBranches());
+                if(branch && branch!=='default')return branch;
+                const metadata=await this.fetchJsonConditional(`${this.apiBase()}/repos/${owner}/${repo}`,signal);
+                if(typeof metadata?.default_branch!=='string'||!metadata.default_branch.trim())throw new Error(this.messages.fetchTree());
+                return metadata.default_branch;
+        }
+
         private async fetchBranch(owner: string, repo: string, branch: string, signal: AbortSignal): Promise<any> {
                 const url = `${this.apiBase()}/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`;
                 try {
@@ -318,7 +337,8 @@ export class GitSource implements SyncSource {
 
         private async fetchRepoTree(owner: string, repo: string, branch: string, signal: AbortSignal): Promise<GitHubTreeItem[]> {
                 const branchData = await this.fetchBranch(owner, repo, branch, signal);
-                const treeSha = branchData.commit.commit.tree.sha;
+                const treeSha = branchData?.commit?.commit?.tree?.sha;
+                if(typeof treeSha!=='string'||!treeSha)throw new Error(this.messages.fetchTree());
                 const treeUrl = `${this.apiBase()}/repos/${owner}/${repo}/git/trees/${treeSha}?recursive=1`;
                 let treeData: any;
                 try {

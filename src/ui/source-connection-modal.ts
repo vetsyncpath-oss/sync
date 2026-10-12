@@ -12,10 +12,11 @@ export class SourceConnectionModal extends Modal {
         new Setting(box).setName(t('Название','Name')).addText(x=>x.setValue(c.name).onChange(v=>c.name=v));
         new Setting(box).setName(t('Провайдер','Provider')).addDropdown(dd=>{
             for(const d of EngineRegistry.all())dd.addOption(d.kind,resolveLabel(i18n.t,d.labelKey));
-            dd.setValue(c.kind).onChange(v=>{c.kind=v as SourceConnection['kind'];c.values=c.kind==='git'?{branch:'main'}:{};this.render();});
+            dd.setValue(c.kind).onChange(v=>{c.kind=v as SourceConnection['kind'];c.values=c.kind==='git'?{branch:'default'}:{};this.render();});
         });
         for(const f of EngineRegistry.get(c.kind).settingsSchema){
             const row=new Setting(box).setName(resolveLabel(i18n.t,f.labelKey));
+            if(f.helpKey)row.setDesc(resolveLabel(i18n.t,f.helpKey));
             if(f.type==='toggle')row.addToggle(x=>x.setValue(Boolean(c.values[f.key]??f.default)).onChange(v=>c.values[f.key]=v));
             else row.addText(x=>{x.setValue(String(c.values[f.key]??f.default??''));if(f.type==='secret'||f.secret)x.inputEl.type='password';x.onChange(v=>c.values[f.key]=f.type==='number'?Number(v):v);});
         }

@@ -302,14 +302,8 @@ EngineRegistry.register({
                 },
                 {
                         key: 'branch',
-                        type: 'select',
+                        type: 'text',
                         labelKey: 'eng.git.branch',
-                        options: [
-                                { value: 'all', labelKey: 'eng.git.branches.all' },
-                                { value: 'default', labelKey: 'eng.git.branches.default' },
-                        ],
-                        // default — для инициализации пустых настроек / миграции.
-                        // Реальное значение (main/master/develop) — за пользователем.
                         default: 'default',
                 },
                 // [W6-T04] baseUrl — опциональный API-корень для GitHub Enterprise
@@ -339,7 +333,7 @@ EngineRegistry.register({
                         repo: () => ({
                                 repoUrl: String(values.repoUrl ?? ''),
                                 accessToken: String(values.accessToken ?? ''),
-                                branch: String(values.branch ?? 'main'),
+                                branch: String(values.branch ?? 'default'),
                                 baseUrl: typeof values.baseUrl === 'string' ? values.baseUrl : undefined,
                         }),
                         transport: ctx?.transport,
@@ -500,16 +494,8 @@ EngineRegistry.register({
                         type: 'text',
                         labelKey: 'eng.gdrive.folderId',
                         helpKey: 'eng.gdrive.folderIdHelp',
-                        // required: false — пустой = весь Drive пользователя (медленно на больших).
+                        required: true,
                         placeholderKey: 'eng.gdrive.folderIdPlaceholder',
-                },
-                {
-                        key: 'includeDocs',
-                        type: 'toggle',
-                        labelKey: 'eng.gdrive.includeDocs',
-                        helpKey: 'eng.gdrive.includeDocsHelp',
-                        // default: false — Google Docs/Sheets/Slides пропускаются по умолчанию.
-                        default: false,
                 },
         ],
         create: (values, ctx) => {
@@ -517,7 +503,7 @@ EngineRegistry.register({
                         config: () => ({
                                 apiKey: String(values.apiKey ?? ''),
                                 folderId: typeof values.folderId === 'string' ? values.folderId : undefined,
-                                includeDocs: values.includeDocs === true,
+                                includeDocs: false, // Native Google documents require an unimplemented export adapter.
                         }),
                         transport: ctx?.transport,
                         onRateLimitWait: ctx?.onRateLimitWait,
@@ -557,7 +543,7 @@ EngineRegistry.register({
         // боевого smoke-теста против реальных WebDAV-серверов (пост-аудит §3).
         experimental: true,
         capabilities: {
-                auth: true,         // Basic auth required (user+pass)
+                auth: true,         // Optional Basic auth; anonymous servers are supported.
                 etag: true,         // ETag в PROPFIND-ответе (если сервер отдаёт)
                 mtime: true,        // getlastmodified в метаданных
                 incremental: true,  // PROPFIND + GET — без полного скачивания
@@ -577,7 +563,7 @@ EngineRegistry.register({
                         type: 'text',
                         labelKey: 'eng.webdav.username',
                         helpKey: 'eng.webdav.usernameHelp',
-                        required: true,
+                        required: false,
                 },
                 {
                         key: 'password',

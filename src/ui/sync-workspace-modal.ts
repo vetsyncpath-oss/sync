@@ -120,7 +120,7 @@ export class SyncWorkspaceModal extends Modal {
         await loading;if(!this.closed){this.renderSources();this.renderTree();}
     }
     private editSource(source?:SourceConnection):void{
-        const modal=new SourceConnectionModal(this.app,source??{id:crypto.randomUUID(),name:'',kind:'git',values:{branch:'main'}},draft=>{
+        const modal=new SourceConnectionModal(this.app,source??{id:crypto.randomUUID(),name:'',kind:'git',values:{branch:'default'}},draft=>{
             const index=this.connections.findIndex(c=>c.id===draft.id);if(index<0)this.connections.push(draft);else this.connections[index]=draft;
             this.inventories.invalidate(draft.id);this.view=draft.id;this.render();void this.loadSource(draft);
         });trackModal(modal);modal.open();

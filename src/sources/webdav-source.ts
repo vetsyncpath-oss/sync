@@ -69,7 +69,7 @@ export interface WebDavSourceOptions {
 }
 
 const DEFAULT_MESSAGES: WebDavSourceMessages = {
-        credentialsMissing: () => 'WebDAV base URL and username are required.',
+        credentialsMissing: () => 'WebDAV URL is required; a password requires a username.',
         propfindFailed: (s) => `PROPFIND failed: HTTP ${s}`,
         downloadFailed: (s) => `Download failed: HTTP ${s}`,
         fileNotFound: (path) => `WebDAV file not found: ${path}`,
@@ -196,7 +196,7 @@ export class WebDavSource implements SyncSource {
         async getManifest(signal: AbortSignal): Promise<RemoteEntry[]> {
                 if (signal.aborted) throw abortedError();
                 const { baseUrl, username, password: _password, rootPath } = this.config();
-                if (!baseUrl || !username) throw new Error(this.messages.credentialsMissing());
+                if (!baseUrl.trim() || (_password && !username.trim())) throw new Error(this.messages.credentialsMissing());
 
                 this.pathToMeta.clear();
                 const entries: RemoteEntry[] = [];

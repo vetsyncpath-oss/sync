@@ -21,7 +21,7 @@ export class ProfileLibraryModal extends Modal {
             });
             for(const c of this.connections)new Setting(box).setName(c.name).setDesc(c.kind).addButton(b=>b.setButtonText(t('Изменить','Edit')).onClick(()=>this.editConnection(c)))
                 .addButton(b=>b.setButtonText(t('Удалить','Remove')).onClick(()=>{if(this.defaultSource===c.id||this.profiles.some(p=>p.source===c.id)){new Notice(t('Подключение используется профилем','Connection is used by a profile'));return;}this.connections=this.connections.filter(x=>x.id!==c.id);this.render();}));
-            new Setting(box).addButton(b=>b.setButtonText(t('Добавить подключение','Add connection')).onClick(()=>this.editConnection({id:crypto.randomUUID(),name:'',kind:'git',values:{branch:'main'}})));
+            new Setting(box).addButton(b=>b.setButtonText(t('Добавить подключение','Add connection')).onClick(()=>this.editConnection({id:crypto.randomUUID(),name:'',kind:'git',values:{branch:'default'}})));
         }else{
             for(const p of this.profiles){ const row=new Setting(box).setName(p.name).setDesc(`${writeLabel(p.write)} · ${deleteLabel(p.delete)}${p.source?' · '+(this.connections.find(c=>c.id===p.source)?.name ?? t('Основной источник','Primary source')):''}`)
                 .addButton(b=>b.setButtonText(p.builtin?t('Создать свой на основе','Customize copy'):t('Изменить','Edit')).onClick(()=>this.editProfile(p.builtin?{...p,id:crypto.randomUUID(),builtin:false,name:p.name+' — '+t('мой','custom')}:p)));
@@ -53,9 +53,10 @@ export class ProfileLibraryModal extends Modal {
         const c=structuredClone(original),modal=new Modal(this.app);modal.titleEl.setText(t('Подключение','Connection'));
         const render=()=>{
             const box=modal.contentEl;box.empty();new Setting(box).setName(t('Название','Name')).addText(x=>x.setValue(c.name).onChange(v=>c.name=v));
-            new Setting(box).setName(t('Провайдер','Provider')).addDropdown(dd=>{for(const d of EngineRegistry.all())dd.addOption(d.kind,resolveLabel(i18n.t,d.labelKey));dd.setValue(c.kind).onChange(v=>{c.kind=v as SourceConnection['kind'];c.values=c.kind==='git'?{branch:'main'}:{};render();});});
+            new Setting(box).setName(t('Провайдер','Provider')).addDropdown(dd=>{for(const d of EngineRegistry.all())dd.addOption(d.kind,resolveLabel(i18n.t,d.labelKey));dd.setValue(c.kind).onChange(v=>{c.kind=v as SourceConnection['kind'];c.values=c.kind==='git'?{branch:'default'}:{};render();});});
             for(const f of EngineRegistry.get(c.kind).settingsSchema){
                 const row=new Setting(box).setName(resolveLabel(i18n.t,f.labelKey));
+            if(f.helpKey)row.setDesc(resolveLabel(i18n.t,f.helpKey));
                 if(f.type==='toggle')row.addToggle(x=>x.setValue(Boolean(c.values[f.key]??f.default)).onChange(v=>c.values[f.key]=v));
                 else row.addText(x=>{x.setValue(String(c.values[f.key]??f.default??''));if(f.type==='secret'||f.secret)x.inputEl.type='password';x.onChange(v=>c.values[f.key]=f.type==='number'?Number(v):v);});
             }

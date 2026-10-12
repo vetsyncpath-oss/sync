@@ -1305,6 +1305,7 @@ export default class GitSyncPlugin extends Plugin {
                         if (kind === 'git') {
                                 return {
                                         messages: {
+                                                unsupportedBranches: () => i18n.getLocale()==='ru'?'Синхронизация всех веток не поддерживается. Укажите одну ветку или оставьте поле пустым для ветки репозитория по умолчанию.':'All-branches sync is unsupported. Enter one branch or leave it empty for the repository default.',
                                                 branchNotFound: (b: string) => t.errBranchNotFound(b),
                                                 fetchBranch: (st: number) => t.errFetchBranch(st),
                                                 fetchTree: () => t.errFetchTree,
@@ -1343,6 +1344,7 @@ export default class GitSyncPlugin extends Plugin {
                                                 new Notice(t.noticeRateLimitedCloud(Math.ceil(waitMs / 1000)), 10000);
                                         },
                                         messages: {
+                                                folderRequired: () => i18n.getLocale()==='ru'?'Укажите ID публичной папки Drive. API-ключ не предоставляет доступ к личному диску.':'Specify a public Drive folder ID. An API key does not grant access to your private Drive.',
                                                 apiKeyMissing: () => t.errGdriveApiKeyMissing,
                                                 listFailed: (st: number) => t.errGdriveListFailed(st),
                                                 downloadFailed: (st: number) => t.errGdriveDownloadFailed(st),

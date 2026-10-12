@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { App } from 'obsidian';
 import Plugin from '../main';
+import { BufferArchiveReader } from '../src/core/archive';
 import type { VaultAdapter, SyncSource } from '../src/sources/types';
 import { ab, deferred, fixture, entry } from './helpers';
 
@@ -172,4 +173,24 @@ test('selected Yandex connection drives real listing and download instead of leg
  assert.equal(new TextDecoder().decode(await context.source.fetch(manifest[0],new AbortController().signal)),'REMOTE');
  assert.equal(new URL(calls[0]).searchParams.get('public_key'),'https://disk.yandex.ru/d/example');assert.equal(calls.length,3);
  await context.source.dispose();
+});
+
+for(const kind of ['git','gdrive','webdav','zip-url'] as const)test(`named ${kind} connection reaches inventory and file download through plugin routing`,async()=>{
+ const h=preparationHost(),plugin=h.port as any;await plugin.ensureProfileSettings();const settings=h.settings as any;
+ const values={git:{repoUrl:'https://github.com/test/repo',branch:'default'},gdrive:{apiKey:'test-key',folderId:'shared-folder'},webdav:{baseUrl:'https://dav.example/root/',username:'',password:''},'zip-url':{vaultUrl:'https://cloud.example/s/abcdefgh?x=1'}}[kind];
+ settings.connections=[{id:'selected',name:'Selected source',kind,values}];settings.vaultPolicy.defaultSource='selected';
+ const calls:string[]=[];
+ plugin.engineCtx=(requested:string)=>{assert.equal(requested,kind);return {
+  archiveDownloader:{download:async(url:string)=>{calls.push(url);return new BufferArchiveReader(Uint8Array.from(Buffer.from('UEsDBBQAAAAAACWrSF3xCA2bBAAAAAQAAAAEAAAAYS5tZEFBQUFQSwECFAMUAAAAAAAlq0hd8QgNmwQAAAAEAAAABAAAAAAAAAAAAAAAgAEAAAAAYS5tZFBLBQYAAAAAAQABADIAAAAmAAAAAAA=','base64')).buffer);}},
+  transport:{fetch:async(url:string,req:any)=>{
+   calls.push(url);let body='AAAA';
+   if(kind==='git'&&!url.includes('/git/blobs/'))body=JSON.stringify(url.endsWith('/test/repo')?{default_branch:'main'}:url.includes('/branches/')?{commit:{commit:{tree:{sha:'tree'}}}}:{tree:[{type:'blob',path:'a.md',sha:'a'.repeat(40),size:4}],truncated:false});
+   if(kind==='gdrive'&&!url.includes('alt=media'))body=JSON.stringify({files:[{id:'file',name:'a.md',mimeType:'text/plain',size:'4',sha256Checksum:entry('a.md','AAAA').hash}]});
+   if(kind==='webdav'&&req.method!=='GET')body='<D:multistatus xmlns:D="DAV:"><D:response><D:href>/root/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response><D:response><D:href>/root/a.md</D:href><D:propstat><D:prop><D:resourcetype/><D:getcontentlength>4</D:getcontentlength><D:getetag>"v1"</D:getetag></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response></D:multistatus>';
+   return {status:kind==='webdav'&&req.method!=='GET'?207:200,headers:{},arrayBuffer:async()=>ab(body),text:async()=>body};
+  }}
+ };};
+ const context=await plugin.routingContext();assert.equal(context.source.kind,kind);
+ try{const manifest=await context.source.getManifest(new AbortController().signal);assert.equal(manifest.length,1);assert.equal(manifest[0].path,'a.md');assert.equal(new TextDecoder().decode(await context.source.fetch(manifest[0],new AbortController().signal)),'AAAA');assert(calls.length>0);if(kind==='zip-url')assert.equal(new URL(calls[0]).pathname,'/s/abcdefgh/download');}
+ finally{await context.source.dispose();}
 });

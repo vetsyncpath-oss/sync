@@ -7,21 +7,9 @@
 // типа из main.ts в core нарушил бы чистоту ядра (исторического
 // переиспользуемого типа статуса в src/sources/types.ts нет).
 
-/**
- * Источник сконфигурирован достаточно для синхронизации?
- *
- * [W1-T03/BUG-16] git: достаточно repoUrl — accessToken опционален для
- * публичных репозиториев (git-source при пустом токене просто не шлёт
- * заголовок Authorization). Старый guard в main.ts требовал
- * `repoUrl && accessToken` и врал «Настройки не заполнены» для публичных репо.
- *
- * yandex / zip-url: нужен непустой vaultUrl (пробелы не считаются).
- *
- * [W6-T03] gdrive: apiKey обязателен (секрет из настроек — лежит в
- * отдельном поле, не в `cfg.vaultUrl`); в config-guards передаётся через
- * `cfg.apiKey` (см. main.ts isConfiguredForSource).
- * [W6-T05] webdav: нужен непустой baseUrl + username (password опционален
- * для публичных серверов). Передаётся через `cfg.baseUrl` + `cfg.username`.
+/** Minimum supported configuration; network access is verified by the provider.
+ * Drive requires a public folder: an API key is not account authorization.
+ * WebDAV supports anonymous access; a password requires a username.
  */
 export function isSourceConfigured(
         kind: 'git' | 'yandex' | 'zip-url' | 'gdrive' | 'webdav',
@@ -31,9 +19,10 @@ export function isSourceConfigured(
                 vaultUrl: string;
                 /** [W6-T03] gdrive: API key (required). */
                 apiKey?: string;
+                folderId?: string;
                 /** [W6-T05] webdav: base URL (required). */
                 baseUrl?: string;
-                /** [W6-T05] webdav: username (required). */
+                /** WebDAV username; optional for anonymous access. */
                 username?: string;
                 /** [W6-T05] webdav: password (optional — public WebDAV). */
                 password?: string;
@@ -42,16 +31,16 @@ export function isSourceConfigured(
         },
 ): boolean {
         if (kind === 'git') {
-                return Boolean(cfg.repoUrl);
+                return Boolean(cfg.repoUrl.trim());
         }
         if (kind === 'gdrive') {
                 // [W6-T03] gdrive: apiKey обязателен (секрет из настроек).
-                return Boolean(cfg.apiKey && cfg.apiKey.trim().length > 0);
+                return Boolean(cfg.apiKey?.trim() && cfg.folderId?.trim() && cfg.folderId.trim()!=='root');
         }
         if (kind === 'webdav') {
-                // [W6-T05] webdav: baseUrl + username обязательны (Basic auth).
+                // Anonymous access is valid; do not silently discard an orphan password.
                 return Boolean(cfg.baseUrl && cfg.baseUrl.trim().length > 0
-                        && cfg.username && cfg.username.trim().length > 0);
+                        && (!cfg.password || Boolean(cfg.username?.trim())));
         }
         // yandex / zip-url: vaultUrl (пробелы не считаются).
         return cfg.vaultUrl.trim().length > 0;

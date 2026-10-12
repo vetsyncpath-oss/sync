@@ -5,7 +5,7 @@ import { WebDavSource } from '../src/sources/webdav-source';
 import { GDriveSource } from '../src/sources/gdrive-source';
 import { YandexSource } from '../src/sources/yandex-source';
 import { GitSource } from '../src/sources/git-source';
-import { ZipUrlSource } from '../src/sources/zip-url-source';
+import { ZipUrlSource, detectProvider } from '../src/sources/zip-url-source';
 import { BufferArchiveReader } from '../src/core/archive';
 import { FetchTransport } from '../src/adapters/fetch-transport';
 import type { NetRequest } from '../src/sources/types';
@@ -109,4 +109,39 @@ test('discard cancels the body and propagates the redirect restriction', async t
   const response = await new FetchTransport().fetch('https://example.test', { redirect: 'error' });
   response.discard?.(); await Promise.resolve(); assert(cancelled); assert.equal(mode, 'error');
   assert.throws(() => response.text(), /discarded/);
+});
+
+test('Git resolves repository default, preserves explicit branches and rejects unsupported all',async()=>{
+ const calls:string[]=[];let branch='default';
+ const source=new GitSource({repo:()=>({repoUrl:'https://github.com/test/repo',branch,accessToken:''}),transport:{fetch:async(url)=>{
+  calls.push(url);const body=JSON.stringify(url.endsWith('/test/repo')?{default_branch:'release/stable'}:url.includes('/branches/')?{commit:{commit:{tree:{sha:'tree'}}}}:{tree:[],truncated:false});
+  return {status:200,headers:{},arrayBuffer:async()=>ab(body),text:async()=>body};
+ }}});
+ await source.getManifest(signal());assert(calls.some(u=>u.endsWith('/branches/release%2Fstable')));assert(!calls.some(u=>u.endsWith('/branches/default')));
+ calls.length=0;branch='feature/test';await source.getManifest(signal());assert(calls[0].endsWith('/branches/feature%2Ftest'));
+ calls.length=0;branch='all';await assert.rejects(source.getManifest(signal()),/one branch/);assert.equal(calls.length,0);
+});
+test('non-GitHub repository never silently reads a same-named GitHub repository',async()=>{
+ let calls=0;const source=new GitSource({repo:()=>({repoUrl:'https://gitlab.com/test/repo',branch:'main',accessToken:''}),transport:{fetch:async()=>{calls++;throw Error('unexpected');}}});
+ await assert.rejects(source.getManifest(signal()),/Invalid repository URL/);assert.equal(calls,0);
+});
+test('Drive rejects account-root browsing with an API key before network access',async()=>{
+ for(const folderId of [undefined,'','root']){
+  let calls=0;const source=new GDriveSource({config:()=>({apiKey:'test-key',folderId}),transport:{fetch:async()=>{calls++;throw Error('unexpected');}}});
+  await assert.rejects(source.getManifest(signal()),/public Drive folder/);assert.equal(calls,0);
+ }
+});
+test('public WebDAV lists and downloads without an Authorization header',async()=>{
+ const requests:NetRequest[]=[];const source=new WebDavSource({config:()=>({baseUrl:'https://dav.example/root/',username:'',password:''}),transport:{fetch:async(_url,req)=>{
+  requests.push(req);const body=req.method==='GET'?'x':wrap(self+resource('/root/a.md'));
+  return {status:req.method==='GET'?200:207,headers:{},arrayBuffer:async()=>ab(body),text:async()=>body};
+ }}});
+ const manifest=await source.getManifest(signal());assert.equal(str(await source.fetch(manifest[0],signal())),'x');assert.equal(requests.length,2);assert(requests.every(r=>!r.headers?.authorization));
+});
+test('ZIP shared links preserve query parameters while changing the download path',()=>{
+ const dropbox=new URL(detectProvider('https://www.dropbox.com/scl/fi/abc/vault.zip?rlkey=shared&dl=0').downloadUrl);
+ assert.equal(dropbox.searchParams.get('dl'),'1');assert.equal(dropbox.searchParams.get('rlkey'),'shared');
+ const nextcloud=new URL(detectProvider('https://cloud.example/s/abcdefgh?download=1').downloadUrl);
+ assert.equal(nextcloud.pathname,'/s/abcdefgh/download');assert.equal(nextcloud.searchParams.get('download'),'1');
+ assert.equal(detectProvider(nextcloud.toString()).downloadUrl,nextcloud.toString());
 });

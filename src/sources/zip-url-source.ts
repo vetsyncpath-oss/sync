@@ -86,7 +86,7 @@ export function detectProvider(rawUrl: string): ProviderDetection {
         //    dl=1 заставляет отдавать файл (папку — zip'ом), а не страницу.
         if (
                 (host === 'dropbox.com' || host.endsWith('.dropbox.com')) &&
-                (seg[0] === 's' || seg[0] === 'sh') &&
+                (seg[0] === 's' || seg[0] === 'sh' || (seg[0] === 'scl' && (seg[1] === 'fi' || seg[1] === 'fo') && Boolean(seg[2]))) &&
                 seg.length >= 2 &&
                 seg[1] !== ''
         ) {
@@ -121,7 +121,8 @@ export function detectProvider(rawUrl: string): ProviderDetection {
         if (seg[0] === 's' && seg.length >= 2 && /^[a-z0-9_-]+$/i.test(seg[1]) && seg[1].length >= NEXTCLOUD_TOKEN_MIN_LEN) {
                 const rest = seg.slice(2);
                 if (rest.length === 0 || (rest.length === 1 && rest[0] === 'download')) {
-                        const downloadUrl = u.pathname.endsWith('/download') ? rawUrl : rawUrl + '/download';
+                        if (!u.pathname.endsWith('/download')) u.pathname += '/download';
+                        const downloadUrl = u.toString();
                         return { provider: 'nextcloud', downloadUrl };
                 }
         }
