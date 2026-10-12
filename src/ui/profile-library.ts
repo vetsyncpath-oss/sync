@@ -33,7 +33,7 @@ export class ProfileLibraryModal extends Modal {
         const p=structuredClone(original),modal=new Modal(this.app),box=modal.contentEl;
         modal.titleEl.setText(t('Профиль','Profile'));
         new Setting(box).setName(t('Название','Name')).addText(x=>x.setValue(p.name).onChange(v=>p.name=v));
-        new Setting(box).setName(t('Источник','Source')).addDropdown(dd=>{dd.addOption('',t('Наследовать','Inherit')).addOption('primary',t('Основной источник','Primary source'));for(const c of this.connections)dd.addOption(c.id,c.name);dd.setValue(p.source??'').onChange(v=>p.source=v||undefined);});
+        new Setting(box).setName(t('Источник','Source')).addDropdown(dd=>{dd.addOption('',t('Наследовать','Inherit'));if(this.connections.some(c=>c.id==='primary'))dd.addOption('primary',t('Основной источник','Primary source')); for(const c of this.connections)dd.addOption(c.id,c.name);dd.setValue(p.source??'').onChange(v=>p.source=v||undefined);});
         new Setting(box).setName(t('Запись','Write')).addDropdown(dd=>{for(const w of ['preserve','create','update','remote','changes'] as WriteMode[])dd.addOption(w,writeLabel(w));dd.setValue(p.write).onChange(v=>p.write=v as WriteMode);});
         new Setting(box).setName(t('Исчезновение из источника','When absent from source')).addDropdown(dd=>{for(const d of ['keep','tracked','mirror'] as DeleteMode[])dd.addOption(d,deleteLabel(d));dd.setValue(p.delete).onChange(v=>p.delete=v as DeleteMode);});
         new Setting(box).setName(t('Конфликт при обновлении','Conflict during update')).setDesc(t('Используется только для «Обновлять с разрешением конфликтов».','Used only for Update with conflict resolution.')).addDropdown(dd=>{

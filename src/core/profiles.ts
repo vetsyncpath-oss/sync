@@ -7,7 +7,7 @@ export interface SyncProfile {
     /** Named connection; absent inherits the enclosing assignment's connection. */
     source?: string; builtin?: boolean;
 }
-export interface ProfileAssignment { scope: FileRule['scope']; path: string; names?: string[]; profileId: string }
+export interface ProfileAssignment { scope: FileRule['scope']; path: string; names?: string[]; profileId?: string; source?: string; remotePath?: string }
 export interface SourceConnection { id: string; name: string; kind: SyncSource['kind']; values: Record<string, unknown> }
 export const STANDARD_PROFILES: readonly SyncProfile[] = [
     {id:'standard:preserve',name:'Не трогать',write:'preserve',delete:'keep',builtin:true},
@@ -35,8 +35,11 @@ export function compileProfiles(policy: SyncPolicy, profiles: readonly SyncProfi
     if (policy.assignments === undefined) return structuredClone(policy);
     const library = new Map(profiles.map(p => [p.id,p]));
     const assignedRules: FileRule[] = policy.assignments.map(a => {
-        const p = library.get(a.profileId); if (!p) throw new Error(`Missing profile: ${a.profileId}`);
-        return {scope:a.scope,path:a.path,...(a.names ? {names:[...a.names]} : {}),write:p.write,delete:p.delete,conflict:p.conflict,source:p.source};
+        const p = a.profileId ? library.get(a.profileId) : undefined;
+        if (a.profileId && !p) throw new Error(`Missing profile: ${a.profileId}`);
+        if (!p && !a.source) throw new Error('Assignment needs a profile or source');
+        return {scope:a.scope,path:a.path,...(a.names ? {names:[...a.names]} : {}),
+            write:p?.write,delete:p?.delete,conflict:p?.conflict,source:a.source ?? p?.source,remotePath:a.remotePath};
     });
     const fileRules:FileRule[]=[{scope:'vault',path:'',write:'update',delete:'keep'},...assignedRules];
     validateFileRules(fileRules);

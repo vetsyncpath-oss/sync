@@ -41,6 +41,8 @@ export interface RemoteEntry {
         size: number;
         /** mtime источника (epoch-ms), только для UI. Опционален. */
         modified?: number;
+        /** Internal routing result: path is already the final vault destination. */
+        resolvedDestination?: boolean;
 }
 
 /**

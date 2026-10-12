@@ -42,7 +42,7 @@ export class ProfileAssignmentModal extends Modal {
         }
         box.createEl('h4',{text:t('Собственные назначения','Direct assignments')});
         for(const a of same) {
-            new Setting(box).setName(o.profiles.find(p=>p.id===a.profileId)?.name ?? a.profileId).setDesc(a.names?.join(', ') ?? t('Все файлы','All files'))
+            new Setting(box).setName(o.profiles.find(p=>p.id===a.profileId)?.name ?? a.profileId ?? 'Inherited').setDesc(a.names?.join(', ') ?? t('Все файлы','All files'))
                 .addButton(b=>b.setButtonText(t('Убрать','Remove')).onClick(()=>{
                     const idx=assignments.indexOf(a);if(idx>=0)assignments.splice(idx,1);o.apply(assignments);this.close();
                 }));

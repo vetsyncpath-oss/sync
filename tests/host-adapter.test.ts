@@ -80,11 +80,13 @@ function preparationHost() {
   return { f, port, values, settings, source: () => source, swaps: () => cacheSwaps, authorization: () => authorization };
 }
 test('credential rotation rebuilds the real Git adapter without discarding the cache', async () => {
-  const h = preparationHost(); h.f.own('a.md'); h.values.accessToken = 'fresh-token';
+  const h = preparationHost();await h.port.prepareSession();const plugin=h.port as any;
+  const cache=plugin.cache,swaps=h.swaps();cache.set('a.md',{h:'owned',s:1,alg:'sha256'});
+  (h.settings as any).connections[0].values.accessToken='fresh-token';
   await h.port.prepareSession();
   await (h.source() as any).members[0].source.fetch(entry('a.md'), new AbortController().signal);
-  assert.equal(h.authorization(), 'token fresh-token'); assert.equal(h.swaps(), 0); assert.equal(h.port.cache, h.f.cache);
-  assert(h.f.cache.get('a.md')); assert.equal(h.port.preparedConfigRevision, h.port.getConfigurationRevision());
+  assert.equal(h.authorization(), 'token fresh-token'); assert.equal(h.swaps(),swaps); assert.equal(h.port.cache,cache);
+  assert(cache.get('a.md')); assert.equal(h.port.preparedConfigRevision, h.port.getConfigurationRevision());
 });
 test('configuration revision ignores runtime counters and captures policy and credential changes', () => {
   const h = preparationHost(), first = h.port.getConfigurationRevision();
@@ -105,19 +107,19 @@ test('failed profile migration restores previous settings for a safe retry', asy
 });
 test('routing changes isolate caches and failed queues while token rotation keeps ownership', async () => {
   const h=preparationHost(),plugin=h.port as any;
-  await plugin.ensureProfileSettings();
+  await plugin.prepareSession();const primaryNamespace=plugin.cache.namespace;
   const settings=h.settings as any;
-  settings.connections=[{id:'docs',name:'Docs',kind:'git',values:{repoUrl:'https://github.com/test/docs',branch:'main',accessToken:'secret'}}];
+  settings.connections.push({id:'docs',name:'Docs',kind:'git',values:{repoUrl:'https://github.com/test/docs',branch:'main',accessToken:'secret'}});
   settings.profiles.push({id:'docs-profile',name:'Docs',write:'update',delete:'keep',source:'docs'});
   h.f.queue.add({path:'old.md',hash:'a',size:1},'primary failure',1);
-  settings.syncPolicies.test.assignments.push({scope:'folder',path:'docs',profileId:'docs-profile'});
+  settings.vaultPolicy.assignments.push({scope:'folder',path:'docs',profileId:'docs-profile'});
   await plugin.prepareSession();const namespace=plugin.cache.namespace;
   assert.match(namespace,/^routes_[0-9a-f]{64}$/);assert.equal(h.f.queue.size(),0);
   h.f.queue.add({path:'docs/new.md',hash:'b',size:1},'route failure',1);
-  settings.connections[0].values.accessToken='rotated';await plugin.prepareSession();
+  settings.connections.find((c:any)=>c.id==='docs').values.accessToken='rotated';await plugin.prepareSession();
   assert.equal(plugin.cache.namespace,namespace);assert.equal(h.f.queue.size(),1);
-  settings.syncPolicies.test.assignments.pop();await plugin.prepareSession();
-  assert.equal(plugin.cache.namespace,'test');assert.equal(h.f.queue.all()[0].path,'old.md');
+  settings.vaultPolicy.assignments.pop();await plugin.prepareSession();
+  assert.equal(plugin.cache.namespace,primaryNamespace);assert.equal(h.f.queue.all()[0].path,'old.md');
   assert.equal(settings.failedQueues[namespace][0].path,'docs/new.md');
 });
 test('cache load failure never installs an empty replacement or bypasses the next load', async () => {
@@ -127,4 +129,26 @@ test('cache load failure never installs an empty replacement or bypasses the nex
   h.f.queue.add({path:'old.md',hash:'a',size:1},'failure',1);
   for(let attempt=0;attempt<2;attempt++) await assert.rejects(plugin.prepareSession(),/Disk unavailable/);
   assert.equal(loads,2);assert.equal(disposed,2);assert.equal(plugin.cache,h.f.cache);assert.equal(h.f.queue.size(),1);assert.equal(h.swaps(),0);
+});
+test('vault migration keeps assignments stable when the legacy primary source changes',async()=>{
+  const h=preparationHost(),plugin=h.port as any;await plugin.ensureProfileSettings();
+  const settings=h.settings as any,policy=settings.vaultPolicy;
+  policy.assignments.push({scope:'folder',path:'Notes',source:policy.defaultSource,remotePath:'remote-notes'});
+  const snapshot=structuredClone(policy),connections=structuredClone(settings.connections);
+  h.values.repoUrl='https://github.com/test/another-repo';await plugin.ensureProfileSettings();
+  assert.deepEqual(settings.vaultPolicy,snapshot);assert.deepEqual(settings.connections,connections);
+});
+test('all-vault explicit source avoids loading an unused default source',async()=>{
+  const h=preparationHost(),plugin=h.port as any;await plugin.ensureProfileSettings();const settings=h.settings as any;
+  const defaultId=settings.vaultPolicy.defaultSource;
+  settings.connections.push({id:'docs',name:'Docs',kind:'git',values:{repoUrl:'https://github.com/test/docs',branch:'main'}});
+  settings.vaultPolicy.assignments.push({scope:'vault',path:'',source:'docs',remotePath:''});
+  const context=await plugin.routingContext();assert.deepEqual(context.source.members.map((m:any)=>m.id),['docs']);assert.notEqual(defaultId,'docs');
+});
+test('an unconfigured required default cannot be silently omitted from a deletion-capable plan',async()=>{
+ const h=preparationHost(),plugin=h.port as any;await plugin.ensureProfileSettings();const settings=h.settings as any;
+ settings.connections[0].values.repoUrl='';settings.connections.push({id:'docs',name:'Docs',kind:'git',values:{repoUrl:'https://github.com/test/docs',branch:'main'}});
+ settings.vaultPolicy.assignments.push({scope:'folder',path:'Docs',source:'docs',remotePath:'notes'});
+ await assert.rejects(plugin.routingContext(),/Default source is not configured/);
+ settings.vaultPolicy.defaultSource=undefined;const context=await plugin.routingContext();assert.deepEqual(context.source.members.map((m:any)=>m.id),['docs']);
 });

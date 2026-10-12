@@ -4,6 +4,7 @@ export type DeleteMode = 'keep' | 'tracked' | 'mirror';
 export type RuleConflict = 'keep-both' | 'local-wins' | 'remote-wins' | 'ask' | 'incoming';
 export interface FileRule {
     source?: string;
+    remotePath?: string;
     conflict?: RuleConflict;
     scope: 'vault' | 'folder' | 'file';
     path: string;
@@ -12,7 +13,7 @@ export interface FileRule {
     write?: WriteMode;
     delete?: DeleteMode;
 }
-export interface ResolvedFileRule { write?: WriteMode; delete?: DeleteMode; writeRule?: number; deleteRule?: number; source?: string; sourceRule?: number; conflict?: RuleConflict }
+export interface ResolvedFileRule { write?: WriteMode; delete?: DeleteMode; writeRule?: number; deleteRule?: number; source?: string; sourceRule?: number; remotePath?: string; conflict?: RuleConflict }
 const writes = ['preserve', 'create', 'update', 'remote', 'changes'];
 const deletes = ['keep', 'tracked', 'mirror'];
 function validPath(path: unknown): path is string {
@@ -32,7 +33,8 @@ export function validateFileRules(value: unknown): asserts value is FileRule[] |
         if (r.delete !== undefined && !deletes.includes(r.delete)) return fail();
         if (r.source !== undefined && (typeof r.source !== 'string' || !r.source)) return fail();
         if (r.conflict !== undefined && !['keep-both','local-wins','remote-wins','ask','incoming'].includes(r.conflict)) return fail();
-        if (r.write === undefined && r.delete === undefined) return fail();
+        if (r.write === undefined && r.delete === undefined && r.source === undefined) return fail();
+        if (r.remotePath !== undefined && (!r.source || (r.remotePath !== '' && !validPath(r.remotePath)) || (r.scope==='file' && !r.remotePath))) return fail();
         if (r.names !== undefined && (r.scope === 'file' || !Array.isArray(r.names) || !r.names.length
             || r.names.some((n: unknown) => !validPath(n) || n.includes('/')))) return fail();
     });
@@ -57,8 +59,8 @@ export function resolveFileRule(path: string, rules?: readonly FileRule[]): Reso
         if (r.source !== undefined) {
             const previous = result.sourceRule === undefined ? undefined : rules![result.sourceRule];
             if (previous && previous.scope === r.scope && canonical(previous.path) === canonical(r.path)
-                && !!previous.names === !!r.names && result.source !== r.source) throw new Error(`Conflicting source assignments for ${path}`);
-            result.source = r.source; result.sourceRule = i;
+                && !!previous.names === !!r.names && (result.source !== r.source || previous.remotePath !== r.remotePath)) throw new Error(`Conflicting source assignments for ${path}`);
+            result.source = r.source; result.sourceRule = i; result.remotePath = r.remotePath;
         }
     }
     // “Do not touch” is a protection, including when a parent requests mirroring.

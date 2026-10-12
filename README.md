@@ -32,6 +32,6 @@ npm run verify  # тесты, проверка типов и production-сбор
 - Пустые папки автоматически не удаляются.
 - Проверки в настоящем Obsidian, на мобильном устройстве и с реальными аккаунтами остаются отдельным этапом. Проходящие тесты ядра не подтверждают готовность production-релиза.
 
-## File write and deletion rules
+## Vault workspace and profiles
 
-Settings provides standard/custom sync profiles and named source connections. Assign profiles in the file tree to the vault, folders or individual files, with plugin code/settings quick selections. Each file uses one source; ambiguous assignments block synchronization. See [the profile guide](docs/file-rules.md) for migration, precedence, multi-provider examples and limits. Script permissions and scheduling remain off by default.
+Окно дерева открывает локальный vault независимо от сети. Подключения настраиваются и просматриваются отдельно; локальную папку или файл можно связать с конкретным удалённым путём и назначить профиль поведения. Назначения принадлежат vault, каждый файл получает один источник. Ошибка одного preview не скрывает остальные источники; выполнение требует свежих манифестов всех участвующих подключений. [Руководство](docs/file-rules.md) описывает миграцию, наследование, выбор файлов плагинов и ограничения. Планировщик и разрешения на код по умолчанию выключены.

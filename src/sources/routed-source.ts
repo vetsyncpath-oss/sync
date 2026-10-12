@@ -1,16 +1,18 @@
 import type { RemoteEntry, SyncSource } from './types';
 import { resolveFileRule, type FileRule } from '../core/file-rules';
 import { validateManifest } from '../core/source-validation';
+import { sourceCandidates } from '../core/source-bindings';
 import { sha256Hex } from '../core/hasher';
 export interface RoutedMember { id: string; name: string; source: SyncSource }
 /** All selected inventories succeed before any writes. Source instances belong to this session only. */
 export class RoutedSource implements SyncSource {
     readonly kind: SyncSource['kind'];
     readonly deletionSafety: 'immutable' | 'unverified';
-    private readonly locators = new Map<string,{member:RoutedMember;entry:RemoteEntry}>();
+    private readonly locators = new Map<string,{member:RoutedMember;entry:RemoteEntry;exposedPath:string}>();
     constructor(private readonly members: RoutedMember[], private readonly rules: readonly FileRule[],
-        private readonly localPath: (path:string)=>string = p=>p) {
+        private readonly localPath: (path:string)=>string = p=>p, private readonly defaultSource='primary') {
         if (!members.length || new Set(members.map(m=>m.id)).size!==members.length) throw new Error('Invalid source connections');
+        for(const rule of rules)if(rule.source&&!members.some(m=>m.id===rule.source))throw Error('Missing assigned source');
         this.kind=members[0].source.kind;
         this.deletionSafety=members.every(m=>m.source.deletionSafety==='immutable')?'immutable':'unverified';
     }
@@ -25,12 +27,12 @@ export class RoutedSource implements SyncSource {
     async getManifest(signal:AbortSignal):Promise<RemoteEntry[]> {
         const inventories=await this.inventories(signal);const output:RemoteEntry[]=[];
         for (const {member,entries} of inventories) for (const entry of entries) {
-            const owner=resolveFileRule(this.localPath(entry.path),this.rules).source ?? 'primary';
-            if (!this.members.some(m=>m.id===owner)) throw new Error(`Missing assigned source for ${entry.path}`);
-            if (owner!==member.id) continue;
-            const canonical=entry.path.normalize('NFC').toLowerCase();
-            if (this.locators.has(canonical)) throw new Error(`Source path collision: ${entry.path}`);
-            this.locators.set(canonical,{member,entry:{...entry}});output.push({...entry,provider:member.name});
+            for(const path of sourceCandidates(entry.path,member.id,this.rules,this.defaultSource,this.localPath)) {
+                const canonical=path.normalize('NFC').toLowerCase();
+                if (this.locators.has(canonical)) throw new Error(`Source path collision: ${path}`);
+                this.locators.set(canonical,{member,entry:{...entry},exposedPath:path});
+                output.push({...entry,path,provider:member.name,resolvedDestination:resolveFileRule(path,this.rules).remotePath!==undefined});
+            }
         }
         validateManifest(output);return output;
     }
@@ -45,7 +47,7 @@ export class RoutedSource implements SyncSource {
     }
     async fetch(entry:RemoteEntry,signal:AbortSignal):Promise<ArrayBuffer> {
         const found=this.locators.get(entry.path.normalize('NFC').toLowerCase());
-        if (!found || found.entry.path!==entry.path || found.entry.hash!==entry.hash || found.entry.hashAlg!==entry.hashAlg
+        if (!found || found.exposedPath!==entry.path || found.entry.hash!==entry.hash || found.entry.hashAlg!==entry.hashAlg
             || found.entry.size!==entry.size) throw new Error(`Stale source locator: ${entry.path}`);
         if (found.member.source.maxFileSizeBytes!==undefined && entry.size>found.member.source.maxFileSizeBytes) throw new Error('Source file size limit exceeded');
         return found.member.source.fetch({...found.entry},signal);
@@ -57,6 +59,6 @@ export class RoutedSource implements SyncSource {
 }
 /** Credentials must be removed by callers. Routing changes isolate ownership, cache and failed queues. */
 export async function routedNamespace(identity:unknown, rules:readonly FileRule[], mapping:unknown):Promise<string> {
-    const routes=rules.filter(r=>r.source!==undefined).map(r=>({scope:r.scope,path:r.path,names:r.names,source:r.source}));
+    const routes=rules.filter(r=>r.source!==undefined).map(r=>({scope:r.scope,path:r.path,names:r.names,source:r.source,remotePath:r.remotePath}));
     return 'routes_'+await sha256Hex(new TextEncoder().encode(JSON.stringify({identity,routes,mapping})).buffer);
 }

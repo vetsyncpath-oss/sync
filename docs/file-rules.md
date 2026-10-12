@@ -1,48 +1,56 @@
-# Profiles, tree assignments and sources
+# Vault workspace, profiles and source bindings
 
-Settings contains a compact profile library and connection editor. Create a custom profile (or customize a copy of a standard profile), then assign it from the file tree to the entire vault, a folder including descendants, or an individual file. The tree supports file actions, multi-selection and Enter to open assignments. Changes stay in the tree draft until Save. Reloading inventories preserves that draft. Local discovery includes `.obsidian` through the vault adapter.
+Open Settings → File tree. The workspace starts with the local vault; remote access is not required to open or edit it. The left panel lists named source connections, the centre shows either the vault or one selected source, and the right panel edits the selected folder/file. On narrow screens the panels stack.
 
-A profile specifies writing, deletion, conflict handling and an optional named source connection. Path validation, integrity checks, recovery and permissions are mandatory safeguards, not profile toggles. Scheduling and plugin/script permissions remain off by default; profiles do not enable them.
+## Connect a local destination
 
-Within a vault/folder assignment, quick-select all files, plugin code (`main.js`, `manifest.json`, `styles.css`), `data.json`, or comma-separated exact basenames. These are names, not globs or extension filters. Assignments refer to final vault paths after folder mappings; selecting a remote node translates its path accordingly.
+1. Select a folder or file in the vault tree.
+2. Choose a named connection in Source.
+3. Enter its Source path, or pick a path from that connection's separate inventory. Empty means its root; a file binding requires an exact remote file path.
+4. Choose a behaviour profile, or inherit behaviour from the parent.
+5. For folders, optionally select plugin code (`main.js`, `manifest.json`, `styles.css`), `data.json`, or exact comma-separated basenames.
+6. Apply to draft, then Save assignments.
 
-## Inheritance and sources
+For example: `Yandex:/Notes → Vault:/Documents`. The reverse workflow is supported: browse a connection, select its remote folder/file, enter the destination and use Place in vault. Source bindings and profile assignments are independent: a source-only assignment inherits writing/deletion/conflict behaviour. A profile can still provide an optional source default; the same assignment's direct source takes precedence.
 
-Precedence is vault < folder < nested folder < exact file. A basename filter is more specific than all files at the same scope. Each assigned profile defines both writing and deletion; its source and conflict policy may inherit. Equal-priority write/deletion settings use the last assignment. Equal-priority assignments naming different sources are errors and block synchronization, including overlaps for currently absent files. More-specific assignments can override a parent's source. Paths and basenames compare case-insensitively with Unicode NFC normalization.
+Profile selectors use vault < folder < nested folder < exact file precedence. A basename filter is more specific than all files at the same scope. Write/deletion settings use the last equal-priority assignment. Different equal-priority sources, or different remote paths at that priority, are errors. Paths and basenames compare case-insensitively with Unicode NFC normalization.
 
-Every file has one selected source. With no explicit source it uses the primary connection. A named connection identifies an actual repository, disk or endpoint with its own configuration and credentials. The same provider can have multiple connections. If the selected source lacks a file, another provider does not supply it automatically.
+Every destination file has one winning source. A missing file never falls back to another provider. Files covered by a mount are consumed by its bindings, including nested overrides, and is not also downloaded at its original remote-relative path. Distinct source inventories can contain identical paths and metadata without being merged. Final destination collisions still fail validation.
 
-All required inventories must load and validate before any writes. The tree preview lists candidates from all configured connections and labels their origins, using separate source instances from synchronization. Preview availability is not proof that a file will be written: routing, exclusions, permissions and local conflicts still apply.
+Source names identify actual repositories, disks or endpoints, not only provider types. Multiple connections can use the same provider. Configure, Check / refresh, Default for vault and removal are available directly beside each connection. Referenced connections cannot be removed from the saved workspace. The default connection is a regular named connection; changing it does not hide vault assignments. Choose No default source to synchronize only explicitly bound destinations. A configured default that is still needed must load successfully; an invalid configuration cannot silently omit it and authorize deletion.
 
-Routing or public connection identity changes isolate the cache and failed queue; credential rotation does not reset ownership. Primary-only configurations keep their existing namespace. A composite source allows deletion only when every member supplies the required immutable inventory guarantee. Adding Yandex, WebDAV or another unverified inventory does not grant it deletion authority.
+## Inspect and save
 
-## Profile actions
+Each connection loads independently. An unavailable default does not block local browsing or another connection's preview. Failed refresh retains that connection's last successful snapshot with an error/stale marker. Snapshots are held for the open workspace only; reopening fetches again. Superseded or aborted responses cannot replace a newer snapshot. Source edits invalidate the old snapshot.
+
+Local rows show their source and behaviour, inheritance/direct assignment, mixed sources, exclusions/permissions and whether a file appears in a loaded source snapshot. Projected source files can appear before they exist locally. These labels describe inventory availability; they do not guarantee a write or verify local content against the applied baseline. Large trees are paged in groups of 150 visible rows; searching traverses collapsed descendants. Enter opens an inspector, arrows expand/collapse folders. Checkboxes select multiple local files/folders; Profile for selection changes their behaviour while preserving direct source bindings. The source-path picker also supports search.
+
+Assignments and connection edits are drafts. Applying a form does not start synchronization. Save validates references and source overlaps, then persists both together. Closing a changed workspace offers Save / Discard / Return. Background inventory/local refresh does not reset partially edited inspector fields. External settings changes or active execution prevent saving a stale workspace. Actual synchronization still obtains and validates every required fresh inventory before any write; browsing does not weaken execution safeguards.
+
+## Behaviour profiles
 
 - **Do not touch:** no writes, moves or deletions, including force/retry.
-- **Create missing:** install once and retain existing contents; a concurrently created file cannot be overwritten.
-- **Update unchanged local files:** update only when local bytes match the last applied baseline. Skip modified or unowned files.
-- **Match source:** check actual local contents even when remote metadata is unchanged; replace through the recovery safeguards.
-- **Update with conflict resolution:** process source changes and resolve local edits by preserving a copy, keeping local contents, or asking during manual sync. Background conflicts requiring a decision stay pending, without opening a dialog or poisoning the retry queue; deletion is deferred for that run.
+- **Create missing:** install once and retain existing contents; concurrent creation cannot be overwritten.
+- **Update unchanged local files:** update only when local bytes match the last applied baseline; skip modified or unowned files.
+- **Match source:** check actual local contents even when remote metadata is unchanged; replace through recovery safeguards.
+- **Update with conflict resolution:** process source changes and preserve a local/incoming copy, keep local content, or ask during manual synchronization. Automatic conflicts requiring a decision stay pending without a modal or poisoned retry entry; deletions are deferred for that run.
 
-Deletion is independent: keep files absent from the source; delete previously synced files; or delete all eligible files absent from the source. Do not touch forces keep. Exclusions, protected runtime paths and script permissions remain stronger. Background deletions are deferred, and force/retry perform no deletions.
+Deletion is independent: keep absent files, delete previously synced files, or delete all eligible files absent from the source. Do not touch forces keep. Folder/file exclusions, runtime protection, integrity checks and script permissions remain stronger. Scheduling and script permissions remain off by default. Profile assignments do not enable them.
 
-## Example: GitHub plugin code, Yandex documents
+## GitHub plugin code and Yandex documents
 
-1. Add named GitHub and Yandex connections in Settings → Connections.
-2. Create “Plugin code”: GitHub, Match source, Keep absent files.
-3. Assign it in the tree to `.obsidian/plugins`, quick selection Plugin code.
-4. Assign Create missing (or Do not touch) to `data.json` in that folder. Select GitHub explicitly if initial settings should come from that repository.
-5. Create “Documents”: Yandex, Update with conflict resolution, Keep absent files; assign to the documents folder.
-6. Add an individual-file assignment when a particular plugin's settings should follow the source.
-
-If repositories use different layouts, map the relevant source folders to their final vault locations first. Folder mappings remain shared across the routed source; conflicting final destinations fail plan validation.
+Create named connections in the workspace. Link `.obsidian/plugins` to the GitHub repository's plugin directory and choose Match source / Keep absent, filtered to Plugin code. Add a `data.json` assignment using Create missing or Do not touch. Link `Documents` to the Yandex documents folder with the desired conflict profile. An exact-file assignment can override a particular plugin's settings. Sync remains source→vault; local changes are not uploaded.
 
 ## Migration and limits
 
-Existing fetch/light/full settings are converted once to editable profiles and assignments: Receive changes; Follow source deletions; Exact source copy. Folder overrides, inline file rules, exclusions and mappings are carried over. Migration is idempotent; a failed save restores the in-memory settings for retry. Deleting a profile still referenced by any saved policy prevents saving the library; remove its assignments first. Invalid profiles or missing connections block sync rather than dropping protections.
+Existing fetch/light/full settings and inline rules migrate once into profiles. The active source policy becomes `vaultPolicy`, while the old primary configuration becomes a regular named connection selected as the vault default. Existing assignments, folder mappings and exclusions are retained. Older per-source records remain archived; execution and the workspace use the vault policy. Migration is idempotent and restores in-memory settings on save failure. Source edits/default selection no longer switch the assignment library.
 
-Explicit write policies suppress structural moves involving protected source/target paths. Because migrated profiles are explicit too, mapped destinations are processed under their profile while original paths can remain. Review and remove obsolete paths deliberately; migration does not silently clean them up.
+New vault routing uses a SHA-256 cache/queue namespace derived from public connection identities, bindings and mappings. The previous cache/queue remains in its old namespace; it is not adopted automatically as ownership for new routes. Expect a fresh baseline and possible conflict copies on the first run after migration. Credential rotation preserves the routing namespace. Recovery references/history are not discarded.
 
-Profiles operate per file, not as atomic plugin-package installations. Package-level rollback, version compatibility checks and safe activation/hot reload remain separate work. Auto-sync must be enabled separately. Older builds do not understand profiles and assignments: do not downgrade a vault relying on them without restoring equivalent exclusions.
+Legacy folder mappings remain supported and apply to unbound inventory paths. Explicit new bindings produce final vault paths and are not remapped again by a legacy folder target. Explicit write profiles suppress structural moves; originals can remain after migration. Cleanup is deliberate.
 
-Automated checks cover migration, coordinator routing, conflict safeguards, cache/queue isolation and DOM interactions with a host shim. Real Obsidian desktop/mobile and live multi-provider credentials have not been exercised by these tests.
+Composite deletion requires every participating provider to supply an immutable inventory guarantee. Background deletion is deferred; unverified Yandex/Drive/WebDAV inventory cannot authorize deletion. Unused default sources are omitted when an explicit all-vault source assignment supersedes them.
+
+Profiles are per-file policies, not atomic plugin-package upgrades. Package rollback, compatibility checking, safe activation/hot reload, unsaved editor buffers and recovery retention/UI remain separate work. The original `manifest.json` is still required for installation. Do not downgrade builds without restoring equivalent exclusions and source protections.
+
+Tests cover routed execution, migrations, independent source previews and DOM interactions through an Obsidian host shim. Real Obsidian desktop/mobile and live provider accounts have not been exercised by these tests.

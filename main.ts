@@ -1,3 +1,4 @@
+import { SyncWorkspaceModal } from './src/ui/sync-workspace-modal';
 import { ProfileLibraryModal } from './src/ui/profile-library';
 import { compileProfiles, migrateProfilePolicy, STANDARD_PROFILES, validateProfiles, type SyncProfile, type SourceConnection } from './src/core/profiles';
 import { RoutedSource, routedNamespace } from './src/sources/routed-source';
@@ -47,7 +48,7 @@ import { isSourceConfigured, reconnectStatus } from './src/core/config-guards';
 import { FailedQueue } from './src/core/queue';
 import { PathPolicy } from './src/core/path-policy';
 import type { SyncPolicy } from './src/core/policy';
-import { VaultTreeModal, type VaultTreeModalLabels } from './src/ui/vault-tree-modal';
+import type { VaultTreeModalLabels } from './src/ui/vault-tree-modal';
 import { injectPluginCss, removePluginCss } from './src/ui/styles';
 // [W2-T02] чистая display-логика статус-бара (чип Д13 + сегменты состояний)
 import { statusBarView } from './src/ui/statusbar-view';
@@ -146,6 +147,7 @@ const BEFORE_SESSION_TIMEOUT_MS = 10_000;
 type SyncState = 'idle' | 'syncing' | 'error' | 'offline' | 'conflicts' | 'unconfigured';
 
 interface GitSyncSettings {
+        vaultPolicy?: SyncPolicy;
         profiles?: SyncProfile[];
         connections?: SourceConnection[];
         failedQueues?: Record<string, FailedFile[]>;
@@ -1051,13 +1053,14 @@ export default class GitSyncPlugin extends Plugin {
                                         // выборе из онбординга, не только из настроек.
                                         const base = choice === 'obsidian' ? obsidianOnlyPolicy(this.pluginDir()) : fullVaultPolicy(this.pluginDir());
                                         if (!this.settings.syncPolicies) this.settings.syncPolicies = {};
-                                        const existing = this.settings.syncPolicies[this.builtSourceId];
+                                        const existing = this.settings.vaultPolicy ?? this.settings.syncPolicies[this.builtSourceId];
                                         const policy = {
                                                 ...base,
                                                 mirror: existing?.mirror ?? false,
                                                 mirrorFolders: existing?.mirrorFolders,
                                                 fileRules: existing?.fileRules,
                                                 assignments: existing?.assignments,
+                                                defaultSource:existing?.defaultSource,
                                                 // [overhaul v4 / Этап 4] сохраняем кастомные user exclusions
                                                 fileExclusions: mergeFileExclusions(
                                                         base.fileExclusions ?? [],
@@ -1065,6 +1068,7 @@ export default class GitSyncPlugin extends Plugin {
                                                 ),
                                         };
                                         this.settings.syncPolicies[this.builtSourceId] = policy;
+                                        if(this.settings.vaultPolicy)this.settings.vaultPolicy=policy;
                                         this.coordinator?.setSyncPolicy(policy);
                                         void this.saveSettingsImmediate().then(() => void this.syncNow());
                                 });
@@ -1473,6 +1477,7 @@ export default class GitSyncPlugin extends Plugin {
 
 
         private isConfiguredForSource(): boolean {
+                if(this.settings.vaultPolicy)return (this.settings.connections ?? []).some(c=>isSourceConfigured(c.kind,{repoUrl:'',accessToken:'',vaultUrl:'',...c.values}));
                 return isSourceConfigured(this.desiredSourceKind(), {repoUrl:'',accessToken:'',vaultUrl:'',...this.engineValues(this.desiredSourceKind())});
         }
 
@@ -1570,7 +1575,7 @@ export default class GitSyncPlugin extends Plugin {
                 // структурные фильтры и отвечает только за безопасность
                 // (zip-slip, расширения, скрипты, .git, конфликт-копии).
                 // Нет политики — legacy-режим по настройкам syncMode/folders.
-                const hasPolicy = this.settings.syncPolicies?.[this.builtSourceId] !== undefined;
+                const hasPolicy = this.settings.vaultPolicy !== undefined || this.settings.syncPolicies?.[this.builtSourceId] !== undefined;
                 return new PathPolicy({
                         syncMode: hasPolicy ? 'full-vault' : this.settings.syncMode,
                         allowedFolders: hasPolicy ? '' : this.settings.allowedFolders,
@@ -1591,7 +1596,7 @@ export default class GitSyncPlugin extends Plugin {
         private getConfigurationRevision(): number {
                 const kind = this.desiredSourceKind();
                 const config = JSON.stringify({ profiles:this.settings.profiles, connections:this.settings.connections, kind, values: this.engineValues(kind), mirror: this.currentMirrorLevel(),
-                        policy: this.settings.syncPolicies?.[this.makeSourceId(kind)], syncMode: this.settings.syncMode,
+                        policy: this.settings.vaultPolicy ?? this.settings.syncPolicies?.[this.makeSourceId(kind)], syncMode: this.settings.syncMode,
                         allowed: this.settings.allowedFolders, ignored: this.settings.ignoredFolders,
                         plugins: this.settings.allowPlugins, snippets: this.settings.allowSnippets,
                         conflict: this.settings.conflictStrategy, light: this.settings.lightConflictStrategy, trash: this.settings.useTrash });
@@ -1601,9 +1606,9 @@ export default class GitSyncPlugin extends Plugin {
 
         async ensureProfileSettings(): Promise<void> {
                 const previous = structuredClone({profiles:this.settings.profiles,connections:this.settings.connections,
-                        syncPolicies:this.settings.syncPolicies,mirrorLevel:this.settings.mirrorLevel});
+                        syncPolicies:this.settings.syncPolicies,vaultPolicy:this.settings.vaultPolicy,mirrorLevel:this.settings.mirrorLevel});
                 try {
-                const before = JSON.stringify([this.settings.profiles, this.settings.syncPolicies]);
+                const before = JSON.stringify([this.settings.profiles, this.settings.syncPolicies,this.settings.vaultPolicy,this.settings.connections]);
                 const profiles = this.settings.profiles ??= structuredClone([...STANDARD_PROFILES]);
                 this.settings.connections ??= [];
                 validateProfiles(profiles, this.settings.connections);
@@ -1615,13 +1620,25 @@ export default class GitSyncPlugin extends Plugin {
                 }
                 for (const [key, policy] of Object.entries(policies)) policies[key] = migrateProfilePolicy(policy, profiles, key,
                         this.currentMirrorLevel(), this.settings.conflictStrategy, this.settings.lightConflictStrategy ?? 'keep-local');
+                if(!this.settings.vaultPolicy) {
+                        const connectionId='connection_'+id;
+                        if(!this.settings.connections.some(c=>c.id===connectionId))this.settings.connections.push({
+                                id:connectionId,name:i18n.getLocale()==='ru'?'Основной источник':'Default source',
+                                kind:this.desiredSourceKind(),values:this.engineValues(this.desiredSourceKind())});
+                        this.settings.vaultPolicy=structuredClone(policies[id]);
+                        this.settings.vaultPolicy.defaultSource=connectionId;
+                        for(const profile of profiles)if(profile.source==='primary')profile.source=connectionId;
+                        for(const assignment of this.settings.vaultPolicy.assignments ?? [])if(assignment.source==='primary')assignment.source=connectionId;
+                }
+                validateProfiles(profiles,this.settings.connections);
+                compileProfiles(this.settings.vaultPolicy,profiles);
                 const legacyLevel=this.settings.mirrorLevel;this.settings.mirrorLevel='fetch';
-                if (legacyLevel!=='fetch' || before !== JSON.stringify([profiles,policies])) await this.saveSettingsImmediate();
+                if (legacyLevel!=='fetch' || before !== JSON.stringify([profiles,policies,this.settings.vaultPolicy,this.settings.connections])) await this.saveSettingsImmediate();
                 } catch(e) { Object.assign(this.settings,previous); throw e; }
         }
 
         private effectiveProfilePolicy(id: string): SyncPolicy {
-                const policy = this.settings.syncPolicies?.[id] ?? {version:1 as const,mirror:false,folders:[]};
+                const policy = this.settings.vaultPolicy ?? this.settings.syncPolicies?.[id] ?? {version:1 as const,mirror:false,folders:[]};
                 return compileProfiles(policy, this.settings.profiles ?? []);
         }
 
@@ -1629,20 +1646,27 @@ export default class GitSyncPlugin extends Plugin {
                 const kind = this.desiredSourceKind(), id = this.makeSourceId(kind);
                 const policy = this.effectiveProfilePolicy(id), rules = policy.fileRules ?? [];
                 validateProfiles(this.settings.profiles ?? [], this.settings.connections ?? []);
-                const needed = new Set(rules.flatMap(r => r.source && r.source !== 'primary' ? [r.source] : []));
-                const connections = (this.settings.connections ?? []).filter(c=>preview || needed.has(c.id));
-                const descriptors: SourceConnection[] = [{id:'primary',name:'Основной источник',kind,values:this.engineValues(kind)},...connections];
-                for (const c of descriptors) if (!isSourceConfigured(c.kind,{repoUrl:'',accessToken:'',vaultUrl:'',...c.values})) throw new Error(`Source is not configured: ${c.name}`);
-                const identity = descriptors.map(c=>({id:c.id,kind:c.kind,values:Object.fromEntries(
+                const defaultSource=policy.defaultSource ?? (this.settings.vaultPolicy?'unassigned':'primary');
+                const needed = new Set(rules.flatMap(r => r.source ? [r.source] : []));
+                const all=this.settings.connections ?? [];
+                const usesDefault=!rules.some(r=>r.scope==='vault'&&!r.names&&r.source);
+                const descriptors = all.filter(c=>preview || needed.has(c.id) || (usesDefault&&c.id===defaultSource));
+                if(defaultSource==='primary')descriptors.unshift({id:'primary',name:'Default source',kind,values:this.engineValues(kind)});
+                const configured=(c:SourceConnection)=>isSourceConfigured(c.kind,{repoUrl:'',accessToken:'',vaultUrl:'',...c.values});
+                for(const id of needed)if(!descriptors.some(c=>c.id===id&&configured(c)))throw Error('Assigned source is not configured');
+                if(usesDefault&&defaultSource!=='unassigned'&&!descriptors.some(c=>c.id===defaultSource&&configured(c)))throw Error('Default source is not configured; configure it or remove the vault default');
+                const active=descriptors.filter(configured).sort((a,b)=>Number(b.id===defaultSource)-Number(a.id===defaultSource));
+                if(!active.length)throw Error('No configured sources');
+                const identity = active.map(c=>({id:c.id,kind:c.kind,values:Object.fromEntries(
                         EngineRegistry.get(c.kind).settingsSchema.filter(f=>f.type!=='secret' && !f.secret).map(f=>[f.key,c.values[f.key]]))}));
-                const namespace = needed.size ? await routedNamespace(identity,rules,policy.folders) : id;
+                const namespace = this.settings.vaultPolicy ? await routedNamespace({defaultSource,connections:identity},rules,policy.folders) : needed.size ? await routedNamespace(identity,rules,policy.folders) : id;
                 const mapped = (path:string) => {
                         const r=[...policy.folders].filter(r=>r.target && (path===r.path || !r.path || path.startsWith(r.path+'/')))
                                 .sort((a,b)=>b.path.length-a.path.length)[0];
                         return r ? computeLocalPath(path,r.path,r) : path;
                 };
-                const members=descriptors.map(c=>({id:c.id,name:c.name,source:EngineRegistry.create(c.kind,structuredClone(c.values),this.engineCtx(c.kind))}));
-                return {source:new RoutedSource(members,structuredClone(rules),mapped),namespace};
+                const members=active.map(c=>({id:c.id,name:c.name,source:EngineRegistry.create(c.kind,structuredClone(c.values),this.engineCtx(c.kind))}));
+                return {source:new RoutedSource(members,structuredClone(rules),mapped,defaultSource),namespace};
         }
 
         /** Свежесть движка перед сессией: политика, стратегия, источник, sourceId. */
@@ -1664,7 +1688,7 @@ export default class GitSyncPlugin extends Plugin {
                         this.queue.clear(); this.queue.mergeBack(queues[namespace] ?? []);
                         this.cache=nextCache;this.coordinator.setCache(this.cache);
                 }
-                this.builtKind=kind;this.builtSourceId=sourceId;
+                this.builtKind=source.kind;this.builtSourceId=sourceId;
                 this.coordinator.setPolicy(this.makePolicy());
                 this.conflictResolver.setStrategy(this.settings.conflictStrategy);
                 this.conflictResolver.setLightStrategy(this.settings.lightConflictStrategy ?? 'keep-local');
@@ -1751,8 +1775,8 @@ export default class GitSyncPlugin extends Plugin {
                 if (!this.builtSourceId) return;
                 const base = preset === 'obsidian' ? obsidianOnlyPolicy(pluginDir) : fullVaultPolicy(pluginDir);
                 if (!this.settings.syncPolicies) this.settings.syncPolicies = {};
-                const existing = this.settings.syncPolicies[this.builtSourceId];
-                this.settings.syncPolicies[this.builtSourceId] = {
+                const existing = this.settings.vaultPolicy ?? this.settings.syncPolicies[this.builtSourceId];
+                const presetPolicy:SyncPolicy = {
                         ...base,
                         mirror: existing?.mirror ?? false,
                         // [P2/M4] охват зеркала сохраняется (раньше затирался —
@@ -1760,6 +1784,7 @@ export default class GitSyncPlugin extends Plugin {
                         mirrorFolders: existing?.mirrorFolders,
                         fileRules: existing?.fileRules,
                         assignments: existing?.assignments,
+                        defaultSource:existing?.defaultSource,
                         // [overhaul v4 / Этап 4] fileExclusions: берём из base (новый
                         // пресет со стандартными machine-specific исключениями) И
                         // ДОБАВЛЯЕМ существующие пользовательские исключения, которых
@@ -1771,6 +1796,8 @@ export default class GitSyncPlugin extends Plugin {
                         ),
                 };
                 await this.saveSettingsImmediate();
+                this.settings.syncPolicies[this.builtSourceId]=presetPolicy;
+                if(this.settings.vaultPolicy)this.settings.vaultPolicy=presetPolicy;
                 this.coordinator?.setSyncPolicy(this.effectiveProfilePolicy(this.builtSourceId));
         }
 
@@ -1801,7 +1828,11 @@ export default class GitSyncPlugin extends Plugin {
                         const modal=new ProfileLibraryModal(this.app,this.settings.profiles ?? [],this.settings.connections ?? [],async(profiles,connections)=>{
                                 if(revision!==this.getConfigurationRevision())throw new Error('Settings changed; reopen the profile library');
                                 validateProfiles(profiles,connections);
-                                for(const policy of Object.values(this.settings.syncPolicies ?? {}))compileProfiles(policy,profiles);
+                                for(const policy of this.settings.vaultPolicy?[this.settings.vaultPolicy]:Object.values(this.settings.syncPolicies ?? {}))compileProfiles(policy,profiles);
+                                if(this.settings.vaultPolicy){
+                                        const compiled=compileProfiles(this.settings.vaultPolicy,profiles);
+                                        for(const id of [compiled.defaultSource,...(compiled.fileRules??[]).map(r=>r.source)])if(id&&!connections.some(c=>c.id===id))throw Error('Connection is used by a vault assignment');
+                                }
                                 const oldProfiles=this.settings.profiles,oldConnections=this.settings.connections;
                                 this.settings.profiles=profiles;this.settings.connections=connections;
                                 try{await this.saveSettingsImmediate();}catch(e){this.settings.profiles=oldProfiles;this.settings.connections=oldConnections;throw e;}
@@ -1816,70 +1847,33 @@ export default class GitSyncPlugin extends Plugin {
 
         private async openProfileTree(): Promise<void> {
                 await this.ensureProfileSettings();
-                if (!this.coordinator || !this.builtSourceId) {
-                        new Notice(i18n.t.noticeConfigMissing);
-                        return;
-                }
-                if (this.coordinator.isRunning()) {
-                        new Notice(i18n.t.noticePolicyModalBlocked, 3000);
-                        return;
-                }
-                // [overhaul S1/H-3] гейт ДО открытия: fetchRemote модалки тянет
-                // манифест источника в сеть (плюс повторные вызовы из UI).
-                if (!this.assertNetworkAllowed()) return;
-                const sourceId = this.makeSourceId(this.desiredSourceKind());
-                const revision=this.getConfigurationRevision();
-                const abort=new AbortController();
-                const modal = new VaultTreeModal(this.app, {
-                        profiles:structuredClone(this.settings.profiles ?? []),
-                        connections:structuredClone(this.settings.connections ?? []),
-                        onDispose:()=>abort.abort(),
-                        getLocalSnapshot: async () => {
+                const revision=this.getConfigurationRevision(),abort=new AbortController();
+                const modal=new SyncWorkspaceModal(this.app,{
+                        policy:this.settings.vaultPolicy!,profiles:this.settings.profiles ?? [],connections:this.settings.connections ?? [],
+                        pathPolicy:this.makePolicy(),pluginDir:this.pluginDir(),
+                        isRunning:()=>this.sessionOwned || (this.coordinator?.isRunning() ?? false),
+                        local:async()=>{
                                 const snapshot=await scanVaultTree(this.makeVaultAdapter(),{signal:abort.signal,
                                         pruneFolder:path=>path==='.git'||path==='.trash'||path===`${this.pluginDir()}/recovery-v2`});
                                 return {files:snapshot.files,folders:snapshot.folders};
                         },
-                        getCache: () => {
-                                const entries = this.cache.entries();
-                                const map = new Map<string, CacheEntry>();
-                                for (const [path, entry] of Object.entries(entries)) {
-                                        map.set(path, { ...entry });
-                                }
-                                // [5-диагностика] видимость состояния кэша для отладки
-                                // «синхронизированные файлы показаны local-only».
-                                this.verboseLog(
-                                        `policy modal: sourceId=${this.builtSourceId}, ` +
-                                        `cache entries=${map.size}, generatedAt файла кэша см. в manifest-файле`);
-                                return map;
+                        fetch:async(connection,signal)=>{
+                                if(!this.assertNetworkAllowed())throw Error(i18n.getLocale()==='ru'?'Доступ к источнику заблокирован':'Source access blocked');
+                                if(!isSourceConfigured(connection.kind,{repoUrl:'',accessToken:'',vaultUrl:'',...connection.values}))throw Error('Source is not configured');
+                                const source=EngineRegistry.create(connection.kind,structuredClone(connection.values),this.engineCtx(connection.kind));
+                                try{return await source.getManifest(signal);}finally{await source.dispose?.();}
                         },
-                        pluginDir: this.pluginDir(),
-                        fetchRemote: async () => {
-                                if (!this.assertNetworkAllowed()) throw new Error('Source access blocked');
-                                if(revision!==this.getConfigurationRevision())throw new Error('Settings changed; reopen the tree');
-                                const {source}=await this.routingContext(true);
-                                try {
-                                        const entries=await source.previewManifest(abort.signal);
-                                        if(revision!==this.getConfigurationRevision())throw new Error('Settings changed; reopen the tree');
-                                        return entries;
-                                } finally { await source.dispose(); }
+                        dispose:()=>abort.abort(),
+                        save:async(policy,connections)=>{
+                                if(revision!==this.getConfigurationRevision()||this.sessionOwned||this.coordinator?.isRunning())throw Error('Settings changed or sync started; reopen the tree');
+                                validateProfiles(this.settings.profiles ?? [],connections);
+                                const compiled=compileProfiles(policy,this.settings.profiles ?? []);
+                                for(const source of [policy.defaultSource,...(compiled.fileRules ?? []).map(r=>r.source)])if(source&&!connections.some(c=>c.id===source))throw Error('Missing source connection');
+                                const previous={vaultPolicy:this.settings.vaultPolicy,connections:this.settings.connections};
+                                this.settings.vaultPolicy=structuredClone(policy);this.settings.connections=structuredClone(connections);
+                                try{await this.saveSettingsImmediate();}catch(e){Object.assign(this.settings,previous);throw e;}
                         },
-                        pathPolicy: this.makePolicy(),
-                        initialPolicy: this.effectiveProfilePolicy(sourceId),
-                        // [W2-T07 wiring] глобальный уровень из настроек: модалка
-                        // показывает честные статусы по РЕАЛЬНОМУ уровню сессии.
-                        mirrorLevel: () => this.currentMirrorLevel(),
-                        isSyncRunning: () => this.coordinator?.isRunning() ?? false,
-                        onSave: async (policy) => {
-                                if(revision!==this.getConfigurationRevision()||this.coordinator.isRunning())throw new Error('Settings changed or sync started; reopen the tree');
-                                compileProfiles(policy,this.settings.profiles ?? []);
-                                const stored=structuredClone(policy);delete stored.fileRules;
-                                const policies=this.settings.syncPolicies ??= {},previous=policies[sourceId];policies[sourceId]=stored;
-                                try{await this.saveSettingsImmediate();}catch(e){policies[sourceId]=previous;throw e;}
-                        },
-                        labels: i18n.t.vts,
-                });
-                trackModal(modal); // [overhaul S3/M-18] (VaultTreeModal: onClose — метод класса, обёртка его сохраняет)
-                modal.open();
+                });trackModal(modal);modal.open();
         }
 
         async syncNow(): Promise<void> {
@@ -2641,184 +2635,13 @@ class GitSyncSettingTab extends PluginSettingTab {
                 // ════════════════════════════════════════════════════════════════
                 // 1. Источник (Source) — движок + реквизиты подключения + mobile limit.
                 // ════════════════════════════════════════════════════════════════
-                const connectionEl = containerEl.createEl('details');
-                connectionEl.createEl('summary', {text: this.plugin.settings.language==='ru'?'Основной источник':'Primary source'});
-
-                // [W3-T03] schema-driven рендер: dropdown options и поля — из реестра.
-                // Прежде каждый движок = новый if-каскад в display() (§8.1 аудита);
-                // теперь — цикл по EngineRegistry.all() для дропдауна и цикл по
-                // EngineDescriptor.settingsSchema для полей. Добавление движка —
-                // одна строка register() в registry.ts, без правок здесь.
-                new Setting(connectionEl)
-                        .setName(t.settSourceType).setDesc(t.settSourceTypeDesc)
-                        .addDropdown(dd => {
-                                // [W3-T03] dropdown строится из реестра; порядок = порядок
-                                // регистрации (git → yandex → zip-url, тесты engines-registry.test.ts).
-                                for (const d of EngineRegistry.all()) {
-                                        // [P0/P0-6] экспериментальные движки — суффикс в дропдауне.
-                                        dd.addOption(d.kind, resolveLabel(t, d.labelKey) + (d.experimental ? ` ${t.experimentalTag}` : ''));
-                                }
-                                dd.setValue(this.plugin.settings.sourceType)
-                                        .onChange(async v => {
-                                                this.plugin.settings.sourceType = v as 'git' | 'zip-url' | 'yandex' | 'gdrive' | 'webdav';
-                                                await this.plugin.saveSettingsImmediate();
-                                                // [7-d] риск §17-10: предупреждение о судьбе кэшей
-                                                new Notice(t.noticeSourceSwitched, 10000);
-                                                this.display();
-                                        });
-                        });
-
-                // [W3-T03] Поля движка — из settingsSchema. Switch по field.type:
-                // text/url/secret → addText (secret с password + toggle);
-                // select → addDropdown с options[]; toggle → addToggle; number → addText.
-                {
-                        const kind = this.plugin.settings.sourceType;
-                        const desc = EngineRegistry.get(kind);
-                        const s = this.plugin.settings as unknown as Record<string, unknown>;
-                        connectionEl.createEl('h3', { text: t.settConnection });
-
-                        // [P0/P0-6] экспериментальный движок — явное предупреждение
-                        // над полями подключения (inline-стиль: styles.css ещё не
-                        // входит в поставку, M14).
-                        if (desc.experimental) {
-                                const warn = connectionEl.createEl('p', { text: t.noticeExperimentalEngine });
-                                warn.style.color = 'var(--text-warning)';
-                                warn.style.fontStyle = 'italic';
-                                warn.style.margin = '0 0 12px 0';
-                        }
-
-                        for (const field of desc.settingsSchema) {
-                                const label = resolveLabel(t, field.labelKey);
-                                const help = field.helpKey ? resolveLabel(t, field.helpKey) : '';
-                                const placeholder = field.placeholderKey ? resolveLabel(t, field.placeholderKey) : '';
-                                // required-маркер (звёздочка) — на той же строке, что и label.
-                                const requiredMark = field.required ? ` ${t.efl.required}` : '';
-                                const name = `${label}${requiredMark}`;
-
-                                if (field.type === 'select') {
-                                        new Setting(connectionEl)
-                                                .setName(name)
-                                                .setDesc(help)
-                                                .addDropdown(dd => {
-                                                        for (const opt of field.options ?? []) {
-                                                                dd.addOption(opt.value, resolveLabel(t, opt.labelKey));
-                                                        }
-                                                        dd.setValue(String(s[field.key] ?? field.default ?? ''))
-                                                                .onChange(async v => {
-                                                                        s[field.key] = v;
-                                                                        await this.plugin.saveSettingsImmediate();
-                                                                });
-                                                });
-                                        continue;
-                                }
-
-                                if (field.type === 'toggle') {
-                                        new Setting(connectionEl)
-                                                .setName(name)
-                                                .setDesc(help)
-                                                .addToggle(toggle => toggle
-                                                        .setValue(Boolean(s[field.key] ?? false))
-                                                        .onChange(async v => {
-                                                                s[field.key] = v;
-                                                                await this.plugin.saveSettingsImmediate();
-                                                        }));
-                                        continue;
-                                }
-
-                                if (field.type === 'number') {
-                                        new Setting(connectionEl)
-                                                .setName(name)
-                                                .setDesc(help)
-                                                .addText(text => text
-                                                        .setPlaceholder(placeholder)
-                                                        .setValue(String(s[field.key] ?? ''))
-                                                        .onChange(async v => {
-                                                                const n = parseInt(v, 10);
-                                                                s[field.key] = Number.isFinite(n) ? n : 0;
-                                                                await this.plugin.saveSettingsImmediate();
-                                                        }));
-                                        continue;
-                                }
-
-                                // text / url / secret — все addText (secret с password)
-                                new Setting(connectionEl)
-                                        .setName(name)
-                                        .setDesc(help)
-                                        .addText(text => {
-                                                if (field.type === 'secret') {
-                                                        text.inputEl.type = 'password';
-                                                }
-                                                text.setPlaceholder(placeholder)
-                                                        .setValue(String(s[field.key] ?? ''))
-                                                        .onChange(v => {
-                                                                const trimmed = v.trim();
-                                                                // [BUG-?] git repoUrl — валидация формата на лету
-                                                                // (видимая пользователю граница красным/зелёным).
-                                                                // Сохраняется легаси-поведение 2.3.3; новые движки
-                                                                // не имеют parse* функции и этот блок не выполняется.
-                                                                if (field.key === 'repoUrl' && kind === 'git') {
-                                                                        const isValid = !trimmed || GitSource.parseGitUrl(trimmed) !== null;
-                                                                        text.inputEl.style.borderColor = isValid ? 'var(--interactive-success)' : 'var(--text-error)';
-                                                                }
-                                                                s[field.key] = trimmed;
-                                                                this.plugin.saveSettings();
-                                                        });
-                                                // [5-token-toggle] для secret — кнопка показать/скрыть
-                                                if (field.type === 'secret') {
-                                                        const wrapper = text.inputEl.parentElement;
-                                                        if (wrapper) {
-                                                                const toggleBtn = wrapper.createEl('button', {
-                                                                        text: '\u{1F441}', cls: 'git-sync-token-toggle', attr: { type: 'button' }
-                                                                });
-                                                                toggleBtn.style.marginLeft = '6px';
-                                                                toggleBtn.style.cursor = 'pointer';
-                                                                toggleBtn.addEventListener('click', () => {
-                                                                        text.inputEl.type = text.inputEl.type === 'password' ? 'text' : 'password';
-                                                                        toggleBtn.textContent = text.inputEl.type === 'password' ? '\u{1F441}' : '\u{1F648}';
-                                                                });
-                                                        }
-                                                }
-                                        });
-                        }
-
-                        // Test Connection — для всех движков (git имеет собственный метод;
-                        // zip-url — лёгкий Range-путь; yandex — полный getManifest).
-                        new Setting(connectionEl)
-                                .setName(t.settTestConnection).setDesc(t.settTestConnectionDesc)
-                                .addButton(btn => btn.setButtonText(t.settTestConnectionBtn)
-                                        .onClick(async () => { await this.plugin.testConnection(); }));
-                }
-
-                // [Phase 5.1] лимит архива — свойство АРХИВНЫХ движков (yandex/zip-url
-                // качают vault единым архивом). Git загружает пофайлово — для него
-                // настройка бессмысленна и не показывается.
-                if (this.plugin.settings.sourceType !== 'git') {
-                        new Setting(connectionEl)
-                                .setName(t.settMobileWarn).setDesc(t.settMobileWarnDesc)
-                                .addText(text => text
-                                        .setPlaceholder('200')
-                                        .setValue(String(this.plugin.settings.mobileArchiveWarnBytes))
-                                        .onChange(v => {
-                                                const n = parseInt(v, 10);
-                                                this.plugin.settings.mobileArchiveWarnBytes = Number.isFinite(n) && n >= 0 ? n : 200;
-                                                this.plugin.saveSettings();
-                                        }));
-                }
-
-                // ════════════════════════════════════════════════════════════════
-                // 2. Поведение (Behavior) — пресет охвата + уровень зеркала +
-                // стратегия конфликтов (только fetch) + Use Trash + Security +
-                // Language. [W1-T05 / BUG-5] тумблер deleteMissing удалён: уровни
-                // mirrorLevel его поглотили (матрица §2.2 — light/full имеют свою
-                // семантику конфликтов, не управляются отдельным тумблером).
-                // ════════════════════════════════════════════════════════════════
                 containerEl.createEl('h3', { text: this.plugin.settings.language==='ru'?'Профили и назначения':'Profiles and assignments' });
                 new Setting(containerEl).setName(this.plugin.settings.language==='ru'?'Дерево файлов':'File tree')
                         .setDesc(this.plugin.settings.language==='ru'?'Область синхронизации, источники и назначение профилей файлам и папкам.':'Sync scope, sources and profile assignments for files and folders.')
                         .addButton(b=>b.setButtonText(this.plugin.settings.language==='ru'?'Открыть дерево':'Open tree').setCta().onClick(()=>this.plugin.openVaultTreeModal()));
                 new Setting(containerEl).setName(this.plugin.settings.language==='ru'?'Стандартные и пользовательские профили':'Standard and custom profiles')
                         .addButton(b=>b.setButtonText(this.plugin.settings.language==='ru'?'Библиотека профилей':'Profile library').onClick(()=>this.plugin.openProfileLibrary(false)));
-                new Setting(containerEl).setName(this.plugin.settings.language==='ru'?'Дополнительные подключения':'Additional connections')
+                new Setting(containerEl).setName(this.plugin.settings.language==='ru'?'Подключения источников':'Source connections')
                         .addButton(b=>b.setButtonText(this.plugin.settings.language==='ru'?'Подключения':'Connections').onClick(()=>this.plugin.openProfileLibrary(true)));
                 new Setting(containerEl).setName(t.settUseTrash).setDesc(t.settUseTrashDesc)
                         .addToggle(toggle=>toggle.setValue(this.plugin.settings.useTrash).onChange(v=>{this.plugin.settings.useTrash=v;this.plugin.saveSettings();}));

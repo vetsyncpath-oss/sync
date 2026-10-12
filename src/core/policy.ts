@@ -74,6 +74,8 @@ export interface SyncPolicy {
         /** Independent rules on final vault paths; absent = legacy modes. */
         fileRules?: FileRule[];
         assignments?: ProfileAssignment[];
+        /** Vault-wide default connection; assignments override it. */
+        defaultSource?: string;
         /**
          * [W1-T05 / BUG-5] Легаси-тумблер зеркала 2.3.3. Как источник правды
          * об удалениях УМЕР (двойная система BUG-5): поле остаётся в типе
@@ -383,7 +385,7 @@ export function applyPolicy(
 
                 // (c) Локальный путь: самое длинное совпавшее правило С target.
                 let localPath = remotePath;
-                for (const ir of indexed) {
+                for (const ir of entry.resolvedDestination ? [] : indexed) {
                         if (!ruleMatches(remotePath, ir.remoteKey)) continue;
                         if (ir.rule.target) {
                                 localPath = computeLocalPath(remotePath, ir.remoteKey, ir.rule);
