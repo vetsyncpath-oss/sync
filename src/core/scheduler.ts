@@ -1,33 +1,5 @@
-// ============================================================
-// --- CORE/SCHEDULER (W4-T01) ---
-// Авто-синхронизация: интервалы 15/30/60/120 мин, «только при
-// запуске» и «выкл» (дефолт); стартовая задержка 30–60 с;
-// пауза до перезапуска; «следующая через N мин»; авто-ретраи
-// failed-очереди не чаще 1/час, уважая существующий backoff
-// (FailedQueue.takeDue сам по себе уважает nextRetryAt —
-// дополнительный гейт_SCHEDULER_RETRY_MIN_INTERVAL_MS страховки).
-//
-// Дизайн-принципы:
-//   1. Чистое ядро — НЕТ импортов obsidian/node. Время — инъекция
-//      через SchedulerDeps.now(); таймеры — через setInterval/
-//      clearInterval (инъекция для fake-timers в тестах).
-//   2. Идемпотентность: start/setInterval/reconfigure можно звать
-//      в любом порядке; текущий таймер снимается перед новой
-//      установкой (нет «осиротевших таймеров»).
-//   3. Пауза — отдельный флаг; интервал остаётся в настройках,
-//      но таймер снят. resume() рестартует с учётом времени,
-//      оставшегося до следующего тика (или со стартовой задержкой,
-//      если интервал ещё не наработал).
-//   4. Триггер 'auto' отличим от 'retry' — coordinator (W4-T02)
-//      использует headless-режим только для 'auto'.
-//
-// Контракт приёмки (план W4-T01):
-//   - срабатывание по интервалу (fake-timers: ровно 1 вызов за N мин);
-//   - задержка старта (первый тик через startDelayMs, не сразу);
-//   - пауза (pause → 0 вызовов, resume → продолжение);
-//   - backoff-уважение (retry-тик не вызывает trigger, когда
-//     FailedQueue.takeDue пуст — то есть не пришло время повтора).
-// ============================================================
+// Automatic ticks are serialized. Each fresh auto plan includes due failed files;
+// there is no competing manual retry session. off/startup-only retain their semantics.
 
 import type { FailedQueue } from './queue';
 
@@ -60,16 +32,6 @@ const INTERVAL_MINUTES: Record<SchedulerInterval, number> = {
 export const DEFAULT_START_DELAY_MS = 30_000;
 
 /**
- * Минимальный интервал между авто-ретраями failed-очереди, мс (1 час
- * по плану W4-T01). Even though FailedQueue.takeDue уже уважает
- * nextRetryAt, этот гейт страхует от частых триггеров retry-сессий
- * на 15-мин авто-интервале (после каждого retry backoff снова растёт
- * — кап 30 с; 4 retry за час = 1+2+4+8 = 15 с от retry-волн, но
- * каждая новая retry-сессия видит более глубокий backoff).
- */
-const RETRY_MIN_INTERVAL_MS = 60 * 60 * 1000;
-
-/**
  * Инъекция зависимостей: триггер сессии и retry, текущее время, таймеры.
  * Все колбэки — внешние; сам Scheduler не знает про Coordinator/main.
  *
@@ -82,9 +44,7 @@ const RETRY_MIN_INTERVAL_MS = 60 * 60 * 1000;
 export interface SchedulerDeps {
         /** Запустить авто-сессию (headless-режим см. W4-T02). */
         onAutoTick(): void | Promise<void>;
-        /** Запустить retry-сессию дозревших записей (см. coordinator.retryFailed).
-         *  Scheduler не лезет в очередь — лишь зовёт; если takeDue пуст,
-         *  retryFailed сам скажет «nothing to retry». */
+        /** Legacy callback retained for compatibility; ticks use onAutoTick only. */
         onAutoRetry(): void | Promise<void>;
         /** Доступ к failed-очереди для гейта «есть ли дозревшие». */
         queue: FailedQueue;
@@ -187,8 +147,7 @@ export class Scheduler {
                 // [W4-T01] гейт retry активен и в startup-only: пользователь
                 // вернулся, например, к неработающему vault — нужны дозревшие
                 // ретраи.
-                this.tickRetryGate();
-                void this.deps.onAutoTick();
+                void this.runTick();
             }, this.startDelayMs);
             return;
         }
@@ -201,14 +160,12 @@ export class Scheduler {
             // 1-й тик сработал — переключаемся на периодический режим.
             this.lastAutoTickAt = this.now();
             this.nextTickAt = this.now() + ms;
-            this.tickRetryGate();
-            void this.deps.onAutoTick();
+            void this.runTick();
             // Дальнейшие тики — каждые ms через setInterval.
             this.timer = this._setInterval(() => {
                 this.lastAutoTickAt = this.now();
                 this.nextTickAt = this.now() + ms;
-                this.tickRetryGate();
-                void this.deps.onAutoTick();
+                void this.runTick();
             }, ms);
             this.timerIsInterval = true;
         }, this.startDelayMs);
@@ -287,21 +244,16 @@ export class Scheduler {
         }
     }
 
-    /**
-     * Гейт retry: зовётся на каждом авто-тике. Если очередь непуста И
-     * последний retry был ≥ 1 часа назад (или его вообще не было) —
-     * зовёт onAutoRetry. Иначе — пропускает (backoff уже растёт).
-     *
-     * Не лезет в очередь напрямую — лишь консультирует size(). Если
-     * takeDue пуст, onAutoRetry (через coordinator.retryFailed) сам
-     * сообщит «nothing to retry» — это не ошибка, а штатное поведение.
-     */
-    private tickRetryGate(): void {
-        if (this.deps.queue.size() === 0) return;
-        const now = this.now();
-        const sinceLast = this.lastRetryAt === null ? Infinity : now - this.lastRetryAt;
-        if (sinceLast < RETRY_MIN_INTERVAL_MS) return;
-        this.lastRetryAt = now;
-        void this.deps.onAutoRetry();
+    private ticking=false;
+    private async runTick():Promise<void> {
+        if(this.ticking)return;
+        this.ticking=true;
+        try {
+            // Normal automatic sync already includes due failed files and creates a
+            // fresh plan. A second retry session raced it and could open manual UI.
+            if(this.deps.queue.all().some(f=>!f.poisoned&&f.nextRetryAt<=this.now()))this.lastRetryAt=this.now();
+            await this.deps.onAutoTick();
+        } catch(error) { console.error('[VaultSync] automatic sync failed:',error); }
+        finally {this.ticking=false;}
     }
 }

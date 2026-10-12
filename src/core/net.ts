@@ -47,15 +47,17 @@ export class NetError extends Error {
         readonly status?: number;
         /** Номер неудачной попытки, 1-based. */
         readonly attempt?: number;
+        readonly retryAfterMs?:number;
         /** true — операция прервана отменой синхронизации, а не сетевым сбоем. */
         readonly aborted?: boolean;
         /** true — ожидание rate-limit превысило maxRateLimitWaitMs (сразу, без ретраев). */
         readonly rateLimitExceeded?: boolean;
 
-        constructor(message: string, opts?: { status?: number; attempt?: number; aborted?: boolean; rateLimitExceeded?: boolean }) {
+        constructor(message: string, opts?: { retryAfterMs?:number; status?: number; attempt?: number; aborted?: boolean; rateLimitExceeded?: boolean }) {
                 super(message);
                 this.name = 'NetError';
                 this.status = opts?.status;
+                this.retryAfterMs=opts?.retryAfterMs;
                 this.attempt = opts?.attempt;
                 this.aborted = opts?.aborted;
                 this.rateLimitExceeded = opts?.rateLimitExceeded;
@@ -91,7 +93,7 @@ function errText(err: unknown): string {
  * или отменяется во время ожидания. Листенер сигнала честно снимается
  * по завершению в обоих путях (нет «таймеров-сирот», аналог Б-03).
  */
-function sleepInterruptible(ms: number, signal?: AbortSignal): Promise<void> {
+export function sleepInterruptible(ms: number, signal?: AbortSignal): Promise<void> {
         return new Promise<void>((resolve, reject) => {
                 if (signal?.aborted) {
                         reject(new NetError('aborted before wait started', { aborted: true }));
@@ -135,7 +137,8 @@ function rateLimitWaitMs(response: NetResponse, defaultWaitMs: number): number {
         const raw = response.headers['retry-after'];
         if (raw === undefined || raw.trim() === '') return defaultWaitMs;
         const seconds = Number(raw);
-        if (!Number.isFinite(seconds) || seconds < 0) return defaultWaitMs;
+        if (!Number.isFinite(seconds)) {const date=Date.parse(raw);return Number.isFinite(date)?Math.max(0,date-Date.now()):defaultWaitMs;}
+        if(seconds<0)return defaultWaitMs;
         return seconds * 1000;
 }
 
@@ -221,13 +224,13 @@ export class NetLayer {
                                         discardBody();
                                         throw new NetError(
                                                 `rate limit wait ${waitMs}ms exceeds cap ${options.maxRateLimitWaitMs}ms`,
-                                                { status, attempt, rateLimitExceeded: true }
+                                                { status, attempt, rateLimitExceeded: true, retryAfterMs:waitMs }
                                         );
                                 }
                                 if (attempt >= retries) {
                                         discardBody();
                                         throw new NetError(`rate limit (HTTP ${status}) persisted after ${attempt} attempt(s)`, {
-                                                status, attempt,
+                                                retryAfterMs:waitMs, status, attempt,
                                         });
                                 }
                                 options.onRateLimitWait?.(waitMs, attempt);
@@ -236,7 +239,7 @@ export class NetLayer {
                                 continue;
                         }
 
-                        if (status >= 500) {
+                        if (status >= 500 || status === 408) {
                                 if (attempt >= retries) {
                                         discardBody();
                                         throw new NetError(`server error (HTTP ${status}) after ${attempt} attempt(s)`, {
@@ -379,13 +382,13 @@ export class NetLayer {
                                         discardBody();
                                         throw new NetError(
                                                 `rate limit wait ${waitMs}ms exceeds cap ${options.maxRateLimitWaitMs}ms`,
-                                                { status, attempt, rateLimitExceeded: true }
+                                                { status, attempt, rateLimitExceeded: true, retryAfterMs:waitMs }
                                         );
                                 }
                                 if (attempt >= retries) {
                                         discardBody();
                                         throw new NetError(`rate limit (HTTP ${status}) persisted after ${attempt} attempt(s)`, {
-                                                status,
+                                                retryAfterMs:waitMs, status,
                                                 attempt,
                                         });
                                 }
@@ -396,7 +399,7 @@ export class NetLayer {
                         }
 
                         // 5xx — серверный сбой, ретраится с бэкоффом.
-                        if (status >= 500) {
+                        if (status >= 500 || status === 408) {
                                 if (attempt >= retries) {
                                         discardBody();
                                         throw new NetError(`server error (HTTP ${status}) after ${attempt} attempt(s)`, {

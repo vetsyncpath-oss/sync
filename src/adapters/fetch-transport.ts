@@ -31,6 +31,12 @@ export interface FetchTransportOptions {
         bodyTimeoutMs?: number;
 }
 
+export class RequestTimeoutError extends Error {
+        constructor(readonly phase:'headers'|'body',readonly timeoutMs:number) {
+                super(`Request timeout during ${phase} after ${timeoutMs}ms`);this.name='RequestTimeoutError';
+        }
+}
+
 export class FetchTransport implements NetTransport {
         private readonly timeoutMs: number;
         private readonly bodyTimeoutMs: number;
@@ -44,8 +50,9 @@ export class FetchTransport implements NetTransport {
                 if (options.signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
                 const timeoutController = new AbortController();
                 let timer: ReturnType<typeof setTimeout> | undefined;
-                const arm = (ms: number): void => {
-                        timer = setTimeout(() => timeoutController.abort(), ms);
+                let timeout:RequestTimeoutError|undefined;
+                const arm = (ms: number,phase:'headers'|'body'): void => {
+                        timer = setTimeout(() => {timeout=new RequestTimeoutError(phase,ms);timeoutController.abort(timeout);}, ms);
                 };
                 const disarm = (): void => {
                         if (timer !== undefined) {
@@ -62,7 +69,7 @@ export class FetchTransport implements NetTransport {
                         external?.removeEventListener('abort', onExternalAbort);
                 };
                 try {
-                        arm(this.timeoutMs);
+                        arm(this.timeoutMs,'headers');
                         const response = await fetch(url, {
                                 method: options.method ?? 'GET',
                                 headers: options.headers,
@@ -77,8 +84,8 @@ export class FetchTransport implements NetTransport {
                         });
                         // [P1/M6] фаза заголовков прошла — перевооружаемся на тело.
                         disarm();
-                        arm(this.bodyTimeoutMs);
-                        const guarded = <T>(p: Promise<T>): Promise<T> => p.finally(finish);
+                        arm(this.bodyTimeoutMs,'body');
+                        const guarded = <T>(p: Promise<T>): Promise<T> => p.catch(error=>{throw external?.aborted?new DOMException('Request aborted','AbortError'):timeout??error;}).finally(finish);
                         // [overhaul S3/M-12] discard(): явное освобождение БЕЗ чтения
                         //  тела — для веток, где тело не потребляется (4xx/429/5xx/
                         //  304 в NetLayer): раньше таймер и внешний abort-listener
@@ -105,7 +112,7 @@ export class FetchTransport implements NetTransport {
                         };
                 } catch (e) {
                         finish();
-                        throw e;
+                        throw external?.aborted?new DOMException('Request aborted','AbortError'):timeout??e;
                 }
         }
 }

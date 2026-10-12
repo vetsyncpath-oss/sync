@@ -1,3 +1,4 @@
+import { NetError } from './net';
 import { resolveFileRule, validateFileRules } from './file-rules';
 // ============================================================
 // --- CORE/COORDINATOR (фаза 4-2) ---
@@ -667,7 +668,7 @@ export class Coordinator {
          * записи; они НЕ извлекаются из очереди заранее — повторная ошибка
          * наращивает retryCount через add(), удавшиеся удаляются после.
          */
-        async retryFailed(): Promise<SyncStats | null> {
+        async retryFailed(trigger:'manual'|'auto'='manual'): Promise<SyncStats | null> {
                 const { ui, messages: m } = this.current;
                 // [P1/BUG-20] guard ДО confirm-модалки: при идущей синхронизации
                 // пользователь раньше сначала отвечал на confirm, а уже потом
@@ -677,7 +678,7 @@ export class Coordinator {
                 // [overhaul S6 / D-4] двойная защита: parked-записи не «дозревают»
                 // (nextRetryAt = MAX_SAFE_INTEGER) И исключаются явно — ни скачок
                 // часов, ни иная логика выбора now не может вернуть их в оборот.
-                const due = this.current.queue.all().filter((f) => f.nextRetryAt <= now && f.poisoned !== true);
+                const due = this.current.queue.all().filter((f) => trigger==='manual'||(f.nextRetryAt <= now && f.poisoned !== true));
                 if (due.length === 0) {
                         // [overhaul S6 / D-4] parked-записи не «дозревают» никогда
                         // (nextRetryAt = MAX_SAFE_INTEGER): молчаливое «нечего
@@ -691,7 +692,7 @@ export class Coordinator {
                         ui.notify(this.current.queue.size() > 0 ? m.retryNotDue(this.current.queue.size()) : m.nothingToRetry);
                         return null;
                 }
-                if (this.current.ui.confirmRetry && !(await this.current.ui.confirmRetry(due.length))) return null;
+                if (trigger!=='auto' && this.current.ui.confirmRetry && !(await this.current.ui.confirmRetry(due.length))) return null;
 
                 const forced = new Set(due.map((f) => f.path));
                 // [4-review-fix] очередь обслуживается ТОЛЬКО самолечением в
@@ -699,7 +700,7 @@ export class Coordinator {
                 // «манифест-исключение» и «отмена посередине батча» не могут
                 // вычистить непробованные/прерванные записи. Упавшие здесь уже
                 // обновлены add() (retryCount++, новый backoff).
-                const stats = await this.sync({ forcedPaths: forced });
+                const stats = await this.sync({ forcedPaths: forced, trigger });
                 // [overhaul S6 / D-4] финал retry-сессии: если что-то припарковалось
                 // за этот прогон (или было припарковано ранее) — прямо сказать,
                 // что автоповторы для этих файлов прекращены.
@@ -825,10 +826,12 @@ export class Coordinator {
                 // был протечкой git-ограничения в облачные движки.
                 const maxFileSize = o.maxFileSizeBytes ?? source.maxFileSizeBytes ?? Infinity;
                 const maxFileSizeLabel = formatBytes(maxFileSize);
-                const concurrency = Number.isSafeInteger(o.concurrency) && o.concurrency! > 0
+                const requestedConcurrency = Number.isSafeInteger(o.concurrency) && o.concurrency! > 0
                         ? o.concurrency! : DEFAULT_CONCURRENCY;
+                const concurrency=Math.min(requestedConcurrency,source.maxConcurrentDownloads??Infinity);
                 const totalBytes = files.reduce((s, f) => s + f.size, 0);
                 let transferred = 0;
+                let persistenceFailure:Error|undefined;
 
                 const results = await pMap(files, async (file) => {
                         // [W1-T01 / BUG-4] ранний выход мапера обязан маркировать
@@ -838,7 +841,9 @@ export class Coordinator {
                                 this.abortedThisSession = true;
                                 return;
                         }
+                        let phase='download';
                         try {
+                                if(persistenceFailure)throw persistenceFailure;
                                 const previousFailure = queue.all().find(f => f.path === file.path);
                                 if (previousFailure && previousFailure.hash !== file.hash) queue.delete(file.path);
                                 if (file.size > maxFileSize) {
@@ -853,8 +858,10 @@ export class Coordinator {
                                         remotePath === undefined ? file : { ...file, path: remotePath },
                                         signal,
                                 )).slice(0);
+                                phase='verify';
                                 await verifyRemoteData(file, buffer);
                                 signal.throwIfAborted();
+                                phase='prepare-directory';
                                 await this.dirLock.ensure(vault, file.path);
                                 // Матрица §9.1 (фиксы Б-01/Б-02): кэш-хэш = применённая версия.
                                 // [W1-T06/T07] Per-файловый уровень зеркала: конфликты
@@ -868,7 +875,7 @@ export class Coordinator {
                                         appliedLocalSha256: mutations?.store.baseline(namespace, file.path)?.localSha256,
                                         write: async (path: string, data: ArrayBuffer, _expected: ArrayBuffer | null, incoming = false) => {
                                                 const expected = incoming ? MISSING : planned.expected;
-                                                const guard = () => this.guard(path, incoming);
+                                                const guard = () => {if(persistenceFailure)throw persistenceFailure;this.guard(path, incoming);};
                                                 guard();
                                                 if (mutations) await mutations.write(namespace, {
                                                         id: incoming ? `${planned.id}-incoming` : planned.id, planId: this.plan!.id, path, before: expected,
@@ -889,6 +896,7 @@ export class Coordinator {
                                                 }
                                         },
                                 };
+                                phase='apply';
                                 const outcome = await conflict.safeWrite(file, buffer, cache.get(file.path)?.h, fileLevel, signal, transaction,
                                         resolveFileRule(file.path, this.current.syncPolicy?.fileRules).write,
                                         resolveFileRule(file.path, this.current.syncPolicy?.fileRules).conflict, allowAsk);
@@ -912,19 +920,28 @@ export class Coordinator {
                                         stats.skipped++;
                                         ui.notify(m.conflictKeptLocal(file.path));
                                 }
+                                phase='checkpoint';
                                 await this.checkpoint();
                         } catch (e: any) {
                                 if (e?.aborted || e?.name === 'AbortError' || this.shouldCancel) {
                                         this.abortedThisSession = true;
                                         return;
                                 }
+                                if(phase==='checkpoint'||persistenceFailure){
+                                        if(!persistenceFailure){
+                                                persistenceFailure=Object.assign(new Error('Checkpoint failed after file processing; sync stopped without re-queuing applied files'),{cause:e});
+                                                console.error('[VaultSync] checkpoint FAILED:',e);
+                                        }
+                                        throw persistenceFailure;
+                                }
                                 // [5-логи] полный контекст ошибки загрузки: путь, размер,
                                 // попытка — для диагностики EEXIST и сетевых сбоев.
                                 console.error(
-                                        `[VaultSync] download FAILED: "${file.path}" (${file.size}B, hash=${file.hash.slice(0, 12)}…): ` +
+                                        `[VaultSync] ${phase} FAILED: "${file.path}" (${file.size}B, hash=${file.hash.slice(0, 12)}…): ` +
                                                 `${e?.message ?? String(e)}`,
                                 );
-                                queue.add(file, e?.message ?? String(e), Date.now());
+                                queue.add(file, `${phase}: ${e?.message ?? String(e)}`, Date.now(),
+                                        e instanceof NetError && !e.aborted && (e.status===undefined||e.status===429||e.status===408||e.status>=500)?'transient':'blocked',e instanceof NetError?e.retryAfterMs:undefined);
                                 stats.failed++;
                         }
                         transferred += file.size;

@@ -1905,8 +1905,8 @@ export default class GitSyncPlugin extends Plugin {
                         // [overhaul S2/M-7] плавающие промосы тиков — под .catch:
                         // scheduler живёт в core/ (без Notice) и глотать отказы не
                         // имеет права; runSession теперь тотален, это страховка.
-                        onAutoTick: () => { this.runAutoSession().catch((e) => console.error('[VaultSync] auto-tick failed:', e)); },
-                        onAutoRetry: () => { this.retryFailedFiles().catch((e) => console.error('[VaultSync] auto-retry failed:', e)); },
+                        onAutoTick: () => this.runAutoSession(),
+                        onAutoRetry: () => this.retryFailedFiles('auto'),
                         queue: this.queue,
                 });
                 if (interval !== 'off') {
@@ -1948,10 +1948,10 @@ export default class GitSyncPlugin extends Plugin {
                 });
         }
 
-        async retryFailedFiles(): Promise<void> {
-                await this.runSession('retry', async () => {
+        async retryFailedFiles(trigger:'manual'|'auto'='manual'): Promise<void> {
+                await this.runSession(trigger==='auto'?'auto':'retry', async () => {
                         await this.prepareSession();
-                        return await this.coordinator.retryFailed();
+                        return await this.coordinator.retryFailed(trigger);
                 });
         }
 

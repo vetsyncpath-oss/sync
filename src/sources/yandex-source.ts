@@ -20,7 +20,7 @@
 // ============================================================
 
 import type { ArchiveDownloader, NetTransport, RemoteEntry, SyncSource } from './types';
-import { NetLayer, NetError, type NetFetchOptions } from '../core/net';
+import { NetLayer, NetError, sleepInterruptible, type NetFetchOptions } from '../core/net';
 import { ZipUrlSource } from './zip-url-source';
 
 /** База публичного API Яндекс.Диска (дизайн §5.1). */
@@ -107,10 +107,12 @@ interface ListingItem {
 
 export class YandexSource implements SyncSource {
         readonly kind = 'yandex' as const;
+        readonly maxConcurrentDownloads = 2;
         readonly deletionSafety = 'unverified' as const;
         /** [Phase 5.1] пер-файлового лимита нет: облачный диск (см. SyncSource). */
         readonly maxFileSizeBytes?: number;
 
+        private cooldownUntil=0;
         private readonly publicKey: () => string;
         private readonly net: NetLayer;
         private readonly archiveDownloader?: ArchiveDownloader;
@@ -130,7 +132,10 @@ export class YandexSource implements SyncSource {
 
         constructor(opts: YandexSourceOptions) {
                 this.publicKey = opts.publicKey;
-                this.net = new NetLayer(opts.transport);
+                this.net = new NetLayer({fetch:async(url,request)=>{
+                        while(this.cooldownUntil>Date.now())await sleepInterruptible(this.cooldownUntil-Date.now(),request?.signal);
+                        return opts.transport.fetch(url,request);
+                }});
                 this.archiveDownloader = opts.archiveDownloader;
                 this.messages = { ...DEFAULT_MESSAGES, ...opts.messages };
                 this.onRateLimitWait = opts.onRateLimitWait;
@@ -450,11 +455,12 @@ export class YandexSource implements SyncSource {
                                 ...opts,
                                 // §5.2: ожидание дольше часа — сразу понятный отказ (п.6).
                                 maxRateLimitWaitMs: MAX_RATE_LIMIT_WAIT_MS,
-                                onRateLimitWait: (waitMs: number) => this.onRateLimitWait?.(waitMs),
+                                onRateLimitWait: (waitMs: number) => {this.cooldownUntil=Math.max(this.cooldownUntil,Date.now()+waitMs);this.onRateLimitWait?.(waitMs);},
                         });
                 } catch (err) {
+                        if(err instanceof NetError&&err.retryAfterMs)this.cooldownUntil=Math.max(this.cooldownUntil,Date.now()+err.retryAfterMs);
                         if (err instanceof NetError && err.rateLimitExceeded) {
-                                throw new Error(this.messages.rateLimitExceedsHour());
+                                throw new NetError(this.messages.rateLimitExceedsHour(),{status:err.status,attempt:err.attempt,rateLimitExceeded:true,retryAfterMs:err.retryAfterMs});
                         }
                         throw err;
                 }

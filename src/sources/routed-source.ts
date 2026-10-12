@@ -7,6 +7,7 @@ export interface RoutedMember { id: string; name: string; source: SyncSource }
 /** All selected inventories succeed before any writes. Source instances belong to this session only. */
 export class RoutedSource implements SyncSource {
     readonly kind: SyncSource['kind'];
+    readonly maxConcurrentDownloads:number;
     readonly deletionSafety: 'immutable' | 'unverified';
     private readonly locators = new Map<string,{member:RoutedMember;entry:RemoteEntry;exposedPath:string}>();
     constructor(private readonly members: RoutedMember[], private readonly rules: readonly FileRule[],
@@ -14,6 +15,7 @@ export class RoutedSource implements SyncSource {
         if (!members.length || new Set(members.map(m=>m.id)).size!==members.length) throw new Error('Invalid source connections');
         for(const rule of rules)if(rule.source&&!members.some(m=>m.id===rule.source))throw Error('Missing assigned source');
         this.kind=members[0].source.kind;
+        this.maxConcurrentDownloads=Math.min(...members.map(m=>m.source.maxConcurrentDownloads??Infinity));
         this.deletionSafety=members.every(m=>m.source.deletionSafety==='immutable')?'immutable':'unverified';
     }
     private async inventories(signal:AbortSignal) {

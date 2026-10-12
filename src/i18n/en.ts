@@ -44,9 +44,7 @@ export const en: Translations = {
         noticeRateLimited: (sec) => `Rate limited by GitHub. Waiting ${sec}s...`,
         noticeNoFailedFiles: 'No failed files to retry',
         noticeRetryNotDue: (n) => `${n} file(s) are still waiting for their retry backoff. Try again later.`,
-        noticeRetryParked: (n) =>
-                `${n} file(s) stopped retrying: the same errors keep repeating after many attempts. ` +
-                `Run "Force Resync" or clear the failed queue in settings.`,
+        noticeRetryParked: (n) => `${n} file(s) need attention; automatic retries are paused. Fix the cause, then run Retry failed downloads.`,
         noticeFailedQueueCleared: 'Failed queue cleared',
         noticeConflictKeptLocal: (p) => `Conflict: ${p} — kept local version`,
         noticeConflictBoth: (p) => `Conflict: ${p}\nLocal version saved as .conflict file`,

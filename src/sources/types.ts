@@ -50,6 +50,7 @@ export interface RemoteEntry {
  * (дизайн §3.2). [W6-T03] добавлен 'gdrive'; [W6-T05] добавлен 'webdav'.
  */
 export interface SyncSource {
+        readonly maxConcurrentDownloads?: number;
         readonly kind: 'git' | 'yandex' | 'zip-url' | 'gdrive' | 'webdav';
         /** Only validated immutable inventories may currently authorize mirror deletion. */
         readonly deletionSafety?: 'immutable' | 'unverified';
@@ -262,6 +263,7 @@ export type WriteOutcome =
 // --- Очередь неудачных загрузок (перенос FailedFile из main.ts) ---
 
 export interface FailedFile {
+        failureKind?:'transient'|'blocked';
         path: string;
         hash: string;
         size: number;

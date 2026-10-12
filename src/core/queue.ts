@@ -68,8 +68,18 @@ export class FailedQueue {
          * Паркинг идемпотентен: повторные add() на parked-запись не растят
          * retryCount дальше потолка и не снимают паркинг.
          */
-        add(f: { path: string; hash: string; size: number }, reason: string, now: number): void {
+        add(f: { path: string; hash: string; size: number }, reason: string, now: number, failureKind?:'transient'|'blocked',minimumDelayMs=0): void {
                 const existing = this.entries.get(f.path);
+                if(failureKind){
+                        const retryCount=Math.min((existing?.retryCount??-1)+1,30);
+                        const delays=[60_000,300_000,900_000,3_600_000,21_600_000];
+                        const delay=delays[Math.min(retryCount,delays.length-1)]*(1+Math.random()*0.2);
+                        this.entries.set(f.path,{...f,reason,timestamp:now,retryCount,failureKind,
+                                nextRetryAt:failureKind==='blocked'?Number.MAX_SAFE_INTEGER:now+Math.max(Math.round(delay),Number.isFinite(minimumDelayMs)?Math.max(0,minimumDelayMs):0),
+                                poisoned:failureKind==='blocked'});
+                        return;
+                }
+
                 if (existing) {
                         const capped = existing.poisoned === true || existing.retryCount >= this.maxRetries;
                         const retryCount = capped
