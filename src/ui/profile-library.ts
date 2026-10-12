@@ -8,14 +8,19 @@ const ru=()=>i18n.getLocale()==='ru';const t=(r:string,e:string)=>ru()?r:e;
 export function writeLabel(mode:WriteMode):string { return ({preserve:t('Не трогать','Do not touch'),create:t('Добавлять отсутствующие','Create missing'),update:t('Обновлять без локальных правок','Update unchanged local files'),remote:t('Версия источника','Match source'),changes:t('Обновлять с разрешением конфликтов','Update with conflict resolution')})[mode]; }
 export function deleteLabel(mode:DeleteMode):string { return ({keep:t('Сохранять отсутствующие в источнике','Keep files absent from source'),tracked:t('Удалять ранее синхронизированные','Delete previously synced files'),mirror:t('Удалять все отсутствующие в источнике','Delete all files absent from source')})[mode]; }
 export class ProfileLibraryModal extends Modal {
-    constructor(app:App,private profiles:SyncProfile[],private connections:SourceConnection[],private save:(p:SyncProfile[],c:SourceConnection[])=>Promise<void>,private sources=false){super(app);this.profiles=structuredClone(profiles);this.connections=structuredClone(connections);}
+    constructor(app:App,private profiles:SyncProfile[],private connections:SourceConnection[],private save:(p:SyncProfile[],c:SourceConnection[],defaultSource?:string)=>Promise<void>,private sources=false,private defaultSource?:string){super(app);this.profiles=structuredClone(profiles);this.connections=structuredClone(connections);}
     onOpen():void { this.render(); }
     private render():void {
         const box=this.contentEl;box.empty();box.createEl('h3',{text:this.sources?t('Подключения','Connections'):t('Профили синхронизации','Sync profiles')});
-        box.createEl('p',{text:this.sources?t('Подключение хранит адрес и доступ. Его можно выбрать в пользовательском профиле.','A connection stores endpoint and access settings; select it in a custom profile.'):t('Профили описывают поведение. Назначайте их vault, папкам и файлам в дереве. Проверки путей, целостности и восстановления обязательны.','Profiles describe behaviour. Assign them to vault, folders and files in the tree. Path, integrity and recovery checks are mandatory.')});
+        box.createEl('p',{text:this.sources?t('Выберите источник для хранилища. Отдельным папкам и файлам можно назначить другой источник в дереве. Изменения вступят в силу после сохранения.','Choose the vault source. Individual folders and files can use another source assigned in the tree. Save to apply changes.'):t('Профили описывают поведение. Назначайте их vault, папкам и файлам в дереве. Проверки путей, целостности и восстановления обязательны.','Profiles describe behaviour. Assign them to vault, folders and files in the tree. Path, integrity and recovery checks are mandatory.')});
         if(this.sources){
+            new Setting(box).setName(t('Источник для хранилища','Vault source')).setDesc(t('Для файлов без отдельного назначения. «Только назначения» отключает общий источник.','Used by files without a source assignment. Choose “Assignments only” to disable the fallback.')).addDropdown(dd=>{
+                dd.addOption('',t('Только назначения в дереве','Assignments only'));
+                for(const c of this.connections)dd.addOption(c.id,c.name);
+                dd.setValue(this.defaultSource??'').onChange(v=>this.defaultSource=v||undefined);
+            });
             for(const c of this.connections)new Setting(box).setName(c.name).setDesc(c.kind).addButton(b=>b.setButtonText(t('Изменить','Edit')).onClick(()=>this.editConnection(c)))
-                .addButton(b=>b.setButtonText(t('Удалить','Remove')).onClick(()=>{if(this.profiles.some(p=>p.source===c.id)){new Notice(t('Подключение используется профилем','Connection is used by a profile'));return;}this.connections=this.connections.filter(x=>x.id!==c.id);this.render();}));
+                .addButton(b=>b.setButtonText(t('Удалить','Remove')).onClick(()=>{if(this.defaultSource===c.id||this.profiles.some(p=>p.source===c.id)){new Notice(t('Подключение используется профилем','Connection is used by a profile'));return;}this.connections=this.connections.filter(x=>x.id!==c.id);this.render();}));
             new Setting(box).addButton(b=>b.setButtonText(t('Добавить подключение','Add connection')).onClick(()=>this.editConnection({id:crypto.randomUUID(),name:'',kind:'git',values:{branch:'main'}})));
         }else{
             for(const p of this.profiles){ const row=new Setting(box).setName(p.name).setDesc(`${writeLabel(p.write)} · ${deleteLabel(p.delete)}${p.source?' · '+(this.connections.find(c=>c.id===p.source)?.name ?? t('Основной источник','Primary source')):''}`)
@@ -25,7 +30,7 @@ export class ProfileLibraryModal extends Modal {
             new Setting(box).addButton(b=>b.setButtonText(t('Новый профиль','New profile')).onClick(()=>this.editProfile({id:crypto.randomUUID(),name:'',write:'update',delete:'keep'})));
         }
         new Setting(box).addButton(b=>b.setButtonText(t('Сохранить библиотеку','Save library')).setCta().onClick(async()=>{
-            try{validateProfiles(this.profiles,this.connections);await this.save(structuredClone(this.profiles),structuredClone(this.connections));this.close();}
+            try{validateProfiles(this.profiles,this.connections);await this.save(structuredClone(this.profiles),structuredClone(this.connections),this.defaultSource);this.close();}
             catch(e){new Notice(String(e));}
         })).addButton(b=>b.setButtonText(t('Отмена','Cancel')).onClick(()=>this.close()));
     }

@@ -382,7 +382,7 @@ EngineRegistry.register({
         labelKey: 'eng.yandex.label',
         icon: '☁️',
         capabilities: {
-                auth: true,         // accessToken опциональный — публичные ссылки работают
+                auth: false,        // Public-link API only; OAuth is not implemented.
                 incremental: true,  // manifest-режим без полного скачивания (BFS листингов)
                 // testConnection: false — нет лёгкой проверки (требуется E1/E2 запрос).
                 testConnection: false,
@@ -393,14 +393,6 @@ EngineRegistry.register({
                         type: 'url',
                         labelKey: 'eng.yandex.vaultUrl',
                         required: true,
-                },
-                {
-                        key: 'accessToken',
-                        type: 'secret',
-                        labelKey: 'eng.yandex.token',
-                        // required: false — публичные ссылки работают без токена.
-                        // secret: true — маркер для sourceId-фабрики.
-                        secret: true,
                 },
         ],
         create: (values, ctx) => {

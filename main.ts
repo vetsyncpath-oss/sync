@@ -1622,11 +1622,13 @@ export default class GitSyncPlugin extends Plugin {
                         this.currentMirrorLevel(), this.settings.conflictStrategy, this.settings.lightConflictStrategy ?? 'keep-local');
                 if(!this.settings.vaultPolicy) {
                         const connectionId='connection_'+id;
-                        if(!this.settings.connections.some(c=>c.id===connectionId))this.settings.connections.push({
+                        const configured=isSourceConfigured(this.desiredSourceKind(),{repoUrl:'',accessToken:'',vaultUrl:'',...this.engineValues(this.desiredSourceKind())});
+                        const referenced=profiles.some(p=>p.source==='primary')||policies[id].assignments?.some(a=>a.source==='primary');
+                        if((configured||referenced)&&!this.settings.connections.some(c=>c.id===connectionId))this.settings.connections.push({
                                 id:connectionId,name:i18n.getLocale()==='ru'?'Основной источник':'Default source',
                                 kind:this.desiredSourceKind(),values:this.engineValues(this.desiredSourceKind())});
                         this.settings.vaultPolicy=structuredClone(policies[id]);
-                        this.settings.vaultPolicy.defaultSource=connectionId;
+                        this.settings.vaultPolicy.defaultSource=configured?connectionId:undefined;
                         for(const profile of profiles)if(profile.source==='primary')profile.source=connectionId;
                         for(const assignment of this.settings.vaultPolicy.assignments ?? [])if(assignment.source==='primary')assignment.source=connectionId;
                 }
@@ -1653,10 +1655,10 @@ export default class GitSyncPlugin extends Plugin {
                 const descriptors = all.filter(c=>preview || needed.has(c.id) || (usesDefault&&c.id===defaultSource));
                 if(defaultSource==='primary')descriptors.unshift({id:'primary',name:'Default source',kind,values:this.engineValues(kind)});
                 const configured=(c:SourceConnection)=>isSourceConfigured(c.kind,{repoUrl:'',accessToken:'',vaultUrl:'',...c.values});
-                for(const id of needed)if(!descriptors.some(c=>c.id===id&&configured(c)))throw Error('Assigned source is not configured');
-                if(usesDefault&&defaultSource!=='unassigned'&&!descriptors.some(c=>c.id===defaultSource&&configured(c)))throw Error('Default source is not configured; configure it or remove the vault default');
+                for(const id of needed)if(!descriptors.some(c=>c.id===id&&configured(c)))throw Error(i18n.getLocale()==='ru'?`Назначенный источник «${all.find(c=>c.id===id)?.name??id}» не настроен. Откройте «Подключения» и укажите его адрес.`:`Assigned source “${all.find(c=>c.id===id)?.name??id}” is not configured. Open Connections and configure its endpoint.`);
+                if(usesDefault&&defaultSource!=='unassigned'&&!descriptors.some(c=>c.id===defaultSource&&configured(c)))throw Error(i18n.getLocale()==='ru'?`Источник для хранилища «${all.find(c=>c.id===defaultSource)?.name??defaultSource}» не настроен. В «Подключения → Источник для хранилища» выберите настроенный источник или «Только назначения в дереве».`:'Default source is not configured. Open Connections → Vault source and select a configured connection or Assignments only.');
                 const active=descriptors.filter(configured).sort((a,b)=>Number(b.id===defaultSource)-Number(a.id===defaultSource));
-                if(!active.length)throw Error('No configured sources');
+                if(!active.length)throw Error(i18n.getLocale()==='ru'?'Не выбран источник синхронизации. Откройте «Подключения → Источник для хранилища» и выберите подключение либо назначьте его папке в дереве.':'No sync source selected. Open Connections → Vault source and select a connection, or assign one to a folder in the tree.');
                 const identity = active.map(c=>({id:c.id,kind:c.kind,values:Object.fromEntries(
                         EngineRegistry.get(c.kind).settingsSchema.filter(f=>f.type!=='secret' && !f.secret).map(f=>[f.key,c.values[f.key]]))}));
                 const namespace = this.settings.vaultPolicy ? await routedNamespace({defaultSource,connections:identity},rules,policy.folders) : needed.size ? await routedNamespace(identity,rules,policy.folders) : id;
@@ -1825,18 +1827,19 @@ export default class GitSyncPlugin extends Plugin {
         openProfileLibrary(sources:boolean):void {
                 void this.ensureProfileSettings().then(()=>{
                         const revision=this.getConfigurationRevision();
-                        const modal=new ProfileLibraryModal(this.app,this.settings.profiles ?? [],this.settings.connections ?? [],async(profiles,connections)=>{
+                        const modal=new ProfileLibraryModal(this.app,this.settings.profiles ?? [],this.settings.connections ?? [],async(profiles,connections,defaultSource)=>{
                                 if(revision!==this.getConfigurationRevision())throw new Error('Settings changed; reopen the profile library');
                                 validateProfiles(profiles,connections);
                                 for(const policy of this.settings.vaultPolicy?[this.settings.vaultPolicy]:Object.values(this.settings.syncPolicies ?? {}))compileProfiles(policy,profiles);
                                 if(this.settings.vaultPolicy){
-                                        const compiled=compileProfiles(this.settings.vaultPolicy,profiles);
+                                        const compiled=compileProfiles({...this.settings.vaultPolicy,defaultSource},profiles);
                                         for(const id of [compiled.defaultSource,...(compiled.fileRules??[]).map(r=>r.source)])if(id&&!connections.some(c=>c.id===id))throw Error('Connection is used by a vault assignment');
                                 }
-                                const oldProfiles=this.settings.profiles,oldConnections=this.settings.connections;
+                                const oldProfiles=this.settings.profiles,oldConnections=this.settings.connections,oldPolicy=this.settings.vaultPolicy;
                                 this.settings.profiles=profiles;this.settings.connections=connections;
-                                try{await this.saveSettingsImmediate();}catch(e){this.settings.profiles=oldProfiles;this.settings.connections=oldConnections;throw e;}
-                        },sources);trackModal(modal);modal.open();
+                                if(oldPolicy)this.settings.vaultPolicy={...oldPolicy,defaultSource};
+                                try{await this.saveSettingsImmediate();}catch(e){this.settings.profiles=oldProfiles;this.settings.connections=oldConnections;this.settings.vaultPolicy=oldPolicy;throw e;}
+                        },sources,this.settings.vaultPolicy?.defaultSource);trackModal(modal);modal.open();
                 }).catch(e=>new Notice(String(e)));
         }
 

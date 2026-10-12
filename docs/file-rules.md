@@ -54,3 +54,18 @@ Composite deletion requires every participating provider to supply an immutable 
 Profiles are per-file policies, not atomic plugin-package upgrades. Package rollback, compatibility checking, safe activation/hot reload, unsaved editor buffers and recovery retention/UI remain separate work. The original `manifest.json` is still required for installation. Do not downgrade builds without restoring equivalent exclusions and source protections.
 
 Tests cover routed execution, migrations, independent source previews and DOM interactions through an Obsidian host shim. Real Obsidian desktop/mobile and live provider accounts have not been exercised by these tests.
+
+### Выбор источника хранилища
+
+В «Подключения → Источник для хранилища» выберите сохранённое подключение,
+например Yandex, и нажмите «Сохранить библиотеку». Такой же выбор доступен в
+дереве; там он сохраняется кнопкой «Сохранить назначения». Создание подключения
+само по себе не меняет назначение файлов. Источник хранилища применяется к файлам
+без отдельного назначения; более точные назначения в дереве сохраняют приоритет.
+«Только назначения в дереве» отключает общий источник и оставляет синхронизацию
+только явно назначенных областей. При новой настройке пустое legacy-подключение
+больше не становится обязательным источником. Уже сохранённый неработающий
+источник нужно заменить через этот выбор; автоматического переназначения нет.
+
+Yandex использует публичную ссылку на папку или ZIP-архив. OAuth и доступ к
+приватному диску не реализованы; неработающее поле токена удалено из формы.

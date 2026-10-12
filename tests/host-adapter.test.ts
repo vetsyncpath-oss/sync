@@ -152,3 +152,24 @@ test('an unconfigured required default cannot be silently omitted from a deletio
  await assert.rejects(plugin.routingContext(),/Default source is not configured/);
  settings.vaultPolicy.defaultSource=undefined;const context=await plugin.routingContext();assert.deepEqual(context.source.members.map((m:any)=>m.id),['docs']);
 });
+
+test('fresh unconfigured settings do not invent a default connection',async()=>{
+ const h=preparationHost(),plugin=h.port as any;h.values.repoUrl='';await plugin.ensureProfileSettings();
+ const settings=h.settings as any;assert.equal(settings.vaultPolicy.defaultSource,undefined);assert.deepEqual(settings.connections,[]);
+ await assert.rejects(plugin.routingContext(),/Connections → Vault source/);
+});
+test('selected Yandex connection drives real listing and download instead of legacy Git',async()=>{
+ const h=preparationHost(),plugin=h.port as any;await plugin.ensureProfileSettings();const settings=h.settings as any;
+ settings.connections[0].values.repoUrl='';settings.connections.push({id:'disk',name:'My Yandex',kind:'yandex',values:{vaultUrl:'https://disk.yandex.ru/d/example'}});
+ settings.vaultPolicy.defaultSource='disk';const calls:string[]=[];
+ const remote=entry('note.md','REMOTE');
+ plugin.engineCtx=(kind:string)=>{assert.equal(kind,'yandex');return {transport:{fetch:async(url:string)=>{
+  calls.push(url);const parsed=new URL(url);const body=parsed.hostname==='download.example'?'REMOTE':JSON.stringify(parsed.pathname.endsWith('/download')?{href:'https://download.example/file'}:{type:'dir',_embedded:{total:1,items:[{type:'file',name:'note.md',path:'/note.md',size:6,sha256:remote.hash}]}});
+  return {status:200,headers:{},arrayBuffer:async()=>ab(body),text:async()=>body};
+ }}};};
+ const context=await plugin.routingContext();assert.equal(context.source.kind,'yandex');
+ const manifest=await context.source.getManifest(new AbortController().signal);assert.equal(manifest[0].path,'note.md');
+ assert.equal(new TextDecoder().decode(await context.source.fetch(manifest[0],new AbortController().signal)),'REMOTE');
+ assert.equal(new URL(calls[0]).searchParams.get('public_key'),'https://disk.yandex.ru/d/example');assert.equal(calls.length,3);
+ await context.source.dispose();
+});

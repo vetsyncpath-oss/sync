@@ -48,7 +48,6 @@ export class SyncWorkspaceModal extends Modal {
         const toolbar=element('div','','sync-workspace-toolbar');
         this.button(toolbar,tr('Vault','Vault'),()=>this.switchView('vault'));
         this.button(toolbar,tr('Добавить источник','Add source'),()=>this.editSource());
-        this.button(toolbar,tr('Без источника по умолчанию','No default source'),()=>{this.policy.defaultSource=undefined;this.render();});
         this.button(toolbar,tr('Обновить локальное дерево','Refresh local tree'),()=>void this.loadLocal());
         this.button(toolbar,tr('Профиль выделенным','Profile for selection'),()=>this.bulkProfiles());
         new Setting(toolbar).setName(tr('Область','Scope')).addDropdown(dd=>{
@@ -83,6 +82,11 @@ export class SyncWorkspaceModal extends Modal {
     }
     private renderSources():void {
         this.sourceBox.replaceChildren();
+        new Setting(this.sourceBox).setName(tr('Источник для хранилища','Vault source')).setDesc(tr('Для файлов без отдельного назначения','For files without a source assignment')).addDropdown(dd=>{
+            dd.addOption('',tr('Только назначения в дереве','Assignments only'));
+            for(const c of this.connections)dd.addOption(c.id,c.name);
+            dd.setValue(this.policy.defaultSource??'').onChange(v=>{this.policy.defaultSource=v||undefined;this.render();const c=this.connections.find(c=>c.id===v);if(c&&this.inventories.state(v).status==='idle')void this.loadSource(c);});
+        });
         for(const c of this.connections){
             const state=this.inventories.state(c.id),group=element('div','','sync-workspace-source');
             const text=`${c.name}${c.id===this.policy.defaultSource?tr(' · по умолчанию',' · default'):''}`;
@@ -118,7 +122,6 @@ export class SyncWorkspaceModal extends Modal {
     private editSource(source?:SourceConnection):void{
         const modal=new SourceConnectionModal(this.app,source??{id:crypto.randomUUID(),name:'',kind:'git',values:{branch:'main'}},draft=>{
             const index=this.connections.findIndex(c=>c.id===draft.id);if(index<0)this.connections.push(draft);else this.connections[index]=draft;
-            if(!this.policy.defaultSource)this.policy.defaultSource=draft.id;
             this.inventories.invalidate(draft.id);this.view=draft.id;this.render();void this.loadSource(draft);
         });trackModal(modal);modal.open();
     }

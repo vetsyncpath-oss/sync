@@ -7,6 +7,7 @@ import { ProfileLibraryModal } from '../src/ui/profile-library';
 import { VaultTreeModal } from '../src/ui/vault-tree-modal';
 import { PolicyEditor } from '../src/ui/policy-editor';
 import { STANDARD_PROFILES, type ProfileAssignment } from '../src/core/profiles';
+import Plugin from '../main';
 import { i18n } from '../src/i18n';
 
 function dom() {
@@ -67,4 +68,30 @@ test('remote tree selection assigns the final mapped vault path',()=>{
  const select=box.querySelector('select')!;for(const o of Array.from(select.options))o.selected=false;
  Array.from(select.options).find(o=>o.value==='standard:source')!.selected=true;select.dispatchEvent(new window.Event('change'));
  click(box,'Apply to tree');assert.equal(editor.getPolicy().assignments?.[0].path,'.obsidian/plugins/example/main.js');
+});
+
+test('connection library exposes and saves vault source, including assignments-only mode',async()=>{
+ dom();let saved:any;
+ const connections=[{id:'old',name:'Empty old source',kind:'git' as const,values:{}},{id:'disk',name:'Yandex documents',kind:'yandex' as const,values:{vaultUrl:'https://disk.yandex.ru/d/example'}}];
+ const modal=new ProfileLibraryModal(new App(),[...STANDARD_PROFILES],connections,async(p,c,source)=>{saved={p,c,source};},true,'old');modal.onOpen();
+ assert.match(modal.contentEl.textContent!,/Vault source/);
+ const select=modal.contentEl.querySelector('select')!;
+ for(const o of Array.from(select.options))o.selected=false;Array.from(select.options).find(o=>o.value==='disk')!.selected=true;select.dispatchEvent(new window.Event('change'));
+ assert.equal(saved,undefined);click(modal.contentEl,'Save library');await Promise.resolve();assert.equal((saved as any).source,'disk');assert.deepEqual((saved as any).c,connections);
+ const second=new ProfileLibraryModal(new App(),[...STANDARD_PROFILES],connections,async(p,c,source)=>{saved={source};},true,'disk');second.onOpen();
+ const choice=second.contentEl.querySelector('select')!;for(const o of Array.from(choice.options))o.selected=false;Array.from(choice.options).find(o=>o.value==='')!.selected=true;choice.dispatchEvent(new window.Event('change'));
+ click(second.contentEl,'Save library');await Promise.resolve();assert.equal((saved as any).source,undefined);
+});
+
+test('plugin connection form persists source selection atomically and rolls back failed saves',async()=>{
+ const document=dom(),plugin=Object.create(Plugin.prototype) as any;
+ const initial={version:1,mirror:false,folders:[],assignments:[],defaultSource:'old'};
+ const settings={profiles:[...STANDARD_PROFILES],connections:[{id:'old',name:'Old',kind:'git',values:{}},{id:'disk',name:'Yandex',kind:'yandex',values:{vaultUrl:'https://disk.yandex.ru/d/example'}}],vaultPolicy:initial};
+ let fail=true,saves=0;
+ Object.assign(plugin,{app:new App(),settings,ensureProfileSettings:async()=>{},getConfigurationRevision:()=>1,saveSettingsImmediate:async()=>{saves++;if(fail)throw Error('Disk full');}});
+ plugin.openProfileLibrary(true);await Promise.resolve();await Promise.resolve();
+ const modal=document.body.lastElementChild as HTMLElement,select=modal.querySelector('select')!;
+ for(const o of Array.from(select.options))o.selected=false;Array.from(select.options).find(o=>o.value==='disk')!.selected=true;select.dispatchEvent(new window.Event('change'));
+ click(modal,'Save library');for(let i=0;i<5;i++)await Promise.resolve();assert.equal(settings.vaultPolicy,initial);assert.equal(settings.vaultPolicy.defaultSource,'old');
+ fail=false;click(modal,'Save library');for(let i=0;i<5;i++)await Promise.resolve();assert.equal(settings.vaultPolicy.defaultSource,'disk');assert.equal(saves,2);
 });
