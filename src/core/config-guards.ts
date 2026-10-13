@@ -20,6 +20,10 @@ export function isSourceConfigured(
                 /** [W6-T03] gdrive: API key (required). */
                 apiKey?: string;
                 folderId?: string;
+                authMode?: string;
+                clientId?: string;
+                accountSub?: string;
+                secretRef?: string;
                 /** [W6-T05] webdav: base URL (required). */
                 baseUrl?: string;
                 /** WebDAV username; optional for anonymous access. */
@@ -34,6 +38,7 @@ export function isSourceConfigured(
                 return Boolean(cfg.repoUrl.trim());
         }
         if (kind === 'gdrive') {
+                if(cfg.authMode==='oauth-desktop')return Boolean(cfg.folderId?.trim()&&cfg.clientId?.trim()&&cfg.accountSub?.trim()&&cfg.secretRef?.trim());
                 // [W6-T03] gdrive: apiKey обязателен (секрет из настроек).
                 return Boolean(cfg.apiKey?.trim() && cfg.folderId?.trim() && cfg.folderId.trim()!=='root');
         }

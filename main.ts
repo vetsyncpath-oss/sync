@@ -1,4 +1,6 @@
 import { NodeHttpTransport, BufferedHostTransport } from './src/adapters/host-transport';
+import { GoogleConnections } from './src/adapters/google-connections';
+import { pickGoogleFolder } from './src/ui/gdrive-folder-picker';
 import { AcknowledgedSave } from './src/core/acknowledged-save';
 import { SyncFault, diagnosticText } from './src/core/sync-issue';
 import type { SyncProgress } from './src/sources/types';
@@ -723,6 +725,7 @@ export default class GitSyncPlugin extends Plugin {
         private askChain: Promise<unknown> = Promise.resolve();
         private sessionProgress?:SyncProgress;
         private hostTransportLimit=0;
+        private googleConnections?:GoogleConnections;
         private autoPaused=false;
         private autoBlockedReason?:string;
         private hostTransport?:import('./src/sources/types').NetTransport;
@@ -896,7 +899,8 @@ export default class GitSyncPlugin extends Plugin {
                 this.vaultSyncHook?.dispose();
                 this.vaultSyncHook = undefined;
                 try { delete (window as any).vaultSync; } catch { /* IE-quirk fallback — Obsidian не нужен */ (window as any).vaultSync = undefined; }
-                void this.persistEngineState('checkpoint');
+                this.googleConnections?.disconnect();
+                void this.persistEngineState('checkpoint').catch(error=>console.error('[vault-sync] unload checkpoint failed',diagnosticText(error)));
         }
 
         /**
@@ -1241,6 +1245,17 @@ export default class GitSyncPlugin extends Plugin {
                         return this.hostTransport;
                 }
 
+                private googleService():GoogleConnections {
+                        if(!this.googleConnections)this.googleConnections=new GoogleConnections({
+                                transport:()=>this.networkTransport('gdrive'),
+                                secrets:()=>{if(!Platform.isDesktopApp||!this.app.secretStorage)throw Error('Google OAuth requires Obsidian desktop with SecretStorage (1.11.4+)');return this.app.secretStorage;},
+                                guard:()=>{if(!Platform.isDesktopApp||!this.app.secretStorage)throw Error('Google OAuth requires Obsidian desktop with SecretStorage (1.11.4+)');if(!this.assertNetworkAllowed())throw Error('Source access blocked');},
+                                connections:()=>this.settings.connections??[],maxBytes:()=>this.maxPayloadBytes(),
+                                openBrowser:url=>require('electron').shell.openExternal(url),
+                                pick:(client,signal)=>pickGoogleFolder(this.app,client,signal),
+                        });return this.googleConnections;
+                }
+
                 private engineCtx(kind = this.builtKind): EngineCtx {
                         const t = i18n.t;
                         if (kind === 'git') {
@@ -1280,6 +1295,7 @@ export default class GitSyncPlugin extends Plugin {
                         // (cast: EngineCtx.messages — общий Record, см. git-ветку.)
                         if (kind === 'gdrive') {
                                 return {
+                                        googleTransport:values=>this.googleService().transport(values),maxPayloadBytes:this.maxPayloadBytes(),
                                         transport: this.networkTransport(kind),
                                         onRateLimitWait: (waitMs: number) => {
                                                 new Notice(t.noticeRateLimitedCloud(Math.ceil(waitMs / 1000)), 10000);
@@ -1591,7 +1607,7 @@ export default class GitSyncPlugin extends Plugin {
                 const active=descriptors.sort((a,b)=>Number(b.id===defaultSource)-Number(a.id===defaultSource));
                 if(!active.length)throw Error(i18n.getLocale()==='ru'?'Не выбран источник синхронизации. Откройте «Подключения → Источник для хранилища» и выберите подключение либо назначьте его папке в дереве.':'No sync source selected. Open Connections → Vault source and select a connection, or assign one to a folder in the tree.');
                 const identity = active.map(c=>({id:c.id,kind:c.kind,values:Object.fromEntries(
-                        EngineRegistry.get(c.kind).settingsSchema.filter(f=>f.type!=='secret' && !f.secret).map(f=>[f.key,c.values[f.key]]))}));
+                        [...EngineRegistry.get(c.kind).settingsSchema.filter(f=>f.type!=='secret' && !f.secret).map(f=>[f.key,c.values[f.key]]),...(c.kind==='gdrive'?[['authMode',c.values.authMode],['accountSub',c.values.accountSub]]:[])])}));
                 const namespace = this.settings.vaultPolicy ? await routedNamespace({defaultSource,connections:identity},rules,policy.folders) : needed.size ? await routedNamespace(identity,rules,policy.folders) : id;
                 const mapped = (path:string) => {
                         const r=[...policy.folders].filter(r=>r.target && (path===r.path || !r.path || path.startsWith(r.path+'/')))
@@ -1766,7 +1782,7 @@ export default class GitSyncPlugin extends Plugin {
 
         openProfileLibrary(sources:boolean):void {
                 void this.ensureProfileSettings().then(()=>{
-                        const revision=this.getConfigurationRevision();
+                        const revision=this.getConfigurationRevision();const google=this.googleService().actions();
                         const modal=new ProfileLibraryModal(this.app,this.settings.profiles ?? [],this.settings.connections ?? [],async(profiles,connections,defaultSource)=>{
                                 if(revision!==this.getConfigurationRevision())throw new Error('Settings changed; reopen the profile library');
                                 validateProfiles(profiles,connections);
@@ -1779,7 +1795,7 @@ export default class GitSyncPlugin extends Plugin {
                                 this.settings.profiles=profiles;this.settings.connections=connections;
                                 if(oldPolicy)this.settings.vaultPolicy={...oldPolicy,defaultSource};
                                 try{await this.saveSettingsImmediate();this.restartAutoSync();}catch(e){this.settings.profiles=oldProfiles;this.settings.connections=oldConnections;this.settings.vaultPolicy=oldPolicy;throw e;}
-                        },sources,this.settings.vaultPolicy?.defaultSource,this.settings.vaultPolicy);trackModal(modal);modal.open();
+                        },sources,this.settings.vaultPolicy?.defaultSource,this.settings.vaultPolicy,false,google);trackModal(modal);modal.open();
                 }).catch(e=>new Notice(String(e)));
         }
 
@@ -1790,9 +1806,9 @@ export default class GitSyncPlugin extends Plugin {
 
         private async openProfileTree(): Promise<void> {
                 await this.ensureProfileSettings();
-                let revision=this.getConfigurationRevision();const abort=new AbortController();
+                let revision=this.getConfigurationRevision();const abort=new AbortController();const google=this.googleService().actions();
                 const modal=new SyncWorkspaceModal(this.app,{
-                        policy:this.settings.vaultPolicy!,profiles:this.settings.profiles ?? [],connections:this.settings.connections ?? [],
+                        policy:this.settings.vaultPolicy!,profiles:this.settings.profiles ?? [],connections:this.settings.connections ?? [],google,
                         pathPolicy:this.makePolicy(),pluginDir:this.pluginDir(),
                         isRunning:()=>this.sessionOwned || (this.coordinator?.isRunning() ?? false),
                         local:async()=>{
@@ -1810,7 +1826,7 @@ export default class GitSyncPlugin extends Plugin {
                         checkDownload:(connection,signal)=>this.checkSourceConnection(connection,signal,true),
                         run:ids=>this.syncNow(ids),
                         recovery:()=>this.openRecoveryModal(),
-                        dispose:()=>abort.abort(),
+                        dispose:()=>{abort.abort();google.releaseDraft?.();},
                         save:async(policy,connections,profiles=this.settings.profiles??[])=>{
                                 if(revision!==this.getConfigurationRevision()||this.sessionOwned||this.coordinator?.isRunning())throw Error('Settings changed or sync started; reopen the tree');
                                 validateProfiles(profiles,connections);
@@ -2172,7 +2188,7 @@ export default class GitSyncPlugin extends Plugin {
         private async checkSourceConnection(connection:SourceConnection,signal:AbortSignal,sample=false):Promise<void> {
                 if(!this.assertNetworkAllowed())throw Error(i18n.getLocale()==='ru'?'Доступ к источнику заблокирован':'Source access blocked');
                 const descriptor=EngineRegistry.get(connection.kind),values=connectionValues(connection);
-                if(validateSettings(descriptor.settingsSchema,values).length)throw Error(i18n.getLocale()==='ru'?'Проверьте поля подключения':'Check the connection fields');
+                if(connectionIssues(connection).length)throw Error(i18n.getLocale()==='ru'?'Проверьте поля подключения':'Check the connection fields');
                 signal.throwIfAborted();const source=EngineRegistry.create(connection.kind,values,this.engineCtx(connection.kind));
                 try{
                         if(connection.kind==='git'){const result=await (source as GitSource).testConnection(String(values.branch??'default'));if(!result.success)throw Error(result.message);}

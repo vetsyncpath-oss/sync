@@ -16,8 +16,10 @@ import { DraftModal } from './draft-modal';
 import { button, element, field, selectInput, setSelectValue, textInput, tr } from './dom';
 import { ExclusionsModal } from './exclusions-modal';
 import { SourcePathModal } from './source-path-modal';
+import type { GoogleConnectionActions } from './gdrive-folder-picker';
 
 export interface WorkspaceDeps {
+    google?: GoogleConnectionActions;
     policy: SyncPolicy; profiles: SyncProfile[]; connections: SourceConnection[];
     pathPolicy: PathPolicy; pluginDir: string; isRunning(): boolean;
     local(): Promise<{ files: string[]; folders: string[] }>;
@@ -209,7 +211,7 @@ export class SyncWorkspaceModal extends DraftModal {
             const index = this.connections.findIndex(c => c.id === draft.id);
             if (index < 0) this.connections.push(draft); else this.connections[index] = draft;
             this.inventories.invalidate(draft.id); this.checks.delete(draft.id); this.render();
-        }); trackModal(modal); modal.open();
+        },this.deps.google); trackModal(modal); modal.open();
     }
     private mapped(path: string): string {
         const rule = this.policy.folders.filter(r => r.target && (!r.path || path === r.path || path.startsWith(r.path + '/'))).sort((a, b) => b.path.length - a.path.length)[0];
@@ -487,7 +489,7 @@ export class SyncWorkspaceModal extends DraftModal {
         references.assignments=[...(references.assignments??[]), ...[...this.forms.values()].filter(f=>f.value.profile||f.value.source).map((f,index)=>({scope:'file' as const,path:'__draft_reference_'+index,profileId:f.value.profile||undefined,source:f.value.source||undefined}))];
         const modal=new ProfileLibraryModal(this.app,this.profiles,this.connections,async(profiles,connections,defaultSource)=>{
             compileProfiles(references,profiles); this.profiles=profiles;this.connections=connections;this.policy.defaultSource=defaultSource;this.render();
-        },false,this.policy.defaultSource,references,true);trackModal(modal);modal.open();
+        },false,this.policy.defaultSource,references,true,this.deps.google);trackModal(modal);modal.open();
     }
     private async preview(ids?: string[]): Promise<void> {
         if (!this.deps.run || this.deps.isRunning()) return;

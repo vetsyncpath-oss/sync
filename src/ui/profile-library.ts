@@ -7,6 +7,7 @@ import { trackModal } from './modal-registry';
 import { DraftModal } from './draft-modal';
 import { SourceConnectionModal } from './source-connection-modal';
 import { button, element, field, selectInput, textInput, tr } from './dom';
+import type { GoogleConnectionActions } from './gdrive-folder-picker';
 
 export function writeLabel(mode: WriteMode): string { return ({ preserve: tr('Не трогать', 'Do not touch'), create: tr('Добавлять отсутствующие', 'Create missing'), update: tr('Обновлять без локальных правок', 'Update unchanged local files'), remote: tr('Версия источника', 'Match source'), changes: tr('Обновлять с разрешением конфликтов', 'Update with conflict resolution') })[mode]; }
 export function deleteLabel(mode: DeleteMode): string { return ({ keep: tr('Сохранять отсутствующие в источнике', 'Keep files absent from source'), tracked: tr('Удалять ранее синхронизированные', 'Delete previously synced files'), mirror: tr('Удалять все отсутствующие в источнике', 'Delete all files absent from source') })[mode]; }
@@ -23,7 +24,8 @@ export class ProfileLibraryModal extends DraftModal {
     private saving = false;
     constructor(app: App, private profiles: SyncProfile[], private connections: SourceConnection[],
         private save: (p: SyncProfile[], c: SourceConnection[], defaultSource?: string) => Promise<void>,
-        private sources = false, private defaultSource?: string, private policy?: SyncPolicy, private draftMode=false) {
+        private sources = false, private defaultSource?: string, private policy?: SyncPolicy, private draftMode=false,
+        private google?: GoogleConnectionActions) {
         super(app); this.profiles = structuredClone(profiles); this.connections = structuredClone(connections); this.initial = this.fingerprint();
     }
     private fingerprint(): string { return JSON.stringify([this.profiles, this.connections, this.defaultSource]); }
@@ -35,6 +37,7 @@ export class ProfileLibraryModal extends DraftModal {
         } catch (error) { new Notice(String(error)); } finally { this.saving = false; }
     }
     onOpen(): void { this.render(); }
+    onClose(): void { if(!this.draftMode)this.google?.releaseDraft?.(); }
     private render(): void {
         const box = this.contentEl; box.replaceChildren(); box.classList.add('sync-library');
         box.append(element('h3', this.sources ? tr('Подключения', 'Connections') : tr('Профили синхронизации', 'Sync profiles')));
@@ -82,7 +85,7 @@ export class ProfileLibraryModal extends DraftModal {
         const modal = new SourceConnectionModal(this.app, original, connection => {
             const index = this.connections.findIndex(c => c.id === connection.id);
             if (index < 0) this.connections.push(connection); else this.connections[index] = connection; this.render();
-        }); trackModal(modal); modal.open();
+        },this.google); trackModal(modal); modal.open();
     }
 }
 class ProfileEditorModal extends DraftModal {
