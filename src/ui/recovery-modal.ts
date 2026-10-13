@@ -6,6 +6,8 @@ import { trackModal } from './modal-registry';
 import { button, element, textInput, tr } from './dom';
 
 export interface RecoveryDeps {
+    retention?():Promise<{before:number;ids:string[];objects?:{count:number;bytes:number}}>;
+    prune?(preview:{before:number;ids:string[];objects?:{count:number;bytes:number}}):Promise<void>;
     load():Promise<{records:OperationRecord[];used:number;limit:number}>;
     verify(id:string):Promise<void>;
     restore(id:string):Promise<string>;
@@ -24,7 +26,7 @@ export class RecoveryModal extends Modal {
         const box=this.contentEl;box.replaceChildren();box.append(element('h2',tr('Восстановление и незавершённые операции','Recovery and unfinished operations')));
         box.append(element('p',tr('Восстановление создаёт отдельную копию рядом с файлом. Текущие файлы и история сохраняются.','Restoring creates a separate copy beside the file. Current files and history are retained.')));
         const search=textInput('',value=>{this.query=value;this.page=0;this.render();});search.type='search';search.placeholder=tr('Найти путь','Find path');search.setAttribute('aria-label',search.placeholder);box.append(search);
-        this.list=element('div');box.append(this.list);button(box,tr('Обновить','Refresh'),()=>void this.load());button(box,tr('Закрыть','Close'),()=>this.close());void this.load();
+        this.list=element('div');box.append(this.list);button(box,tr('Обновить','Refresh'),()=>void this.load());if(this.deps.retention&&this.deps.prune)button(box,tr('Управление старой историей','Manage old history'),()=>void this.retention());button(box,tr('Закрыть','Close'),()=>this.close());void this.load();
     }
     private async load():Promise<void>{
         this.list.replaceChildren(element('p',tr('Читаем историю…','Reading history…')));
@@ -57,6 +59,17 @@ export class RecoveryModal extends Modal {
     private async action(fn:()=>Promise<void>):Promise<void>{
         if(this.busy||this.closed)return;this.busy=true;this.render();
         try{await fn();}catch(error){new Notice(String(error));}finally{this.busy=false;this.render();}
+    }
+    private async retention():Promise<void>{
+        if(this.busy||this.deps.isRunning())return;
+        try{const preview=await this.deps.retention!();if(this.closed)return;const modal=new Modal(this.app);
+            modal.contentEl.append(element('h3',tr('Очистить завершённую историю старше 30 дней?','Remove completed history older than 30 days?')),
+                element('p',tr('Можно удалить операций: ','Eligible operations: ')+preview.ids.length),
+                element('p',tr('Ненужных копий: ','Unreferenced copies: ')+(preview.objects?.count??0)+' · '+formatBytes(preview.objects?.bytes??0)),
+                element('p',tr('Текущие исходные версии, последнее применение каждого пути и незавершённые операции сохранятся. Старые копии без ссылок из оставшейся истории будут удалены. При необходимости скачайте их до очистки. Это действие нельзя отменить.','Current baselines, the latest application for each path and unfinished operations remain. Old copies no longer referenced by retained history will be deleted. Download copies you need before cleanup. This action cannot be undone.')));
+            const accept=button(modal.contentEl,tr('Удалить старую историю и ненужные копии','Delete old history and unreferenced copies'),()=>void this.action(async()=>{accept.disabled=true;await this.deps.prune!(preview);modal.close();await this.load();}));
+            button(modal.contentEl,tr('Вернуться','Return'),()=>modal.close());trackModal(modal);modal.open();
+        }catch(error){new Notice(String(error));}
     }
     private async review(record:OperationRecord):Promise<void>{
         try{

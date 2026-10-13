@@ -11,6 +11,8 @@ export function reasonLabel(reason: string): string {
         background: tr('Удаление ожидает ручного запуска', 'Deletion awaits a manual run'), unverified: tr('Полнота снимка не подтверждена; удаление запрещено', 'Inventory completeness is unverified; deletion blocked'),
         'decision-required': tr('Конфликт ожидает вашего решения', 'Conflict awaits your decision'), 'incoming-copy': tr('Локальный файл сохранён; входящая версия в копии', 'Local file retained; incoming version saved as a copy'),
         accepted: tr('Версия источника принята', 'Source version accepted'), 'local-preserved': tr('Локальная версия сохранена профилем', 'Local version preserved by the profile'),
+        'package-not-ready':tr('Пакет плагина или темы не прошёл все проверки; остальные записи отложены','Plugin or theme package did not pass all checks; remaining writes deferred'),
+        'source-paused':tr('Источник остановлен после повторяющихся ошибок; файл ещё не загружался','Source paused after repeated failures; file has not been downloaded'),
         'file-too-large': tr('Превышен допустимый размер', 'File size limit exceeded'), 'io-error': tr('Операция не выполнена; проверьте подробности ошибки', 'Operation failed; check the error details'),
     } as Record<string, string>)[reason] ?? reason;
 }
@@ -30,7 +32,7 @@ export function operationTable(rows: readonly SyncPlanRow[] | readonly SyncFileR
         for (const row of filtered.slice(page * 100, (page + 1) * 100)) {
             const line = element('tr');
             const label = 'action' in row ? actionLabel(row.action) : statusLabel(row.status);
-            for (const text of [label, row.source ?? '—', 'remotePath' in row ? row.remotePath ?? '—' : '—', row.path, reasonLabel(row.reason)]) line.append(element('td', text));
+            for (const text of [label, row.source ?? '—', 'remotePath' in row ? row.remotePath ?? '—' : '—', row.path, reasonLabel(row.reason)+('issue' in row&&row.issue?' · '+row.issue.stage+': '+row.issue.message+(row.issue.status?' · HTTP '+row.issue.status:'')+(row.issue.attempt?' · '+tr('попытка ','attempt ')+row.issue.attempt:'')+(row.issue.retryAt&&row.issue.retryAt<Number.MAX_SAFE_INTEGER?' · '+tr('повтор после ','retry after ')+new Date(row.issue.retryAt).toLocaleString():''):'')+('conflictPath' in row&&row.conflictPath?' · '+row.conflictPath:'')]) line.append(element('td', text));
             data.append(line);
         }
         table.append(data); body.append(table);

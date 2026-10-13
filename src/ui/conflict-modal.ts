@@ -15,7 +15,9 @@ export class ConflictAskModal extends Modal {
         button(box, tr('Оставить локальную; пропустить входящую', 'Keep local; skip incoming'), () => this.resolve('local-wins'));
         button(box, tr('Решить позже', 'Decide later'), () => this.resolve('defer'));
     }
-    wait(): Promise<ConflictChoice> { return new Promise(resolve => { this.resolver = resolve; this.open(); }); }
+    wait(signal?:AbortSignal): Promise<ConflictChoice> { if(signal?.aborted)return Promise.resolve('defer');
+        const abort=()=>this.close();const work=new Promise<ConflictChoice>(resolve=>{this.resolver=resolve;signal?.addEventListener('abort',abort,{once:true});this.open();});
+        return work.finally(()=>signal?.removeEventListener('abort',abort)); }
     onClose(): void { if (!this.resolved) { this.resolved = true; this.resolver?.('defer'); } }
     private resolve(choice: ConflictChoice): void { if (this.resolved) return; this.resolved = true; this.resolver?.(choice); this.close(); }
 }

@@ -22,6 +22,7 @@ export interface WorkspaceDeps {
     pathPolicy: PathPolicy; pluginDir: string; isRunning(): boolean;
     local(): Promise<{ files: string[]; folders: string[] }>;
     fetch(connection: SourceConnection, signal: AbortSignal): Promise<RemoteEntry[]>;
+    checkDownload?(connection:SourceConnection,signal:AbortSignal):Promise<void>;
     check?(connection: SourceConnection, signal: AbortSignal): Promise<void>;
     run?(sourceIds?: string[]): Promise<void>;
     profilesLibrary?(): void;
@@ -157,10 +158,12 @@ export class SyncWorkspaceModal extends DraftModal {
             choose.setAttribute('aria-pressed', String(this.view === c.id));
             group.append(element('small', c.kind + ' · ' + (state.status === 'loading' ? tr('Загрузка…', 'Loading…') : state.status === 'error' ? (state.loadedAt ? tr('Снимок устарел', 'Stale snapshot') : tr('Ошибка загрузки', 'Load failed')) :
                 state.loadedAt ? tr('Снимок: ', 'Snapshot: ') + new Date(state.loadedAt).toLocaleString() : tr('Не загружен', 'Not loaded'))));
+            group.append(element('small',tr('Авто: ','Auto: ')+(c.auto==='off'?tr('только вручную','manual only'):c.auto??tr('общий интервал','global interval'))));
             const check = this.checks.get(c.id); if (check) group.append(element('small', check.loading ? tr('Проверка доступа…', 'Checking access…') : check.message));
             const actions = element('details', '', 'sync-source-actions'); actions.append(element('summary', tr('Действия', 'Actions')));
             button(actions, tr('Настроить', 'Configure'), () => this.editSource(c));
-            if (this.deps.check) button(actions, tr('Проверить доступ', 'Check access'), () => void this.checkSource(c));
+            if (this.deps.check) button(actions, tr('Проверить доступ к каталогу', 'Check inventory access'), () => void this.checkSource(c));
+            if(this.deps.checkDownload)button(actions,tr('Проверить пробную загрузку','Test a sample download'),()=>void this.checkSource(c,true));
             button(actions, tr('Обновить содержимое', 'Refresh contents'), () => void this.loadSource(c)).disabled = state.status === 'loading';
             if (state.status === 'loading') button(actions, tr('Отменить загрузку', 'Cancel loading'), () => { this.inventories.cancel(c.id); this.renderSources(); this.renderTree(); });
             button(actions, tr('Сделать общим источником', 'Set as default source'), () => { this.policy.defaultSource = c.id; this.render(); });
@@ -194,10 +197,10 @@ export class SyncWorkspaceModal extends DraftModal {
         const pending = this.inventories.load(c.id, signal => this.deps.fetch(structuredClone(c), signal)); this.renderSources(); this.renderTree();
         await pending; if (!this.closed) { this.renderSources(); this.renderTree(); }
     }
-    private async checkSource(c: SourceConnection): Promise<void> {
+    private async checkSource(c: SourceConnection,sample=false): Promise<void> {
         if (!this.deps.check || this.checks.get(c.id)?.loading) return;
         this.checks.set(c.id, { loading: true, message: '' }); this.renderSources();
-        try { await this.deps.check(structuredClone(c), this.controller.signal); this.checks.set(c.id, { loading: false, message: tr('Доступ подтверждён', 'Access confirmed') }); }
+        try { await (sample?this.deps.checkDownload!:this.deps.check!)(structuredClone(c), this.controller.signal); this.checks.set(c.id, { loading: false, message:sample?tr('Пробный файл получен и проверен; vault не изменён','Sample file received and verified; vault unchanged'):tr('Доступ к каталогу подтверждён; загрузка файлов не проверялась','Inventory accessible; file downloads not tested') }); }
         catch (error) { this.checks.set(c.id, { loading: false, message: String(error) }); }
         if (!this.closed) this.renderSources();
     }

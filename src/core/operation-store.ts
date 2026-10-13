@@ -1,3 +1,4 @@
+import { SyncFault } from './sync-issue';
 import type { CacheEntry, FileSystem, RemoteEntry } from '../sources/types';
 import { sha256Hex } from './hasher';
 import { validateManifest } from './source-validation';
@@ -44,7 +45,7 @@ const MARKER = 'sync-operations-v2-migrated.json';
 const TEMP = /^sync-operations-(?:v2-\d{16}|v2-migrated|v3-(?:event|checkpoint)-\d{16})\.json\.[\w-]+\.tmp$/;
 const ROOT = '0'.repeat(64);
 type FinalStatus = 'applied' | 'not-applied' | 'blocked';
-type Command = { kind: 'begin'; record: OperationRecord } | { kind: 'finish'; id: string; status: FinalStatus };
+type Command = { kind: 'begin'; record: OperationRecord } | { kind: 'finish'; id: string; status: FinalStatus } | {kind:'prune';ids:string[];before:number};
 interface Event { version: 3; kind: 'event'; sequence: number; previous: string; command: Command }
 interface Checkpoint { version: 3; kind: 'checkpoint'; tip: string; state: State }
 interface Marker { version: 3; kind: 'migration-marker'; initialSequence: number; initialTip: string }
@@ -117,7 +118,7 @@ export class OperationStore {
         private marker?: Marker;
         private count = 0;
         private readonly minimumCheckpointEvents: number;
-        constructor(private readonly fs: FileSystem, private readonly maxRecords = 10000, options: OperationStoreOptions = {}) {
+        constructor(private readonly fs: FileSystem, private maxRecords = 10000, options: OperationStoreOptions = {}) {
                 this.minimumCheckpointEvents = options.minimumCheckpointEvents ?? 256;
                 if (!Number.isSafeInteger(maxRecords) || maxRecords < 1 || !Number.isSafeInteger(this.minimumCheckpointEvents)
                         || this.minimumCheckpointEvents < 1) throw new Error('Invalid operation storage budget');
@@ -180,6 +181,7 @@ export class OperationStore {
                 this.assertReadable();
                 return structuredClone(Object.values(this.state.operations).filter(r => namespace === undefined || r.namespace === namespace));
         }
+        baselines(namespace:string):AppliedBaseline[]{this.assertReadable();return structuredClone(Object.entries(this.state.baselines).filter(([k])=>JSON.parse(k)[0]===namespace).map(([,value])=>value));}
         baseline(namespace: string, path: string): AppliedBaseline | undefined {
                 this.assertReadable();
                 const baseline = this.state.baselines[key(namespace, path)]; return baseline && structuredClone(baseline);
@@ -188,6 +190,25 @@ export class OperationStore {
                 if (this.fault) throw this.fault;
                 if (!this.loaded) throw new Error('Operation state must be loaded before reading');
         }
+        prunable(before:number):OperationRecord[]{this.assertReadable();return this.retentionCandidates(before);}
+        private retentionCandidates(before:number):OperationRecord[]{
+                const protectedIds=new Set<string>(),seen=new Set<string>();
+                const ordered=Object.values(this.state.operations).filter(record=>record.status==='applied').sort((a,b)=>b.appliedSequence!-a.appliedSequence!);
+                for(const record of ordered){const effect=record.effect;
+                        const paths=effect?.kind==='set'?[effect.remote.path]:effect?.kind==='delete'?[effect.path]:effect?.kind==='move'?[effect.from,effect.to]:[];
+                        for(const path of paths){const k=key(record.namespace,path);if(!seen.has(k))protectedIds.add(record.id);seen.add(k);}
+                }
+                return structuredClone(Object.values(this.state.operations)).filter(record=>['applied','not-applied'].includes(record.status)&&record.createdAt<before&&!protectedIds.has(record.id));
+        }
+        async prune(before:number,ids:readonly string[]):Promise<void>{
+                await this.load();await this.serial(async()=>{
+                        this.assertReadable();const allowed=new Set(this.prunable(before).map(record=>record.id));
+                        if(ids.some(id=>!allowed.has(id)))throw Error('Retention preview changed; review it again');
+                        if(!ids.length)return;await this.ensureFormat();await this.append({kind:'prune',before,ids:[...ids]});await this.compactLocked();
+                });
+        }
+        setLimit(records:number):void{if(!Number.isSafeInteger(records)||records<1)throw Error('Invalid history budget');this.maxRecords=records;}
+        async capacity():Promise<{used:number;limit:number}>{await this.load();this.assertReadable();return {used:this.count,limit:this.maxRecords};}
         async begin(input: OperationRecord): Promise<void> {
                 const record = structuredClone(input);
                 await this.load();
@@ -195,7 +216,7 @@ export class OperationStore {
                         this.assertReadable();
                         const command: Command = { kind: 'begin', record };
                         this.prepare(command, this.state.sequence + 1);
-                        if (this.count >= this.maxRecords) throw new Error('Operation history budget exhausted; original retained');
+                        if (this.count >= this.maxRecords) throw new SyncFault('history-quota','Operation history budget exhausted; original retained','session');
                         // Maintenance precedes a new intention; it cannot turn an already
                         // applied mutation into a spurious download failure.
                         await this.ensureFormat();
@@ -223,12 +244,18 @@ export class OperationStore {
                 const command = value.command;
                 if (command.kind === 'begin') {
                         if (!object(command.record)) throw new Error('Invalid operation begin event');
-                } else if (command.kind !== 'finish' || typeof command.id !== 'string' || !idValid(command.id)
+                } else if(command.kind==='prune'){if(!Array.isArray(command.ids)||!Number.isFinite(command.before))throw Error('Invalid retention event');}
+                else if (command.kind !== 'finish' || typeof command.id !== 'string' || !idValid(command.id)
                         || !['applied', 'not-applied', 'blocked'].includes(String(command.status))) throw new Error('Invalid operation command');
                 return value as unknown as Event;
         }
-        private prepare(command: Command, sequence: number): OperationRecord {
+        private prepare(command: Command, sequence: number): OperationRecord|undefined {
                 if (!Number.isSafeInteger(sequence)) throw new Error('Operation sequence exhausted');
+                if(command.kind==='prune'){
+                        if(!Number.isFinite(command.before)||!Array.isArray(command.ids)||new Set(command.ids).size!==command.ids.length)throw Error('Invalid retention operation');
+                        const allowed=new Set(this.retentionCandidates(command.before).map(record=>record.id));
+                        if(command.ids.some(id=>!idValid(id)||!allowed.has(id)))throw Error('Retention would remove protected history');return;
+                }
                 let record: OperationRecord;
                 if (command.kind === 'begin') {
                         record = command.record;
@@ -247,6 +274,8 @@ export class OperationStore {
         }
         private accept(command: Command, sequence: number): void {
                 const record = this.prepare(command, sequence);
+                if(command.kind==='prune'){for(const id of command.ids)delete this.state.operations[id];this.count-=command.ids.length;this.state.sequence=sequence;return;}
+                if(!record)throw Error('Operation record missing');
                 this.state.operations[record.id] = record;
                 if (command.kind === 'begin') this.count++;
                 this.state.sequence = sequence;

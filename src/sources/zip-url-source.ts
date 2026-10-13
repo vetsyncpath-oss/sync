@@ -1,3 +1,4 @@
+import type { TransferObserver } from './types';
 // ============================================================
 // --- SOURCES/ZIP-URL-SOURCE (фаза 5, задача 5-e) ---
 // Универсальный источник синхронизации: zip-архив по прямой
@@ -239,10 +240,11 @@ function toArrayBuffer(data: Uint8Array | ArrayBuffer): ArrayBuffer {
 
 export class ZipUrlSource implements SyncSource {
         readonly kind = 'zip-url' as const;
+        readonly maxFileSizeBytes=64*1024*1024;
         readonly deletionSafety = 'immutable' as const;
-        /** [Phase 5.1] пер-файлового лимита нет: архив скачивается целиком (см. SyncSource). */
-        readonly maxFileSizeBytes?: number;
+        /** Bounded portable extraction; the archive itself uses separate staging. */
 
+        private manifestObserve?: TransferObserver;
         private readonly opts: ZipUrlSourceOptions;
         private readonly messages: ZipUrlSourceMessages;
 
@@ -275,10 +277,11 @@ export class ZipUrlSource implements SyncSource {
                 this.timer = opts.timer ?? { setTimeout, clearTimeout, now: () => Date.now() };
         }
 
-        async getManifest(signal: AbortSignal): Promise<RemoteEntry[]> {
+        async getManifest(signal: AbortSignal,observe?:TransferObserver): Promise<RemoteEntry[]> {
                 if (signal.aborted) {
                         throw abortedError();
                 }
+                this.manifestObserve=observe;
                 if (this.activeOps > 0) throw new Error('Archive snapshot is in use');
                 // A resource lease does not establish freshness for a new listing.
                 await this.forceDispose();
@@ -295,7 +298,7 @@ export class ZipUrlSource implements SyncSource {
                 return entries;
         }
 
-        async fetch(entry: RemoteEntry, signal: AbortSignal): Promise<ArrayBuffer> {
+        async fetch(entry: RemoteEntry, signal: AbortSignal,observe?:TransferObserver): Promise<ArrayBuffer> {
                 if (signal.aborted) {
                         throw abortedError();
                 }
@@ -311,7 +314,8 @@ export class ZipUrlSource implements SyncSource {
                         if (signal.aborted) {
                                 throw abortedError();
                         }
-                        const data = await extractEntry(reader, zipEntry);
+                        observe?.({stage:'verify'});
+                        const data = await extractEntry(reader, zipEntry,signal);
                         if (data.byteLength !== entry.size) {
                                 throw new Error(
                                         `размер распакованной записи не совпал с манифестом: ${entry.path} ` +
@@ -517,7 +521,7 @@ export class ZipUrlSource implements SyncSource {
                 signal: AbortSignal,
         ): Promise<RandomAccessReader> {
                 let url = det.downloadUrl;
-                let reader = await this.opts.downloader.download(url, { signal, onProgress: this.opts.onProgress });
+                let reader = await this.opts.downloader.download(url, { signal, onProgress:p=>{this.opts.onProgress?.(p);this.manifestObserve?.({stage:'manifest',bytes:p.bytesTransferred,totalBytes:p.totalBytes??undefined,capability:p.capability??'streaming'});} });
                 let kind = await this.classify(reader);
 
                 if (kind === 'html' && det.provider === 'gdrive' && !url.includes('confirm=t')) {
@@ -527,7 +531,7 @@ export class ZipUrlSource implements SyncSource {
                                 throw abortedError();
                         }
                         url = url + '&confirm=t';
-                        reader = await this.opts.downloader.download(url, { signal, onProgress: this.opts.onProgress });
+                        reader = await this.opts.downloader.download(url, { signal, onProgress:p=>{this.opts.onProgress?.(p);this.manifestObserve?.({stage:'manifest',bytes:p.bytesTransferred,totalBytes:p.totalBytes??undefined,capability:p.capability??'streaming'});} });
                         kind = await this.classify(reader);
                 }
 

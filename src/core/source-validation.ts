@@ -1,3 +1,4 @@
+import { SyncFault } from './sync-issue';
 import type { RemoteEntry } from '../sources/types';
 import { crc32Hex, gitBlobSha1Hex, sha256Hex } from './hasher';
 
@@ -41,12 +42,12 @@ export function validateManifest(entries: RemoteEntry[]): void {
 
 /** ETag/weak are version hints; content digests are verified against received bytes. */
 export async function verifyRemoteData(entry: RemoteEntry, data: ArrayBuffer): Promise<void> {
-        if (data.byteLength !== entry.size) throw new Error(`Source size mismatch: ${entry.path}`);
+        if (data.byteLength !== entry.size) throw new SyncFault('integrity', `Source size mismatch: ${entry.path}`,'file',true);
         let digest: string | undefined;
         if (entry.hashAlg === 'sha256') digest = await sha256Hex(data);
         else if (entry.hashAlg === 'git-sha1') digest = await gitBlobSha1Hex(data);
         else if (entry.hashAlg === 'crc32') digest = crc32Hex(data);
         if (digest !== undefined && digest.toLowerCase() !== entry.hash.toLowerCase()) {
-                throw new Error(`Source integrity mismatch: ${entry.path}`);
+                throw new SyncFault('integrity', `Source integrity mismatch: ${entry.path}`,'file',true);
         }
 }

@@ -1,7 +1,6 @@
 // ============================================================
 // --- SOURCES/TYPES: контракты ядра синхронизации (фаза 3-1) ---
-// ЗАМОРОЖЕНЫ до фазы 7: изменения — только через задачу-ревизию
-// между фазами (overhaul-plan.md §2.5, риск Р-3).
+// Optional observation ports preserve compatibility with existing sources and transports.
 // Ядро core/ НЕ импортирует obsidian/node — только эти интерфейсы
 // и собственные зависимости друг друга (решение В5-1).
 // ============================================================
@@ -66,10 +65,12 @@ export interface SyncSource {
          * с источником на каждой сессии (в т.ч. после setSource).
          */
         readonly maxFileSizeBytes?: number;
+        fileSizeLimit?(entry:RemoteEntry): number|undefined;
         /** Полный список файлов источника с их хэшами. */
-        getManifest(signal: AbortSignal): Promise<RemoteEntry[]>;
+        getManifest(signal: AbortSignal, observe?: TransferObserver): Promise<RemoteEntry[]>;
         /** Загрузка содержимого одного файла. */
-        fetch(entry: RemoteEntry, signal: AbortSignal): Promise<ArrayBuffer>;
+        fetch(entry: RemoteEntry, signal: AbortSignal, observe?: TransferObserver): Promise<ArrayBuffer>;
+        forceDispose?(): void | Promise<void>;
         /** [5-1] Освобождение сессионных ресурсов (tmp-архив ZIP-источника). Coordinator зовёт в finally. */
         dispose?(): Promise<void>;
 }
@@ -125,7 +126,8 @@ export interface VaultAdapter {
         mkdir(path: string): Promise<void>;
         remove(path: string): Promise<void>;
         rename(from: string, to: string): Promise<void>;
-        stat(path: string): Promise<{ mtime: number; size: number } | null>;
+        assertWritable?(path: string): void | Promise<void>;
+        stat(path: string): Promise<{ mtime: number; size: number; type?: string } | null>;
         /** [4-1] Системная корзина; реализация опциональна (платформа/тесты). */
         trash?(path: string): Promise<void>;
         /** [4-1] Листинг каталога (чистка пустых папок); опционально. */
@@ -137,7 +139,26 @@ export interface NetTransport {
         fetch(url: string, options: NetRequest): Promise<NetResponse>;
 }
 
+export type PipelineStage = 'preparing' | 'recovery' | 'manifest' | 'observe-local' | 'confirm' | 'download-link' | 'download' | 'waiting' | 'verify' | 'prepare-directory' | 'apply' | 'checkpoint' | 'finalize' | 'cancelling';
+export interface TransferEvent {
+        source?:string;items?:number;
+        stage: PipelineStage;
+        attempt?: number; maxAttempts?: number;
+        bytes?: number; totalBytes?: number; byteDelta?: number;
+        retryAt?: number; status?: number; host?: string;
+        capability?: 'streaming' | 'buffered';
+}
+export type TransferObserver = (event: TransferEvent) => void;
+export interface SyncIssue {
+        code: string; message: string; stage: PipelineStage;
+        retryable: boolean; scope: 'file' | 'source' | 'session';
+        status?: number; attempt?: number; retryAt?: number; host?: string;
+}
+export interface FileActivity extends TransferEvent { path: string; source?: string; lastActivityAt: number }
+
 export interface NetRequest {
+        observe?: TransferObserver;
+        maxBytes?: number;
         method?: string;
         headers?: Record<string, string>;
         signal?: AbortSignal;
@@ -168,6 +189,7 @@ export interface FileSystem {
         read(path: string): Promise<string | null>;
         write(path: string, content: string): Promise<void>;
         rename(from: string, to: string): Promise<void>;
+        assertWritable?(path: string): void | Promise<void>;
         exists(path: string): Promise<boolean>;
         remove(path: string): Promise<void>;
         /** Список имён файлов каталога (для GC старых кэшей). */
@@ -240,7 +262,7 @@ export type ConflictChoice = 'remote-wins' | 'local-wins' | 'keep-both' | 'incom
 
 /** Последовательный вопрос пользователю (модалка; фикс Б-21). */
 export interface ConfirmUI {
-        askConflict(info: ConflictInfo): Promise<ConflictChoice>;
+        askConflict(info: ConflictInfo, signal?: AbortSignal): Promise<ConflictChoice>;
 }
 
 /**
@@ -271,6 +293,7 @@ export type WriteOutcome =
 
 export interface FailedFile {
         failureKind?:'transient'|'blocked';
+        issue?: SyncIssue;
         path: string;
         hash: string;
         size: number;
@@ -294,6 +317,11 @@ export interface FailedFile {
 
 /** Статистика одной сессии синхронизации (перенос из main.ts). */
 export interface SyncStats {
+        trace?:Array<TransferEvent & {at:number;path?:string;source?:string}>;traceDropped?:number;
+        sessionId?: string;
+        problems?: SyncIssue[];
+        pendingBefore?: number; pendingAfter?: number; retryScheduled?: number; blocked?: number;
+        networkBytes?: number; notAttempted?: number;
         problem?: string;
         results?: SyncFileResult[];
         received?: number;
@@ -366,12 +394,18 @@ export type SyncPhase = 'syncing' | 'idle' | 'error' | 'offline' | 'unconfigured
 export interface SyncPlanRow {
         action: 'add' | 'restore' | 'update' | 'check' | 'move' | 'delete' | 'skip' | 'defer' | 'blocked';
         path: string; remotePath?: string; source?: string;
-        reason: 'missing' | 'source-changed' | 'match-source' | 'baseline-check' | 'mapping' | 'absent' | 'preserve' | 'create-only' | 'background' | 'unverified';
+        reason: 'missing' | 'source-changed' | 'match-source' | 'baseline-check' | 'mapping' | 'absent' | 'preserve' | 'create-only' | 'background' | 'unverified' | 'file-too-large';
 }
-export interface SyncFileResult { path: string; remotePath?:string; source?: string; status: 'applied' | 'unchanged' | 'skipped' | 'pending' | 'error'; reason: string }
+export interface SyncFileResult { path: string; remotePath?:string; source?: string; status: 'applied' | 'unchanged' | 'skipped' | 'pending' | 'error'; reason: string; issue?: SyncIssue; conflictPath?: string }
 
 /** Прогресс для статус-бара. */
 export interface SyncProgress {
+        stage?: PipelineStage;
+        activities?: readonly FileActivity[];
+        currentFailed?: number;
+        issues?: readonly SyncFileResult[];
+        lastActivityAt?: number;
+        networkBytes?: number;
         attention?: 'deletions' | 'conflicts';
         fileIndex?:number;fileTotal?:number;currentPath?:string;
         progressText?: string;
@@ -387,7 +421,7 @@ export interface SyncProgress {
 
 /** UI-порты Coordinator'а: модалки, статус-бар, нотисы. Тексты — на стороне UI. */
 export interface SyncUI {
-        confirmSync(info: ConfirmSyncInfo): Promise<boolean>;
+        confirmSync(info: ConfirmSyncInfo, signal?: AbortSignal): Promise<boolean>;
         /** Подтверждение retry-сессии (N дозревших файлов); опционально. */
         confirmRetry?(count: number): Promise<boolean>;
         setStatus(phase: SyncPhase, progress?: SyncProgress): void;
@@ -415,6 +449,7 @@ export interface RandomAccessReader {
 
 /** Прогресс скачивания архива. */
 export interface ArchiveDownloadProgress {
+        capability?:'streaming'|'buffered';
         bytesTransferred: number;
         /** content-length отсутствует / chunked → null. */
         totalBytes: number | null;

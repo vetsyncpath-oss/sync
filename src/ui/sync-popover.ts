@@ -1,3 +1,4 @@
+import type { SyncProgress } from '../sources/types';
 // src/ui/sync-popover.ts — «штаб синхронизации» popover [W2-T03 / Д5=1].
 //
 // Канон: решение Д5=1 (popover как «штаб»: чип состояния/уровня + фазы
@@ -34,7 +35,7 @@ const IDLE_BADGE = () => i18n.t.pop.statusIdle;
 /** Состояние popover — снимок Coordinator/StatusBar на момент open/update.
  *  Source-of-truth: main.ts StatusBarManager.setStatus копирует сюда поля
  *  из SyncState + сессии (phase/file* из coordinator events). */
-export interface PopoverState {
+export interface PopoverState extends Pick<SyncProgress,'stage'|'activities'|'currentFailed'|'issues'|'lastActivityAt'|'networkBytes'> {
         status: 'idle' | 'syncing' | 'error' | 'offline' | 'conflicts' | 'unconfigured' | 'blocked';
         profilesMode?: boolean;
         blockedReason?: string;
@@ -59,8 +60,9 @@ export interface PopoverState {
         /** [W4-T04] Scheduler snapshot — для индикатора «следующая через N мин».
          *  null = scheduler не инициализирован (W4-T04 не активирован в main.ts). */
         scheduler?: {
+                blockedReason?:string;
                 interval: 'off' | 'startup-only' | '15m' | '30m' | '1h' | '2h';
-                paused: boolean;
+                paused: boolean; pending?:boolean;running?:boolean;
                 minutesUntilNext: number | null;
         } | null;
 }
@@ -79,7 +81,8 @@ export interface SyncPopoverDeps {
         state: PopoverState;
         onSync: () => void;
         onCancel: () => void;
-        onRetry: () => void;
+        onRetry: (paths?:readonly string[]) => void;
+        onExportDiagnostics?:()=>void;
         onPauseAuto: () => void;
         onOpenJournal: () => void;
         onOpenSettings: () => void;
@@ -186,6 +189,7 @@ export class SyncPopoverView {
          *  Канонический источник внутри view — это поле, не deps.state. */
         private state: PopoverState;
         private closed = false;
+        private lastSessionNode?:HTMLElement;private lastSessionEntry?:JournalEntry|null;
 
         constructor(deps: SyncPopoverDeps) {
                 this.deps = deps;
@@ -194,6 +198,8 @@ export class SyncPopoverView {
 
         render(): void {
                 const { contentEl } = this.deps;
+                const activeElement=contentEl.contains(document.activeElement)?document.activeElement as HTMLElement:undefined;
+                const detailsState=Array.from(contentEl.querySelectorAll<HTMLDetailsElement>('details')).map(item=>({cls:item.className,open:item.open}));
                 const focused=contentEl.contains(document.activeElement)?{cls:(document.activeElement as HTMLElement).className,text:document.activeElement?.textContent}:undefined;
                 contentEl.replaceChildren();
                 contentEl.classList.add('pop-popover');
@@ -219,7 +225,9 @@ export class SyncPopoverView {
                 contentEl.append(this.renderActions());
 
                 // 5. Сводка последней сессии.
-                contentEl.append(this.renderLastSession());
+                if(this.lastSessionEntry!==this.deps.lastEntry||!this.lastSessionNode){this.lastSessionNode=this.renderLastSession();this.lastSessionEntry=this.deps.lastEntry;}
+                for(const button of Array.from(this.lastSessionNode.querySelectorAll<HTMLButtonElement>('.pop-targeted-retries button')))button.disabled=this.state.status==='syncing';
+                contentEl.append(this.lastSessionNode);
 
                 // 6. Конфликты — при status='conflicts' или lastEntry.conflicts>0.
                 if (this.state.status === 'conflicts' || (this.deps.lastEntry?.conflicts ?? 0) > 0 || (this.deps.lastEntry?.deferredConflicts??0)>0) {
@@ -228,7 +236,9 @@ export class SyncPopoverView {
 
                 // 7. Ссылки внизу.
                 contentEl.append(this.renderLinks());
-                if(focused)Array.from(contentEl.querySelectorAll<HTMLElement>('button')).find(button=>button.className===focused.cls&&button.textContent===focused.text)?.focus();
+                for(const item of detailsState){const details=Array.from(contentEl.querySelectorAll<HTMLDetailsElement>('details')).find(node=>node.className===item.cls);if(item.cls&&details)details.open=item.open;}
+                if(activeElement&&contentEl.contains(activeElement))activeElement.focus();
+                else if(focused)Array.from(contentEl.querySelectorAll<HTMLElement>('button')).find(button=>button.className===focused.cls&&button.textContent===focused.text)?.focus();
         }
 
         /** Обновить состояние и перерисовать. Без дублирования DOM:
@@ -328,7 +338,7 @@ export class SyncPopoverView {
                                 text: t.fileProgress(this.state.fileIndex, this.state.fileTotal??0),
                         }));
                 }
-                if (this.state.currentPath) {
+                if (this.state.currentPath&&!this.state.activities?.length) {
                         sub.append(el('div', {
                                 cls: 'pop-current-path',
                                 text: t.currentPath(this.state.currentPath),
@@ -336,7 +346,7 @@ export class SyncPopoverView {
                 }
                 const bytes = this.state.bytesTransferred ?? 0;
                 const totalBytes = this.state.totalBytes ?? 0;
-                if (bytes > 0 && totalBytes > 0) {
+                if (totalBytes > 0) {
                         const transferred = this.deps.formatBytes(bytes);
                         const totalStr = this.deps.formatBytes(totalBytes);
                         sub.append(el('div', {
@@ -344,6 +354,20 @@ export class SyncPopoverView {
                                 text: t.bytesProgress(transferred, totalStr),
                         }));
                 }
+                if((this.state.networkBytes??0)>bytes)sub.append(el('small',{text:tr('Трафик файлов с учётом повторов: ','File traffic including retries: ')+this.deps.formatBytes(this.state.networkBytes!)}));
+                if(this.state.stage==='cancelling')sub.append(el('p',{text:tr('Отмена: уже начатая запись должна завершиться. Применённые файлы сохраняются.','Cancelling: an active write must finish. Applied files are retained.')}));
+                else if(this.state.stage)sub.append(el('p',{text:stageLabel(this.state.stage)}));
+                for(const activity of this.state.activities??[]){
+                        const line=el('div',{cls:'pop-active-file'});
+                        line.append(el('code',{text:activity.path||activity.source||''}),el('span',{text:[activity.source,stageLabel(activity.stage),activity.attempt?tr('попытка ','attempt ')+activity.attempt+'/'+activity.maxAttempts:'',activity.host].filter(Boolean).join(' · ')}));
+                        if(activity.items!==undefined)line.append(el('small',{text:tr('Файлов в каталоге: ','Files inventoried: ')+activity.items}));
+                        if(activity.retryAt)line.append(el('small',{text:tr('Ожидание: ','Waiting: ')+Math.max(0,Math.ceil((activity.retryAt-Date.now())/1000))+' s'}));
+                        else line.append(el('small',{text:tr('С последней активности: ','Since last activity: ')+Math.max(0,Math.floor((Date.now()-activity.lastActivityAt)/1000))+' s'}));
+                        if(activity.capability==='buffered')line.append(el('small',{text:tr('Платформа возвращает файл целиком; байты видны после ответа. Отмена не останавливает запрос ОС.','The platform returns the whole file; bytes appear after the response. Cancel does not stop the OS request.')}));
+                        wrap.append(line);
+                }
+                if(this.state.currentFailed)sub.append(el('p',{text:tr('Новые ошибки этого запуска: ','New failures in this run: ')+this.state.currentFailed}));
+                if(this.state.issues?.length){const list=el('details',{cls:'pop-live-errors'});list.append(el('summary',{text:tr('Ошибки текущего запуска','Failures in this run')}));for(const row of this.state.issues.slice(-10))list.append(el('p',{text:row.path+' · '+(row.issue?.message??row.reason)}));wrap.append(list);}
                 if (sub.children.length > 0) wrap.append(sub);
                 return wrap;
         }
@@ -407,6 +431,8 @@ export class SyncPopoverView {
                         wrap.append(el('span', { cls: 'pop-scheduler-state pop-scheduler-paused', text: t.autoPausedState }));
                         return wrap;
                 }
+                if(sched.blockedReason){wrap.append(el('span',{text:tr('Автозапуски остановлены: ','Automatic runs stopped: ')+sched.blockedReason+tr(' Исправьте причину и выполните ручной запуск.',' Fix the cause and run manually.')}));return wrap;}
+                if(sched.pending){wrap.append(el('span',{text:tr('Автозапуск ожидает сеть, доступ или завершение текущей сессии.','Automatic run awaits network, access or the active session.')}));return wrap;}
                 if (sched.minutesUntilNext === null) {
                         // interval='startup-only' после первого тика — nextTickAt=null.
                         // Но startup-only сам по себе не должен здесь оказаться (одноразовый),
@@ -448,6 +474,12 @@ export class SyncPopoverView {
                 row.append(el('span', { cls: 'pop-trigger', text: jrnl[TRIGGER_KEY[e.trigger]] }));
                 wrap.append(row);
                 if(e.blockedReason)wrap.append(el('p',{text:e.blockedReason}));
+                if(e.pendingAfter)wrap.append(el('p',{text:tr('Нерешённых файлов после запуска: ','Unresolved files after this run: ')+e.pendingAfter+tr(' · автоповтор: ',' · automatic retry: ')+(e.retryScheduled??0)+tr(' · требуют исправления: ',' · require repair: ')+(e.blocked??0)}));
+                if(e.notAttempted)wrap.append(el('p',{text:tr('Отложено из-за остановки: ','Deferred after stopping: ')+e.notAttempted}));
+                if(e.results?.some(row=>row.status==='error')){
+                        const actions=el('div',{cls:'pop-targeted-retries'});
+                        for(const row of e.results.filter(row=>row.status==='error').slice(0,20)){const retry=el('button',{text:tr('Повторить: ','Retry: ')+row.path});retry.disabled=this.state.status==='syncing';retry.addEventListener('click',()=>this.deps.onRetry([row.path]));actions.append(retry);}wrap.append(actions);
+                }
                 if(e.results?.length){const details=el('details');details.append(el('summary',{text:tr('Результаты по файлам','File results')}),operationTable(e.results));wrap.append(details);}
 
                 // Счётчики — только ненулевые, через ' · '.
@@ -505,6 +537,7 @@ export class SyncPopoverView {
         private renderLinks(): HTMLElement {
                 const t = i18n.t.pop;
                 const wrap = el('div', { cls: 'pop-links' });
+                if(this.deps.onExportDiagnostics){const exportButton=el('button',{text:tr('Скачать диагностику','Download diagnostics')});exportButton.addEventListener('click',()=>this.deps.onExportDiagnostics!());wrap.append(exportButton);}
                 if(this.deps.onOpenWorkspace){const b=el('button',{cls:'pop-link pop-link-workspace',text:tr('Рабочее окно','Workspace')});b.addEventListener('click',()=>this.deps.onOpenWorkspace!());wrap.append(b);}
                 if(this.deps.onRecovery){const b=el('button',{cls:'pop-link pop-link-recovery',text:tr('Восстановление','Recovery')});b.addEventListener('click',()=>this.deps.onRecovery!());wrap.append(b);}
                 const j = el('button', { cls: 'pop-link pop-link-journal', text: t.linkJournal });
@@ -516,3 +549,5 @@ export class SyncPopoverView {
                 return wrap;
         }
 }
+
+function stageLabel(stage:string):string{return ({preparing:tr('Подготовка','Preparing'),recovery:tr('Проверка восстановления','Checking recovery'),manifest:tr('Чтение каталога / архива','Reading inventory / archive'),'observe-local':tr('Проверка локальных версий','Checking local versions'),confirm:tr('Ожидается подтверждение','Awaiting confirmation'),'download-link':tr('Получение ссылки на файл','Obtaining download link'),download:tr('Получение файла','Receiving file'),waiting:tr('Ожидание повторной попытки','Waiting to retry'),verify:tr('Проверка содержимого','Verifying content'),'prepare-directory':tr('Проверка каталогов','Checking directories'),apply:tr('Сохранение / решение конфликта','Saving / resolving conflict'),checkpoint:tr('Сохранение состояния','Saving state'),finalize:tr('Завершение и освобождение ресурсов','Finalizing and releasing resources') } as Record<string,string>)[stage]??stage;}

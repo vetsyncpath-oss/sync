@@ -8,5 +8,7 @@ export function sessionLabel(entry:JournalEntry,fallback:string):string {
     if(entry.deferredConflicts)return tr('Ожидает решения','Awaiting decision');
     if(entry.blockedDeletions)return tr('Удаления заблокированы','Deletions blocked');
     if(entry.deferredDeletions)return tr('Удаления отложены','Deletions deferred');
+    if(entry.pendingAfter&&!entry.errors)return tr('Очередь ожидает повтора или исправления','Pending retry or repair');
+    if(entry.notAttempted)return tr('Источник временно остановлен','Source temporarily paused');
     return fallback;
 }

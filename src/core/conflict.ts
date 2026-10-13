@@ -1,3 +1,4 @@
+import { cancellable } from './cancellable';
 import type { WriteMode, RuleConflict } from './file-rules';
 // src/core/conflict.ts — разрешитель конфликтов «локаль vs облако»
 // (фаза 3-5, дизайн §9.1 — матрица решений, реализована дословно).
@@ -383,9 +384,9 @@ export class ConflictResolver {
         ): Promise<WriteOutcome> {
                 let choice: ConflictStrategy | import('../sources/types').ConflictChoice = this.strategy;
                 if (mirror !== 'light' && mirror !== 'full' && choice === 'ask') {
-                        choice = this.deps.ui ? await this.deps.ui.askConflict({
+                        choice = this.deps.ui ? await cancellable(this.deps.ui.askConflict({
                                 path: entry.path, localSize: local.byteLength, remoteSize: remoteData.byteLength,
-                        }) : 'keep-both';
+                        },signal),signal) : 'keep-both';
                 }
                 signal?.throwIfAborted();
                 if (choice === 'defer') return { kind: 'skipped', updateCache: false, requiresDecision: true };

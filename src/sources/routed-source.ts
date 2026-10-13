@@ -1,3 +1,5 @@
+import { ResourceGate } from '../core/resource-gate';
+import type { TransferObserver } from './types';
 import type { RemoteEntry, SyncSource } from './types';
 import { resolveFileRule, type FileRule } from '../core/file-rules';
 import { validateManifest } from '../core/source-validation';
@@ -11,6 +13,7 @@ export class RoutedSource implements SyncSource {
     readonly kind: SyncSource['kind'];
     readonly maxConcurrentDownloads:number;
     readonly deletionSafety: 'immutable' | 'unverified';
+    private readonly gates=new Map<string,ResourceGate>();
     private readonly locators = new Map<string,{member:RoutedMember;entry:RemoteEntry;exposedPath:string}>();
     constructor(private readonly members: RoutedMember[], private readonly rules: readonly FileRule[],
         private readonly localPath: (path:string)=>string = p=>p, private readonly defaultSource='primary', private readonly selectedIds?: readonly string[]) {
@@ -20,21 +23,22 @@ export class RoutedSource implements SyncSource {
         if(!active.length || selectedIds?.some(id=>!members.some(m=>m.id===id)))throw Error('No assigned source selected');
         this.kind=active[0].source.kind;
         this.sources=active.map(m=>({id:m.id,name:m.name,kind:m.source.kind}));
-        this.maxConcurrentDownloads=Math.min(...active.map(m=>m.source.maxConcurrentDownloads??Infinity));
+        this.maxConcurrentDownloads=active.reduce((sum,m)=>sum+(m.source.maxConcurrentDownloads??4),0);
+        for(const m of active)this.gates.set(m.id,new ResourceGate(m.source.maxConcurrentDownloads??4));
         this.deletionSafety=active.every(m=>m.source.deletionSafety==='immutable')?'immutable':'unverified';
     }
-    private async inventories(signal:AbortSignal) {
+    private async inventories(signal:AbortSignal,observe?:TransferObserver) {
         this.locators.clear();const result: {member:RoutedMember;entries:RemoteEntry[]}[]=[];
         for (const member of this.members) {
             if(this.selectedIds && !this.selectedIds.includes(member.id))continue;
-            signal.throwIfAborted();
-            try {const entries=await member.source.getManifest(signal);validateManifest(entries);result.push({member,entries});}
+            signal.throwIfAborted();observe?.({stage:'manifest',source:member.name});
+            try {const entries=await member.source.getManifest(signal,event=>observe?.({...event,source:member.name}));validateManifest(entries);result.push({member,entries});}
             catch(error){if(signal.aborted||(error as Error)?.name==='AbortError')throw error;throw Object.assign(new Error(member.name+': '+(error instanceof Error?error.message:String(error))),{cause:error});}
         }
         return result;
     }
-    async getManifest(signal:AbortSignal):Promise<RemoteEntry[]> {
-        const inventories=await this.inventories(signal);const output:RemoteEntry[]=[];
+    async getManifest(signal:AbortSignal,observe?:TransferObserver):Promise<RemoteEntry[]> {
+        const inventories=await this.inventories(signal,observe);const output:RemoteEntry[]=[];
         for (const {member,entries} of inventories) for (const entry of entries) {
             for(const path of sourceCandidates(entry.path,member.id,this.rules,this.defaultSource,this.localPath)) {
                 const canonical=path.normalize('NFC').toLowerCase();
@@ -54,13 +58,16 @@ export class RoutedSource implements SyncSource {
         }
         return [...visible.values()];
     }
-    async fetch(entry:RemoteEntry,signal:AbortSignal):Promise<ArrayBuffer> {
+    async fetch(entry:RemoteEntry,signal:AbortSignal,observe?:TransferObserver):Promise<ArrayBuffer> {
         const found=this.locators.get(entry.path.normalize('NFC').toLowerCase());
         if (!found || found.exposedPath!==entry.path || found.entry.hash!==entry.hash || found.entry.hashAlg!==entry.hashAlg
             || found.entry.size!==entry.size) throw new Error(`Stale source locator: ${entry.path}`);
         if (found.member.source.maxFileSizeBytes!==undefined && entry.size>found.member.source.maxFileSizeBytes) throw new Error('Source file size limit exceeded');
-        return found.member.source.fetch({...found.entry},signal);
+        const release=await this.gates.get(found.member.id)!.acquire(1,signal);
+        try{return await found.member.source.fetch({...found.entry},signal,observe);}finally{release();}
     }
+    fileSizeLimit(entry:RemoteEntry):number|undefined{const source=this.members.find(m=>m.id===entry.connectionId)?.source;return source?.fileSizeLimit?.(entry)??source?.maxFileSizeBytes;}
+    async forceDispose():Promise<void>{await Promise.allSettled(this.members.map(m=>m.source.forceDispose?.()));this.locators.clear();}
     async dispose():Promise<void> {
         this.locators.clear();const results=await Promise.allSettled(this.members.map(m=>m.source.dispose?.()));
         const error=results.find(r=>r.status==='rejected');if(error?.status==='rejected')throw error.reason;

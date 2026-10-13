@@ -143,7 +143,9 @@ export class ManifestCache {
                 if(await this.fs.exists(path)) {
                         const raw=await this.fs.read(path);
                         if(raw===null)throw new Error('Manifest cache disappeared during publication');
-                        parseCacheFile(raw,this.sourceId);
+                        try {parseCacheFile(raw,this.sourceId);}
+                        catch { const quarantine=path+'.corrupt-'+crypto.randomUUID();await this.fs.rename(path,quarantine);
+                                await this.fs.rename(temp,path);if(await this.fs.read(path)!==json)throw Error('Manifest cache publication verification failed');return; }
                         if(await this.fs.exists(previous))await this.fs.remove(previous);
                         await this.fs.rename(path,previous);
                 }

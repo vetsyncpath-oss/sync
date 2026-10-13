@@ -20,6 +20,6 @@ export class Setting {
   addText(cb:(b:any)=>unknown) {const el=document.createElement('input');this.settingEl.append(el);const b={inputEl:el,setValue:(v:string)=>{el.value=v;return b;},onChange:(fn:(v:string)=>unknown)=>{el.addEventListener('input',()=>fn(el.value));return b;}};cb(b);return this;}
   addToggle(cb:(b:any)=>unknown) {const el=document.createElement('input');el.type='checkbox';this.settingEl.append(el);const b={setValue:(v:boolean)=>{el.checked=v;return b;},onChange:(fn:(v:boolean)=>unknown)=>{el.addEventListener('change',()=>fn(el.checked));return b;}};cb(b);return this;}
 }
-export const Platform = { isMobileApp: false };
+export const Platform = { isMobileApp: false, isDesktopApp:true };
 export const normalizePath = (path: string) => path.replace(/\\/g, '/').replace(/\/{2,}/g, '/').replace(/^\/+|\/+$/g, '').trim();
 export const requestUrl = async () => { throw new Error('No host requestUrl in unit tests'); };

@@ -1,3 +1,4 @@
+import type { TransferObserver } from './types';
 // ============================================================
 // --- SOURCES/GDRIVE-SOURCE (W6-T03) ---
 // Нативный Google Drive источник: вместо ZIP-движка, который
@@ -160,6 +161,7 @@ export class GDriveSource implements SyncSource {
 
         private readonly config: () => { apiKey: string; folderId?: string; includeDocs?: boolean };
         private readonly net: NetLayer;
+        private manifestObserve?:TransferObserver;
         private readonly messages: GDriveSourceMessages;
         private readonly onRateLimitWait?: (waitMs: number) => void;
 
@@ -185,7 +187,8 @@ export class GDriveSource implements SyncSource {
                 this.net = new NetLayer(transport);
         }
 
-        async getManifest(signal: AbortSignal): Promise<RemoteEntry[]> {
+        async getManifest(signal: AbortSignal,observe?:TransferObserver): Promise<RemoteEntry[]> {
+                this.manifestObserve=event=>observe?.({...event,stage:event.stage==='waiting'?'waiting':'manifest',bytes:undefined,totalBytes:undefined,byteDelta:undefined});
                 if (signal.aborted) throw abortedError();
                 const { apiKey, folderId, includeDocs } = this.config();
                 if (!folderId?.trim() || folderId.trim()==='root') throw new Error(this.messages.folderRequired());
@@ -308,7 +311,7 @@ export class GDriveSource implements SyncSource {
                 return entries;
         }
 
-        async fetch(entry: RemoteEntry, signal: AbortSignal): Promise<ArrayBuffer> {
+        async fetch(entry: RemoteEntry, signal: AbortSignal, observe?: TransferObserver): Promise<ArrayBuffer> {
                 if (signal.aborted) throw abortedError();
                 // [P0/C1] Drive API требует ключ на КАЖДОМ запросе, включая alt=media.
                 const { apiKey, folderId } = this.config();
@@ -327,7 +330,7 @@ export class GDriveSource implements SyncSource {
                 // [overhaul S1/H-4] В 404-ошибку уходит ТОЛЬКО id файла: раньше
                 // передавался весь url — с `key=<apiKey>` — и секрет персистился
                 // в FailedFile.reason → data.json → topErrors журнала → UI.
-                const buffer = await this.fetchBuffer(url, signal, id);
+                const buffer = await this.fetchBuffer(url, signal, id, observe, entry.size);
                 if (buffer.byteLength !== entry.size) {
                         throw new Error(`GDrive: size mismatch for ${entry.path}: ${buffer.byteLength} != ${entry.size}`);
                 }
@@ -375,7 +378,7 @@ export class GDriveSource implements SyncSource {
         private async fetchJson(url: string, signal: AbortSignal): Promise<unknown> {
                 try {
                         const buffer = await this.net.fetchBuffer(url, {
-                                headers: { 'Accept': 'application/json' },
+                                headers: { 'Accept': 'application/json' },observe:this.manifestObserve,
                                 signal,
                                 retries: MAX_RETRY_ATTEMPTS,
                                 maxRateLimitWaitMs: MAX_RATE_LIMIT_WAIT_MS,
@@ -384,7 +387,7 @@ export class GDriveSource implements SyncSource {
                         });
                         return JSON.parse(new TextDecoder().decode(buffer));
                 } catch (e: any) {
-                        if (e?.rateLimitExceeded) throw new Error(this.messages.rateLimitExceedsHour());
+                        if (e?.rateLimitExceeded) {e.message=this.messages.rateLimitExceedsHour();throw e;}
                         if (e?.status) throw new Error(this.messages.listFailed(e.status));
                         throw e;
                 }
@@ -423,10 +426,10 @@ export class GDriveSource implements SyncSource {
          * [overhaul S1/H-4] notFoundLabel — ЧТО называть в 404-сообщении
          * (id файла или путь): НИКОГДА не url с ключом (утечка секрета).
          */
-        private async fetchBuffer(url: string, signal: AbortSignal, notFoundLabel: string): Promise<ArrayBuffer> {
+        private async fetchBuffer(url: string, signal: AbortSignal, notFoundLabel: string, observe?: TransferObserver, expectedSize?:number): Promise<ArrayBuffer> {
                 try {
                         return await this.net.fetchBuffer(url, {
-                                headers: { 'Accept': 'application/octet-stream' },
+                                headers: { 'Accept': 'application/octet-stream' }, observe, expectedSize,
                                 signal,
                                 retries: MAX_RETRY_ATTEMPTS,
                                 maxRateLimitWaitMs: MAX_RATE_LIMIT_WAIT_MS,
@@ -434,9 +437,9 @@ export class GDriveSource implements SyncSource {
                                 onRateLimitWait: (waitMs: number) => this.onRateLimitWait?.(waitMs),
                         });
                 } catch (e: any) {
-                        if (e?.rateLimitExceeded) throw new Error(this.messages.rateLimitExceedsHour());
-                        if (e?.status === 404) throw new Error(this.messages.fileNotFound(notFoundLabel));
-                        if (e?.status) throw new Error(this.messages.downloadFailed(e.status));
+                        if (e?.rateLimitExceeded) {e.message=this.messages.rateLimitExceedsHour();throw e;}
+                        if (e?.status === 404) {e.message=this.messages.fileNotFound(notFoundLabel);throw e;}
+                        if (e?.status) {e.message=this.messages.downloadFailed(e.status);throw e;}
                         throw e;
                 }
         }

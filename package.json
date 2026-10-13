@@ -16,10 +16,12 @@
     "dev": "node esbuild.config.mjs"
   },
   "dependencies": {
-    "@xmldom/xmldom": "0.9.12"
+    "@xmldom/xmldom": "0.9.12",
+    "pako": "2.1.0"
   },
   "devDependencies": {
     "@types/node": "18.19.130",
+    "@types/pako": "2.0.4",
     "esbuild": "0.28.2",
     "linkedom": "0.18.12",
     "obsidian": "1.13.1",
