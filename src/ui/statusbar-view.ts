@@ -17,11 +17,13 @@ import { formatBytes } from '../utils/format';
 
 /** Состояния статус-бара. Дублирует SyncState из main.ts: main.ts импортирует
  *  obsidian, поэтому чистый модуль объявляет совместимый тип сам. */
-export type StatusBarState = 'idle' | 'syncing' | 'error' | 'offline' | 'conflicts' | 'unconfigured';
+export type StatusBarState = 'idle' | 'syncing' | 'error' | 'offline' | 'conflicts' | 'unconfigured' | 'blocked';
 
 /** Словарной срез, нужный статус-бару. Словари en/ru (Translations)
  *  удовлетворяют ему структурно — тесты подают настоящий словарь. */
 export interface StatusBarTexts {
+        sbBlocked?: string;
+        sbAttention?:string;
 	sbSyncing: string;
 	sbSyncInProgress: string;
 	sbError: string;
@@ -62,6 +64,7 @@ export interface StatusBarView {
 }
 
 export interface StatusBarViewOptions {
+        attention?:'deletions'|'conflicts';
 	pendingCount?: number;
 	/** Текст фазы синхронизации (пусто → дефолт sbSyncing). */
 	progressText?: string;
@@ -98,6 +101,8 @@ export function statusBarView(state: StatusBarState, opts: StatusBarViewOptions)
 	let text: string;
 	let tooltip: string;
 	switch (state) {
+                case 'blocked':
+                        icon='⛔';text=t.sbBlocked??t.sbError;tooltip=opts.progressText??text;break;
 		case 'syncing':
 			icon = '\u23F3';
 			text = progressTextOf(opts, t);
@@ -105,7 +110,7 @@ export function statusBarView(state: StatusBarState, opts: StatusBarViewOptions)
 			break;
 		case 'error':
 			icon = '\u274C';
-			text = (opts.pendingCount ?? 0) > 0 ? t.sbErrorCount(opts.pendingCount ?? 0) : t.sbError;
+			text = opts.attention ? (t.sbAttention??t.sbError)+': '+(opts.pendingCount??0) : (opts.pendingCount ?? 0) > 0 ? t.sbErrorCount(opts.pendingCount ?? 0) : t.sbError;
 			tooltip = t.sbSyncFailed;
 			break;
 		case 'conflicts':

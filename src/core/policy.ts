@@ -101,6 +101,8 @@ export interface SyncPolicy {
          *  (или full при пустых folders). НЕ влияет на applyPolicy — только
          *  UI-семантика (шапка модалки, селектор настроек, миграция). */
         preset?: 'full' | 'obsidian' | 'custom';
+        /** Remember selective scope independently of the currently materialized folders. */
+        scopeSelection?: { mode: 'full' | 'obsidian' | 'custom'; customFolders: FolderPolicy[] };
         /**
          * [overhaul v4 / Этап 2] Per-file/per-glob исключения.
          *

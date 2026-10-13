@@ -19,6 +19,7 @@ import type {
         RemoteEntry,
         SyncPhase,
         SyncStats,
+        SyncPlanRow,
         SyncUI,
         VaultAdapter,
 } from '../sources/types';
@@ -163,6 +164,7 @@ export class Coordinator {
         private activeDeps?: CoordinatorDeps;
         private sessionRevision?: number;
         private plan?: OperationPlan;
+        private activeFailureCount(): number { return this.current.queue.all().filter(file => this.current.policy.isPathAllowed(file.path)).length; }
         private get current(): CoordinatorDeps { return this.activeDeps ?? this.deps; }
 
         private captureSession(): void {
@@ -248,6 +250,7 @@ export class Coordinator {
                 this.controller = controller;
                 const startTime = Date.now();
                 const stats: SyncStats = {
+                        results: [], updated: 0, received: 0,
                         totalFiles: 0, downloaded: 0, deleted: 0, skipped: 0,
                         failed: 0, bytesTransferred: 0, duration: 0, conflicts: 0,
                 };
@@ -461,10 +464,15 @@ export class Coordinator {
                                 if (!matches) { toDownload.push(entry); stats.skipped = Math.max(0, stats.skipped - 1); }
                         }
                         // Preserve remains protected even during force/retry. Create-only never replaces an existing file.
+                        const skippedRows: SyncPlanRow[] = [];
                         toDownload = toDownload.filter(entry => {
                                 const mode = ruleFor(entry.path).write;
                                 const skip = mode === 'preserve' || (mode === 'create' && observations.get(entry.path)?.kind === 'file');
-                                if (skip) stats.skipped++;
+                                if (skip) {
+                                        stats.skipped++;
+                                        skippedRows.push({action:'skip',path:entry.path,source:entry.provider,reason:mode==='preserve'?'preserve':'create-only'});
+                                        stats.results!.push({path:entry.path,source:entry.provider,status:'skipped',reason:mode==='preserve'?'preserve':'create-only'});
+                                }
                                 return !skip;
                         });
                         const failures = new Map(this.current.queue.all().map(file => [file.path, file]));
@@ -476,6 +484,7 @@ export class Coordinator {
                         });
 
                         const levels = new Map(entries.map(entry => [entry.path, levelOf(mirrorModel, entry.path)]));
+                        const requestedDeletions = [...toDelete];
                         for (const [path, level] of this.deletionLevelsOf(extraFolders, mirrorDeletions)) levels.set(path, level);
                         const plan = createOperationPlan({ id: globalThis.crypto.randomUUID(), revision: this.sessionRevision,
                                 downloads: toDownload, deletions: toDelete, moves: policyResult.toMove,
@@ -486,14 +495,27 @@ export class Coordinator {
                         toDelete = plan.deletions.map(file => file.path);
                         stats.blockedDeletions = plan.summary.blocked;
                         stats.deferredDeletions = plan.summary.deferred;
-                        stats.totalFiles = toDownload.length + toDelete.length;
+                        const sourceName = (path:string) => {
+                                const owner=resolveFileRule(path,syncPolicy?.fileRules).source ?? syncPolicy?.defaultSource;
+                                return this.current.source.sources?.find(source=>source.id===owner)?.name;
+                        };
+                        const operations: SyncPlanRow[] = [
+                                ...plan.downloads.map(file=>({action:file.kind==='replace'?(ruleFor(file.entry.path).write==='update'?'check':'update'):file.kind,
+                                        path:file.entry.path,remotePath:file.entry.sourcePath??file.remotePath,source:file.entry.provider,
+                                        reason:file.kind!=='replace'?'missing':ruleFor(file.entry.path).write==='remote'?'match-source':ruleFor(file.entry.path).write==='update'?'baseline-check':'source-changed'} as SyncPlanRow)),
+                                ...plan.moves.map(move=>({action:'move' as const,path:move.to,remotePath:move.from,source:sourceName(move.to),reason:'mapping' as const})),
+                                ...requestedDeletions.map(path=>({action:plan.summary.blocked?'blocked':plan.summary.deferred?'defer':'delete',path,source:sourceName(path),reason:plan.summary.blocked?'unverified':plan.summary.deferred?'background':'absent'} as SyncPlanRow)),
+                                ...skippedRows,
+                        ];
+                        if(plan.summary.deferred) for(const path of requestedDeletions)stats.results!.push({path,source:sourceName(path),status:'pending',reason:plan.summary.blocked?'unverified':'background'});
+                        stats.totalFiles = toDownload.length + toDelete.length + plan.moves.length;
                         this.debugLog(`сессия: источник=${this.current.source.kind}, кэш=${Object.keys(this.current.cache.entries()).length} записей, ` +
                                 `к загрузке=${toDownload.length}, к удалению=${toDelete.length}, orphans=${orphans.length}`);
 
                         if (toDownload.length === 0 && toDelete.length === 0 && plan.moves.length === 0 && !stats.deferredDeletions) {
                                 // Preserve ownership until a successful deletion or explicit dismissal.
                                 if (orphans.length > 0) ui.notifyVerbose?.(m.orphanWarning(orphans.length), 10000);
-                                stats.failed = this.current.queue.size();
+                                stats.failed = this.activeFailureCount();
                                 stats.outcome = stats.failed > 0 ? 'error' : 'ok';
                                 stats.duration = Date.now() - startTime;
                                 await this.persist('session-end');
@@ -503,10 +525,12 @@ export class Coordinator {
                                 return stats;
                         }
 
-                        if (!opts.forcedPaths && !opts.forceAll) {
+                        if (opts.trigger!=='auto') {
                                 const { newFiles: newCount, updates: updatedCount, restores: restoredCount } = plan.summary;
-                                stats.updated = updatedCount;
                                 const info: ConfirmSyncInfo = {
+                                        operations,
+                                        sources:this.current.source.sources?.map(source=>source.name),
+                                        deferredDeletions:plan.summary.deferred,
                                         toDownload: toDownload.length,
                                         toDelete: toDelete.length,
                                         orphans: stats.blockedDeletions ? 0 : orphans.filter(path => !toDelete.includes(path)).length,
@@ -525,22 +549,13 @@ export class Coordinator {
                                         noRecovery: false,
                                 };
 
-                                const trigger = opts.trigger ?? 'manual';
-                                if (trigger === 'auto') {
-                                        // Background deletion awaits explicit per-rule permission in the new runner.
-                                        stats.deferredDeletions = (stats.deferredDeletions ?? 0) + toDelete.length;
-                                        toDelete = [];
-                                } else {
-                                        if (!(await ui.confirmSync(info))) {
-                                                ui.notify(m.cancelled);
-                                                ui.setStatus('idle');
-                                                return null;
-                                        }
+                                if (!(await ui.confirmSync(info))) {
+                                        ui.notify(m.cancelled);ui.setStatus('idle');return null;
                                 }
                         }
 
                         this.guard();
-                        if (plan.moves.length > 0) await this.processRenames(plan.moves);
+                        if (plan.moves.length > 0) await this.processRenames(plan.moves,stats);
 
                         // [P2/3.2] фаза 4 — загрузки (пофайловый прогресс ниже докладывает
                         // bytes/fileCount в ту же фазу).
@@ -550,7 +565,7 @@ export class Coordinator {
                         }
 
                         // Failed/unverified payloads cannot authorize unrelated destructive work.
-                        if (toDelete.length > 0 && !stats.deferredConflicts && stats.failed === 0 && this.current.queue.size() === 0 && !this.shouldCancel) {
+                        if (toDelete.length > 0 && !stats.deferredConflicts && stats.failed === 0 && this.activeFailureCount() === 0 && !this.shouldCancel) {
                                 ui.setStatus('syncing', { phase: 3, progressText: m.phaseDeletions });
                                 await this.processDeletions(toDelete, stats, this.deletionLevelsOf(extraFolders, mirrorDeletions));
                         } else if (toDelete.length > 0) {
@@ -587,7 +602,7 @@ export class Coordinator {
                         // [4-review-fix] паритет со старым кодом: lastSyncTime
                         // обновляется и для частично-неудачной сессии
                         ui.setLastSyncTime(Date.now());
-                        const failed = this.current.queue.size();
+                        const failed = this.activeFailureCount();
                         stats.failed = failed + this.failedDeletions;
                         if (stats.failed > 0) {
                                 stats.outcome = 'error';
@@ -595,7 +610,7 @@ export class Coordinator {
                                 ui.notify(m.syncedWithErrors(stats.failed), 10000);
                         } else if ((stats.deferredDeletions ?? 0) > 0) {
                                 stats.outcome = 'error';
-                                ui.setStatus('error', { pendingCount: stats.deferredDeletions });
+                                ui.setStatus('error', { pendingCount: stats.deferredDeletions, attention:'deletions' });
                                 ui.notify(stats.blockedDeletions
                                         ? (m.deletionsBlocked?.(stats.blockedDeletions) ?? m.deletionsDeferred(stats.blockedDeletions))
                                         : m.deletionsDeferred(stats.deferredDeletions!), 10000);
@@ -624,6 +639,7 @@ export class Coordinator {
                         return stats;
                 } catch (error: any) {
                         const aborted = error?.name === 'AbortError' || error?.aborted || this.shouldCancel;
+                        if(!aborted)stats.problem=error?.message??String(error);
                         if (aborted) {
                                 stats.outcome = 'cancelled';
                                 ui.notify(m.cancelled);
@@ -633,7 +649,7 @@ export class Coordinator {
                                 ui.setStatus('error');
                                 ui.notify(m.syncFailed(error?.message ?? String(error)));
                         }
-                        stats.failed = this.current.queue.size() + this.failedDeletions;
+                        stats.failed = this.activeFailureCount() + this.failedDeletions;
                         stats.duration = Date.now() - startTime;
                         // [overhaul S6] итог сессии — всегда в консоль: нештатное
                         // завершение обязано оставлять след в логе (симптом «всё
@@ -694,7 +710,7 @@ export class Coordinator {
                         ui.notify(this.current.queue.size() > 0 ? m.retryNotDue(this.current.queue.size()) : m.nothingToRetry);
                         return null;
                 }
-                if (trigger!=='auto' && this.current.ui.confirmRetry && !(await this.current.ui.confirmRetry(due.length))) return null;
+
 
                 const forced = new Set(due.map((f) => f.path));
                 // [4-review-fix] очередь обслуживается ТОЛЬКО самолечением в
@@ -810,7 +826,12 @@ export class Coordinator {
                         this.skippedUnsafeCount++; // [7-d] видимость в UI (§7.5)
                         return false;
                 }
-                return this.current.policy.isPathAllowed(e.path);
+                return this.current.policy.isInventoryPathAllowed(e.path);
+        }
+
+        private sourceLabel(path:string):string|undefined {
+                const policy=this.current.syncPolicy,owner=resolveFileRule(path,policy?.fileRules).source??policy?.defaultSource;
+                return this.current.source.sources?.find(source=>source.id===owner)?.name;
         }
 
         private async processDownloads(
@@ -833,6 +854,7 @@ export class Coordinator {
                 const concurrency=Math.min(requestedConcurrency,source.maxConcurrentDownloads??Infinity);
                 const totalBytes = files.reduce((s, f) => s + f.size, 0);
                 let transferred = 0;
+                let processed=0;
                 let persistenceFailure:Error|undefined;
 
                 const results = await pMap(files, async (file) => {
@@ -850,6 +872,7 @@ export class Coordinator {
                                 if (previousFailure && previousFailure.hash !== file.hash) queue.delete(file.path);
                                 if (file.size > maxFileSize) {
                                         queue.add(file, m.fileTooLarge(formatBytes(file.size), maxFileSizeLabel), Date.now());
+                                        stats.results?.push({path:file.path,source:file.provider,status:'error',reason:'file-too-large'});
                                         stats.failed++;
                                         return;
                                 }
@@ -860,8 +883,10 @@ export class Coordinator {
                                         remotePath === undefined ? file : { ...file, path: remotePath },
                                         signal,
                                 )).slice(0);
+                                transferred+=buffer.byteLength;
                                 phase='verify';
                                 await verifyRemoteData(file, buffer);
+                                stats.received = (stats.received ?? 0) + 1;
                                 signal.throwIfAborted();
                                 phase='prepare-directory';
                                 await this.dirLock.ensure(vault, file.path);
@@ -903,6 +928,7 @@ export class Coordinator {
                                         resolveFileRule(file.path, this.current.syncPolicy?.fileRules).write,
                                         resolveFileRule(file.path, this.current.syncPolicy?.fileRules).conflict, allowAsk);
                                 if (outcome.kind === 'skipped' && outcome.requiresDecision) stats.deferredConflicts=(stats.deferredConflicts ?? 0)+1;
+                                stats.results?.push({path:file.path,remotePath:file.sourcePath??planned.remotePath,source:file.provider,status:outcome.updateCache?(outcome.primaryChanged===false&&outcome.kind==='written'?'unchanged':'applied'):outcome.kind==='skipped'&&outcome.requiresDecision?'pending':'skipped',reason:outcome.kind==='skipped'&&outcome.requiresDecision?'decision-required':outcome.kind==='conflict'&&outcome.primaryChanged===false?'incoming-copy':outcome.updateCache?'accepted':'local-preserved'});
                                 if (outcome.kind === 'conflict') {
                                         stats.conflicts++;
                                         if (outcome.mirror === 'full') {
@@ -913,6 +939,7 @@ export class Coordinator {
                                 if (outcome.updateCache) {
                                         cache.set(file.path, { h: file.hash, s: file.size, alg: file.hashAlg, t: Date.now() });
                                         stats.downloaded++;
+                                        if (planned.expected.kind === 'file' && outcome.primaryChanged !== false) stats.updated = (stats.updated ?? 0) + 1;
                                         stats.bytesTransferred += buffer.byteLength;
                                         this.debugLog(`downloaded ok: "${file.path}" (${buffer.byteLength}B)`);
                                         // [4-4-fix] самолечение очереди: файл записан — прошлую ошибку снимаем
@@ -942,17 +969,19 @@ export class Coordinator {
                                         `[VaultSync] ${phase} FAILED: "${file.path}" (${file.size}B, hash=${file.hash.slice(0, 12)}…): ` +
                                                 `${e?.message ?? String(e)}`,
                                 );
+                                stats.results?.push({path:file.path,source:file.provider,status:'error',reason:'io-error'});
                                 queue.add(file, `${phase}: ${e?.message ?? String(e)}`, Date.now(),
                                         e instanceof NetError && !e.aborted && (e.status===undefined||e.status===429||e.status===408||e.status>=500)?'transient':'blocked',e instanceof NetError?e.retryAfterMs:undefined);
                                 stats.failed++;
                         }
-                        transferred += file.size;
-                        ui.setStatus('syncing', {
-                                phase: 4,
-                                progressText: `${stats.downloaded}`,
-                                bytesTransferred: transferred,
-                                totalBytes,
-                        });
+                        finally {
+                                processed++;
+                                ui.setStatus('syncing', {
+                                        phase: 4, progressText: `${processed}/${files.length}`,
+                                        fileIndex: processed, fileTotal: files.length, currentPath: file.path,
+                                        bytesTransferred: transferred, totalBytes,
+                                });
+                        }
                 }, concurrency);
                 const unexpected = results.find(result => result instanceof Error);
                 if (unexpected instanceof Error) throw unexpected;
@@ -1004,6 +1033,7 @@ export class Coordinator {
                                         if (o.useTrash() && vault.trash) await vault.trash(path); else await vault.remove(path); }
                                 cache.delete(path);
                                 stats.deleted++;
+                                stats.results?.push({path,source:this.sourceLabel(path),status:'applied',reason:'absent'});
                                 // [W2-T08] журнальные счётчики по уровням (только исполненные)
                                 const lvl = levelOf?.get(path);
                                 if (lvl === 'full') stats.deleteFull = (stats.deleteFull ?? 0) + 1;
@@ -1012,6 +1042,7 @@ export class Coordinator {
                                 if (this.shouldCancel || e?.name === 'AbortError') { this.abortedThisSession = true; break; }
                                 stats.failed++;
                                 this.failedDeletions++;
+                                stats.results?.push({path,source:this.sourceLabel(path),status:'error',reason:'io-error'});
                                 console.error(`[VaultSync] Failed to delete ${path}:`, e?.message ?? e);
                         }
                 }
@@ -1081,7 +1112,7 @@ export class Coordinator {
          *      а add() сбросил бы retryCount — mergeBack сохраняет статус).
          * A failed move stops the session; it cannot silently authorize later deletions.
          */
-        private async processRenames(moves: readonly PlannedMove[]): Promise<void> {
+        private async processRenames(moves: readonly PlannedMove[], stats:SyncStats): Promise<void> {
                 const { vault, cache, queue } = this.current;
                 for (const { from, to, expected, id } of moves) {
                         // [W1-T01 / BUG-4] прерванные переименования — не успех.
@@ -1111,7 +1142,9 @@ export class Coordinator {
                                         queue.delete(from);
                                         queue.mergeBack([{ ...failed, path: to }]);
                                 }
+                                stats.results?.push({path:to,remotePath:from,source:this.sourceLabel(to),status:'applied',reason:'mapping'});
                         } catch (e: any) {
+                                if(e?.name!=='AbortError')stats.results?.push({path:to,remotePath:from,source:this.sourceLabel(to),status:'error',reason:'io-error'});
                                 console.error(`[VaultSync] rename FAILED ${from} → ${to}: ${e?.message ?? e}`);
                                 throw e;
                         }

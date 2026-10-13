@@ -9,6 +9,12 @@ export interface SyncProfile {
 }
 export interface ProfileAssignment { scope: FileRule['scope']; path: string; names?: string[]; profileId?: string; source?: string; remotePath?: string }
 export interface SourceConnection { id: string; name: string; kind: SyncSource['kind']; values: Record<string, unknown> }
+export function participatingSources(policy: SyncPolicy): string[] {
+    const rules=policy.fileRules??[];
+    const ids=new Set(rules.flatMap(rule=>rule.source?[rule.source]:[]));
+    if(policy.defaultSource&&!rules.some(rule=>rule.scope==='vault'&&!rule.names&&rule.source))ids.add(policy.defaultSource);
+    return [...ids];
+}
 export const STANDARD_PROFILES: readonly SyncProfile[] = [
     {id:'standard:preserve',name:'Не трогать',write:'preserve',delete:'keep',builtin:true},
     {id:'standard:seed',name:'Установить только отсутствующие',write:'create',delete:'keep',builtin:true},

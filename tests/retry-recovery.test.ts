@@ -73,7 +73,7 @@ for(const trigger of ['manual','auto'] as const)for(const mode of ['preserve','c
 });
 
 test('manual retry can recover a blocked file after repair without force-overwrite',async()=>{
- const f=fixture([entry('a.md')]);f.queue.add(entry('a.md'),'write failure',0,'blocked');let asked=0;f.ui.confirmRetry=async()=>{asked++;return true;};
+ const f=fixture([entry('a.md')]);f.queue.add(entry('a.md'),'write failure',0,'blocked');let asked=0;f.ui.confirmSync=async(info)=>{asked++;assert(info.operations?.length);return true;};
  assert.equal((await f.coordinator.retryFailed())?.outcome,'ok');assert.equal(asked,1);assert.equal(str(f.files.get('a.md')!),'REMOTE');assert.equal(f.queue.size(),0);
 });
 test('manual retry of blocked files still respects preserve rules',async()=>{

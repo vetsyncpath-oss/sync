@@ -1,70 +1,123 @@
-import { App, Modal, Notice, Setting } from 'obsidian';
-import { EngineRegistry } from '../engines/registry';
-import { i18n, resolveLabel } from '../i18n';
-import { validateProfiles, type SyncProfile, type SourceConnection } from '../core/profiles';
+import { App, Notice } from 'obsidian';
+import { i18n } from '../i18n';
+import { compileProfiles, validateProfiles, type SyncProfile, type SourceConnection } from '../core/profiles';
+import type { SyncPolicy } from '../core/policy';
 import type { WriteMode, DeleteMode, RuleConflict } from '../core/file-rules';
 import { trackModal } from './modal-registry';
-const ru=()=>i18n.getLocale()==='ru';const t=(r:string,e:string)=>ru()?r:e;
-export function writeLabel(mode:WriteMode):string { return ({preserve:t('Не трогать','Do not touch'),create:t('Добавлять отсутствующие','Create missing'),update:t('Обновлять без локальных правок','Update unchanged local files'),remote:t('Версия источника','Match source'),changes:t('Обновлять с разрешением конфликтов','Update with conflict resolution')})[mode]; }
-export function deleteLabel(mode:DeleteMode):string { return ({keep:t('Сохранять отсутствующие в источнике','Keep files absent from source'),tracked:t('Удалять ранее синхронизированные','Delete previously synced files'),mirror:t('Удалять все отсутствующие в источнике','Delete all files absent from source')})[mode]; }
-export class ProfileLibraryModal extends Modal {
-    constructor(app:App,private profiles:SyncProfile[],private connections:SourceConnection[],private save:(p:SyncProfile[],c:SourceConnection[],defaultSource?:string)=>Promise<void>,private sources=false,private defaultSource?:string){super(app);this.profiles=structuredClone(profiles);this.connections=structuredClone(connections);}
-    onOpen():void { this.render(); }
-    private render():void {
-        const box=this.contentEl;box.empty();box.createEl('h3',{text:this.sources?t('Подключения','Connections'):t('Профили синхронизации','Sync profiles')});
-        box.createEl('p',{text:this.sources?t('Выберите источник для хранилища. Отдельным папкам и файлам можно назначить другой источник в дереве. Изменения вступят в силу после сохранения.','Choose the vault source. Individual folders and files can use another source assigned in the tree. Save to apply changes.'):t('Профили описывают поведение. Назначайте их vault, папкам и файлам в дереве. Проверки путей, целостности и восстановления обязательны.','Profiles describe behaviour. Assign them to vault, folders and files in the tree. Path, integrity and recovery checks are mandatory.')});
-        if(this.sources){
-            new Setting(box).setName(t('Источник для хранилища','Vault source')).setDesc(t('Для файлов без отдельного назначения. «Только назначения» отключает общий источник.','Used by files without a source assignment. Choose “Assignments only” to disable the fallback.')).addDropdown(dd=>{
-                dd.addOption('',t('Только назначения в дереве','Assignments only'));
-                for(const c of this.connections)dd.addOption(c.id,c.name);
-                dd.setValue(this.defaultSource??'').onChange(v=>this.defaultSource=v||undefined);
-            });
-            for(const c of this.connections)new Setting(box).setName(c.name).setDesc(c.kind).addButton(b=>b.setButtonText(t('Изменить','Edit')).onClick(()=>this.editConnection(c)))
-                .addButton(b=>b.setButtonText(t('Удалить','Remove')).onClick(()=>{if(this.defaultSource===c.id||this.profiles.some(p=>p.source===c.id)){new Notice(t('Подключение используется профилем','Connection is used by a profile'));return;}this.connections=this.connections.filter(x=>x.id!==c.id);this.render();}));
-            new Setting(box).addButton(b=>b.setButtonText(t('Добавить подключение','Add connection')).onClick(()=>this.editConnection({id:crypto.randomUUID(),name:'',kind:'git',values:{branch:'default'}})));
-        }else{
-            for(const p of this.profiles){ const row=new Setting(box).setName(p.name).setDesc(`${writeLabel(p.write)} · ${deleteLabel(p.delete)}${p.source?' · '+(this.connections.find(c=>c.id===p.source)?.name ?? t('Основной источник','Primary source')):''}`)
-                .addButton(b=>b.setButtonText(p.builtin?t('Создать свой на основе','Customize copy'):t('Изменить','Edit')).onClick(()=>this.editProfile(p.builtin?{...p,id:crypto.randomUUID(),builtin:false,name:p.name+' — '+t('мой','custom')}:p)));
-                if(!p.builtin)row.addButton(b=>b.setButtonText(t('Удалить','Remove')).onClick(()=>{this.profiles=this.profiles.filter(x=>x.id!==p.id);this.render();}));
+import { DraftModal } from './draft-modal';
+import { SourceConnectionModal } from './source-connection-modal';
+import { button, element, field, selectInput, textInput, tr } from './dom';
+
+export function writeLabel(mode: WriteMode): string { return ({ preserve: tr('Не трогать', 'Do not touch'), create: tr('Добавлять отсутствующие', 'Create missing'), update: tr('Обновлять без локальных правок', 'Update unchanged local files'), remote: tr('Версия источника', 'Match source'), changes: tr('Обновлять с разрешением конфликтов', 'Update with conflict resolution') })[mode]; }
+export function deleteLabel(mode: DeleteMode): string { return ({ keep: tr('Сохранять отсутствующие в источнике', 'Keep files absent from source'), tracked: tr('Удалять ранее синхронизированные', 'Delete previously synced files'), mirror: tr('Удалять все отсутствующие в источнике', 'Delete all files absent from source') })[mode]; }
+export function profileName(profile: SyncProfile): string {
+    const names: Record<string, string> = {
+        'standard:preserve': writeLabel('preserve'), 'standard:seed': tr('Установить только отсутствующие', 'Install missing files only'),
+        'standard:safe': writeLabel('update'), 'standard:source': tr('Версия источника без удалений', 'Match source without deletion'),
+        'standard:conflicts': tr('Обновлять с сохранением конфликтной копии', 'Update with a conflict copy'),
+    };
+    return profile.builtin ? names[profile.id] ?? profile.name : profile.name;
+}
+export class ProfileLibraryModal extends DraftModal {
+    private readonly initial: string;
+    private saving = false;
+    constructor(app: App, private profiles: SyncProfile[], private connections: SourceConnection[],
+        private save: (p: SyncProfile[], c: SourceConnection[], defaultSource?: string) => Promise<void>,
+        private sources = false, private defaultSource?: string, private policy?: SyncPolicy, private draftMode=false) {
+        super(app); this.profiles = structuredClone(profiles); this.connections = structuredClone(connections); this.initial = this.fingerprint();
+    }
+    private fingerprint(): string { return JSON.stringify([this.profiles, this.connections, this.defaultSource]); }
+    protected isDirty(): boolean { return this.fingerprint() !== this.initial; }
+    protected async saveDraft(): Promise<void> {
+        if (this.saving) return; this.saving = true;
+        try { validateProfiles(this.profiles, this.connections); if (this.policy) compileProfiles(this.policy, this.profiles);
+            await this.save(structuredClone(this.profiles), structuredClone(this.connections), this.defaultSource); this.acceptClose();
+        } catch (error) { new Notice(String(error)); } finally { this.saving = false; }
+    }
+    onOpen(): void { this.render(); }
+    private render(): void {
+        const box = this.contentEl; box.replaceChildren(); box.classList.add('sync-library');
+        box.append(element('h3', this.sources ? tr('Подключения', 'Connections') : tr('Профили синхронизации', 'Sync profiles')));
+        box.append(element('p', this.sources ? tr('Подключения задают адреса источников. Их области и поведение настраиваются в дереве.', 'Connections define source endpoints. Assign their scopes and behaviour in the tree.') :
+            tr('Профиль задаёт поведение файлов. Источник назначается отдельно в дереве.', 'A profile defines file behaviour. Assign its source separately in the tree.')));
+        if (this.sources) {
+            field(box, tr('Источник для хранилища', 'Vault source'), selectInput([
+                ['', tr('Только назначения в дереве', 'Assignments only')], ...this.connections.map(c => [c.id, c.name] as const),
+            ], this.defaultSource ?? '', value => this.defaultSource = value || undefined), tr('Для файлов без собственного источника. Смена применяется после сохранения.', 'For files without their own source. Changes apply after saving.'));
+            for (const connection of this.connections) {
+                const row = element('div', '', 'sync-library-row'); row.append(element('strong', connection.name), element('small', connection.kind));
+                button(row, tr('Изменить', 'Edit'), () => this.editConnection(connection));
+                button(row, tr('Удалить', 'Remove'), () => {
+                    const rules = this.policy && compileProfiles(this.policy, this.profiles).fileRules;
+                    if (this.defaultSource === connection.id || rules?.some(rule => rule.source === connection.id) || this.profiles.some(p => p.source === connection.id)) {
+                        new Notice(tr('Подключение используется. Сначала измените общий источник или назначения в дереве.', 'This connection is used. Change the vault source or tree assignments first.')); return;
+                    }
+                    this.connections = this.connections.filter(c => c.id !== connection.id); this.render();
+                }); box.append(row);
             }
-            new Setting(box).addButton(b=>b.setButtonText(t('Новый профиль','New profile')).onClick(()=>this.editProfile({id:crypto.randomUUID(),name:'',write:'update',delete:'keep'})));
+            button(box, tr('Добавить подключение', 'Add connection'), () => this.editConnection({ id: crypto.randomUUID(), name: '', kind: 'git', values: { branch: 'default' } }));
+        } else {
+            for (const profile of this.profiles) {
+                const row = element('div', '', 'sync-library-row'); row.append(element('strong', profileName(profile)), element('small', writeLabel(profile.write) + ' · ' + deleteLabel(profile.write === 'preserve' ? 'keep' : profile.delete)));
+                button(row, profile.builtin ? tr('Создать свой на основе', 'Customize copy') : tr('Изменить', 'Edit'), () => this.editProfile(profile.builtin ?
+                    { ...profile, id: crypto.randomUUID(), builtin: false, name: profileName(profile) + ' — ' + tr('мой', 'custom') } : profile));
+                if (!profile.builtin) button(row, tr('Удалить', 'Remove'), () => {
+                    const usages = this.policy?.assignments?.filter(a => a.profileId === profile.id) ?? [];
+                    if (usages.length) { new Notice(tr('Профиль назначен: ', 'Profile is assigned to: ') + usages.map(a => a.path || 'Vault').join(', ')); return; }
+                    this.profiles = this.profiles.filter(p => p.id !== profile.id); this.render();
+                }); box.append(row);
+            }
+            button(box, tr('Новый профиль', 'New profile'), () => this.editProfile({ id: crypto.randomUUID(), name: '', write: 'update', delete: 'keep' }));
         }
-        new Setting(box).addButton(b=>b.setButtonText(t('Сохранить библиотеку','Save library')).setCta().onClick(async()=>{
-            try{validateProfiles(this.profiles,this.connections);await this.save(structuredClone(this.profiles),structuredClone(this.connections),this.defaultSource);this.close();}
-            catch(e){new Notice(String(e));}
-        })).addButton(b=>b.setButtonText(t('Отмена','Cancel')).onClick(()=>this.close()));
+        button(box, this.draftMode?tr('Применить к черновику', 'Apply to draft'):tr('Сохранить библиотеку', 'Save library'), () => void this.saveDraft(), 'mod-cta');
+        button(box, tr('Отмена', 'Cancel'), () => this.close());
     }
-    private editProfile(original:SyncProfile):void {
-        const p=structuredClone(original),modal=new Modal(this.app),box=modal.contentEl;
-        modal.titleEl.setText(t('Профиль','Profile'));
-        new Setting(box).setName(t('Название','Name')).addText(x=>x.setValue(p.name).onChange(v=>p.name=v));
-        new Setting(box).setName(t('Источник','Source')).addDropdown(dd=>{dd.addOption('',t('Наследовать','Inherit'));if(this.connections.some(c=>c.id==='primary'))dd.addOption('primary',t('Основной источник','Primary source')); for(const c of this.connections)dd.addOption(c.id,c.name);dd.setValue(p.source??'').onChange(v=>p.source=v||undefined);});
-        new Setting(box).setName(t('Запись','Write')).addDropdown(dd=>{for(const w of ['preserve','create','update','remote','changes'] as WriteMode[])dd.addOption(w,writeLabel(w));dd.setValue(p.write).onChange(v=>p.write=v as WriteMode);});
-        new Setting(box).setName(t('Исчезновение из источника','When absent from source')).addDropdown(dd=>{for(const d of ['keep','tracked','mirror'] as DeleteMode[])dd.addOption(d,deleteLabel(d));dd.setValue(p.delete).onChange(v=>p.delete=v as DeleteMode);});
-        new Setting(box).setName(t('Конфликт при обновлении','Conflict during update')).setDesc(t('Используется только для «Обновлять с разрешением конфликтов».','Used only for Update with conflict resolution.')).addDropdown(dd=>{
-            for(const [key,label] of [['keep-both',t('Удалённый на место; локальный в копию','Apply remote; keep local copy')],['incoming',t('Локальный на месте; удалённый в копию','Keep local; incoming copy')],['local-wins',t('Пропустить удалённый','Skip remote')],['ask',t('Запросить решение при ручном запуске','Ask during manual sync')]])dd.addOption(key,label);
-            dd.setValue(p.conflict??'keep-both').onChange(v=>p.conflict=v as RuleConflict);
-        });
-        new Setting(box).addButton(b=>b.setButtonText(t('Готово','Done')).setCta().onClick(()=>{
-            try{p.conflict??='keep-both';validateProfiles([p],this.connections);const i=this.profiles.findIndex(x=>x.id===p.id);if(i<0)this.profiles.push(p);else this.profiles[i]=p;modal.close();this.render();}catch(e){new Notice(String(e));}
-        }));trackModal(modal);modal.open();
+    private editProfile(original: SyncProfile): void {
+        const modal = new ProfileEditorModal(this.app, original, profile => {
+            const index = this.profiles.findIndex(p => p.id === profile.id);
+            if (index < 0) this.profiles.push(profile); else this.profiles[index] = profile; this.render();
+        }); trackModal(modal); modal.open();
     }
-    private editConnection(original:SourceConnection):void {
-        const c=structuredClone(original),modal=new Modal(this.app);modal.titleEl.setText(t('Подключение','Connection'));
-        const render=()=>{
-            const box=modal.contentEl;box.empty();new Setting(box).setName(t('Название','Name')).addText(x=>x.setValue(c.name).onChange(v=>c.name=v));
-            new Setting(box).setName(t('Провайдер','Provider')).addDropdown(dd=>{for(const d of EngineRegistry.all())dd.addOption(d.kind,resolveLabel(i18n.t,d.labelKey));dd.setValue(c.kind).onChange(v=>{c.kind=v as SourceConnection['kind'];c.values=c.kind==='git'?{branch:'default'}:{};render();});});
-            for(const f of EngineRegistry.get(c.kind).settingsSchema){
-                const row=new Setting(box).setName(resolveLabel(i18n.t,f.labelKey));
-            if(f.helpKey)row.setDesc(resolveLabel(i18n.t,f.helpKey));
-                if(f.type==='toggle')row.addToggle(x=>x.setValue(Boolean(c.values[f.key]??f.default)).onChange(v=>c.values[f.key]=v));
-                else row.addText(x=>{x.setValue(String(c.values[f.key]??f.default??''));if(f.type==='secret'||f.secret)x.inputEl.type='password';x.onChange(v=>c.values[f.key]=f.type==='number'?Number(v):v);});
-            }
-            new Setting(box).addButton(b=>b.setButtonText(t('Готово','Done')).setCta().onClick(()=>{
-                try{if(!c.name.trim())throw new Error(t('Укажите название','Name required'));for(const f of EngineRegistry.get(c.kind).settingsSchema)if(f.required&&!String(c.values[f.key]??'').trim())throw new Error(resolveLabel(i18n.t,f.labelKey)+': '+t('обязательное поле','required'));
-                    const i=this.connections.findIndex(x=>x.id===c.id);if(i<0)this.connections.push(c);else this.connections[i]=c;modal.close();this.render();
-                }catch(e){new Notice(String(e));}
-            }));
-        };render();trackModal(modal);modal.open();
+    private editConnection(original: SourceConnection): void {
+        const modal = new SourceConnectionModal(this.app, original, connection => {
+            const index = this.connections.findIndex(c => c.id === connection.id);
+            if (index < 0) this.connections.push(connection); else this.connections[index] = connection; this.render();
+        }); trackModal(modal); modal.open();
+    }
+}
+class ProfileEditorModal extends DraftModal {
+    private draft: SyncProfile;
+    private readonly initial: string;
+    private deleteChoice:DeleteMode;
+    constructor(app: App, original: SyncProfile, private apply: (p: SyncProfile) => void) {
+        super(app); this.draft = structuredClone(original); this.initial = JSON.stringify(this.draft);this.deleteChoice=original.delete;
+    }
+    protected isDirty(): boolean { return JSON.stringify(this.draft) !== this.initial; }
+    onOpen(): void { this.render(); }
+    private render(): void {
+        const box = this.contentEl, p = this.draft; box.replaceChildren(); box.append(element('h3', tr('Профиль поведения', 'Behaviour profile')));
+        field(box, tr('Название', 'Name'), textInput(p.name, v => p.name = v));
+        field(box, tr('Запись', 'Write'), selectInput((['preserve', 'create', 'update', 'remote', 'changes'] as WriteMode[]).map(mode => [mode, writeLabel(mode)]), p.write, value => {
+            if(p.write!=='preserve')this.deleteChoice=p.delete;
+            p.write = value as WriteMode;p.delete=p.write==='preserve'?'keep':this.deleteChoice;this.render();
+        }));
+        if (p.write === 'preserve') box.append(element('p', tr('Защищены записи, перемещения и удаления. Отсутствующие файлы не создаются.', 'Writes, moves and deletions are protected. Missing files are not created.')));
+        else field(box, tr('Исчезновение из источника', 'When absent from source'), selectInput((['keep', 'tracked', 'mirror'] as DeleteMode[]).map(mode => [mode, deleteLabel(mode)]), p.delete, value => p.delete = value as DeleteMode),
+            tr('Фоновые удаления отложены. Для Яндекса, Drive и WebDAV удаления заблокированы до подтверждения полноты снимка.', 'Background deletions are deferred. Yandex, Drive and WebDAV deletions are blocked until inventory completeness is proven.'));
+        if (p.write === 'changes') field(box, tr('Конфликт при обновлении', 'Conflict during update'), selectInput([
+            ['keep-both', tr('Источник на месте; локальная версия в копию', 'Apply source; keep local copy')],
+            ['incoming', tr('Локальная на месте; входящая версия в копию', 'Keep local; save incoming copy')],
+            ['local-wins', tr('Оставить локальную; пропустить входящую', 'Keep local; skip incoming')],
+            ['ask', tr('Спросить при ручном запуске', 'Ask during manual sync')],
+        ], p.conflict ?? 'keep-both', value => p.conflict = value as RuleConflict));
+        if (p.write === 'update') box.append(element('p', tr('Локальные правки и файлы без подтверждённой исходной версии будут пропущены.', 'Local edits and files without a confirmed baseline will be skipped.')));
+        if (p.write === 'remote') box.append(element('p', tr('Локальная версия может быть заменена даже без изменений источника. Перед заменой сохраняется восстановительная копия.', 'Local content may be replaced even if the source is unchanged. A recovery copy is saved before replacement.')));
+        button(box, tr('Готово', 'Done'), () => {
+            try {
+                if (p.write === 'preserve') p.delete = 'keep';
+                if (p.write === 'changes') p.conflict ??= 'keep-both'; else delete p.conflict;
+                validateProfiles([p]); this.apply(structuredClone(p)); this.acceptClose();
+            } catch (error) { new Notice(String(error)); }
+        }, 'mod-cta'); button(box, tr('Отмена', 'Cancel'), () => this.close());
     }
 }

@@ -27,6 +27,9 @@ export type HashAlg = 'sha256' | 'crc32' | 'git-sha1' | 'weak' | 'etag';
 
 /** Одна запись манифеста источника (файл в облаке / репозитории). */
 export interface RemoteEntry {
+        connectionId?: string;
+        /** Original provider path for preview/results; fetch uses the session locator. */
+        sourcePath?: string;
         /** Human-readable provider origin for the tree. */
         provider?: string;
         /** Относительный путь в vault, POSIX-разделители. */
@@ -50,6 +53,7 @@ export interface RemoteEntry {
  * (дизайн §3.2). [W6-T03] добавлен 'gdrive'; [W6-T05] добавлен 'webdav'.
  */
 export interface SyncSource {
+        readonly sources?: readonly { id: string; name: string; kind: string }[];
         readonly maxConcurrentDownloads?: number;
         readonly kind: 'git' | 'yandex' | 'zip-url' | 'gdrive' | 'webdav';
         /** Only validated immutable inventories may currently authorize mirror deletion. */
@@ -111,6 +115,8 @@ export interface DiffResult {
 
 /** Файловые операции над vault, изолирующие core/ от Obsidian API. */
 export interface VaultAdapter {
+        /** Create a new file without replacing an existing destination. */
+        createBinary?(path: string, data: ArrayBuffer): Promise<void>;
         exists(path: string): Promise<boolean>;
         readBinary(path: string): Promise<ArrayBuffer>;
         writeBinary(path: string, data: ArrayBuffer): Promise<void>;
@@ -230,7 +236,7 @@ export interface ConflictInfo {
         remoteModified?: number;
 }
 
-export type ConflictChoice = 'remote-wins' | 'local-wins' | 'keep-both';
+export type ConflictChoice = 'remote-wins' | 'local-wins' | 'keep-both' | 'incoming' | 'defer';
 
 /** Последовательный вопрос пользователю (модалка; фикс Б-21). */
 export interface ConfirmUI {
@@ -246,13 +252,14 @@ export interface ConfirmUI {
  * только kind/updateCache — расширение обратно совместимо.
  */
 export type WriteOutcome =
-        | { kind: 'written'; updateCache: true }
+        | { kind: 'written'; updateCache: true; primaryChanged?: boolean }
         | { kind: 'skipped'; updateCache: false; requiresDecision?: boolean }
         | {
                         kind: 'conflict';
                         updateCache: true;
                         /** Recovery/conflict copy path; optional for legacy callers. */
                         conflictPath?: string;
+                        primaryChanged?: boolean;
                         /** [W1-T06] Уровень зеркала, породивший конфликт (матрица §2.2);
                          *  отсутствует = fetch — конфликт по стратегии настроек (§9.1). */
                         mirror?: 'light' | 'full';
@@ -287,6 +294,9 @@ export interface FailedFile {
 
 /** Статистика одной сессии синхронизации (перенос из main.ts). */
 export interface SyncStats {
+        problem?: string;
+        results?: SyncFileResult[];
+        received?: number;
         totalFiles: number;
         downloaded: number;
         deleted: number;
@@ -319,6 +329,9 @@ export interface SyncStats {
 
 /** Сводка изменений для модалки подтверждения (дизайн §16). */
 export interface ConfirmSyncInfo {
+        operations?: readonly SyncPlanRow[];
+        sources?: readonly string[];
+        deferredDeletions?: number;
         /** Deletions suppressed because this source cannot prove a complete snapshot. */
         blockedDeletions?: number;
         toDownload: number;
@@ -350,8 +363,17 @@ export interface ConfirmSyncInfo {
 /** Фазы конвейера для статус-бара. */
 export type SyncPhase = 'syncing' | 'idle' | 'error' | 'offline' | 'unconfigured' | 'conflicts';
 
+export interface SyncPlanRow {
+        action: 'add' | 'restore' | 'update' | 'check' | 'move' | 'delete' | 'skip' | 'defer' | 'blocked';
+        path: string; remotePath?: string; source?: string;
+        reason: 'missing' | 'source-changed' | 'match-source' | 'baseline-check' | 'mapping' | 'absent' | 'preserve' | 'create-only' | 'background' | 'unverified';
+}
+export interface SyncFileResult { path: string; remotePath?:string; source?: string; status: 'applied' | 'unchanged' | 'skipped' | 'pending' | 'error'; reason: string }
+
 /** Прогресс для статус-бара. */
 export interface SyncProgress {
+        attention?: 'deletions' | 'conflicts';
+        fileIndex?:number;fileTotal?:number;currentPath?:string;
         progressText?: string;
         bytesTransferred?: number;
         totalBytes?: number;

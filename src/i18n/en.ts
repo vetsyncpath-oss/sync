@@ -7,6 +7,8 @@ import type { Translations } from './types';
 export const en: Translations = {
         sbSyncing: 'Syncing...',
         sbSyncInProgress: 'Sync in progress',
+        sbAttention: 'Needs attention',
+        sbBlocked: 'Run blocked',
         sbError: 'Error',
         sbErrorCount: (n) => `${n} errors`,
         sbSyncFailed: 'Sync failed. Click to see details.',
@@ -34,7 +36,7 @@ export const en: Translations = {
         noticeDeletingFiles: (n) => `Deleting ${n} removed files...`,
         noticeSyncedWithErrors: (n) => `Synced with ${n} errors. Check Settings to retry.`,
         noticeSuccess: (dl, del, conf, dur) => {
-                let msg = `Success! ${dl} downloaded`;
+                let msg = `Done! Files accepted: ${dl}`;
                 if (del > 0) msg += `, ${del} deleted`;
                 if (conf > 0) msg += `, ${conf} conflicts`;
                 msg += ` in ${dur}`;
@@ -108,7 +110,7 @@ export const en: Translations = {
         settTestConnectionBtn: 'Test Connection',
         settOptions: 'Options',
         settUseTrash: 'Use System Trash',
-        settUseTrashDesc: 'Move deleted files to system trash instead of permanent delete',
+        settUseTrashDesc: 'Move deleted files to system trash as an extra safeguard. Verified recovery copies are retained independently.',
         settConflictStrategy: 'Conflict Resolution',
         settConflictStrategyDesc: 'How to handle files modified both locally and in the source',
         settConflictKeepBoth: 'Keep both (create .conflict copy)',
@@ -375,7 +377,7 @@ export const en: Translations = {
                 outcomeOk: 'Success',
                 outcomeCancelled: 'Cancelled',
                 outcomeError: 'Needs attention',
-                statDownloaded: (n) => `${n} downloaded`,
+                statDownloaded: (n) => `${n} accepted`,
                 statUpdated: (n) => `${n} updated`,
                 statDeletedLight: (n) => `${n} deleted (light)`,
                 statDeletedFull: (n) => `${n} deleted (full)`,
@@ -437,7 +439,7 @@ export const en: Translations = {
                 pathsTitle: 'Paths',
                 pathsMore: (n) => `… and ${n} more`,
                 dangerWarning: 'This session will delete files — review before proceeding',
-                noRecovery: 'Trash is OFF: deletions are PERMANENT',
+                noRecovery: 'System trash is off. Verified recovery copies are retained.',
                 proceed: 'Proceed',
                 cancel: 'Cancel',
         },

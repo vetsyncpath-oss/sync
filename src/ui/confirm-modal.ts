@@ -25,11 +25,18 @@
 
 import { i18n } from '../i18n';
 import { formatBytes } from '../utils/format';
+import type { SyncPlanRow } from '../sources/types';
+import { operationTable } from './operation-table';
+import { tr } from './dom';
 
 export type ConfirmFlow = 'sync' | 'force' | 'retry' | 'scan';
 
 /** Данные для рендера — main.ts собирает их из ConfirmSyncInfo/scan. */
 export interface ConfirmSections {
+        operations?: readonly SyncPlanRow[];
+        sources?: readonly string[];
+        movedCount?: number;
+        deferredDeletions?: number;
         blockedDeletions?: number;
         /** Скачиваний всего (NEW + MODIFIED + MISSING_LOCAL). */
         toDownload?: number;
@@ -51,7 +58,7 @@ export interface ConfirmSections {
         downloadBytes?: number;
         /** Пути — уже отсортированы caller'ом; рендерим топ-10. */
         paths?: string[];
-        /** !useTrash → удаления безвозвратны (noRecovery-предупреждение). */
+        /** Whether system trash is disabled; verified recovery is independent. */
         noRecovery?: boolean;
 }
 
@@ -129,10 +136,12 @@ export class ConfirmModalView {
                 contentEl.append(el('h2', { cls: 'cfm-title', text: t[TITLE_KEY[flow]] }));
 
                 // BUG-10: имя движка — НЕ хардкод 'GitHub'. Под заголовком, cls 'cfm-engine'.
-                contentEl.append(el('div', { cls: 'cfm-engine', text: `${ENGINE_LABEL()}: ${engine}` }));
+                contentEl.append(el('div', { cls: 'cfm-engine', text: sections.sources?.length ? tr('Участвуют: ', 'Sources: ') + sections.sources.join(', ') : `${ENGINE_LABEL()}: ${engine}` }));
 
                 // Секции: только ненулевые (zero → не показываем).
                 const sectionsEl = el('div', { cls: 'cfm-sections' });
+                if (sections.movedCount) sectionsEl.append(el('div', {cls:'cfm-sec',text:tr('Перемещений: ', 'Moves: ')+sections.movedCount}));
+                if (sections.deferredDeletions && !sections.blockedDeletions) sectionsEl.append(el('div', {cls:'cfm-sec',text:tr('Отложенных удалений: ', 'Deferred deletions: ')+sections.deferredDeletions}));
                 if ((sections.blockedDeletions ?? 0) > 0) {
                         sectionsEl.append(el('div', { cls: 'cfm-sec', text: t.sectionBlocked(sections.blockedDeletions!) }));
                 }
@@ -164,6 +173,7 @@ export class ConfirmModalView {
                         sectionsEl.append(el('div', { cls: 'cfm-sec cfm-sec-orphan', text: t.sectionOrphan(sections.orphans!) }));
                 }
                 contentEl.append(sectionsEl);
+                if (sections.operations?.length) contentEl.append(operationTable(sections.operations));
 
                 // Пути: топ-10 (caller уже отсортировал); если >10 — pathsMore(N-10).
                 if ((sections.paths?.length ?? 0) > 0) {

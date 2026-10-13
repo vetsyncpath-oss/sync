@@ -33,4 +33,18 @@ export class RecoveryStore {
                 const bytes = await this.vault.readBinary(ref.path);
                 if (bytes.byteLength !== ref.size || await sha256Hex(bytes) !== ref.sha256) throw new Error('Recovery content verification failed');
         }
+        async read(ref: RecoveryRef): Promise<ArrayBuffer> {
+                await this.verify(ref);
+                const data=await this.vault.readBinary(ref.path);
+                if(data.byteLength!==ref.size || await sha256Hex(data)!==ref.sha256)throw Error('Recovery content changed');
+                return data;
+        }
+        async usage():Promise<{used:number;limit:number}> {
+                if(!this.vault.list)throw Error('Recovery storage listing unavailable');
+                let used=0;
+                if(await this.vault.exists(this.root))for(const path of (await this.vault.list(this.root)).files){
+                        const stat=await this.vault.stat(path);if(!stat||!Number.isSafeInteger(stat.size)||stat.size<0)throw Error('Recovery storage size unavailable');used+=stat.size;
+                }
+                return {used,limit:this.maxBytes};
+        }
 }

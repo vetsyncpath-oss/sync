@@ -24,6 +24,9 @@
 // как в main.ts, где удалённое дерево фильтруется обоими, а кэш — только
 // isPathAllowed.
 
+import { resolveFileRule, type FileRule } from './file-rules';
+import { destinationIsRouted } from './source-bindings';
+import type { FolderPolicy } from './policy';
 /** Опции политики путей (в main.ts — поля settings). */
 export interface PathPolicyOptions {
         syncMode: 'config-only' | 'full-vault';
@@ -33,6 +36,7 @@ export interface PathPolicyOptions {
         allowSnippets: boolean;
         /** Local runtime/state directories excluded independently of user presets. */
         protectedPaths?: readonly string[];
+        executionSources?: { ids: string[]; defaultSource?: string; rules: FileRule[]; folders?:FolderPolicy[] };
 }
 
 /** Расширения, не синхронизируемые никогда (порт из main.ts). */
@@ -78,9 +82,12 @@ export class PathPolicy {
         constructor(opts: PathPolicyOptions) {
                 // Защитная копия: политика фиксирует снимок настроек на момент
                 // создания (в main.ts isPathAllowed читал живой this.settings).
-                this.opts = { ...opts, protectedPaths: [...(opts.protectedPaths ?? [])] };
+                this.opts = { ...opts, protectedPaths: [...(opts.protectedPaths ?? [])], executionSources: opts.executionSources && structuredClone(opts.executionSources) };
         }
         snapshot(): PathPolicy { return new PathPolicy(this.opts); }
+        forSources(ids: readonly string[], defaultSource: string | undefined, rules: readonly FileRule[],folders:readonly FolderPolicy[]=[]): PathPolicy {
+                return new PathPolicy({ ...this.opts, executionSources: { ids: [...ids], defaultSource, rules: structuredClone([...rules]),folders:structuredClone([...folders]) } });
+        }
 
         /**
          * Структурная безопасность: '..', null-byte, абсолютный путь, 'C:',
@@ -108,6 +115,18 @@ export class PathPolicy {
          * отдельная ответственность вызывающего до записи на диск).
          */
         isPathAllowed(rawPath: string): boolean {
+                if (!this.isInventoryPathAllowed(rawPath)) return false;
+                const run = this.opts.executionSources;
+                if (run) {
+                        const owner = resolveFileRule(this.normalize(rawPath), run.rules).source ?? run.defaultSource;
+                        if (!owner || !run.ids.includes(owner)) return false;
+                        if(!destinationIsRouted(this.normalize(rawPath),run.rules,run.defaultSource,run.folders))return false;
+                }
+                return true;
+        }
+
+        /** Raw inventory paths are routed before the final destination's run ownership is checked. */
+        isInventoryPathAllowed(rawPath: string): boolean {
                 const path = this.normalize(rawPath);
                 if (this.isProtectedPath(path)) return false;
                 // [3-8б] Конфликт-копии не синхронизируются ни в одну сторону —

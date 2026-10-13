@@ -26,6 +26,7 @@
 // недопустима, но и ронять sync из-за журнала нельзя).
 
 import type { MirrorLevel } from './mirror';
+import type { SyncFileResult } from '../sources/types';
 
 /** Триггер сессии: чем она была вызвана (команда/авто/повтор/скан/форс). */
 export type JournalTrigger = 'manual' | 'auto' | 'retry' | 'scan' | 'force';
@@ -40,6 +41,14 @@ export type JournalOutcome = 'ok' | 'cancelled' | 'error';
 
 /** Одна завершённая сессия синхронизации (сериализуется в JSON как есть). */
 export interface JournalEntry {
+        sources?: string[];
+        profilesMode?: boolean;
+        received?: number;
+        deferredConflicts?: number;
+        blockedReason?: string;
+        attemptOnly?: boolean;
+        results?: SyncFileResult[];
+        resultsTotal?: number;
         /** Начало сессии, epoch-ms (длительность отдельно — конец-начало). */
         startedAt: number;
         /** Длительность сессии, мс. */
@@ -121,6 +130,12 @@ function coerceEntry(raw: unknown): JournalEntry | null {
                 }
         }
         return {
+                sources:Array.isArray(r.sources)?r.sources.filter((value):value is string=>typeof value==='string').slice(0,100):undefined,
+                profilesMode:r.profilesMode===true,
+                received:num(r.received),deferredConflicts:num(r.deferredConflicts),
+                blockedReason:typeof r.blockedReason==='string'?r.blockedReason:undefined,attemptOnly:r.attemptOnly===true,
+                results:Array.isArray(r.results)?r.results.filter((value):value is SyncFileResult=>!!value&&typeof value==='object'&&typeof value.path==='string'&&typeof value.reason==='string'&&(value.source===undefined||typeof value.source==='string')&&(value.remotePath===undefined||typeof value.remotePath==='string')&&['applied','unchanged','skipped','pending','error'].includes(value.status)).slice(0,500):undefined,
+                resultsTotal:num(r.resultsTotal),
                 startedAt: r.startedAt as number,
                 durationMs: r.durationMs as number,
                 engine: r.engine,

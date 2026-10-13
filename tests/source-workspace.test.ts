@@ -18,7 +18,7 @@ function dom(){
  const {document,window}=parseHTML('<html><body></body></html>');Object.assign(globalThis,{document,window});
  const proto=window.HTMLElement.prototype as any;proto.empty=function(){this.replaceChildren();};proto.setText=function(text:string){this.textContent=text;};proto.createEl=function(tag:string,opts:any={}){const el=document.createElement(tag);el.textContent=opts.text??'';this.append(el);return el;};i18n.setLocale('en');return document;
 }
-function click(box:HTMLElement,text:string){const b=Array.from(box.querySelectorAll('button')).find(b=>b.textContent===text);assert(b,`Missing ${text}`);b.click();}
+function click(box:HTMLElement,text:string){const b=Array.from(box.querySelectorAll('button')).find(b=>b.textContent===text);if(b){b.click();return;}const name=Array.from(box.querySelectorAll('.sync-tree-name')).find(n=>n.textContent===text);assert(name,`Missing ${text}`);(name.parentElement as HTMLElement).click();}
 function changeSelect(el:HTMLSelectElement,value:string){for(const o of Array.from(el.options))o.selected=false;const o=Array.from(el.options).find(o=>o.value===value);assert(o);o.selected=true;el.dispatchEvent(new window.Event('change'));}
 function input(el:HTMLInputElement,value:string){el.value=value;el.dispatchEvent(new window.Event('input'));}
 async function tick(){await new Promise(r=>setTimeout(r,0));}
@@ -67,9 +67,9 @@ test('vault opens immediately with blocked default, then another source can load
 test('local folder inspector assigns source path without creating a source-specific profile',async()=>{
  dom();const w=workspace();await tick();click(w.modal.contentEl,'Documents');
  const inspector=w.modal.contentEl.querySelector('.sync-workspace-inspector') as HTMLElement;
- changeSelect(inspector.querySelectorAll('select')[0],'disk');input(inspector.querySelectorAll('input')[0],'notes');changeSelect(inspector.querySelectorAll('select')[1],'standard:source');click(inspector,'Apply to draft');
+ changeSelect(inspector.querySelectorAll('select')[0],'disk');input(inspector.querySelector('input[type=text]')!,'notes');changeSelect(inspector.querySelectorAll('select')[1],'standard:source');click(inspector,'Apply to draft');
  assert.equal(w.saved(),undefined);const p=(w.modal as any).policy;assert.equal(p.assignments[0].source,'disk');assert.equal(p.assignments[0].remotePath,'notes');assert.equal(p.assignments[0].path,'Documents');
- click(w.modal.contentEl,'Save assignments');await tick();assert.equal(w.saved().p.assignments[0].source,'disk');assert.deepEqual(w.deps.policy.assignments,[]);
+ click(w.modal.contentEl,'Save settings');await tick();assert.equal(w.saved().p.assignments[0].source,'disk');assert.deepEqual(w.deps.policy.assignments,[]);
 });
 test('remote placement creates a vault binding and same-name sources stay separate',async()=>{
  dom();const w=workspace({fetch:async()=>[entry('bundle/file.md')]});await tick();click(w.modal.contentEl,'Documents disk');await tick();click(w.modal.contentEl,'bundle');
@@ -84,7 +84,7 @@ test('source editor opens the migrated default and edits only a draft',async()=>
 });
 test('discard leaves settings unchanged and save failure leaves the draft open',async()=>{
  dom();const w=workspace({save:async()=>{throw Error('Disk full');}});await tick();click(w.modal.contentEl,'Documents');const inspector=w.modal.contentEl.querySelector('.sync-workspace-inspector') as HTMLElement;
- changeSelect(inspector.querySelectorAll('select')[1],'standard:preserve');click(inspector,'Apply to draft');click(w.modal.contentEl,'Save assignments');await tick();assert((Notice as any).messages.some((m:unknown)=>String(m).includes('Disk full')));assert((w.modal as any).policy.assignments.length);
+ changeSelect(inspector.querySelectorAll('select')[1],'standard:preserve');click(inspector,'Apply to draft');click(w.modal.contentEl,'Save settings');await tick();assert((Notice as any).messages.some((m:unknown)=>String(m).includes('Disk full')));assert((w.modal as any).policy.assignments.length);
  w.modal.close();const confirm=document.body.lastElementChild as HTMLElement;click(confirm,'Discard');assert.deepEqual(w.deps.policy.assignments,[]);
 });
 test('basename-filtered bindings preserve other files and inheritance',async()=>{
@@ -100,8 +100,8 @@ test('background source fetch failure still prevents every write in the executio
 test('a source response does not reset partially edited assignment fields',async()=>{
  dom();const slow=deferred<any>();const w=workspace({fetch:async()=>slow.promise});await tick();click(w.modal.contentEl,'Documents');
  const inspector=w.modal.contentEl.querySelector('.sync-workspace-inspector') as HTMLElement;
- changeSelect(inspector.querySelectorAll('select')[0],'disk');input(inspector.querySelectorAll('input')[0],'custom-path');
- slow.resolve([entry('remote.md')]);await tick();assert.equal(inspector.querySelectorAll('input')[0].value,'custom-path');click(inspector,'Apply to draft');assert.equal((w.modal as any).policy.assignments[0].remotePath,'custom-path');
+ changeSelect(inspector.querySelectorAll('select')[0],'disk');input(inspector.querySelector('input[type=text]')!,'custom-path');
+ slow.resolve([entry('remote.md')]);await tick();assert.equal(inspector.querySelector<HTMLInputElement>('input[type=text]')!.value,'custom-path');click(inspector,'Apply to draft');assert.equal((w.modal as any).policy.assignments[0].remotePath,'custom-path');
 });
 test('explicit final destinations are not remapped a second time by legacy folder targets',async()=>{
  const p={...policy(),defaultSource:'none',folders:[{path:'Notes',include:'include' as const,target:{kind:'move' as const,localPath:'Archive'}}],assignments:[{scope:'folder' as const,path:'Notes',source:'git',remotePath:'remote',profileId:'standard:source'}]};
