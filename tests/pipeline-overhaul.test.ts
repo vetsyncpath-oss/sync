@@ -124,3 +124,9 @@ test('resource limits can be raised without dropping retained history or recover
 test('inventory source context retains an underlying transient HTTP cause',()=>{
  const issue=syncIssue(Object.assign(Error('Disk: temporary rate limit'),{cause:new NetError('rate limited',{status:429,attempt:3,retryAfterMs:60000,host:'api.example'})}),'manifest');assert(issue.retryable);assert.equal(issue.status,429);assert.equal(issue.attempt,3);assert.equal(issue.host,'api.example');
 });
+test('manual questions wait until independent nonconflicting downloads have completed',async()=>{
+ const manifest=Array.from({length:5},(_,i)=>entry('conflict-'+i+'.md')).concat(entry('ordinary.md'));
+ const f=fixture(manifest);for(let i=0;i<5;i++)f.files.set('conflict-'+i+'.md',ab('LOCAL'));
+ f.conflict.setStrategy('ask');let questions=0;f.resolverDeps.ui={askConflict:async()=>{questions++;assert.equal(str(f.files.get('ordinary.md')!),'REMOTE');return 'defer';}};
+ const result=await f.coordinator.sync();assert.equal(questions,5);assert.equal(result?.failed,0);assert.equal(result?.outcome,'ok');assert.equal(result?.deferredConflicts,5);assert.equal(f.queue.size(),0);
+});

@@ -25,7 +25,7 @@ test('existing profiles preserve creation, deletion and automatic conflict seman
     assert.deepEqual(values.get('standard:safe')!.conflict, { action: 'keep-local', keepOther: false });
     assert.equal(values.get('standard:source')!.updates, 'enforce-source');
     assert.deepEqual(values.get('standard:conflicts')!.conflict, { action: 'keep-remote', keepOther: true });
-    for (const p of values.values()) assert.equal(p.direction, 'pull');
+    for (const [id,p] of values)if(id!=='standard:drive-bidirectional')assert.equal(p.direction, 'pull');
 });
 test('migration retains exact file identity and source locator across repeated conversion', () => {
     const profiles = structuredClone([...STANDARD_PROFILES]);

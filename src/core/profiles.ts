@@ -23,7 +23,17 @@ export const STANDARD_PROFILES: readonly SyncProfile[] = [
     {id:'standard:safe',name:'Обновлять без локальных правок',write:'update',delete:'keep',builtin:true},
     {id:'standard:source',name:'Версия источника без удалений',write:'remote',delete:'keep',builtin:true},
     {id:'standard:conflicts',name:'Обновлять с сохранением конфликтной копии',write:'changes',delete:'keep',conflict:'keep-both',builtin:true},
+    {id:'standard:drive-bidirectional',name:'Google Drive ↔ vault',direction:'bidirectional',write:'changes',delete:'tracked',conflict:'keep-both',builtin:true},
 ];
+export function validateProfileConnections(policy:SyncPolicy,profiles:readonly SyncProfile[],connections:readonly SourceConnection[]):void {
+    const compiled=compileProfiles(policy,profiles),rules=compiled.fileRules??[];
+    for(const rule of rules)for(const name of rule.names??['__file__']){
+        const path=rule.scope==='file'?rule.path:[rule.path,name].filter(Boolean).join('/'),resolved=resolveFileRule(path,rules);
+        const behavior=effectiveBehavior(resolved);if(behavior.direction!=='bidirectional'||behavior.protected)continue;
+        const connection=connections.find(c=>c.id===(resolved.source??compiled.defaultSource));
+        if(!connection||connection.kind!=='gdrive'||connection.values.authMode!=='oauth-desktop')throw Error('Bidirectional profiles require an OAuth Google Drive connection');
+    }
+}
 export function validateProfiles(profiles: readonly SyncProfile[], connections: readonly SourceConnection[] = []): void {
     const ids = new Set<string>();
     for (const c of connections) {

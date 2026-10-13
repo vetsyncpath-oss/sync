@@ -242,6 +242,7 @@ export class ConflictResolver {
         }
 
         /** Сменить стратегию (без пересоздания резолвера). */
+        getStrategy():ConflictStrategy{return this.strategy;}
         setStrategy(strategy: ConflictStrategy): void {
                 this.strategy = strategy;
         }

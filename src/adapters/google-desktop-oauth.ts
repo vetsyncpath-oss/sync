@@ -15,7 +15,7 @@ export async function authorizeGoogleDesktop(client: GoogleClient, transport: Ne
     const code = await new Promise<string>((resolve, reject) => {
         let consumed = false, finished = false;
         const server = http.createServer((request, response) => {
-            const url = new URL(request.url ?? '/', redirectUri);
+            let url:URL;try{url=new URL(request.url??'/',redirectUri);}catch{response.writeHead(400);response.end('Invalid callback URL');return;}
             if (request.method !== 'GET' || url.origin !== new URL(redirectUri).origin || url.pathname !== '/' || request.headers.host !== new URL(redirectUri).host
                 || url.searchParams.get('state') !== state || consumed) {
                 response.writeHead(400); response.end('Invalid authorization response'); return;

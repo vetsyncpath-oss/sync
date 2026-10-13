@@ -3,9 +3,12 @@ import type { VaultAdapter } from '../sources/types';
 import { OperationStore, type CacheEffect, type OperationRecord } from './operation-store';
 import { RecoveryStore } from './recovery-store';
 import { assertLocal, MISSING, observeLocal, sameVersion, StalePlanError, versionOf, type LocalVersion } from './local-version';
+import { SyncFault,diagnosticText } from './sync-issue';
+class ConditionalWriteUnavailable extends SyncFault { constructor(){super('local-guard-unavailable','Conditional local write unavailable; original retained');} }
 
 export interface MutationRequest {
         id: string; planId: string; path: string; before: LocalVersion; effect?: CacheEffect;
+        requireConditionalWrite?:boolean;
         /** Checks cancellation, config revision and policy, including after each async prerequisite. */
         guard(): void;
 }
@@ -21,23 +24,24 @@ export class DurableMutations {
                 if (from) await assertLocal(this.vault, request.path, MISSING);
                 const record: OperationRecord = { id: request.id, planId: request.planId, path: request.path, before: request.before,
                         effect: request.effect, namespace, kind, from, after, recovery, status: 'committing', createdAt: Date.now() };
-                await this.store.begin(record);
+                try{await this.store.begin(record);}catch(error){if(error instanceof SyncFault)throw error;throw new SyncFault('operation-journal',`Operation intent could not be persisted; original retained: ${diagnosticText(error)}`,'session');}
                 let started = false;
                 try {
                         request.guard(); await this.vault.assertWritable?.(from??request.path);await this.vault.assertWritable?.(request.path); await assertLocal(this.vault, from ?? request.path, request.before);
                         if (from) await assertLocal(this.vault, request.path, MISSING);
                         request.guard(); started = true; await action();
                         if (!sameVersion(await observeLocal(this.vault, request.path), after) || (from && (await observeLocal(this.vault, from)).kind !== 'missing')) throw new Error('Mutation result verification failed');
-                        await this.store.finish(record.id, 'applied');
+                        try{await this.store.finish(record.id, 'applied');}catch(error){throw new SyncFault('operation-journal',`Applied operation could not be acknowledged; recovery intent retained: ${diagnosticText(error)}`,'session');}
                 } catch (error) {
                         // An observed stale precondition proves that our commit was not made.
                         // An arbitrary IO error can be thrown after a write; retain its intent.
-                        if (!started || error instanceof StalePlanError) await this.store.finish(record.id, 'not-applied');
+                        if (!started || error instanceof StalePlanError||error instanceof ConditionalWriteUnavailable) await this.store.finish(record.id, 'not-applied');
                         throw error;
                 }
         }
         async write(namespace: string, request: MutationRequest, data: ArrayBuffer, signal?: AbortSignal): Promise<void> {
                 const after = await versionOf(data);
+                if(request.requireConditionalWrite&&!sameVersion(request.before,after)&&(request.before.kind==='missing'?!this.vault.createBinary:!this.vault.compareAndWrite))throw new ConditionalWriteUnavailable();
                 await this.commit(namespace, request, 'write', after, async () => {
                         if (sameVersion(request.before, after)) return;
                         if(request.before.kind==='missing' && this.vault.createBinary){
@@ -49,6 +53,7 @@ export class DurableMutations {
                                 const result = await this.vault.compareAndWrite(request.path, data, previous, signal);
                                 if (result === false) throw new StalePlanError(request.path);
                                 if (result === true) return;
+                                if(request.requireConditionalWrite)throw new ConditionalWriteUnavailable();
                         }
                         request.guard(); await assertLocal(this.vault, request.path, request.before); request.guard();
                         await this.vault.writeBinary(request.path, data);

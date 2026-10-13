@@ -1,7 +1,8 @@
 // Small URL/query helpers adapted from hesprs/sync-engine, a795a46, under MIT.
 // See licenses/sync-engine-MIT.txt and THIRD_PARTY_NOTICES.md.
 import type { NetRequest, NetResponse, NetTransport } from './types';
-import { googleJson } from '../auth/google-auth';
+import { googleJson,googleResponse } from '../auth/google-auth';
+import { sleepInterruptible } from '../core/net';
 import { SyncFault } from '../core/sync-issue';
 import { sha256Hex } from '../core/hasher';
 import { md5Hex } from '../core/md5';
@@ -83,7 +84,7 @@ export class GoogleDriveClient {
         if (size > this.maxFileBytes) throw new SyncFault('file-too-large','File exceeds the configured transfer limit');
         const response = await this.transport.fetch(buildUrl(API,`/files/${encodeURIComponent(file.id)}`,{alt:'media',supportsAllDrives:'true'}),
             {signal,maxBytes:this.maxFileBytes,redirect:'error'});
-        if (response.status !== 200) { response.discard?.(); throw Object.assign(new SyncFault('download',`Drive download failed: HTTP ${response.status}`,'file',response.status===429||response.status>=500),{status:response.status}); }
+        if (response.status !== 200) { if(response.status>=400)await googleResponse(response,signal);response.discard?.();throw new SyncFault('download',`Drive download failed: HTTP ${response.status}`); }
         const bytes = await response.arrayBuffer(); signal.throwIfAborted();
         await this.verify(file,bytes);
         const after = await this.inspect(file.id,signal);
@@ -115,12 +116,13 @@ export class GoogleDriveClient {
         const target = buildUrl(UPLOAD,create?'/files':`/files/${encodeURIComponent(fileId)}`,
             {uploadType:'resumable',fields:FIELDS,supportsAllDrives:'true',...(create?{}:{keepRevisionForever:'true'})});
         let state = previous;
-        if (state && (state.size !== bytes.byteLength || state.fileId !== fileId)) throw new SyncFault('recovery-invalid','Upload snapshot changed','session');
+        if (state && (state.size !== bytes.byteLength || state.fileId !== fileId||!Number.isSafeInteger(state.offset)||state.offset<0||state.offset>state.size)) throw new SyncFault('recovery-invalid','Upload snapshot changed','session');
+        if(state){const url=new URL(state.url);if(url.origin!=='https://www.googleapis.com'||url.username||url.password||!url.pathname.startsWith('/upload/drive/v3/'))throw new SyncFault('recovery-invalid','Untrusted persisted upload session','session');}
         if (!state) {
             const start = await this.transport.fetch(target,{method:create?'POST':'PATCH',signal,redirect:'error',maxBytes:1024*1024,
                 headers:{'Content-Type':'application/json','X-Upload-Content-Length':String(bytes.byteLength),'X-Upload-Content-Type':'application/octet-stream'},
                 body:JSON.stringify(metadata)});
-            const location=start.headers.location;start.discard?.();
+            const location=start.headers.location;if(start.status>=400)await googleResponse(start,signal);start.discard?.();
             if (start.status < 200 || start.status >= 300 || !location) throw new SyncFault('upload-session',`Drive upload initialization failed: HTTP ${start.status}`,'file',start.status===429||start.status>=500);
             const url = new URL(location);
             if (url.origin!=='https://www.googleapis.com' || !url.pathname.startsWith('/upload/drive/v3/')) throw new SyncFault('redirect-policy','Untrusted upload session','source');
@@ -142,9 +144,9 @@ export class GoogleDriveClient {
                 body:probe?new Uint8Array(0):new Uint8Array(bytes,state.offset,end-state.offset)};
             let response:NetResponse;
             try {response=await this.transport.fetch(state.url,request);}
-            catch (error) {signal.throwIfAborted();if(++transient>4)throw error;probe=true;continue;}
+            catch (error) {signal.throwIfAborted();if(++transient>4||error instanceof SyncFault&&!error.retryable)throw error;await sleepInterruptible(1000*2**(transient-1),signal);probe=true;continue;}
             if (response.status===200 || response.status===201) {
-                const file=parseFile(JSON.parse(await response.text()));
+                const file=parseFile(await googleResponse(response,signal));
                 if(file.id!==fileId)throw new SyncFault('integrity','Drive returned a different upload target','file');
                 await this.verify(file,bytes);return file;
             }
@@ -155,9 +157,13 @@ export class GoogleDriveClient {
                 if(offset>state.offset)stalls=0;
                 state={...state,offset};await persist({...state});probe=offset===bytes.byteLength;continue;
             }
-            response.discard?.();
-            if ((response.status===429 || response.status>=500) && ++transient<=4) {probe=true;continue;}
-            throw Object.assign(new SyncFault(response.status===404?'upload-expired':'upload',`Drive upload failed: HTTP ${response.status}`,'file',response.status===404||response.status===429||response.status>=500),{status:response.status});
+            let failure:unknown;try{await googleResponse(response,signal);}catch(error){failure=error;}
+            if(response.status===404)throw Object.assign(new SyncFault('upload-expired','Drive upload session expired','file',true),{status:404});
+            if(failure instanceof SyncFault&&failure.retryable&&++transient<=4){
+                const retryAt=(failure as SyncFault&{retryAt?:number}).retryAt,delay=Math.max(1000*2**(transient-1),(retryAt??0)-Date.now());
+                if(delay>60_000)throw failure;await sleepInterruptible(delay,signal);probe=true;continue;
+            }
+            throw failure??new SyncFault('upload',`Drive upload failed: HTTP ${response.status}`);
         }
     }
 }

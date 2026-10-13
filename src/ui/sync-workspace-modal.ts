@@ -89,7 +89,7 @@ export class SyncWorkspaceModal extends DraftModal {
         const box = this.contentEl; box.replaceChildren(); box.classList.add('sync-workspace');
         box.dataset.pane = 'tree';
         const heading = element('div', '', 'sync-workspace-heading');
-        heading.append(element('h2', tr('Синхронизация vault', 'Vault synchronization')), element('small', tr('Источник → этот vault. Локальные правки не отправляются.', 'Source → this vault. Local edits are not uploaded.'))); box.append(heading);
+        heading.append(element('h2', tr('Синхронизация vault', 'Vault synchronization')), element('small', tr('Источник → vault. Для OAuth Drive можно назначить двусторонний профиль.', 'Source → vault. OAuth Drive also supports a bidirectional profile.'))); box.append(heading);
         const toolbar = element('div', '', 'sync-workspace-toolbar');
         button(toolbar, 'Vault', () => this.switchView('vault'));
         button(toolbar, tr('Добавить источник', 'Add source'), () => this.editSource());
@@ -123,7 +123,7 @@ export class SyncWorkspaceModal extends DraftModal {
         this.bulkButton = button(footer, tr('Профиль выделенным', 'Profile for selection'), () => this.bulkProfiles());
         button(footer, tr('Сбросить черновик', 'Reset draft'), () => { this.policy = structuredClone(this.savedPolicy); this.connections = structuredClone(this.savedConnections); this.profiles=structuredClone(this.savedProfiles); this.forms.clear(); this.render(); }, 'sync-workspace-reset');
         this.saveButton = button(footer, tr('Сохранить настройки', 'Save settings'), () => void this.save(), 'mod-cta');
-        if (this.deps.run) this.runButton = button(footer, tr('Предпросмотр запуска', 'Preview run'), () => void this.preview());
+        if (this.deps.run) this.runButton = button(footer, tr('Запустить синхронизацию', 'Run synchronization'), () => void this.preview());
         button(footer, tr('Закрыть', 'Close'), () => this.close()); box.append(footer);
         this.render(); void this.loadLocal();
         const connection = this.connections.find(c => c.id === this.policy.defaultSource); if (connection) void this.loadSource(connection);

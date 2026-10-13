@@ -339,6 +339,15 @@ export class OperationStore {
                 }
         }
         private async compactLocked(): Promise<void> {
+                const retained=(await this.fs.list()).filter(name=>CHECKPOINT.test(name)).sort();
+                if(retained.length>=8){
+                        if(retained.some(name=>sequenceOf(CHECKPOINT,name)>this.checkpointSequence))throw new SyncFault('checkpoint-cleanup','Unexpected future journal generation; history retained','session');
+                        // Cleanup precedes another publication once a bounded grace period is exhausted.
+                        // Verify both surviving anchors before removing redundant checkpoints.
+                        await this.readCheckpoint(retained.at(-1)!);await this.readCheckpoint(retained.at(-2)!);
+                        try{for(const old of retained.slice(0,-2)){await this.readCheckpoint(old);await this.fs.remove(old);}}
+                        catch{throw new SyncFault('checkpoint-cleanup','Cannot clean old journal checkpoints; stop before accumulating another generation','session');}
+                }
                 if (this.checkpointSequence !== this.state.sequence) {
                         validateState(this.state);
                         await this.publish(filename('checkpoint', this.state.sequence), { version: 3, kind: 'checkpoint', tip: this.tip, state: this.state });
@@ -353,7 +362,7 @@ export class OperationStore {
                         // A filename from another writer or unexpected future generation
                         // cannot authorize deletion of this instance's verified history.
                         if (checkpoints.some(name => sequenceOf(CHECKPOINT, name) > this.checkpointSequence)
-                                || names.some(name => EVENT.test(name) && sequenceOf(EVENT, name) > this.state.sequence)) return;
+                                || names.some(name => EVENT.test(name) && sequenceOf(EVENT, name) > this.state.sequence)) throw Error('Journal cleanup blocked by an unexpected future generation');
                         const previous = checkpoints.at(-2);
                         if (previous) {
                                 const current=await this.readCheckpoint(filename('checkpoint', this.checkpointSequence));

@@ -90,6 +90,7 @@ export class SourceConnectionModal extends DraftModal {
     }
     private renderGoogle(box: HTMLElement): void {
         const c=this.draft;
+        box.append(element('p',tr('Ссылки и file ID сохраняются. До проверки записи на месте локальные обновления существующих объектов публикуются в конфликтные копии. Новые файлы отправляются автоматически.','Links and file IDs are preserved. Until in-place writes are validated, local updates of existing objects are published as conflict copies. New files upload automatically.')));
         box.append(element('p',tr('Google разрешает доступ к Drive аккаунта. Синхронизация ограничена выбранной папкой.','Google grants account Drive access. Synchronization is restricted to the selected folder.')));
         const input=element('input');input.type='file';input.accept='.json,application/json';
         input.disabled=this.busy;

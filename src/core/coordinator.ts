@@ -629,15 +629,15 @@ export class Coordinator {
                                 stats.retryScheduled=this.activeFailures().filter(file=>!file.poisoned).length;
                                 stats.blocked=this.activeFailures().filter(file=>file.poisoned).length;
                                 stats.duration=Date.now()-startTime;
-                                if(stats.outcome==='ok'&&(stats.failed>0||stats.pendingAfter>0||stats.notAttempted||stats.deferredDeletions||stats.deferredConflicts))stats.outcome='error';
-                                if(stats.outcome==='ok') {ui.setLastSyncTime(Date.now());try{await this.persist('success-end');}catch(error){const issue=syncIssue(error,'checkpoint');issue.scope='session';stats.problem=issue.message;stats.problems!.push(issue);stats.outcome='error';}}
+                                if(stats.outcome==='ok'&&(stats.failed>0||stats.pendingAfter>0||stats.notAttempted||stats.deferredDeletions))stats.outcome='error';
+                                if(stats.outcome==='ok'&&!stats.deferredDeletions&&!stats.deferredConflicts) {ui.setLastSyncTime(Date.now());try{await this.persist('success-end');}catch(error){const issue=syncIssue(error,'checkpoint');issue.scope='session';stats.problem=issue.message;stats.problems!.push(issue);stats.outcome='error';}}
                                 stats.duration=Date.now()-startTime;
                                 if(stats.outcome==='cancelled'){ui.setStatus('idle');ui.notify(m.cancelled);}
                                 else if(stats.problem){ui.setStatus('error',{pendingCount:stats.pendingAfter});ui.notify(m.syncFailed(stats.problem),10000);}
                                 else if(stats.failed>0){ui.setStatus('error',{pendingCount:stats.failed});ui.notify(m.syncedWithErrors(stats.failed),10000);}
                                 else if(stats.pendingAfter>0){ui.setStatus('error',{pendingCount:stats.pendingAfter});ui.notify(m.retryNotDue(stats.pendingAfter),10000);}
                                 else if(stats.notAttempted){ui.setStatus('error',{pendingCount:stats.notAttempted});ui.notify(m.retryNotDue(stats.notAttempted),10000);}
-                                else if(stats.deferredDeletions){ui.setStatus('error',{pendingCount:stats.deferredDeletions,attention:'deletions'});ui.notify(stats.blockedDeletions?(m.deletionsBlocked?.(stats.blockedDeletions)??m.deletionsDeferred(stats.blockedDeletions)):m.deletionsDeferred(stats.deferredDeletions),10000);}
+                                else if(stats.deferredDeletions){ui.setStatus('conflicts',{pendingCount:stats.deferredDeletions,attention:'deletions'});ui.notify(stats.blockedDeletions?(m.deletionsBlocked?.(stats.blockedDeletions)??m.deletionsDeferred(stats.blockedDeletions)):m.deletionsDeferred(stats.deferredDeletions),10000);}
                                 else if(stats.deferredConflicts){ui.setStatus('conflicts',{pendingCount:stats.deferredConflicts});ui.notify(m.conflictsDeferred??'Conflicts need a manual run',10000);}
                                 else {ui.setStatus(stats.conflicts?'conflicts':'idle',{pendingCount:stats.conflicts});ui.notify(stats.totalFiles?m.success(stats.downloaded,stats.deleted,stats.conflicts,formatDuration(stats.duration)):m.upToDate);}
                                 console.info(this.sessionEndLog(stats));
@@ -985,7 +985,7 @@ export class Coordinator {
                 };
                 const packages=new Map<string,RemoteEntry[]>(),units:RemoteEntry[][]=[];
                 for(const file of files){const key=runtimePackage(file.path);if(!key){units.push([file]);continue;}let unit=packages.get(key);if(!unit){unit=[];packages.set(key,unit);units.push(unit);}unit.push(file);}
-                const results=await pMap(units,async unit=>{
+                const processUnit=async(unit:RemoteEntry[])=>{
                         if(unit.length===1)return processOne(unit[0]);
                         if(unit.some(isPaused)){unit.forEach(deferSource);return;}
                         if(persistenceFailure||signal.aborted){stats.notAttempted=(stats.notAttempted??0)+unit.length;return;}
@@ -1014,7 +1014,15 @@ export class Coordinator {
                                 const before=stats.failed;await processOne(unit[i],staged.get(unit[i].path));staged.delete(unit[i].path);
                                 if(stats.failed>before||persistenceFailure||signal.aborted){for(const file of unit.slice(i+1)){stats.notAttempted=(stats.notAttempted??0)+1;stats.results?.push({path:file.path,source:file.provider,status:'pending',reason:'package-not-ready'});processed++;}break;}
                         }}finally{release?.();for(const file of unit)activities.delete(file.path);publish(true);}
-                },concurrency).finally(()=>{clearInterval(heartbeat);if(pendingPublish)clearTimeout(pendingPublish);});
+                };
+                const mayAsk=(unit:RemoteEntry[])=>allowAsk&&unit.some(file=>{
+                        const rule=resolveFileRule(file.path,this.current.syncPolicy?.fileRules),planned=this.plan!.downloads.find(p=>p.entry.path===file.path);
+                        return planned?.expected.kind==='file'&&(rule.conflict??conflict.getStrategy())==='ask'&&(rule.write===undefined||rule.write==='changes');
+                });
+                const ordinary=units.filter(unit=>!mayAsk(unit)),questions=units.filter(mayAsk);
+                let results:(void|Error)[]=[];
+                try{results=[...await pMap(ordinary,processUnit,concurrency),...await pMap(questions,processUnit,concurrency)];}
+                finally{clearInterval(heartbeat);if(pendingPublish)clearTimeout(pendingPublish);}
 
                 const unexpected = results.find(result => result instanceof Error);
                 if (unexpected instanceof Error) throw unexpected;

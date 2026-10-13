@@ -24,7 +24,7 @@ export function effectiveBehavior(rule: Pick<ResolvedFileRule, 'write' | 'delete
     if (write === 'preserve') return { direction, createMissingLocal: false, createMissingRemote: false,
         updates: 'none', deletions: 'keep', conflict, protected: true };
     if (direction === 'bidirectional') {
-        if (write !== 'changes' || deletion === 'mirror' || choice === 'incoming') throw Error('Incompatible bidirectional profile');
+        if (write !== 'changes' || deletion === 'mirror' || choice === 'incoming'||choice==='local-wins') throw Error('Incompatible bidirectional profile; publishing over an existing Drive ID awaits concurrency validation');
         return { direction, createMissingLocal: true, createMissingRemote: true, updates: 'changed-side',
             deletions: deletion === 'keep' ? 'keep' : 'propagate-trash', conflict, protected: false };
     }

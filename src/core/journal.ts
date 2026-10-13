@@ -43,6 +43,7 @@ export type JournalOutcome = 'ok' | 'cancelled' | 'error';
 
 /** Одна завершённая сессия синхронизации (сериализуется в JSON как есть). */
 export interface JournalEntry {
+        uploaded?:number;deletedDrive?:number;
         trace?:import('../sources/types').SyncStats['trace'];traceDropped?:number;
         sessionId?:string;build?:string;platform?:string;
         pendingBefore?:number;pendingAfter?:number;retryScheduled?:number;blocked?:number;notAttempted?:number;networkBytes?:number;problems?:SyncIssue[];
@@ -142,7 +143,7 @@ function coerceEntry(raw: unknown): JournalEntry | null {
                 problems:Array.isArray(r.problems)?r.problems.filter((v):v is SyncIssue=>!!v&&typeof v==='object'&&typeof v.message==='string'&&typeof v.code==='string').slice(0,20):undefined,
                 sources:Array.isArray(r.sources)?r.sources.filter((value):value is string=>typeof value==='string').slice(0,100):undefined,
                 profilesMode:r.profilesMode===true,
-                received:num(r.received),deferredConflicts:num(r.deferredConflicts),
+                uploaded:num(r.uploaded),deletedDrive:num(r.deletedDrive),received:num(r.received),deferredConflicts:num(r.deferredConflicts),
                 blockedReason:typeof r.blockedReason==='string'?r.blockedReason:undefined,attemptOnly:r.attemptOnly===true,
                 results:Array.isArray(r.results)?r.results.filter((value):value is SyncFileResult=>!!value&&typeof value==='object'&&typeof value.path==='string'&&typeof value.reason==='string'&&(value.source===undefined||typeof value.source==='string')&&(value.remotePath===undefined||typeof value.remotePath==='string')&&['applied','unchanged','skipped','pending','error'].includes(value.status)).slice(0,500):undefined,
                 resultsTotal:num(r.resultsTotal),

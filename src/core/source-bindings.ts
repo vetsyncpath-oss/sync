@@ -50,3 +50,22 @@ export function destinationIsRouted(path:string,rules:readonly FileRule[],defaul
     };
     return sourceCandidates(remote,owner,rules,defaultSource??'',map).some(candidate=>canonical(resolveFileRule(candidate,rules).remotePath!==undefined?candidate:map(candidate))===canonical(path));
 }
+
+/** Invert the winning assignment; require an unambiguous round trip before uploading. */
+export function sourcePathForDestination(local:string,source:string,rules:readonly FileRule[],defaultSource:string,folders:readonly FolderPolicy[]=[]):string|undefined {
+    const resolved=resolveFileRule(local,rules);
+    if((resolved.source??defaultSource)!==source)return undefined;
+    const binding=resolved.sourceRule===undefined?undefined:rules[resolved.sourceRule];
+    let remote=local;
+    if(binding?.remotePath!==undefined){
+        remote=binding.scope==='file'?binding.remotePath:[binding.remotePath,local.split('/').slice(binding.path?binding.path.split('/').length:0).join('/')].filter(Boolean).join('/');
+    }else{
+        const targets=folders.filter(f=>f.target).map(f=>({rule:f,local:computeLocalPath(f.path,f.path,f)}))
+            .filter(f=>canonical(local)===canonical(f.local)||canonical(local).startsWith(canonical(f.local)+'/')).sort((a,b)=>b.local.length-a.local.length);
+        if(targets[1]&&canonical(targets[0].local)===canonical(targets[1].local))throw Error('Ambiguous source mapping');
+        if(targets[0])remote=[targets[0].rule.path,local.split('/').slice(targets[0].local.split('/').length).join('/')].filter(Boolean).join('/');
+    }
+    const map=(path:string)=>{const f=folders.filter(f=>f.target&&(!f.path||path===f.path||path.startsWith(f.path+'/'))).sort((a,b)=>b.path.length-a.path.length)[0];return f?computeLocalPath(path,f.path,f):path;};
+    const paths=sourceCandidates(remote,source,rules,defaultSource,map).map(path=>resolveFileRule(path,rules).remotePath!==undefined?path:map(path));
+    return paths.some(p=>canonical(p)===canonical(local))?remote:undefined;
+}
