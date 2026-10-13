@@ -7,7 +7,8 @@
     "node": ">=18.18.0"
   },
   "scripts": {
-    "build": "npm run typecheck && node esbuild.config.mjs production",
+    "build": "npm run typecheck && npm run styles && node esbuild.config.mjs production",
+    "styles": "node scripts/styles.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test.mjs",
     "bench:state": "node scripts/bench-state.mjs",

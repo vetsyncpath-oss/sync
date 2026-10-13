@@ -24,6 +24,9 @@
 import { i18n } from '../i18n';
 import type { JournalEntry, JournalOutcome, JournalTrigger } from '../core/journal';
 import type { MirrorLevel } from '../core/mirror';
+import { tr } from './dom';
+import { operationTable } from './operation-table';
+import { sessionLabel } from './session-label';
 
 /** Короткая подпись idle-бейджа — из словаря (раньше module-local TODO). */
 const IDLE_BADGE = () => i18n.t.pop.statusIdle;
@@ -32,7 +35,10 @@ const IDLE_BADGE = () => i18n.t.pop.statusIdle;
  *  Source-of-truth: main.ts StatusBarManager.setStatus копирует сюда поля
  *  из SyncState + сессии (phase/file* из coordinator events). */
 export interface PopoverState {
-        status: 'idle' | 'syncing' | 'error' | 'offline' | 'conflicts' | 'unconfigured';
+        status: 'idle' | 'syncing' | 'error' | 'offline' | 'conflicts' | 'unconfigured' | 'blocked';
+        profilesMode?: boolean;
+        blockedReason?: string;
+        attention?:'deletions'|'conflicts';
         mirrorLevel: MirrorLevel;
         /** Pending failed files (retry-очередь) — источник видимости actionRetry. */
         pendingErrorCount: number;
@@ -77,6 +83,8 @@ export interface SyncPopoverDeps {
         onPauseAuto: () => void;
         onOpenJournal: () => void;
         onOpenSettings: () => void;
+        onOpenWorkspace?: () => void;
+        onRecovery?: () => void;
         onClose: () => void;
         /** Форматирование времени — инжект (main подставит toLocaleString);
          *  в core/journal дат-форматирования нет принципиально. */
@@ -88,9 +96,10 @@ export interface SyncPopoverDeps {
 /** Названия фаз по индексу — ключи в pop-словаре (порядок жёсткий:
  *  0=manifest → 1=policy → 2=diff → 3=deletions → 4=downloads → 5=finalize). */
 const PHASE_KEYS = [
-        'phaseManifest', 'phasePolicy', 'phaseDiff', 'phaseDeletions',
-        'phaseDownloads', 'phaseFinalize',
+        'phaseManifest', 'phasePolicy', 'phaseDiff', 'phaseDownloads',
+        'phaseDeletions', 'phaseFinalize',
 ] as const;
+const PHASE_ORDER = [0, 1, 2, 4, 3, 5];
 
 type TriggerKey = 'triggerManual' | 'triggerAuto' | 'triggerRetry' | 'triggerScan' | 'triggerForce';
 type OutcomeKey = 'outcomeOk' | 'outcomeCancelled' | 'outcomeError';
@@ -185,6 +194,7 @@ export class SyncPopoverView {
 
         render(): void {
                 const { contentEl } = this.deps;
+                const focused=contentEl.contains(document.activeElement)?{cls:(document.activeElement as HTMLElement).className,text:document.activeElement?.textContent}:undefined;
                 contentEl.replaceChildren();
                 contentEl.classList.add('pop-popover');
 
@@ -212,12 +222,13 @@ export class SyncPopoverView {
                 contentEl.append(this.renderLastSession());
 
                 // 6. Конфликты — при status='conflicts' или lastEntry.conflicts>0.
-                if (this.state.status === 'conflicts' || (this.deps.lastEntry?.conflicts ?? 0) > 0) {
+                if (this.state.status === 'conflicts' || (this.deps.lastEntry?.conflicts ?? 0) > 0 || (this.deps.lastEntry?.deferredConflicts??0)>0) {
                         contentEl.append(this.renderConflicts());
                 }
 
                 // 7. Ссылки внизу.
                 contentEl.append(this.renderLinks());
+                if(focused)Array.from(contentEl.querySelectorAll<HTMLElement>('button')).find(button=>button.className===focused.cls&&button.textContent===focused.text)?.focus();
         }
 
         /** Обновить состояние и перерисовать. Без дублирования DOM:
@@ -230,6 +241,7 @@ export class SyncPopoverView {
                 this.state = state;
                 this.render();
         }
+        setLastEntry(entry:JournalEntry|null):void { if(this.closed)return;this.deps.lastEntry=entry;this.render(); }
 
         /** Закрытие: идемпотентно (флаг), чистит контейнер, ровно один раз
          *  зовёт deps.onClose(). Рекурсия «view.close → onClose → Menu.close →
@@ -249,8 +261,9 @@ export class SyncPopoverView {
                 const t = i18n.t;
                 const s = this.state;
                 switch (s.status) {
+                        case 'blocked':return tr('Запуск заблокирован','Run blocked');
                         case 'syncing': return t.sbSyncing;
-                        case 'error': return s.pendingErrorCount > 0 ? t.sbErrorCount(s.pendingErrorCount) : t.sbError;
+                        case 'error': return s.attention?tr('Требует внимания','Needs attention'):s.pendingErrorCount > 0 ? t.sbErrorCount(s.pendingErrorCount) : t.sbError;
                         case 'conflicts': return t.sbConflicts(s.conflictsCount);
                         case 'offline': return t.sbOffline;
                         case 'unconfigured': return t.sbUnconfigured;
@@ -267,6 +280,8 @@ export class SyncPopoverView {
                         cls: `pop-status pop-status-${this.state.status}`,
                         text: this.statusBadgeText(),
                 }));
+                if(this.state.blockedReason)header.append(el('p',{text:this.state.blockedReason}));
+                if(this.state.profilesMode){header.append(el('span',{cls:'pop-chip',text:tr('Профили назначенных областей','Assigned scope profiles')}));return header;}
                 const chip = chipForLevel(this.state.mirrorLevel);
                 header.append(el('span', {
                         cls: `pop-chip ${chip.cls}`,
@@ -294,7 +309,8 @@ export class SyncPopoverView {
                 // 6 фаз конвейера: точка-чип на каждую. Текущая — pop-phase-current,
                 // пройденные — pop-phase-done, будущие — pop-phase-pending.
                 const phases = el('div', { cls: 'pop-phases' });
-                const cur = this.state.phase;
+                const cur = PHASE_ORDER.indexOf(this.state.phase);
+                if (cur < 0) wrap.append(el('p', { text: tr('Подготовка запуска…', 'Preparing run…') }));
                 for (let i = 0; i < PHASE_KEYS.length; i++) {
                         const key = PHASE_KEYS[i];
                         const cls = i < cur ? 'pop-phase pop-phase-done'
@@ -306,13 +322,13 @@ export class SyncPopoverView {
 
                 // Под-фаза: файловый прогресс, текущий путь, байты — только если есть.
                 const sub = el('div', { cls: 'pop-progress-sub' });
-                if (this.state.fileIndex !== undefined && this.state.fileTotal !== undefined) {
+                if (this.state.phase===4 && this.state.fileIndex !== undefined && (this.state.fileTotal??0)>0) {
                         sub.append(el('div', {
                                 cls: 'pop-file-progress',
-                                text: t.fileProgress(this.state.fileIndex, this.state.fileTotal),
+                                text: t.fileProgress(this.state.fileIndex, this.state.fileTotal??0),
                         }));
                 }
-                if (this.state.currentPath !== undefined) {
+                if (this.state.currentPath) {
                         sub.append(el('div', {
                                 cls: 'pop-current-path',
                                 text: t.currentPath(this.state.currentPath),
@@ -339,7 +355,8 @@ export class SyncPopoverView {
 
                 // actionSync — только не при syncing.
                 if (s.status !== 'syncing') {
-                        const b = el('button', { cls: 'pop-action pop-action-sync', text: t.actionSync });
+                        const b = el('button', { cls: 'pop-action pop-action-sync', text: s.status==='blocked'?tr('Повторить запуск','Retry run'):t.actionSync });
+                        b.disabled=s.status==='unconfigured';
                         b.addEventListener('click', () => this.deps.onSync());
                         wrap.append(b);
                 }
@@ -352,8 +369,7 @@ export class SyncPopoverView {
                 }
 
                 // actionRetry — при pendingErrorCount>0 или lastEntry.errors>0.
-                const lastErrors = this.deps.lastEntry?.errors ?? 0;
-                if (s.pendingErrorCount > 0 || lastErrors > 0) {
+                if (s.pendingErrorCount > 0 && s.status!=='syncing' && s.status!=='blocked' && s.status!=='unconfigured') {
                         const b = el('button', { cls: 'pop-action pop-action-retry', text: t.actionRetry });
                         b.addEventListener('click', () => this.deps.onRetry());
                         wrap.append(b);
@@ -424,13 +440,15 @@ export class SyncPopoverView {
                 row.append(el('span', { cls: 'pop-when', text: this.deps.formatTime(e.startedAt) }));
                 row.append(el('span', {
                         cls: `pop-outcome pop-outcome-${e.outcome}`,
-                        text: jrnl[OUTCOME_KEY[e.outcome]],
+                        text: sessionLabel(e,jrnl[OUTCOME_KEY[e.outcome]]),
                 }));
                 row.append(el('span', { cls: 'pop-duration', text: formatDuration(e.durationMs) }));
-                row.append(el('span', { cls: 'pop-engine', text: e.engine }));
-                row.append(el('span', { cls: 'pop-level', text: levelName(e.mirrorLevel) }));
+                row.append(el('span', { cls: 'pop-engine', text: e.sources?.join(', ') || e.engine }));
+                if(!e.profilesMode)row.append(el('span', { cls: 'pop-level', text: levelName(e.mirrorLevel) }));
                 row.append(el('span', { cls: 'pop-trigger', text: jrnl[TRIGGER_KEY[e.trigger]] }));
                 wrap.append(row);
+                if(e.blockedReason)wrap.append(el('p',{text:e.blockedReason}));
+                if(e.results?.length){const details=el('details');details.append(el('summary',{text:tr('Результаты по файлам','File results')}),operationTable(e.results));wrap.append(details);}
 
                 // Счётчики — только ненулевые, через ' · '.
                 const stats = this.statsLine(e);
@@ -464,6 +482,11 @@ export class SyncPopoverView {
                 if (e.conflicts > 0) parts.push(t.statConflicts(e.conflicts));
                 if (e.skipped > 0) parts.push(t.statSkipped(e.skipped));
                 if (e.errors > 0) parts.push(t.statErrors(e.errors));
+                if(e.received)parts.push(tr('Получено из источника: ','Read from source: ')+e.received);
+                if(e.deferredConflicts)parts.push(tr('Ожидают решения: ','Awaiting decision: ')+e.deferredConflicts);
+                if(e.blockedDeletions)parts.push(t.statBlocked(e.blockedDeletions));
+                const deferred=(e.deferredDeletions??0)-(e.blockedDeletions??0);
+                if(deferred>0)parts.push(t.statDeferred(deferred));
                 return parts.join(' · ');
         }
 
@@ -472,12 +495,18 @@ export class SyncPopoverView {
                 const wrap = el('div', { cls: 'pop-conflicts' });
                 wrap.append(el('div', { cls: 'pop-section-title', text: t.conflictsSection }));
                 wrap.append(el('div', { cls: 'pop-conflicts-hint', text: t.conflictsHint }));
+                if((this.deps.lastEntry?.deferredConflicts??0)>0){
+                        const decide=el('button',{text:tr('Разрешить конфликты при ручном запуске','Resolve conflicts in a manual run')});
+                        decide.disabled=this.state.status==='syncing'||this.state.status==='blocked';decide.addEventListener('click',()=>this.deps.onSync());wrap.append(decide);
+                }
                 return wrap;
         }
 
         private renderLinks(): HTMLElement {
                 const t = i18n.t.pop;
                 const wrap = el('div', { cls: 'pop-links' });
+                if(this.deps.onOpenWorkspace){const b=el('button',{cls:'pop-link pop-link-workspace',text:tr('Рабочее окно','Workspace')});b.addEventListener('click',()=>this.deps.onOpenWorkspace!());wrap.append(b);}
+                if(this.deps.onRecovery){const b=el('button',{cls:'pop-link pop-link-recovery',text:tr('Восстановление','Recovery')});b.addEventListener('click',()=>this.deps.onRecovery!());wrap.append(b);}
                 const j = el('button', { cls: 'pop-link pop-link-journal', text: t.linkJournal });
                 j.addEventListener('click', () => this.deps.onOpenJournal());
                 wrap.append(j);

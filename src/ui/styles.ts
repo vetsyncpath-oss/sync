@@ -1,4 +1,5 @@
 import { WORKSPACE_CSS } from './sync-workspace-styles';
+export { WORKSPACE_CSS };
 // src/ui/styles.ts — рантайм-инъекция CSS плагина (Phase 4.1).
 //
 // ПРОБЛЕМА: styles.css грузится Obsidian'ом как ОТДЕЛЬНЫЙ файл папки плагина.

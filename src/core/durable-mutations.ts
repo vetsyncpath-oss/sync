@@ -40,6 +40,9 @@ export class DurableMutations {
                 const after = await versionOf(data);
                 await this.commit(namespace, request, 'write', after, async () => {
                         if (sameVersion(request.before, after)) return;
+                        if(request.before.kind==='missing' && this.vault.createBinary){
+                                request.guard();await this.vault.createBinary(request.path,data);return;
+                        }
                         if (request.before.kind === 'file' && this.vault.compareAndWrite) {
                                 const previous = await this.vault.readBinary(request.path); request.guard();
                                 if (!sameVersion(await versionOf(previous), request.before)) throw new StalePlanError(request.path);
@@ -50,6 +53,36 @@ export class DurableMutations {
                         request.guard(); await assertLocal(this.vault, request.path, request.before); request.guard();
                         await this.vault.writeBinary(request.path, data);
                 });
+        }
+        /** Restore to a new protected conflict-copy name, never over the user's current file. */
+        async restoreCopy(id:string, allow:(path:string)=>boolean, guard:()=>void):Promise<string> {
+                await this.store.load();const record=this.store.records().find(r=>r.id===id);
+                if(!record?.recovery)throw Error('Recovery copy unavailable');
+                if(!this.vault.createBinary)throw Error('Non-overwriting file creation unavailable');
+                const original=record.kind==='move'?record.from!:record.path;
+                if(!allow(original))throw Error('Recovery destination is protected by permissions');
+                guard();const bytes=await this.recovery.read(record.recovery);guard();
+                const slash=original.lastIndexOf('/'),base=original.slice(slash+1),dot=base.lastIndexOf('.');
+                const encoder=new TextEncoder(),extension=dot>0&&encoder.encode(base.slice(dot)).length<=64?base.slice(dot):'';
+                const suffix='.conflict-restored-'+crypto.randomUUID()+extension;
+                let stem='';const budget=255-encoder.encode(suffix).length;
+                for(const char of extension?base.slice(0,dot):base){if(encoder.encode(stem+char).length>budget)break;stem+=char;}
+                const path=original.slice(0,slash+1)+(stem||'_')+suffix;
+                const parent=path.slice(0,Math.max(path.lastIndexOf('/'),0));
+                if(parent && !(await this.vault.exists(parent))) {
+                        const parts=parent.split('/');let directory='';
+                        for(const part of parts){directory=directory?directory+'/'+part:part;if(!(await this.vault.exists(directory)))await this.vault.mkdir(directory);}
+                }
+                guard();await this.write('manual-recovery',{id:crypto.randomUUID(),planId:'manual-recovery',path,before:MISSING,guard},bytes);
+                return path;
+        }
+        async keepCurrent(id:string, expected:LocalVersion, from:LocalVersion|undefined, guard:()=>void):Promise<void> {
+                await this.store.load();const record=this.store.records().find(r=>r.id===id);
+                if(!record || !['committing','blocked'].includes(record.status))throw Error('Operation no longer needs review');
+                if(record.recovery)await this.recovery.verify(record.recovery);
+                guard();await assertLocal(this.vault,record.path,expected);
+                if(record.from){if(!from)throw Error('Move observation missing');await assertLocal(this.vault,record.from,from);}
+                guard();await this.store.finish(id,'not-applied');
         }
         async delete(namespace: string, request: MutationRequest, useTrash: boolean): Promise<void> {
                 await this.commit(namespace, request, 'delete', MISSING, async () => {

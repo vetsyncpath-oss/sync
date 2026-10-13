@@ -295,7 +295,7 @@ export class ConflictResolver {
                 if (writeMode === 'preserve') return { kind: 'skipped', updateCache: false };
                 if (!(await vault.exists(entry.path))) {
                         await this.writeIfUnchanged(entry.path, remoteData, null, signal, transaction);
-                        return { kind: 'written', updateCache: true };
+                        return { kind: 'written', updateCache: true, primaryChanged: true };
                 }
                 if (writeMode === 'create') return { kind: 'skipped', updateCache: false };
                 const local = await vault.readBinary(entry.path);
@@ -304,14 +304,14 @@ export class ConflictResolver {
                 // Equal bytes need no write, avoiding a race with a subsequent edit.
                 if (bytesEqual(local, remoteData)) {
                         if (transaction) await this.writeIfUnchanged(entry.path, remoteData, local, signal, transaction);
-                        return { kind: 'written', updateCache: true };
+                        return { kind: 'written', updateCache: true, primaryChanged: false };
                 }
                 const conflict = transaction?.appliedLocalSha256 !== undefined
                         ? await this.deps.sha256(local) !== transaction.appliedLocalSha256
                         : cacheHash === undefined || localHash === null || localHash !== cacheHash;
                 if (!conflict) {
                         await this.writeIfUnchanged(entry.path, remoteData, local, signal, transaction);
-                        return { kind: 'written', updateCache: true };
+                        return { kind: 'written', updateCache: true, primaryChanged: true };
                 }
                 if (writeMode === 'update') return { kind: 'skipped', updateCache: false };
                 if (writeMode === 'changes' && ruleConflict === 'ask' && !allowAsk) return {kind:'skipped',updateCache:false,requiresDecision:true};
@@ -381,23 +381,24 @@ export class ConflictResolver {
                 signal?: AbortSignal,
                 transaction?: WriteTransaction,
         ): Promise<WriteOutcome> {
-                let choice: ConflictStrategy = this.strategy;
+                let choice: ConflictStrategy | import('../sources/types').ConflictChoice = this.strategy;
                 if (mirror !== 'light' && mirror !== 'full' && choice === 'ask') {
                         choice = this.deps.ui ? await this.deps.ui.askConflict({
                                 path: entry.path, localSize: local.byteLength, remoteSize: remoteData.byteLength,
                         }) : 'keep-both';
                 }
                 signal?.throwIfAborted();
+                if (choice === 'defer') return { kind: 'skipped', updateCache: false, requiresDecision: true };
                 if ((mirror === undefined || mirror === 'fetch') && choice === 'local-wins') {
                         return { kind: 'skipped', updateCache: false };
                 }
                 const now = this.deps.now?.() ?? Date.now();
                 const conflictPath = await this.buildConflictPath(entry.path, now);
                 signal?.throwIfAborted();
-                if (mirror === 'light' && this.lightStrategy === 'keep-local') {
+                if (choice === 'incoming' || (mirror === 'light' && this.lightStrategy === 'keep-local')) {
                         if (transaction) await transaction.write(conflictPath, remoteData, null, true);
                         else await this.deps.vault.writeBinary(conflictPath, remoteData);
-                        return { kind: 'conflict', updateCache: true, conflictPath, mirror: 'light' };
+                        return { kind: 'conflict', updateCache: true, conflictPath, mirror: 'light', primaryChanged: false };
                 }
                 // Re-read AFTER any question/path allocation; preserve the latest saved version.
                 local = await this.deps.vault.readBinary(entry.path);
@@ -405,7 +406,7 @@ export class ConflictResolver {
                 await this.deps.vault.writeBinary(conflictPath, local);
                 // A failed recovery write or a concurrent edit must leave the original intact.
                 await this.writeIfUnchanged(entry.path, remoteData, local, signal, transaction);
-                return { kind: 'conflict', updateCache: true, conflictPath,
+                return { kind: 'conflict', updateCache: true, conflictPath, primaryChanged: true,
                         ...(mirror === 'light' || mirror === 'full' ? { mirror } : {}) };
         }
 

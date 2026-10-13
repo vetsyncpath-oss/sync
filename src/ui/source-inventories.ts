@@ -21,5 +21,9 @@ export class SourceInventories {
         }finally{if(this.requests.get(id)===controller)this.requests.delete(id);}
     }
     invalidate(id:string):void {this.requests.get(id)?.abort();this.requests.delete(id);this.states.delete(id);}
+    cancel(id:string):void {
+        this.requests.get(id)?.abort(); this.requests.delete(id);
+        const previous=this.state(id); this.states.set(id,{...previous,status:previous.loadedAt?'ready':'idle',error:undefined});
+    }
     dispose():void {for(const c of this.requests.values())c.abort();this.requests.clear();}
 }

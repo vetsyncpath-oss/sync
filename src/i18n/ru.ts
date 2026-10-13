@@ -7,6 +7,8 @@ import type { Translations } from './types';
 export const ru: Translations = {
         sbSyncing: 'Синхронизация...',
         sbSyncInProgress: 'Синхронизация',
+        sbAttention: 'Требует внимания',
+        sbBlocked: 'Запуск заблокирован',
         sbError: 'Ошибка',
         sbErrorCount: (n) => `${n} ошибок`,
         sbSyncFailed: 'Сбой синхронизации. Нажмите для подробностей.',
@@ -34,7 +36,7 @@ export const ru: Translations = {
         noticeDeletingFiles: (n) => `Удаление ${n} файлов...`,
         noticeSyncedWithErrors: (n) => `Синхронизировано с ${n} ошибками. Проверьте настройки.`,
         noticeSuccess: (dl, del, conf, dur) => {
-                let msg = `Готово! ${dl} загружено`;
+                let msg = `Готово! Принято файлов: ${dl}`;
                 if (del > 0) msg += `, ${del} удалено`;
                 if (conf > 0) msg += `, ${conf} конфликтов`;
                 msg += ` за ${dur}`;
@@ -108,7 +110,7 @@ export const ru: Translations = {
         settTestConnectionBtn: 'Проверить',
         settOptions: 'Параметры',
         settUseTrash: 'Использовать корзину',
-        settUseTrashDesc: 'Перемещать удалённые файлы в корзину вместо безвозвратного удаления',
+        settUseTrashDesc: 'Перемещать удалённые файлы в корзину дополнительно к проверенным восстановительным копиям, которые сохраняются независимо.',
         settConflictStrategy: 'Разрешение конфликтов',
         settConflictStrategyDesc: 'Как обрабатывать файлы, изменённые локально и в источнике одновременно',
         settConflictKeepBoth: 'Сохранить оба (создать копию .conflict)',
@@ -375,7 +377,7 @@ export const ru: Translations = {
                 outcomeOk: 'Успех',
                 outcomeCancelled: 'Отменена',
                 outcomeError: 'Требует внимания',
-                statDownloaded: (n) => `загружено: ${n}`,
+                statDownloaded: (n) => `принято: ${n}`,
                 statUpdated: (n) => `обновлено: ${n}`,
                 statDeletedLight: (n) => `удалено (лёгкое): ${n}`,
                 statDeletedFull: (n) => `удалено (полное): ${n}`,
@@ -437,7 +439,7 @@ export const ru: Translations = {
                 pathsTitle: 'Пути',
                 pathsMore: (n) => `… и ещё ${n}`,
                 dangerWarning: 'Сессия удалит файлы — проверьте перед запуском',
-                noRecovery: 'Корзина ВЫКЛ: удаления безвозвратны',
+                noRecovery: 'Системная корзина выключена. Проверенные восстановительные копии сохраняются.',
                 proceed: 'Выполнить',
                 cancel: 'Отмена',
         },

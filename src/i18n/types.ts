@@ -272,6 +272,8 @@ export interface Translations {
         // --- Status Bar ---
         sbSyncing: string;
         sbSyncInProgress: string;
+        sbAttention: string;
+        sbBlocked: string;
         sbError: string;
         sbErrorCount: (n: number) => string;
         sbSyncFailed: string;
