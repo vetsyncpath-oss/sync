@@ -317,7 +317,11 @@ export class NodeArchiveDownloader implements ArchiveDownloader {
                         if (resumeFromByte > 0) {
                                 reqOpts.headers = { range: `bytes=${resumeFromByte}-` };
                         }
+                        const onAbort=()=>req.destroy(abortedError());
+                        const cleanup=()=>{opts.signal?.removeEventListener('abort',onAbort);clearTimeout(headerTimer);};
+                        const headerTimer=setTimeout(()=>req.destroy(new Error('Archive response headers timed out')),this.requestTimeoutMs);
                         const req = httpMod.get(url, reqOpts, (res: any) => {
+                                clearTimeout(headerTimer);
                                 const status = res.statusCode ?? 0;
 
                                 // Редирект: резолвим Location относительно текущего URL
@@ -325,12 +329,12 @@ export class NodeArchiveDownloader implements ArchiveDownloader {
                                         res.resume(); // слить тело
                                         const location = res.headers.location;
                                         if (!location || depth >= MAX_REDIRECTS) {
-                                                reject(new Error(
+                                                cleanup();reject(new Error(
                                                         `archive download: ${location ? 'too many redirects' : 'redirect without Location'} (HTTP ${status})`,
                                                 ));
                                                 return;
                                         }
-                                        const nextUrl = new URL(location, url).toString();
+                                        cleanup();const nextUrl = new URL(location, url).toString();
                                         // На редиректе resumeFromByte сбрасывается: новый URL —
                                         // нечего продолжать, стартуем с нуля.
                                         this.downloadToFile(nextUrl, tmpPath, opts, depth + 1, 0).then(resolve, reject);
@@ -355,7 +359,7 @@ export class NodeArchiveDownloader implements ArchiveDownloader {
                                                 new Error(`HTTP ${status} for archive download`),
                                                 { status },
                                         );
-                                        reject(err);
+                                        cleanup();reject(err);
                                         return;
                                 } else {
                                         // 200 на fresh (resumeFromByte == 0): обычный truncate-write.
@@ -371,14 +375,6 @@ export class NodeArchiveDownloader implements ArchiveDownloader {
                                 let received = partialHonored ? resumeFromByte : 0;
                                 let settled = false;
 
-                                const onAbort = () => {
-                                        // destroy с ошибкой → 'error' на res/out ниже → reject
-                                        req.destroy(abortedError());
-                                };
-                                opts.signal?.addEventListener('abort', onAbort, { once: true });
-                                const cleanup = () => {
-                                        opts.signal?.removeEventListener('abort', onAbort);
-                                };
                                 const fail = (e: Error) => {
                                         if (settled) return;
                                         settled = true;
@@ -391,7 +387,7 @@ export class NodeArchiveDownloader implements ArchiveDownloader {
                                         received += chunk.length;
                                         opts.onProgress?.({ bytesTransferred: received, totalBytes });
                                 });
-                                res.on('error', fail);
+                                res.on('error', fail);res.on('aborted',()=>fail(new Error('Archive response interrupted')));
                                 out.on('error', fail);
                                 out.on('finish', () => {
                                         if (settled) return;
@@ -413,7 +409,8 @@ export class NodeArchiveDownloader implements ArchiveDownloader {
                                 res.pipe(out);
                         });
 
-                        req.on('error', (e: Error) => reject(mapNetworkError(e, opts.signal)));
+                        opts.signal?.addEventListener('abort',onAbort,{once:true});if(opts.signal?.aborted)onAbort();
+                        req.on('error', (e: Error) => {cleanup();reject(mapNetworkError(e, opts.signal));});
                         // [5-review M1] Node-опция timeout только ЭМИТИТ событие —
                         // без обработчика зависший сервер вешает стрим навсегда
                         req.on('timeout', () => {

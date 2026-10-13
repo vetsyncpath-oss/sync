@@ -43,7 +43,9 @@ export const DEFAULT_START_DELAY_MS = 30_000;
  */
 export interface SchedulerDeps {
         /** Запустить авто-сессию (headless-режим см. W4-T02). */
-        onAutoTick(): void | Promise<void>;
+        onAutoTick(): void | boolean | Promise<void | boolean>;
+        canRun?():boolean;
+        onStateChange?():void;
         /** Legacy callback retained for compatibility; ticks use onAutoTick only. */
         onAutoRetry(): void | Promise<void>;
         /** Доступ к failed-очереди для гейта «есть ли дозревшие». */
@@ -62,8 +64,10 @@ export interface SchedulerDeps {
 
 /** Состояние Scheduler для снапшота/отчётности (popover «следующая через N мин»). */
 export interface SchedulerSnapshot {
+        blockedReason?:string;
         interval: SchedulerInterval;
         paused: boolean;
+        pending?:boolean; running?:boolean;
         /** epoch-ms следующего тика, или null если off / paused / startup-only-after-startup. */
         nextTickAt: number | null;
         /** Минут до следующего тика (округление вниз); null если нет следующего. */
@@ -88,6 +92,8 @@ export class Scheduler {
 
     private interval: SchedulerInterval = 'off';
     private paused = false;
+    private startupConsumed=false;
+    private pending=false;
     /** Активный таймер: либо setTimeout (до 1-го тика), либо setInterval
      *  (после 1-го тика в периодическом режиме). Для startup-only — setTimeout. */
     private timer: unknown = null;
@@ -138,12 +144,13 @@ export class Scheduler {
         // startup-only: один прогон через startDelayMs, затем стоп.
         // setTimeout (НЕ setInterval) — нам нужен ровно один тик.
         if (interval === 'startup-only') {
+            if(this.startupConsumed){this.nextTickAt=null;return;}
             this.nextTickAt = this.now() + this.startDelayMs;
             this.timer = this._setTimeout(() => {
                 this.timer = null;
                 this.timerIsInterval = false;
                 this.nextTickAt = null;
-                this.lastAutoTickAt = this.now();
+                this.pending=true;
                 // [W4-T01] гейт retry активен и в startup-only: пользователь
                 // вернулся, например, к неработающему vault — нужны дозревшие
                 // ретраи.
@@ -158,12 +165,12 @@ export class Scheduler {
         this.nextTickAt = this.now() + this.startDelayMs;
         this.timer = this._setTimeout(() => {
             // 1-й тик сработал — переключаемся на периодический режим.
-            this.lastAutoTickAt = this.now();
+            this.pending=true;
             this.nextTickAt = this.now() + ms;
             void this.runTick();
             // Дальнейшие тики — каждые ms через setInterval.
             this.timer = this._setInterval(() => {
-                this.lastAutoTickAt = this.now();
+                this.pending=true;
                 this.nextTickAt = this.now() + ms;
                 void this.runTick();
             }, ms);
@@ -183,20 +190,20 @@ export class Scheduler {
         if (this.paused || this.interval === 'off') return;
         this.paused = true;
         this.stopTimer();
-        this.nextTickAt = null;
+        this.nextTickAt = null;this.deps.onStateChange?.();
     }
 
     /** Снять паузу: рестарт с тем же интервалом и стартовой задержкой. */
     resume(): void {
         if (!this.paused) return;
         this.paused = false;
-        this.start(this.interval, this.startDelayMs);
+        const pending=this.pending;this.start(this.interval, this.startDelayMs);this.pending=pending;this.wake();this.deps.onStateChange?.();
     }
 
     /** Полная остановка (interval → off, таймер снят). */
     stop(): void {
         this.stopTimer();
-        this.interval = 'off';
+        this.interval = 'off';this.pending=false;
         this.paused = false;
         this.nextTickAt = null;
     }
@@ -222,7 +229,7 @@ export class Scheduler {
         }
         return {
             interval: this.interval,
-            paused: this.paused,
+            paused: this.paused,pending:this.pending,running:this.ticking,
             nextTickAt: this.nextTickAt,
             minutesUntilNext,
             lastAutoTickAt: this.lastAutoTickAt,
@@ -245,15 +252,19 @@ export class Scheduler {
     }
 
     private ticking=false;
+    /** One coalesced catch-up, after online/unbusy/access-change. */
+    wake():void {if(this.pending&&!this.paused&&this.interval!=='off'&&!this.ticking&&(this.deps.canRun?.()??true))void this.runTick();}
     private async runTick():Promise<void> {
-        if(this.ticking)return;
-        this.ticking=true;
+        this.pending=true;
+        if(this.interval==='startup-only'&&this.startupConsumed){this.pending=false;return;}
+        if(this.ticking||this.paused||this.interval==='off'||!(this.deps.canRun?.()??true)){this.deps.onStateChange?.();return;}
+        this.ticking=true;this.pending=false;this.deps.onStateChange?.();
         try {
-            // Normal automatic sync already includes due failed files and creates a
-            // fresh plan. A second retry session raced it and could open manual UI.
-            if(this.deps.queue.all().some(f=>!f.poisoned&&f.nextRetryAt<=this.now()))this.lastRetryAt=this.now();
-            await this.deps.onAutoTick();
+            const accepted=await this.deps.onAutoTick();
+            if(accepted===false){this.pending=true;return;}
+            this.lastAutoTickAt=this.now();if(this.interval==='startup-only')this.startupConsumed=true;
+            // Retry work belongs to the accepted plan; a due queue item alone is not evidence of a retry.
         } catch(error) { console.error('[VaultSync] automatic sync failed:',error); }
-        finally {this.ticking=false;}
+        finally {this.ticking=false;this.deps.onStateChange?.();}
     }
 }

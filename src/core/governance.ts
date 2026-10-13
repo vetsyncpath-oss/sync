@@ -249,7 +249,7 @@ export async function awaitBeforeSession(
         let onAbort: (() => void) | undefined;
         try {
                 await Promise.race([
-                        Promise.resolve(beforeSession.call(authApi)).catch(() => {
+                        Promise.resolve().then(()=>beforeSession.call(authApi)).catch(() => {
                                 // Ошибка pull-цикла менеджера — не наша проблема:
                                 // вердикт остаётся прежним (см. контракт выше).
                         }),

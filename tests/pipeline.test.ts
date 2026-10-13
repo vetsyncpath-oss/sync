@@ -66,7 +66,7 @@ test('weak remote versions use real applied bytes and incoming copies never adva
   assert.equal(f.store.baseline('test', 'a.md')?.localSha256, baseline.localSha256); assert.equal(f.store.baseline('test', 'a.md')?.remote.hash, 'v2');
 });
 test('applied state repairs a lost legacy checkpoint without redownloading', async () => {
-  const f = fixture([entry('a.md')]); f.cache.flush = async () => { throw new Error('checkpoint disk failure'); };
+  const f = fixture([entry('a.md')]);const flush=f.cache.flush.bind(f.cache);let publications=0; f.cache.flush = async () => { if(++publications===1)return flush();throw new Error('checkpoint disk failure'); };
   assert.equal((await f.coordinator.sync())?.outcome, 'error'); assert.equal(str(f.files.get('a.md')!), 'REMOTE');
   const cache = new ManifestCache(f.memory.fs, 'test'); await cache.load();
   const store = new OperationStore(f.memory.fs); f.deps.cache = cache; f.deps.mutations = new DurableMutations(store, f.recovery, f.vault);
@@ -185,10 +185,10 @@ test('force resync retains the last applied baseline', async () => {
   assert.equal((await f.coordinator.forceResync())?.outcome, 'ok'); assert.equal(f.cache.get('a.md')?.h, entry('a.md').hash);
   assert.deepEqual(f.operations, []);
 });
-test('a no-op with outstanding failures reports attention rather than success', async () => {
+test('a no-op does not attribute a historical failure outside its inventory to this run', async () => {
   const f = fixture(); f.queue.add(entry('gone.md'), 'offline', 0);
-  const result = await f.coordinator.sync(); assert.equal(result?.outcome, 'error'); assert.equal(result?.failed, 1);
-  assert(!f.notices.includes('current')); assert.equal(f.queue.size(), 1);
+  const result = await f.coordinator.sync(); assert.equal(result?.outcome, 'ok'); assert.equal(result?.failed, 0);assert.equal(result?.pendingAfter,0);
+  assert(f.notices.includes('current')); assert.equal(f.queue.size(), 1);
 });
 test('a parked download still prevents unrelated mirror deletion', async () => {
   const f = fixture([entry('a.md')], 'light'); f.own('gone.md');

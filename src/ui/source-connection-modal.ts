@@ -24,6 +24,8 @@ export class SourceConnectionModal extends DraftModal {
             this.providers.set(c.kind, structuredClone(c.values)); c.kind = value as SourceConnection['kind'];
             c.values = structuredClone(this.providers.get(value) ?? (value === 'git' ? { branch: 'default' } : {})); this.render();
         }));
+        field(box,tr('Автосинхронизация этого источника','Automatic sync for this source'),selectInput([
+            ['inherit',tr('Общий интервал','Global interval')],['off',tr('Только вручную','Manual only')],['startup-only',tr('Один раз при запуске','Once at startup')],['15m','15 min'],['30m','30 min'],['1h','1 h'],['2h','2 h']],c.auto??'inherit',value=>c.auto=value as SourceConnection['auto']));
         const descriptor = EngineRegistry.get(c.kind);
         if (descriptor.experimental) box.append(element('p', i18n.t.noticeExperimentalEngine, 'sync-workspace-warning'));
         for (const f of descriptor.settingsSchema) {

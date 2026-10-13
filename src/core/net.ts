@@ -16,6 +16,8 @@ import type { NetRequest, NetResponse, NetTransport } from '../sources/types';
 
 /** Настройки одного вызова NetLayer.fetchBuffer (дизайн §11.1). */
 export interface NetFetchOptions {
+        observe?: import('../sources/types').TransferObserver;
+        maxElapsedMs?: number; maxBytes?: number; method?: string; body?: BodyInit; redirect?: RequestRedirect;
         /** Ожидаемый размер тела, байт: не совпал → ретрай (фикс Б-19). */
         expectedSize?: number;
         /** Сигнал отмены: каскадируется в транспорт и во ВСЕ ожидания (фикс Б-07). */
@@ -45,6 +47,7 @@ export interface NetFetchOptions {
 export class NetError extends Error {
         /** HTTP-статус неудачного ответа, если ответ был. */
         readonly status?: number;
+        readonly code?: string; readonly host?: string;
         /** Номер неудачной попытки, 1-based. */
         readonly attempt?: number;
         readonly retryAfterMs?:number;
@@ -53,10 +56,10 @@ export class NetError extends Error {
         /** true — ожидание rate-limit превысило maxRateLimitWaitMs (сразу, без ретраев). */
         readonly rateLimitExceeded?: boolean;
 
-        constructor(message: string, opts?: { retryAfterMs?:number; status?: number; attempt?: number; aborted?: boolean; rateLimitExceeded?: boolean }) {
+        constructor(message: string, opts?: { code?:string;host?:string;retryAfterMs?:number; status?: number; attempt?: number; aborted?: boolean; rateLimitExceeded?: boolean }) {
                 super(message);
                 this.name = 'NetError';
-                this.status = opts?.status;
+                this.status = opts?.status; this.code=opts?.code;this.host=opts?.host;
                 this.retryAfterMs=opts?.retryAfterMs;
                 this.attempt = opts?.attempt;
                 this.aborted = opts?.aborted;
@@ -147,329 +150,64 @@ function rateLimitWaitMs(response: NetResponse, defaultWaitMs: number): number {
  * прерываемая отмена, проверка размера и магических байт тела.
  */
 export class NetLayer {
-        private readonly transport: NetTransport;
-
-        constructor(transport: NetTransport) {
-                this.transport = transport;
+        constructor(private readonly transport: NetTransport) {}
+        async fetchBuffer(url: string, opts: NetFetchOptions = {}): Promise<ArrayBuffer> {
+                return (await this.fetchBufferConditional(url, opts)).body;
         }
-
-        /**
-         * [W4-T03] Условный GET: если есть etag, шлём `If-None-Match`. На
-         * 304 — не тянем тело (оно пустое), возвращаем notModified=true и
-         * тот же etag. На 200 — забираем тело как обычно, обновляем etag
-         * из response.headers['etag']. Ретраи на 5xx сохраняются (как в
-         * fetchBuffer); 4xx → NetError (как в fetchBuffer).
-         *
-         * Возвращает объект, а не ArrayBuffer, чтобы caller (git-source)
-         * отличал 304 от 200 без инспекции заголовков.
-         */
-        async fetchBufferConditional(url: string, opts?: NetFetchOptions & {
-                ifNoneMatch?: string;
-        }): Promise<{ body: ArrayBuffer; etag: string | null; notModified: boolean; status: number }> {
-                const options = opts ?? {};
-                const retries = options.retries ?? DEFAULT_RETRIES;
-                const backoffs = options.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
-                const rateLimitDefaultWaitMs = options.rateLimitDefaultWaitMs ?? DEFAULT_RATE_LIMIT_WAIT_MS;
-                const signal = options.signal;
-
-                if (retries < 1) {
-                        throw new NetError(`retries must be >= 1, got ${retries}`);
+        async fetchBufferConditional(url: string, opts: NetFetchOptions & {ifNoneMatch?: string} = {}): Promise<{body:ArrayBuffer;etag:string|null;notModified:boolean;status:number}> {
+                const retries=opts.retries??DEFAULT_RETRIES, backoffs=opts.retryBackoffMs??DEFAULT_RETRY_BACKOFF_MS, signal=opts.signal;
+                if(!Number.isSafeInteger(retries)||retries<1)throw new NetError('retries must be >= 1');
+                const headers={...opts.headers,...(opts.ifNoneMatch?{'if-none-match':opts.ifNoneMatch}:{})};
+                const started=Date.now(), host=new URL(url).host;
+                const wait=async(ms:number,attempt:number,status?:number)=>{
+                        const remaining=(opts.maxElapsedMs??120_000)-(Date.now()-started);
+                        if(ms>remaining)throw new NetError('Retry deferred: request wait budget exhausted',{code:status===429?'rate-limit':'network',status,attempt,retryAfterMs:ms,host});
+                        opts.observe?.({stage:'waiting',attempt,maxAttempts:retries,retryAt:Date.now()+ms,status,host});
+                        await sleepInterruptible(ms,signal);
+                };
+                for(let attempt=1;attempt<=retries;attempt++) {
+                        if(signal?.aborted)throw new NetError('Request cancelled',{aborted:true,attempt,host});
+                        opts.observe?.({stage:'download',attempt,maxAttempts:retries,bytes:0,host});
+                        let response:NetResponse;
+                        try { response=await this.transport.fetch(url,{method:opts.method,body:opts.body,redirect:opts.redirect,headers,signal,maxBytes:opts.maxBytes??(opts.expectedSize===undefined?undefined:Math.max(opts.expectedSize+1024,Math.ceil(opts.expectedSize*1.1))),observe:event=>opts.observe?.({...event,attempt,maxAttempts:retries,host:event.host??host})}); }
+                        catch(error) {
+                                if(signal?.aborted)throw new NetError('Request cancelled',{aborted:true,attempt,host});
+                                const code=(error as {code?:string})?.code??((error as Error)?.name==='RequestTimeoutError'?'timeout':'network');
+                                if(code==='file-too-large'||code==='redirect-policy'||attempt===retries)throw new NetError(`network error after ${attempt} attempt(s): ${errText(error)}`,{attempt,code,host});
+                                await wait(backoffFor(backoffs,attempt),attempt);continue;
+                        }
+                        const status=response.status, discard=()=>{try{response.discard?.();}catch{/* release best effort */}};
+                        const custom=status===429?null:opts.classifyRateLimit?.(status,response.headers)??null;
+                        if(status===429||custom!==null) {
+                                const ms=status===429?rateLimitWaitMs(response,opts.rateLimitDefaultWaitMs??DEFAULT_RATE_LIMIT_WAIT_MS):custom!;
+                                discard();
+                                if(opts.maxRateLimitWaitMs!==undefined&&ms>opts.maxRateLimitWaitMs)throw new NetError(`rate limit wait ${ms}ms exceeds cap ${opts.maxRateLimitWaitMs}ms`,{status,attempt,rateLimitExceeded:true,retryAfterMs:ms,host,code:'rate-limit'});
+                                opts.onRateLimitWait?.(ms,attempt);
+                                if(attempt===retries)throw new NetError(`rate limit (HTTP ${status}) persisted after ${attempt} attempt(s)`,{status,attempt,retryAfterMs:ms,host,code:'rate-limit'});
+                                await wait(ms,attempt,status);continue;
+                        }
+                        if(status>=500||status===408) {
+                                discard();if(attempt===retries)throw new NetError(`server error (HTTP ${status}) after ${attempt} attempt(s)`,{status,attempt,host});
+                                await wait(backoffFor(backoffs,attempt),attempt,status);continue;
+                        }
+                        if(status>=400) {discard();throw new NetError(`HTTP ${status} for ${urlForLog(url)}`,{status,attempt,host});}
+                        if(status===304) {discard();return {body:new ArrayBuffer(0),etag:opts.ifNoneMatch??null,notModified:true,status};}
+                        if(status>=300) {discard();throw new NetError('Unexpected redirect response',{status,attempt,host,code:'redirect-policy'});}
+                        let body:ArrayBuffer;
+                        try {body=await response.arrayBuffer();}
+                        catch(error) {
+                                if(signal?.aborted)throw new NetError('Cancelled while reading body',{aborted:true,attempt,host});
+                                const code=(error as {code?:string})?.code??((error as Error)?.name==='RequestTimeoutError'?'timeout':'network');
+                                if(code==='file-too-large'||attempt===retries)throw new NetError(`failed to read body after ${attempt} attempt(s): ${errText(error)}`,{attempt,host,code});
+                                await wait(backoffFor(backoffs,attempt),attempt);continue;
+                        }
+                        if(opts.expectedSize!==undefined&&body.byteLength!==opts.expectedSize) {
+                                if(attempt===retries)throw new NetError(`size mismatch: expected ${opts.expectedSize} bytes, received ${body.byteLength}`,{attempt,host,code:'integrity'});
+                                await wait(backoffFor(backoffs,attempt),attempt);continue;
+                        }
+                        if(opts.validateMagic&&!opts.validateMagic(new Uint8Array(body,0,Math.min(MAGIC_BYTES_LIMIT,body.byteLength))))throw new NetError('magic-byte check failed: unexpected response format',{status,attempt,host,code:'response-format'});
+                        return {body,etag:response.headers.etag??null,notModified:false,status};
                 }
-
-                // If-None-Match добавляется в заголовки (не перетирая caller'ские).
-                const headers: Record<string, string> = { ...options.headers };
-                if (options.ifNoneMatch) {
-                        headers['if-none-match'] = options.ifNoneMatch;
-                }
-
-                for (let attempt = 1; attempt <= retries; attempt++) {
-                        if (signal?.aborted) {
-                                throw new NetError(`aborted before attempt ${attempt}`, { aborted: true });
-                        }
-                        let response: NetResponse;
-                        try {
-                                response = await this.transport.fetch(url, { headers, signal });
-                        } catch (err) {
-                                if (signal?.aborted) {
-                                        throw new NetError(`aborted during fetch: ${errText(err)}`, {
-                                                aborted: true, attempt,
-                                        });
-                                }
-                                if (attempt >= retries) {
-                                        throw new NetError(`network error after ${attempt} attempt(s): ${errText(err)}`, { attempt });
-                                }
-                                await sleepInterruptible(backoffFor(backoffs, attempt), signal);
-                                continue;
-                        }
-
-                        const status = response.status;
-                        // [overhaul S3/M-12] ветки, где тело НЕ потребляется — явный
-                        // discard (снятие body-таймера и abort-листенера транспорта);
-                        // раньше они удерживались до bodyTimeout (до 5 мин) на КАЖДОЙ
-                        // retry-попытке. 2xx-ветка читает тело — там finish срабатывает
-                        // сам (guarded в транспорте).
-                        const discardBody = (): void => {
-                                try { response.discard?.(); } catch { /* best-effort */ }
-                        };
-
-                        // Rate-limit (429 или кастомная классификация).
-                        const customRateWait = status === 429
-                                ? null
-                                : (options.classifyRateLimit ? options.classifyRateLimit(status, response.headers) : null);
-                        if (status === 429 || customRateWait !== null) {
-                                const waitMs = status === 429
-                                        ? rateLimitWaitMs(response, rateLimitDefaultWaitMs)
-                                        : (customRateWait as number);
-                                if (options.maxRateLimitWaitMs !== undefined && waitMs > options.maxRateLimitWaitMs) {
-                                        discardBody();
-                                        throw new NetError(
-                                                `rate limit wait ${waitMs}ms exceeds cap ${options.maxRateLimitWaitMs}ms`,
-                                                { status, attempt, rateLimitExceeded: true, retryAfterMs:waitMs }
-                                        );
-                                }
-                                if (attempt >= retries) {
-                                        discardBody();
-                                        throw new NetError(`rate limit (HTTP ${status}) persisted after ${attempt} attempt(s)`, {
-                                                retryAfterMs:waitMs, status, attempt,
-                                        });
-                                }
-                                options.onRateLimitWait?.(waitMs, attempt);
-                                discardBody();
-                                await sleepInterruptible(waitMs, signal);
-                                continue;
-                        }
-
-                        if (status >= 500 || status === 408) {
-                                if (attempt >= retries) {
-                                        discardBody();
-                                        throw new NetError(`server error (HTTP ${status}) after ${attempt} attempt(s)`, {
-                                                status, attempt,
-                                        });
-                                }
-                                discardBody();
-                                await sleepInterruptible(backoffFor(backoffs, attempt), signal);
-                                continue;
-                        }
-
-                        if (status >= 400) {
-                                discardBody();
-                                throw new NetError(`HTTP ${status} for ${urlForLog(url)} (client error, not retryable)`, { status });
-                        }
-
-                        // 304 — not modified: etag прежний, тело пустое, notModified=true.
-                        if (status === 304) {
-                                discardBody();
-                                return {
-                                        body: new ArrayBuffer(0),
-                                        etag: options.ifNoneMatch ?? null,
-                                        notModified: true,
-                                        status,
-                                };
-                                // NB: validateMagic/expectedSize к 304 не применяются —
-                                // тела нет по определению.
-                        }
-
-                        // 2xx (включая 200): забираем тело, проверки размера/магии.
-                        let body: ArrayBuffer;
-                        try {
-                                body = await response.arrayBuffer();
-                        } catch (err) {
-                                if (signal?.aborted) {
-                                        throw new NetError(`aborted while reading body: ${errText(err)}`, {
-                                                aborted: true, attempt,
-                                        });
-                                }
-                                if (attempt >= retries) {
-                                        throw new NetError(`failed to read body after ${attempt} attempt(s): ${errText(err)}`, { attempt });
-                                }
-                                await sleepInterruptible(backoffFor(backoffs, attempt), signal);
-                                continue;
-                        }
-                        if (options.expectedSize !== undefined && body.byteLength !== options.expectedSize) {
-                                if (attempt >= retries) {
-                                        throw new NetError(
-                                                `size mismatch: expected ${options.expectedSize} bytes, received ${body.byteLength}`,
-                                                { attempt }
-                                        );
-                                }
-                                await sleepInterruptible(backoffFor(backoffs, attempt), signal);
-                                continue;
-                        }
-                        if (options.validateMagic) {
-                                const n = Math.min(MAGIC_BYTES_LIMIT, body.byteLength);
-                                const firstBytes = new Uint8Array(body, 0, n);
-                                if (!options.validateMagic(firstBytes)) {
-                                        throw new NetError(
-                                                `magic-byte check failed (HTTP ${status}, first ${n} byte(s)): body does not look like expected binary format`,
-                                                { status, attempt }
-                                        );
-                                }
-                        }
-
-                        return {
-                                body,
-                                etag: response.headers['etag'] ?? null,
-                                notModified: false,
-                                status,
-                        };
-                }
-                throw new NetError('retries exhausted without result');
-        }
-
-        async fetchBuffer(url: string, opts?: NetFetchOptions): Promise<ArrayBuffer> {
-                const options = opts ?? {};
-                const retries = options.retries ?? DEFAULT_RETRIES;
-                const backoffs = options.retryBackoffMs ?? DEFAULT_RETRY_BACKOFF_MS;
-                const rateLimitDefaultWaitMs = options.rateLimitDefaultWaitMs ?? DEFAULT_RATE_LIMIT_WAIT_MS;
-                const signal = options.signal;
-
-                if (retries < 1) {
-                        throw new NetError(`retries must be >= 1, got ${retries}`);
-                }
-
-                for (let attempt = 1; attempt <= retries; attempt++) {
-                        // Отмена до начала попытки (включая самую первую — semantics п.6).
-                        if (signal?.aborted) {
-                                throw new NetError(`aborted before attempt ${attempt}`, { aborted: true });
-                        }
-
-                        let response: NetResponse;
-                        try {
-                                response = await this.transport.fetch(url, {
-                                        headers: options.headers,
-                                        signal,
-                                });
-                        } catch (err) {
-                                // Отмена во время активного запроса: транспорт бросил по signal —
-                                // это НЕ сетевой сбой, ретраить нельзя (semantics п.8).
-                                if (signal?.aborted) {
-                                        throw new NetError(`aborted during fetch: ${errText(err)}`, {
-                                                aborted: true,
-                                                attempt,
-                                        });
-                                }
-                                // Сетевая ошибка — ретрайable с бэкоффом.
-                                if (attempt >= retries) {
-                                        throw new NetError(`network error after ${attempt} attempt(s): ${errText(err)}`, {
-                                                attempt,
-                                        });
-                                }
-                                await sleepInterruptible(backoffFor(backoffs, attempt), signal);
-                                continue;
-                        }
-
-                        const status = response.status;
-                        // [overhaul S3/M-12] непотреблённые тела — явный discard (см. fetchBuffer).
-                        const discardBody = (): void => {
-                                try { response.discard?.(); } catch { /* best-effort */ }
-                        };
-
-                        // Rate-limit: явный 429 ИЛИ кастомная классификация не-429 статуса
-                        // (ревью 3-review: GitHub 403 + X-RateLimit-Remaining: 0 — старый код
-                        // ждал по X-RateLimit-Reset; паритет поведения восстановлен).
-                        // Ожидание ПРЕРЫВАЕМО отменой (фикс Б-07); лимит попыток распространяется
-                        // и на rate-limit — вечное ожидание не зацикливает.
-                        const customRateWait = status === 429
-                                ? null
-                                : (options.classifyRateLimit ? options.classifyRateLimit(status, response.headers) : null);
-                        if (status === 429 || customRateWait !== null) {
-                                const waitMs = status === 429
-                                        ? rateLimitWaitMs(response, rateLimitDefaultWaitMs)
-                                        : (customRateWait as number);
-                                // Слишком долгое ожидание — сразу отказ, без ретраев
-                                // (паритет errRateLimitExceedsHour старого кода).
-                                if (options.maxRateLimitWaitMs !== undefined && waitMs > options.maxRateLimitWaitMs) {
-                                        discardBody();
-                                        throw new NetError(
-                                                `rate limit wait ${waitMs}ms exceeds cap ${options.maxRateLimitWaitMs}ms`,
-                                                { status, attempt, rateLimitExceeded: true, retryAfterMs:waitMs }
-                                        );
-                                }
-                                if (attempt >= retries) {
-                                        discardBody();
-                                        throw new NetError(`rate limit (HTTP ${status}) persisted after ${attempt} attempt(s)`, {
-                                                retryAfterMs:waitMs, status,
-                                                attempt,
-                                        });
-                                }
-                                options.onRateLimitWait?.(waitMs, attempt);
-                                discardBody();
-                                await sleepInterruptible(waitMs, signal);
-                                continue;
-                        }
-
-                        // 5xx — серверный сбой, ретраится с бэкоффом.
-                        if (status >= 500 || status === 408) {
-                                if (attempt >= retries) {
-                                        discardBody();
-                                        throw new NetError(`server error (HTTP ${status}) after ${attempt} attempt(s)`, {
-                                                status,
-                                                attempt,
-                                        });
-                                }
-                                discardBody();
-                                await sleepInterruptible(backoffFor(backoffs, attempt), signal);
-                                continue;
-                        }
-
-                        // Прочие 4xx (403, 404, …) — НЕ ретраятся (semantics п.3).
-                        if (status >= 400) {
-                                discardBody();
-                                throw new NetError(`HTTP ${status} for ${urlForLog(url)} (client error, not retryable)`, { status });
-                        }
-
-                        // 2xx (3xx не обрабатываются — semantics п.7: редиректы на совести
-                        // транспорта; сюда 3xx может попасть только как «протечка» и
-                        // проходит те же проверки тела, что и 2xx).
-
-                        let body: ArrayBuffer;
-                        try {
-                                body = await response.arrayBuffer();
-                        } catch (err) {
-                                if (signal?.aborted) {
-                                        throw new NetError(`aborted while reading body: ${errText(err)}`, {
-                                                aborted: true,
-                                                attempt,
-                                        });
-                                }
-                                if (attempt >= retries) {
-                                        throw new NetError(`failed to read body after ${attempt} attempt(s): ${errText(err)}`, {
-                                                attempt,
-                                        });
-                                }
-                                await sleepInterruptible(backoffFor(backoffs, attempt), signal);
-                                continue;
-                        }
-
-                        // Размер: усечение лечится повторной загрузкой (фикс Б-19).
-                        if (options.expectedSize !== undefined && body.byteLength !== options.expectedSize) {
-                                if (attempt >= retries) {
-                                        throw new NetError(
-                                                `size mismatch: expected ${options.expectedSize} bytes, received ${body.byteLength}`,
-                                                { attempt }
-                                        );
-                                }
-                                await sleepInterruptible(backoffFor(backoffs, attempt), signal);
-                                continue;
-                        }
-
-                        // Магические байты: HTML-заглушка вместо бинарника — ошибка СРАЗУ,
-                        // без ретрая: сервер честно вернул «не то», повтор бессмысленен.
-                        if (options.validateMagic) {
-                                const n = Math.min(MAGIC_BYTES_LIMIT, body.byteLength);
-                                const firstBytes = new Uint8Array(body, 0, n);
-                                if (!options.validateMagic(firstBytes)) {
-                                        throw new NetError(
-                                                `magic-byte check failed (HTTP ${status}, first ${n} byte(s)): body does not look like expected binary format`,
-                                                { status, attempt }
-                                        );
-                                }
-                        }
-
-                        return body;
-                }
-
-                // Недостижимо при retries >= 1: последняя попытка всегда бросает или возвращает тело.
                 throw new NetError('retries exhausted without result');
         }
 }

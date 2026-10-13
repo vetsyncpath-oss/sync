@@ -1,3 +1,5 @@
+import { NetLayer } from '../core/net';
+import type { TransferObserver } from './types';
 // ============================================================
 // --- SOURCES/WEBDAV-SOURCE (W6-T05) ---
 // Нативный WebDAV движок: PROPFIND + GET для self-hosted vault
@@ -177,6 +179,7 @@ export class WebDavSource implements SyncSource {
 
         private readonly config: () => { baseUrl: string; username: string; password: string; rootPath?: string };
         private readonly transport: NetTransport;
+        private manifestObserve?:TransferObserver;
         private readonly messages: WebDavSourceMessages;
         private readonly requestTimeoutMs: number;
 
@@ -193,7 +196,8 @@ export class WebDavSource implements SyncSource {
                 this.transport = opts.transport ?? new FetchTransport({ timeoutMs: this.requestTimeoutMs });
         }
 
-        async getManifest(signal: AbortSignal): Promise<RemoteEntry[]> {
+        async getManifest(signal: AbortSignal,observe?:TransferObserver): Promise<RemoteEntry[]> {
+                this.manifestObserve=event=>observe?.({...event,stage:event.stage==='waiting'?'waiting':'manifest',bytes:undefined,totalBytes:undefined,byteDelta:undefined});
                 if (signal.aborted) throw abortedError();
                 const { baseUrl, username, password: _password, rootPath } = this.config();
                 if (!baseUrl.trim() || (_password && !username.trim())) throw new Error(this.messages.credentialsMissing());
@@ -281,7 +285,7 @@ export class WebDavSource implements SyncSource {
                 return entries;
         }
 
-        async fetch(entry: RemoteEntry, signal: AbortSignal): Promise<ArrayBuffer> {
+        async fetch(entry: RemoteEntry, signal: AbortSignal, observe?: TransferObserver): Promise<ArrayBuffer> {
                 if (signal.aborted) throw abortedError();
                 const cached = this.pathToMeta.get(entry.path);
                 if (!cached) {
@@ -290,7 +294,7 @@ export class WebDavSource implements SyncSource {
                 const headers: Record<string, string> = { 'accept': 'application/octet-stream' };
                 this.applyAuth(headers);
                 if (cached.etag && !/^W\//i.test(cached.etag)) headers['if-match'] = cached.etag;
-                const buffer = await this.fetchWithRetry(cached.fullPath, 'GET', headers, undefined, signal);
+                const buffer = await this.fetchWithRetry(cached.fullPath, 'GET', headers, undefined, signal, observe, entry.size);
                 if (buffer.byteLength !== entry.size) {
                         throw new Error(`WebDAV: size mismatch for ${entry.path}: ${buffer.byteLength} != ${entry.size}`);
                 }
@@ -336,51 +340,9 @@ export class WebDavSource implements SyncSource {
          * (WebDAV редко отдаёт Retry-After); ретраим 5xx/429/503 с экспоненциальным
          * бэкоффом. 4xx — fail-fast (клиентская ошибка).
          */
-        private async fetchWithRetry(
-                url: string,
-                method: string,
-                headers: Record<string, string>,
-                body: string | undefined,
-                signal: AbortSignal,
-        ): Promise<ArrayBuffer> {
-                let lastError: unknown = null;
-                for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
-                        if (signal.aborted) throw abortedError();
-                        if (attempt > 1) {
-                                const idx = Math.min(attempt - 2, RETRY_BACKOFF_MS.length - 1);
-                                await sleep(RETRY_BACKOFF_MS[idx], signal);
-                        }
-                        try {
-                                const req: NetRequest = { method, headers, body: body as BodyInit, signal, redirect: 'error' };
-                                const res: NetResponse = await this.transport.fetch(url, req);
-                                const status = res.status;
-                                // [overhaul S4 / S3-review #1] discard-паритет с NetLayer: ветки,
-                                // где тело не читается, обязаны снимать таймеры/листенеры
-                                // транспорта (до bodyTimeout = 5 мин на КАЖДОЙ retry-попытке).
-                                const discardBody = (): void => {
-                                        try { res.discard?.(); } catch { /* best-effort */ }
-                                };
-                                if (status === 404) {
-                                        discardBody();
-                                        throw new WebDavError(404, this.messages.fileNotFound(urlForLog(url)));
-                                }
-                                if (status !== (method === 'PROPFIND' ? 207 : 200)) {
-                                        discardBody();
-                                        throw new WebDavError(status, `${method} HTTP ${status}`);
-                                }
-                                return await res.arrayBuffer();
-                        } catch (e: any) {
-                                lastError = e;
-                                if (signal.aborted) throw abortedError();
-                                // 4xx (кроме 429) — не ретраим
-                                if (e instanceof WebDavError && !isRetryableStatus(e.status)) {
-                                        if (e.status === 404) throw e;
-                                        throw new Error(this.messagesFor(method, e.status));
-                                }
-                                // 5xx/429/503 — ретраим, если есть ещё попытки
-                        }
-                }
-                throw lastError;
+        private async fetchWithRetry(url:string,method:string,headers:Record<string,string>,body:string|undefined,signal:AbortSignal,observe?:TransferObserver,expectedSize?:number):Promise<ArrayBuffer> {
+                try {return await new NetLayer(this.transport).fetchBuffer(url,{method,headers,body,signal,observe:observe??(method==='PROPFIND'?this.manifestObserve:undefined),expectedSize,redirect:'error',retries:MAX_RETRY_ATTEMPTS,retryBackoffMs:RETRY_BACKOFF_MS});}
+                catch(error){if((error as {status?:number}).status)(error as Error).message=this.messagesFor(method,(error as {status:number}).status);throw error;}
         }
 
         private messagesFor(method: string, status: number): string {

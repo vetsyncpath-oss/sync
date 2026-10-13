@@ -8,7 +8,7 @@ export interface SyncProfile {
     source?: string; builtin?: boolean;
 }
 export interface ProfileAssignment { scope: FileRule['scope']; path: string; names?: string[]; profileId?: string; source?: string; remotePath?: string }
-export interface SourceConnection { id: string; name: string; kind: SyncSource['kind']; values: Record<string, unknown> }
+export interface SourceConnection { auto?: 'inherit' | import('./scheduler').SchedulerInterval; id: string; name: string; kind: SyncSource['kind']; values: Record<string, unknown> }
 export function participatingSources(policy: SyncPolicy): string[] {
     const rules=policy.fileRules??[];
     const ids=new Set(rules.flatMap(rule=>rule.source?[rule.source]:[]));
@@ -27,6 +27,7 @@ export function validateProfiles(profiles: readonly SyncProfile[], connections: 
     for (const c of connections) {
         if (!c.id || c.id === 'primary' || ids.has(c.id) || !c.name.trim() || !['git','yandex','zip-url','gdrive','webdav'].includes(c.kind)
             || !c.values || typeof c.values !== 'object' || Array.isArray(c.values)) throw new Error('Invalid source connection');
+        if(c.auto!==undefined&&!['inherit','off','startup-only','15m','30m','1h','2h'].includes(c.auto))throw Error('Invalid source schedule');
         ids.add(c.id);
     }
     const sources = ids; const seen = new Set<string>();

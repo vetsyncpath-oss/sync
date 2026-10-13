@@ -1,3 +1,5 @@
+import { diagnosticText } from './sync-issue';
+import type { SyncIssue } from '../sources/types';
 // src/core/journal.ts — журнал сессий синхронизации [W2-T08].
 //
 // Канон: решения Д7=1 («единый журнал на обе поверхности: popover-модалка
@@ -41,6 +43,9 @@ export type JournalOutcome = 'ok' | 'cancelled' | 'error';
 
 /** Одна завершённая сессия синхронизации (сериализуется в JSON как есть). */
 export interface JournalEntry {
+        trace?:import('../sources/types').SyncStats['trace'];traceDropped?:number;
+        sessionId?:string;build?:string;platform?:string;
+        pendingBefore?:number;pendingAfter?:number;retryScheduled?:number;blocked?:number;notAttempted?:number;networkBytes?:number;problems?:SyncIssue[];
         sources?: string[];
         profilesMode?: boolean;
         received?: number;
@@ -83,6 +88,7 @@ export interface JournalEntry {
  * read() → null означает «файла ещё нет» (первый запуск — норма, НЕ warn).
  */
 export interface JournalIo {
+        quarantine?(raw:string):Promise<void>;
         read(): Promise<string | null>;
         write(s: string): Promise<void>;
 }
@@ -97,7 +103,7 @@ export interface JournalStore {
 }
 
 /** Ёмкость кольца: сколько последних сессий храним (спека §7: 50). */
-export const JOURNAL_LIMIT = 50;
+export const JOURNAL_LIMIT = 200;
 
 /** Допустимые значения enum-полей при чтении (защита от битых файлов). */
 const TRIGGERS: ReadonlySet<string> = new Set(['manual', 'auto', 'retry', 'scan', 'force']);
@@ -130,6 +136,10 @@ function coerceEntry(raw: unknown): JournalEntry | null {
                 }
         }
         return {
+                trace:Array.isArray(r.trace)?r.trace.filter(event=>!!event&&typeof event==='object'&&typeof event.stage==='string'&&Number.isFinite(event.at)).slice(-500):undefined,traceDropped:num(r.traceDropped),
+                sessionId:typeof r.sessionId==='string'?r.sessionId:undefined,build:typeof r.build==='string'?r.build:undefined,platform:typeof r.platform==='string'?r.platform:undefined,
+                pendingBefore:num(r.pendingBefore),pendingAfter:num(r.pendingAfter),retryScheduled:num(r.retryScheduled),blocked:num(r.blocked),notAttempted:num(r.notAttempted),networkBytes:num(r.networkBytes),
+                problems:Array.isArray(r.problems)?r.problems.filter((v):v is SyncIssue=>!!v&&typeof v==='object'&&typeof v.message==='string'&&typeof v.code==='string').slice(0,20):undefined,
                 sources:Array.isArray(r.sources)?r.sources.filter((value):value is string=>typeof value==='string').slice(0,100):undefined,
                 profilesMode:r.profilesMode===true,
                 received:num(r.received),deferredConflicts:num(r.deferredConflicts),
@@ -168,17 +178,20 @@ function coerceEntry(raw: unknown): JournalEntry | null {
  */
 export class FileJournal implements JournalStore {
         private readonly io: JournalIo;
+        private corruptRaw?:string;
+        private readFailed=false;
+        private chain:Promise<void>=Promise.resolve();
 
         constructor(io: JournalIo) {
                 this.io = io;
         }
 
         async load(): Promise<JournalEntry[]> {
-                let raw: string | null;
+                let raw: string | null;this.readFailed=false;this.corruptRaw=undefined;
                 try {
                         raw = await this.io.read();
                 } catch (e: unknown) {
-                        console.warn('[VaultSync] journal: read failed, treating as empty', e);
+                        this.readFailed=true;console.warn('[VaultSync] journal: read failed; existing file retained', e);
                         return [];
                 }
                 // null = файла ещё нет (первый запуск) — норма, без warn.
@@ -187,16 +200,16 @@ export class FileJournal implements JournalStore {
                 try {
                         parsed = JSON.parse(raw);
                 } catch (e: unknown) {
-                        console.warn('[VaultSync] journal: broken JSON, treating as empty', e);
+                        this.corruptRaw=raw;console.warn('[VaultSync] journal: broken JSON; preserve before publication', e);
                         return [];
                 }
                 if (!Array.isArray(parsed)) {
-                        console.warn('[VaultSync] journal: unexpected format (not an array), treating as empty');
+                        this.corruptRaw=raw;console.warn('[VaultSync] journal: unexpected format; existing file retained');
                         return [];
                 }
                 const entries = parsed.map(coerceEntry).filter((e): e is JournalEntry => e !== null);
                 if (entries.length !== parsed.length) {
-                        console.warn(`[VaultSync] journal: dropped ${parsed.length - entries.length} invalid entries`);
+                        this.corruptRaw=raw;console.warn(`[VaultSync] journal: dropped ${parsed.length - entries.length} invalid entries`);
                 }
                 // Инвариант кольца держим и на чтении: файл мог быть написан
                 // вручную или старой версией с большей ёмкостью — лишнее снизу.
@@ -204,13 +217,14 @@ export class FileJournal implements JournalStore {
         }
 
         async append(entry: JournalEntry): Promise<void> {
-                // Битый файл → load() уже отработал warn'ом и вернул []: эта
-                // запись «лечит» файл, перезаписывая его начисто.
-                const prev = await this.load();
-                const next = [entry, ...prev].slice(0, JOURNAL_LIMIT);
-                // Ошибка записи ПРОБРАСЫВАЕТСЯ (см. контракт класса). Единственный
-                // бросок журнала — намеренно: main решает, как реагировать.
-                await this.io.write(JSON.stringify(next));
+                const work=this.chain.then(async()=>{
+                        const prev=await this.load();
+                        if(this.readFailed)throw Error('Journal is unreadable; refusing to replace diagnostic history');
+                        if(this.corruptRaw!==undefined){if(!this.io.quarantine)throw Error('Journal is corrupt; diagnostic backup is required');await this.io.quarantine(this.corruptRaw);}
+                        const next=[entry,...prev].slice(0,JOURNAL_LIMIT);
+                        while(next.length>1&&JSON.stringify(next).length>8*1024*1024)next.pop();
+                        await this.io.write(JSON.stringify(next));
+                });this.chain=work.catch(()=>{});return work;
         }
 
         async clear(): Promise<void> {

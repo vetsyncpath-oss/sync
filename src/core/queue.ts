@@ -68,15 +68,17 @@ export class FailedQueue {
          * Паркинг идемпотентен: повторные add() на parked-запись не растят
          * retryCount дальше потолка и не снимают паркинг.
          */
-        add(f: { path: string; hash: string; size: number }, reason: string, now: number, failureKind?:'transient'|'blocked',minimumDelayMs=0): void {
+        add(f: { path: string; hash: string; size: number }, reason: string, now: number, failureKind?:'transient'|'blocked',minimumDelayMs=0,issue?:import('../sources/types').SyncIssue): void {
                 const existing = this.entries.get(f.path);
                 if(failureKind){
-                        const retryCount=Math.min((existing?.retryCount??-1)+1,30);
+                        const changed=existing?.hash!==f.hash;
+                        const retryCount=Math.min((changed?-1:existing?.retryCount??-1)+1,this.maxRetries);
+                        const poisoned=failureKind==='blocked'||retryCount>=this.maxRetries;
                         const delays=[60_000,300_000,900_000,3_600_000,21_600_000];
                         const delay=delays[Math.min(retryCount,delays.length-1)]*(1+Math.random()*0.2);
-                        this.entries.set(f.path,{...f,reason,timestamp:now,retryCount,failureKind,
-                                nextRetryAt:failureKind==='blocked'?Number.MAX_SAFE_INTEGER:now+Math.max(Math.round(delay),Number.isFinite(minimumDelayMs)?Math.max(0,minimumDelayMs):0),
-                                poisoned:failureKind==='blocked'});
+                        this.entries.set(f.path,{...f,reason,timestamp:now,retryCount,failureKind,issue,
+                                nextRetryAt:poisoned?Number.MAX_SAFE_INTEGER:now+Math.max(Math.round(delay),Number.isFinite(minimumDelayMs)?Math.max(0,minimumDelayMs):0),
+                                poisoned});
                         return;
                 }
 
@@ -99,7 +101,7 @@ export class FailedQueue {
                         if (poisoned && existing.poisoned !== true) {
                                 console.warn(
                                         `[VaultSync] retry cap (${this.maxRetries}) reached for "${f.path}": ` +
-                                                `${reason} — attempts parked; use Force Resync or clear the failed queue`,
+                                                `${reason} — attempts parked; use targeted Retry after fixing the cause`,
                                 );
                         }
                 } else {
@@ -161,7 +163,7 @@ export class FailedQueue {
 
         /** Снимок (глубокая копия записей) всех элементов очереди. */
         all(): FailedFile[] {
-                return [...this.entries.values()].map((e) => ({ ...e }));
+                return structuredClone([...this.entries.values()]);
         }
 
         /**

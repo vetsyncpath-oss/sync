@@ -1,3 +1,6 @@
+import { NodeHttpTransport, BufferedHostTransport } from './src/adapters/host-transport';
+import { SyncFault, diagnosticText } from './src/core/sync-issue';
+import type { SyncProgress } from './src/sources/types';
 import { sessionLabel } from './src/ui/session-label';
 import { connectionIssues, connectionValues } from './src/engines/connection-validation';
 import { RecoveryModal } from './src/ui/recovery-modal';
@@ -153,6 +156,8 @@ interface GitSyncSettings {
         profiles?: SyncProfile[];
         connections?: SourceConnection[];
         failedQueues?: Record<string, FailedFile[]>;
+        maxPayloadMiB?:number;recoveryLimitMiB?:number;historyLimit?:number;
+        sourceCircuits?:Record<string,{retryAt:number;failures:number}>;
         repoUrl: string;
         accessToken: string;
         branch: string;
@@ -315,6 +320,7 @@ class StatusBarManager {
                 phase?: number;
                 attention?:'deletions'|'conflicts';fileIndex?:number;fileTotal?:number;currentPath?:string;
         }) {
+                if(options?.phase!==undefined&&options.phase!==this.pipelinePhase){this.bytesTransferred=0;this.totalBytes=0;}
                 this.state = state;
                 this.attention=options?.attention;
                 if(options?.fileIndex!==undefined)this.fileIndex=options.fileIndex;
@@ -555,7 +561,9 @@ async function showConfirmModal(
         flow: ConfirmFlow,
         sections: ConfirmSections,
         engine: string,
+        signal?:AbortSignal,
 ): Promise<boolean> {
+        if(signal?.aborted)return false;
         const modal = new Modal(app);
         const view = new ConfirmModalView({
                 contentEl: modal.contentEl,
@@ -568,7 +576,9 @@ async function showConfirmModal(
         modal.onOpen = () => view.render();
         // Esc/фон: трактуем как cancel. После proceed/cancel-клика флаг
         // view.resolved уже выставлен — повторный вызов close() игнор.
-        modal.onClose = () => view.close();
+        const abort=()=>modal.close();
+        signal?.addEventListener('abort',abort,{once:true});
+        modal.onClose = () => {signal?.removeEventListener('abort',abort);view.close();};
         trackModal(modal); // [overhaul S3/M-18]
         modal.open();
         return view.waitForResult();
@@ -718,18 +728,26 @@ export default class GitSyncPlugin extends Plugin {
 
         // [3-review] Б-21 на уровне интеграции: ask-модалки строго по одной
         private askChain: Promise<unknown> = Promise.resolve();
+        private sessionProgress?:SyncProgress;
+        private hostTransportLimit=0;
+        private autoPaused=false;
+        private autoBlockedReason?:string;
+        private hostTransport?:import('./src/sources/types').NetTransport;
+        private autoSchedulers=new Map<string,Scheduler>();
 
         // [W1-T03/BUG-17] возврат сети больше не затирает error слепым 'idle':
         // при непустой failed-очереди показываем 'error' + pendingCount.
         // queue создаётся в buildEngine() позже onload — отсюда optional-chaining.
         private onlineHandler = () => {
+                this.wakeAutoSync();
+                if(this.sessionOwned||this.coordinator?.isRunning())return;
                 const r = reconnectStatus(this.queue?.size() ?? 0);
                 this.statusBar.setState(r.state, r.state === 'error' ? { pendingCount: r.pendingCount } : undefined);
         };
-        private offlineHandler = () => this.statusBar.setState('offline');
+        private offlineHandler = () => {if(!this.sessionOwned&&!this.coordinator?.isRunning())this.statusBar.setState('offline');};
         private focusHandler = () => {
                 this.statusBar.setLastSync(this.settings.lastSyncTime);
-                this.statusBar.refresh();
+                this.statusBar.refresh();this.wakeAutoSync();this.popoverView?.update(this.snapshotPopoverState());
         };
 
         async onload() {
@@ -845,8 +863,8 @@ export default class GitSyncPlugin extends Plugin {
 
                 this.registerInterval(window.setInterval(() => {
                         this.statusBar.setLastSync(this.settings.lastSyncTime);
-                        this.statusBar.refresh();
-                }, 60000));
+                        this.statusBar.refresh();this.popoverView?.update(this.snapshotPopoverState());
+                }, 1000));
 
                 window.addEventListener('online', this.onlineHandler);
                 window.addEventListener('offline', this.offlineHandler);
@@ -869,7 +887,7 @@ export default class GitSyncPlugin extends Plugin {
                 window.removeEventListener('offline', this.offlineHandler);
                 window.removeEventListener('focus', this.focusHandler);
                 this.coordinator?.cancel();
-                this.scheduler?.stop();
+                for(const scheduler of this.autoSchedulers.values())scheduler.stop();
                 // [W6-T01] Принудительный release ZIP-сессии (минуя TTL): tmp-файл
                 // вычищается немедленно при выгрузке плагина, не дожидаясь
                 // истечения 5-мин аренды. forceDispose идемпотентен — безопасен
@@ -912,7 +930,8 @@ export default class GitSyncPlugin extends Plugin {
                         state: this.snapshotPopoverState(),
                         onSync: () => { modal.close(); void this.syncNow(); },
                         onCancel: () => { this.cancelSync(); },
-                        onRetry: () => { modal.close(); void this.retryFailedFiles(); },
+                        onRetry: paths => { modal.close(); void this.retryFailedFiles('manual',paths); },
+                        onExportDiagnostics:()=>void this.exportSyncDiagnostics(),
                         onPauseAuto: () => this.pauseAutoSync(),
                         onOpenJournal: () => { modal.close(); this.openJournalModal(); },
                         onOpenSettings: () => { modal.close(); openPluginSettings(); },
@@ -949,7 +968,8 @@ export default class GitSyncPlugin extends Plugin {
                         profilesMode:Boolean(this.settings.profiles?.length),
                         attention:sb.attention,fileIndex:sb.fileIndex,fileTotal:sb.fileTotal,currentPath:sb.currentPath,
                         blockedReason:status==='blocked'?this.lastBlockReason:undefined,
-                        pendingErrorCount:this.queue.all().filter(file=>file.failureKind!=='blocked'&&!file.poisoned).length,
+                        pendingErrorCount:this.queue.all().length,
+                        ...(status==='syncing'?this.sessionProgress:{}),
                         conflictsCount: status === 'conflicts' ? pending : 0,
                         // [P2/3.2] живая фаза конвейера из setStatus-потока Coordinator
                         // (раньше хардкод -1 — полоса была декоративной, бэклог 3.2).
@@ -994,14 +1014,14 @@ export default class GitSyncPlugin extends Plugin {
                 if(this.settings.onboarded)return;
                 const modal=new Modal(this.app),ru=i18n.getLocale()==='ru';
                 modal.contentEl.createEl('h2',{text:ru?'Настройте синхронизацию':'Set up synchronization'});
-                modal.contentEl.createEl('p',{text:ru?'Файлы загружаются из источников в этот vault. Добавьте подключение, выберите область и профиль поведения в рабочем окне. Сохранение настроек не запускает синхронизацию.':'Files are downloaded from sources into this vault. Add a connection, choose its scope and behaviour in the workspace. Saving settings does not start synchronization.'});
+                modal.contentEl.createEl('p',{text:ru?'Файлы загружаются из источников в этот vault. Добавьте подключение, выберите область и профиль поведения в рабочем окне. Запускайте синхронизацию кнопкой или задайте расписание для источников.':'Files are downloaded from sources into this vault. Add a connection, choose its scope and behaviour in the workspace. Run synchronization with the button or choose a schedule for each source.'});
                 new Setting(modal.contentEl).addButton(button=>button.setButtonText(ru?'Настроить':'Set up').setCta().onClick(()=>{modal.close();this.openVaultTreeModal();}))
                         .addButton(button=>button.setButtonText(ru?'Позже':'Later').onClick(()=>modal.close()));
                 trackModal(modal);modal.open();
         }
 
         async saveSettings() { this.settingsManager.queueSave(); }
-        async saveSettingsImmediate() { await this.settingsManager.saveImmediate(); }
+        async saveSettingsImmediate() { await this.settingsManager.saveImmediate();this.autoBlockedReason=undefined; }
 
         // ============================================================
         // --- СБОРКА ДВИГАТЕЛЯ (Coordinator + GitSource + адаптеры) ---
@@ -1054,14 +1074,8 @@ export default class GitSyncPlugin extends Plugin {
                 // (adapter.read: null = файла нет — первый запуск, НЕ warn).
                 const journalPath = `${this.manifest.dir ? `${this.manifest.dir}/` : ''}vault-sync-journal.json`;
                 const journalIo: JournalIo = {
-                        read: async () => {
-                                try {
-                                        const data = await this.app.vault.adapter.read(journalPath);
-                                        return data ?? null;
-                                } catch {
-                                        return null; // ENOENT — первый запуск
-                                }
-                        },
+                        read: async () => (await this.app.vault.adapter.exists(journalPath))?this.app.vault.adapter.read(journalPath):null,
+                        quarantine:async raw=>{const path=journalPath+'.corrupt-'+crypto.randomUUID();await this.app.vault.adapter.write(path,raw);if(await this.app.vault.adapter.read(path)!==raw)throw Error('Diagnostic backup verification failed');},
                         write: async (s) => {
                                 await this.app.vault.adapter.write(journalPath, s);
                         },
@@ -1076,17 +1090,18 @@ export default class GitSyncPlugin extends Plugin {
                         ui: {
                                 // [overhaul S4 / S3-review #2] конфликтная модалка — в реестре:
                                 // onClose резолвит 'keep-both' — по выгруженному плагину стрелять нельзя.
-                                askConflict: (info) => this.serializeAsk(() => {
+                                askConflict: (info,signal) => this.serializeAsk(() => {
                                         const m = new ConflictAskModal(this.app, info);
                                         trackModal(m);
-                                        return m.wait();
-                                }),
+                                        return m.wait(signal);
+                                },signal),
                         },
                         // [overhaul v4 / Этап 3] light-стратегия из настроек.
                         lightStrategy: this.settings.lightConflictStrategy ?? 'keep-local',
                 });
 
                 this.mutations = new DurableMutations(new OperationStore(this.fsAdapter),new RecoveryStore(this.makeVaultAdapter(),this.recoveryDirectory()),this.makeVaultAdapter());
+                const pluginForLimits=this;
                 this.coordinator = new Coordinator({
                         mutations: this.mutations,
                         source: initialSource,
@@ -1133,6 +1148,8 @@ export default class GitSyncPlugin extends Plugin {
                                 // [W1-T07 / BUG-5] Единый вход модели удалений — уровень
                                 // зеркала (deleteMissing-тумблер из логики умер).
                                 mirrorLevel: () => this.currentMirrorLevel(),
+                                get maxFileSizeBytes(){return pluginForLimits.maxPayloadBytes();},get bufferBudgetBytes(){return pluginForLimits.maxPayloadBytes()*4;},
+                                sourceCircuits:()=>this.settings.sourceCircuits??= {},
                                 useTrash: () => this.settings.useTrash,
                                 isOnline: () => navigator.onLine,
                                 isConfigured: () => this.isConfiguredForSource(),
@@ -1219,10 +1236,22 @@ export default class GitSyncPlugin extends Plugin {
                  * (transport, downloader, messages, onProgress, onRateLimitWait).
                  * Реестр передаёт ctx в конструктор движка как есть.
                  */
+                private maxPayloadBytes():number {
+                        const configured=this.settings.maxPayloadMiB;
+                        return (Platform.isDesktopApp&&Number.isFinite(configured)&&configured!>=4&&configured!<=256?configured!:Platform.isDesktopApp?64:16)*1024*1024;
+                }
+                private networkTransport(kind:string):import('./src/sources/types').NetTransport {
+                        if(!Platform.isDesktopApp&&kind==='webdav')return new FetchTransport({timeoutMs:REQUEST_TIMEOUT_MS,bodyTimeoutMs:REQUEST_TIMEOUT_MS});
+                        const limit=this.maxPayloadBytes();
+                        if(!this.hostTransport||this.hostTransportLimit!==limit){this.hostTransportLimit=limit;this.hostTransport=Platform.isDesktopApp?
+                                new NodeHttpTransport({timeoutMs:REQUEST_TIMEOUT_MS,idleTimeoutMs:REQUEST_TIMEOUT_MS,maxBytes:limit}):new BufferedHostTransport(requestUrl,{maxBytes:limit});}
+                        return this.hostTransport;
+                }
+
                 private engineCtx(kind = this.builtKind): EngineCtx {
                         const t = i18n.t;
                         if (kind === 'git') {
-                                return {
+                                return {transport:this.networkTransport(kind),
                                         messages: {
                                                 unsupportedBranches: () => i18n.getLocale()==='ru'?'Синхронизация всех веток не поддерживается. Укажите одну ветку или оставьте поле пустым для ветки репозитория по умолчанию.':'All-branches sync is unsupported. Enter one branch or leave it empty for the repository default.',
                                                 branchNotFound: (b: string) => t.errBranchNotFound(b),
@@ -1239,7 +1268,7 @@ export default class GitSyncPlugin extends Plugin {
                         }
                         if (kind === 'yandex') {
                                 return {
-                                        transport: new FetchTransport({ timeoutMs: REQUEST_TIMEOUT_MS }),
+                                        transport: this.networkTransport(kind),
                                         archiveDownloader: this.getArchiveDownloader(),
                                         onRateLimitWait: (waitMs: number) => {
                                                 new Notice(t.noticeRateLimitedCloud(Math.ceil(waitMs / 1000)), 10000);
@@ -1258,7 +1287,7 @@ export default class GitSyncPlugin extends Plugin {
                         // (cast: EngineCtx.messages — общий Record, см. git-ветку.)
                         if (kind === 'gdrive') {
                                 return {
-                                        transport: new FetchTransport({ timeoutMs: REQUEST_TIMEOUT_MS }),
+                                        transport: this.networkTransport(kind),
                                         onRateLimitWait: (waitMs: number) => {
                                                 new Notice(t.noticeRateLimitedCloud(Math.ceil(waitMs / 1000)), 10000);
                                         },
@@ -1280,7 +1309,7 @@ export default class GitSyncPlugin extends Plugin {
                         // английских DEFAULT_MESSAGES. (cast — как в gdrive-ветке.)
                         if (kind === 'webdav') {
                                 return {
-                                        transport: new FetchTransport({ timeoutMs: REQUEST_TIMEOUT_MS }),
+                                        transport: this.networkTransport(kind),
                                         messages: {
                                                 credentialsMissing: () => t.errWebdavCredentialsMissing,
                                                 propfindFailed: (st: number) => t.errWebdavPropfindFailed(st),
@@ -1299,16 +1328,8 @@ export default class GitSyncPlugin extends Plugin {
                                 // [W3-T04] лёгкий транспорт для Test Connection (HEAD + Range-хвост).
                                 // undefined на мобайле → ZipUrlSource.testConnection() идёт fallback full.
                                 rangeTransport: this.getZipRangeTransport(),
-                                // [W6-T01] TTL сессионного архива 5 минут: retry/scan/policy-modal/test
-                                // в пределах пользовательского цикла → 1 скачивание вместо до 4× (оптимизация №1).
-                                zipSessionTtlMs: 5 * 60 * 1000,
-                                onProgress: (p: { bytesTransferred: number; totalBytes: number | null }) => {
-                                        this.statusBar.setState('syncing', {
-                                                progressText: t.sbSyncing,
-                                                bytesTransferred: p.bytesTransferred,
-                                                totalBytes: p.totalBytes ?? 0,
-                                        });
-                                },
+                                // TTL bounds resource retention; every new manifest obtains a fresh archive.
+                                zipSessionTtlMs: 0,
                                 messages: {
                                         htmlInsteadOfArchive: (url: string) => t.errHtmlInsteadOfArchive(url),
                                         notAnArchive: (url: string) => t.errNotAnArchive(url),
@@ -1429,46 +1450,19 @@ export default class GitSyncPlugin extends Plugin {
                 if (!this.zipDownloader) {
                         this.zipDownloader = Platform.isMobileApp
                                 ? {
-                                        // [5-review M2] мобильная «мягкая отмена» (дизайн §7.1):
-                                        // requestUrl не прерывается — проверяем signal ПОСЛЕ
-                                        // завершения и отбрасываем результат отменённой сессии
-                                        download: async (url: string, opts?: { signal?: AbortSignal }) => {
-                                                // [P1/BUG-19] Лимит проверяется ДО загрузки: HEAD content-length
-                                                // до полного GET — мобильный OOM предотвращается, а не
-                                                // фиксируется постфактум. HEAD не сработал (пресайнед-URL
-                                                // без HEAD, редирект) — страховочная проверка после GET
-                                                // остаётся.
-                                                const limitMb = this.settings.mobileArchiveWarnBytes ?? 200;
-                                                if (limitMb > 0) {
-                                                        let headBytes = 0;
-                                                        try {
-                                                                const head = await requestUrl({ url, method: 'HEAD' });
-                                                                const clHead = head.headers?.['content-length'] ?? head.headers?.['Content-Length'];
-                                                                headBytes = Number(clHead ?? 0);
-                                                        } catch {
-                                                                // HEAD не поддержан — идём на GET, решение по факту.
-                                                        }
-                                                        if (headBytes > limitMb * 1024 * 1024) {
-                                                                throw new Error(i18n.t.errMobileArchiveTooLarge(formatBytes(headBytes), limitMb));
-                                                        }
-                                                }
-                                                // requestUrl сам ведёт редиректы и бросает на не-2xx
-                                                const res = await requestUrl({ url, method: 'GET' });
-                                                // [7-d] дизайн §7.1: мобильный порог архива (0 = off);
-                                                // постфактум-страховка (сервер соврал в HEAD / не дал длину)
-                                                const clHeader = res.headers?.['content-length'] ?? res.headers?.['Content-Length'];
-                                                const clBytes = Number(clHeader ?? 0);
-                                                if (limitMb > 0 && clBytes > limitMb * 1024 * 1024) {
-                                                        throw new Error(i18n.t.errMobileArchiveTooLarge(formatBytes(clBytes), limitMb));
-                                                }
-                                                if (opts?.signal?.aborted) {
-                                                        const e: Error & { aborted: boolean } = Object.assign(
-                                                                new Error('archive download aborted (mobile)'),
-                                                                { aborted: true },
-                                                        );
-                                                        throw e;
-                                                }
-                                                return new BufferArchiveReader(res.arrayBuffer);
+                                        download:async(url,opts)=>{
+                                                const configured=(this.settings.mobileArchiveWarnBytes??200)*1024*1024;
+                                                const limit=Math.min(configured>0?configured:32*1024*1024,32*1024*1024);
+                                                const transport=new BufferedHostTransport(requestUrl,{maxBytes:limit});
+                                                const head=await transport.fetch(url,{method:'HEAD',signal:opts.signal});
+                                                const size=Number(head.headers['content-length']);
+                                                if(!Number.isSafeInteger(size)||size<=0)throw new SyncFault('mobile-archive-size','Mobile archive download requires a known Content-Length; use desktop for this link','source');
+                                                if(size>limit)throw new SyncFault('file-too-large',i18n.t.errMobileArchiveTooLarge(formatBytes(size),limit/1024/1024),'source');
+                                                opts.onProgress?.({bytesTransferred:0,totalBytes:size,capability:'buffered'});
+                                                const res=await transport.fetch(url,{signal:opts.signal,maxBytes:limit});
+                                                if(res.status!==200)throw new SyncFault('archive-http',`Archive download HTTP ${res.status}`,'source');
+                                                const data=await res.arrayBuffer();opts.signal?.throwIfAborted();opts.onProgress?.({bytesTransferred:data.byteLength,totalBytes:size,capability:'buffered'});
+                                                return new BufferArchiveReader(data);
                                         },
                                 }
                                 : new NodeArchiveDownloader();
@@ -1528,7 +1522,7 @@ export default class GitSyncPlugin extends Plugin {
         /** Semantic epoch stays in memory. No credential/fingerprint is written to the ledger. */
         private getConfigurationRevision(): number {
                 const kind = this.desiredSourceKind();
-                const config = JSON.stringify({ profiles:this.settings.profiles, connections:this.settings.connections, kind, values: this.engineValues(kind), mirror: this.currentMirrorLevel(),
+                const config = JSON.stringify({maxPayload:this.settings.maxPayloadMiB,recoveryBudget:this.settings.recoveryLimitMiB,historyBudget:this.settings.historyLimit, profiles:this.settings.profiles, connections:this.settings.connections, kind, values: this.engineValues(kind), mirror: this.currentMirrorLevel(),
                         policy: this.settings.vaultPolicy ?? this.settings.syncPolicies?.[this.makeSourceId(kind)], syncMode: this.settings.syncMode,
                         allowed: this.settings.allowedFolders, ignored: this.settings.ignoredFolders,
                         plugins: this.settings.allowPlugins, snippets: this.settings.allowSnippets,
@@ -1619,6 +1613,7 @@ export default class GitSyncPlugin extends Plugin {
 
         /** Свежесть движка перед сессией: политика, стратегия, источник, sourceId. */
         private async prepareSession(selectedIds?: readonly string[]): Promise<void> {
+                this.mutations?.recovery.setLimit((this.settings.recoveryLimitMiB??512)*1024*1024);this.mutations?.store.setLimit(this.settings.historyLimit??10000);
                 if (this.coordinator.isRunning()) return;
                 this.sessionController?.signal.throwIfAborted();
                 await this.ensureProfileSettings();
@@ -1790,7 +1785,7 @@ export default class GitSyncPlugin extends Plugin {
                                 const oldProfiles=this.settings.profiles,oldConnections=this.settings.connections,oldPolicy=this.settings.vaultPolicy;
                                 this.settings.profiles=profiles;this.settings.connections=connections;
                                 if(oldPolicy)this.settings.vaultPolicy={...oldPolicy,defaultSource};
-                                try{await this.saveSettingsImmediate();}catch(e){this.settings.profiles=oldProfiles;this.settings.connections=oldConnections;this.settings.vaultPolicy=oldPolicy;throw e;}
+                                try{await this.saveSettingsImmediate();this.restartAutoSync();}catch(e){this.settings.profiles=oldProfiles;this.settings.connections=oldConnections;this.settings.vaultPolicy=oldPolicy;throw e;}
                         },sources,this.settings.vaultPolicy?.defaultSource,this.settings.vaultPolicy);trackModal(modal);modal.open();
                 }).catch(e=>new Notice(String(e)));
         }
@@ -1819,6 +1814,7 @@ export default class GitSyncPlugin extends Plugin {
                                 try{return await source.getManifest(signal);}finally{await source.dispose?.();}
                         },
                         check:(connection,signal)=>this.checkSourceConnection(connection,signal),
+                        checkDownload:(connection,signal)=>this.checkSourceConnection(connection,signal,true),
                         run:ids=>this.syncNow(ids),
                         recovery:()=>this.openRecoveryModal(),
                         dispose:()=>abort.abort(),
@@ -1829,7 +1825,7 @@ export default class GitSyncPlugin extends Plugin {
                                 for(const source of [policy.defaultSource,...(compiled.fileRules ?? []).map(r=>r.source)])if(source&&!connections.some(c=>c.id===source))throw Error('Missing source connection');
                                 const previous={vaultPolicy:this.settings.vaultPolicy,connections:this.settings.connections,profiles:this.settings.profiles,onboarded:this.settings.onboarded};
                                 this.settings.vaultPolicy=structuredClone(policy);this.settings.connections=structuredClone(connections);this.settings.profiles=structuredClone(profiles);this.settings.onboarded=true;
-                                try{await this.saveSettingsImmediate();revision=this.getConfigurationRevision();this.statusBar.setState(this.isConfiguredForSource()?'idle':'unconfigured');}catch(e){Object.assign(this.settings,previous);throw e;}
+                                try{await this.saveSettingsImmediate();revision=this.getConfigurationRevision();this.restartAutoSync();this.statusBar.setState(this.isConfiguredForSource()?'idle':'unconfigured');}catch(e){Object.assign(this.settings,previous);throw e;}
                         },
                 });trackModal(modal);modal.open();
         }
@@ -1852,60 +1848,70 @@ export default class GitSyncPlugin extends Plugin {
 
         /** Старт планировщика: читает autoSyncInterval из настроек и запускает.
          *  Идемпотентен — повторный вызов пересоздаёт экземпляр (старый снимается). */
+        private wakeAutoSync():void {for(const scheduler of this.autoSchedulers?.values()??[])scheduler.wake();}
+        private automaticSourceIds():string[]{
+                const policy=this.effectiveProfilePolicy(this.builtSourceId),rules=policy.fileRules??[];
+                const ids=new Set(rules.flatMap(rule=>rule.source?[rule.source]:[]));
+                if(!rules.some(rule=>rule.scope==='vault'&&!rule.names&&rule.source))ids.add(policy.defaultSource??(this.settings.vaultPolicy?'unassigned':'primary'));
+                ids.delete('unassigned');return [...ids];
+        }
         startAutoSync(): void {
-                if (!this.queue) return; // buildEngine не позван — нет deps.
-                const interval = (this.settings.autoSyncInterval ?? 'off') as SchedulerInterval;
-                this.scheduler = new Scheduler({
-                        // [overhaul S2/M-7] плавающие промосы тиков — под .catch:
-                        // scheduler живёт в core/ (без Notice) и глотать отказы не
-                        // имеет права; runSession теперь тотален, это страховка.
-                        onAutoTick: () => this.runAutoSession(),
-                        onAutoRetry: () => this.retryFailedFiles('auto'),
-                        queue: this.queue,
-                });
-                if (interval !== 'off') {
-                        this.scheduler.start(interval);
+                if(!this.queue)return;this.autoSchedulers??=new Map();
+                const ids=this.automaticSourceIds(),connections=this.settings.connections??[];
+                const inherit=ids.filter(id=>{const value=connections.find(c=>c.id===id)?.auto;return value===undefined||value==='inherit';});
+                const jobs=[{key:'inherit',ids:inherit,interval:this.settings.autoSyncInterval??'off'},...ids.flatMap(id=>{
+                        const auto=connections.find(c=>c.id===id)?.auto;return auto&&auto!=='inherit'?[{key:id,ids:[id],interval:auto}]:[];
+                })];
+                for(const scheduler of this.autoSchedulers.values())scheduler.stop();
+                for(const job of jobs){
+                        let scheduler=this.autoSchedulers.get(job.key);
+                        if(!scheduler){scheduler=new Scheduler({queue:this.queue,onAutoRetry:()=>{},
+                                canRun:()=>!this.autoBlockedReason&&!this.sessionOwned&&!this.coordinator?.isRunning()&&navigator.onLine&&isSyncAllowed(this.governance)&&vamAllowsWork(this),
+                                onAutoTick:()=>this.runAutoSession(job.key==='inherit'?this.automaticSourceIds().filter(id=>{const auto=this.settings.connections?.find(c=>c.id===id)?.auto;return auto===undefined||auto==='inherit';}):[job.key]),
+                                onStateChange:()=>this.popoverView?.update(this.snapshotPopoverState())});this.autoSchedulers.set(job.key,scheduler);}
+                        if(job.ids.length){scheduler.start(job.interval as SchedulerInterval);if(this.autoPaused)scheduler.pause();}
+                        if(job.key==='inherit')this.scheduler=scheduler;
                 }
         }
 
         /** Переконфигурация интервала (вызывается из SettingsTab.onChange). */
         restartAutoSync(): void {
-                this.scheduler?.stop();
                 this.startAutoSync();
         }
 
         /** Pause/resume toggle — вызывается из popover actionPauseAuto. */
         pauseAutoSync(): void {
-                if (!this.scheduler) return;
-                if (this.scheduler.isPaused()) this.scheduler.resume();
-                else this.scheduler.pause();
+                const active=[...this.autoSchedulers.values()].filter(s=>s.getInterval()!=='off');
+                if(!active.length)return;
+                const resume=active.every(s=>s.isPaused());this.autoPaused=!resume;for(const scheduler of active)resume?scheduler.resume():scheduler.pause();
                 // [W5-T02] статус авто-синк изменился (paused↔running) — уведомляем подписчиков.
-                this.notifyVaultSync();
+                this.notifyVaultSync();this.popoverView?.update(this.snapshotPopoverState());
         }
 
         /** Снимок состояния для popover. null — scheduler не инициализирован
          *  или интервал 'off' (popover не рендерит scheduler-секцию). */
         schedulerSnapshot(): SchedulerSnapshot | null {
-                if (!this.scheduler) return null;
-                const s = this.scheduler.snapshot();
-                if (s.interval === 'off') return null;
-                return s;
+                const states=[...this.autoSchedulers.values()].map(s=>s.snapshot()).filter(s=>s.interval!=='off');
+                if(!states.length)return null;
+                const state=states.sort((a,b)=>(a.nextTickAt??Infinity)-(b.nextTickAt??Infinity))[0];
+                return {...state,blockedReason:this.autoBlockedReason,paused:states.every(s=>s.paused),pending:states.some(s=>s.pending),running:states.some(s=>s.running)};
         }
 
         /** Auto-сессия: headless-режим (W4-T02). coordinator.sync с trigger='auto'
          *  идёт без confirm-модалки; mirrorLevel=fetch/light → удаления откладываются,
-         *  full → исполняются с trash. Notice-фильтр через verboseNotices. */
-        private async runAutoSession(): Promise<void> {
-                await this.runSession('auto', async () => {
-                        await this.prepareSession();
+         *  All automatic deletions await a manual accepted plan. */
+        private async runAutoSession(sourceIds?:readonly string[]): Promise<boolean> {
+                if(!sourceIds?.length)return true;
+                const stats=await this.runSession('auto', async () => {
+                        await this.prepareSession(sourceIds);
                         return await this.coordinator.sync({ trigger: 'auto' });
-                });
+                },sourceIds);return stats!==null;
         }
 
-        async retryFailedFiles(trigger:'manual'|'auto'='manual'): Promise<void> {
+        async retryFailedFiles(trigger:'manual'|'auto'='manual',paths?:readonly string[]): Promise<void> {
                 await this.runSession(trigger==='auto'?'auto':'retry', async () => {
                         await this.prepareSession();
-                        return await this.coordinator.retryFailed(trigger);
+                        return await this.coordinator.retryFailed(trigger,paths);
                 });
         }
 
@@ -1918,17 +1924,8 @@ export default class GitSyncPlugin extends Plugin {
 
         async scanAndRestoreMissing(): Promise<void> {
                 await this.runSession('scan', async () => {
-                        const t = i18n.t;
                         await this.prepareSession();
-                        this.statusBar.setState('syncing', { progressText: '...' });
-                        new Notice(t.noticeCheckingSource);
-                        const missing = await this.coordinator.collectMissing();
-                        if (missing === null || missing.length === 0) {
-                                this.statusBar.setState('idle');
-                                if (missing?.length === 0) new Notice(t.noticeNoMissingFiles);
-                                return null;
-                        }
-                        return this.coordinator.sync({ forcedPaths: new Set(missing) });
+                        return this.coordinator.sync({missingOnly:true});
                 });
         }
 
@@ -1964,20 +1961,21 @@ export default class GitSyncPlugin extends Plugin {
          *  здесь — только старт/длительность/триггер/движок и top-3 ошибок. */
         private async runSession(trigger: 'manual' | 'auto' | 'retry' | 'scan' | 'force', fn: () => Promise<import('./src/sources/types').SyncStats | null>, sourceIds?: readonly string[]): Promise<import('./src/sources/types').SyncStats | null> {
                 if (this.sessionOwned || this.coordinator?.isRunning()) { new Notice(i18n.t.noticeSyncInProgress); return null; }
+                if(trigger!=='auto')this.autoBlockedReason=undefined;
                 this.sessionOwned = true; this.currentTrigger = trigger; this.lastBlockReason = undefined;
                 this.sessionController = new AbortController();
                 this.requestedSources = sourceIds?.map(id => this.settings.connections?.find(c => c.id === id)?.name ?? id);
                 const startedAt = Date.now();
                 this.statusBar?.setState('syncing', { phase: -1, pendingCount: 0, bytesTransferred: 0, totalBytes: 0, progressText: i18n.getLocale() === 'ru' ? 'Подготовка запуска…' : 'Preparing run…' });
                 if (trigger !== 'auto' && this.app && this.statusBar && this.queue && this.journal) this.openStatusPopover();
-                try { return await this.runOwnedSession(trigger, fn); }
+                try {const stats=await this.runOwnedSession(trigger, fn);if(stats?.problems?.some(issue=>issue.scope==='session'&&!issue.retryable))this.autoBlockedReason=stats.problem;return stats;}
                 catch (error) {
-                        if (!this.sessionController.signal.aborted) throw error;
-                        this.statusBar?.setState('idle');
+                        if(!this.sessionController.signal.aborted){this.lastBlockReason=diagnosticText(error);this.statusBar?.setState('error');new Notice(i18n.t.noticeSyncFailed(this.lastBlockReason),10000);}
+                        else this.statusBar?.setState('idle');
                         await this.recordJournal(trigger, null, startedAt); return null;
                 }
                 finally {
-                        this.sessionOwned = false; this.sessionController = undefined;
+                        this.sessionOwned = false; this.sessionController = undefined;this.sessionProgress=undefined;this.wakeAutoSync();
                         this.popoverView?.update(this.snapshotPopoverState());
                         const modal = this.statusModal;
                         if (modal) void this.journal.load().then(entries => {
@@ -2041,7 +2039,7 @@ export default class GitSyncPlugin extends Plugin {
                         // семантику (stats=null → записи нет — сессия не началась).
                         console.error('[VaultSync] session error:', e);
                         new Notice(i18n.t.noticeSyncFailed(e instanceof Error ? e.message : String(e)), 10000);
-                        this.lastBlockReason=e instanceof Error?e.message:String(e);this.statusBar.setState('error');
+                        this.lastBlockReason=diagnosticText(e);this.autoBlockedReason=this.lastBlockReason;this.statusBar.setState('error');
                         return null;
                 } finally {
                         await this.recordJournal(trigger, stats, startedAt);
@@ -2103,7 +2101,7 @@ export default class GitSyncPlugin extends Plugin {
         private onVamRevoked(reason: string | null): void {
                 const reasonText = reason ? describeVamReason(reason) : i18n.t.vam.reasonNoCode;
                 new Notice(i18n.t.vam.noticeRevoked(reasonText), 8000);
-                this.notifyVaultSync();
+                this.notifyVaultSync();this.wakeAutoSync();
         }
 
         /** [W5-T01] Ручной сброс governance (A4) — вызывается из Диагностики
@@ -2112,7 +2110,7 @@ export default class GitSyncPlugin extends Plugin {
                 this.governance = resetGovernance();
                 this.settings.governanceManagerEverActive = false;
                 await this.saveSettingsImmediate();
-                this.notifyVaultSync();
+                this.notifyVaultSync();this.wakeAutoSync();
         }
 
         /** [W5-T02] Снимок состояния для window.vaultSync.getState(). Берёт
@@ -2161,11 +2159,12 @@ export default class GitSyncPlugin extends Plugin {
                         outcome:stats?.outcome??(this.sessionController?.signal.aborted?'cancelled':'error'),sources:stats?this.coordinator?.getCurrentSource().sources?.map(source=>source.name):this.requestedSources,
                         profilesMode:Boolean(this.settings.profiles?.length),blockedReason:stats?.problem??(stats?undefined:this.lastBlockReason),attemptOnly:!stats,
                         downloaded:stats?.downloaded??0,updated:stats?.updated??0,received:stats?.received??0,
+                        trace:stats?.trace,traceDropped:stats?.traceDropped,sessionId:stats?.sessionId,build:BUILD_TAG,platform:Platform.isDesktopApp?'desktop':'mobile',pendingBefore:stats?.pendingBefore,pendingAfter:stats?.pendingAfter,retryScheduled:stats?.retryScheduled,blocked:stats?.blocked,networkBytes:stats?.networkBytes,problems:stats?.problems,notAttempted:stats?.notAttempted,
                         deletedLight:stats?.deleteLight??0,deletedFull:stats?.deleteFull??0,overwritten:stats?.overwritten??0,
                         conflicts:stats?.conflicts??0,skipped:stats?.skipped??0,errors:stats?.failed??0,
                         deferredDeletions:stats?.deferredDeletions??0,blockedDeletions:stats?.blockedDeletions??0,deferredConflicts:stats?.deferredConflicts??0,
                         results:stats?.results?.slice(0,500),resultsTotal:stats?.results?.length??0,
-                        topErrors:stats?.problem?[{message:stats.problem,count:1}]:!stats&&this.lastBlockReason?[{message:this.lastBlockReason,count:1}]:topErrorsFrom(failures.map(file=>file.reason)),
+                        topErrors:stats?.problem?[{message:stats.problem,count:1}]:!stats&&this.lastBlockReason?[{message:this.lastBlockReason,count:1}]:topErrorsFrom(stats?.results?.filter(row=>row.status==='error').map(row=>row.issue?.message??row.reason)??[]),
                 };
                 try{await this.journal.append(entry);}catch(error){console.warn('[VaultSync] journal append failed',error);}
         }
@@ -2173,18 +2172,23 @@ export default class GitSyncPlugin extends Plugin {
         private cancelSync(): void {
                 this.sessionController?.abort();
                 this.coordinator?.cancel();
+                this.sessionProgress={...this.sessionProgress,stage:'cancelling'};this.popoverView?.update(this.snapshotPopoverState());
                 new Notice(i18n.t.noticeCancelling);
         }
 
-        private async checkSourceConnection(connection:SourceConnection,signal:AbortSignal):Promise<void> {
+        private async checkSourceConnection(connection:SourceConnection,signal:AbortSignal,sample=false):Promise<void> {
                 if(!this.assertNetworkAllowed())throw Error(i18n.getLocale()==='ru'?'Доступ к источнику заблокирован':'Source access blocked');
                 const descriptor=EngineRegistry.get(connection.kind),values=connectionValues(connection);
                 if(validateSettings(descriptor.settingsSchema,values).length)throw Error(i18n.getLocale()==='ru'?'Проверьте поля подключения':'Check the connection fields');
                 signal.throwIfAborted();const source=EngineRegistry.create(connection.kind,values,this.engineCtx(connection.kind));
                 try{
-                        if(connection.kind==='git')await (source as GitSource).testConnection(String(values.branch??'default'));
+                        if(connection.kind==='git'){const result=await (source as GitSource).testConnection(String(values.branch??'default'));if(!result.success)throw Error(result.message);}
                         else if(descriptor.capabilities.testConnection){const result=await (source as ZipUrlSource).testConnection();if(!result.ok)throw Error(String(result.error));}
-                        else await source.getManifest(signal);
+                        else if(!sample)await source.getManifest(signal);
+                        if(sample){const inventory=await source.getManifest(signal);const file=inventory.filter(entry=>entry.size<=2*1024*1024).sort((a,b)=>Number(!a.path.endsWith('.css'))-Number(!b.path.endsWith('.css'))||a.size-b.size)[0];
+                                if(!file)throw Error(i18n.getLocale()==='ru'?'В источнике нет файла до 2 МБ для пробной загрузки':'No file below 2 MiB available for a sample download');
+                                const data=await source.fetch(file,signal);await (await import('./src/core/source-validation')).verifyRemoteData(file,data);
+                        }
                         signal.throwIfAborted();
                 }finally{await source.dispose?.();}
         }
@@ -2195,10 +2199,12 @@ export default class GitSyncPlugin extends Plugin {
                         if(this.sessionOwned||this.coordinator.isRunning())throw Error(i18n.getLocale()==='ru'?'Дождитесь завершения синхронизации':'Wait for synchronization to finish');
                         this.sessionOwned=true;const revision=this.getConfigurationRevision();
                         try{return await fn(()=>{if(revision!==this.getConfigurationRevision())throw Error('Settings changed during recovery; retry');});}
-                        finally{this.sessionOwned=false;}
+                        finally{this.sessionOwned=false;this.wakeAutoSync();}
                 };
                 const modal=new RecoveryModal(this.app,{
                         load:async()=>{await this.mutations.store.load();const usage=await this.mutations.recovery.usage();return {records:this.mutations.store.records(),used:usage.used,limit:usage.limit};},
+                        retention:async()=>{await this.mutations.store.load();const before=Date.now()-30*24*60*60*1000,ids=this.mutations.store.prunable(before).map(record=>record.id),refs=this.mutations.store.records().filter(record=>!ids.includes(record.id)).flatMap(record=>record.recovery?[record.recovery]:[]);return {before,ids,objects:await this.mutations.recovery.unreferencedUsage(refs,before)};},
+                        prune:preview=>withOwnership(async guard=>{guard();await this.mutations.store.prune(preview.before,preview.ids);guard();const refs=this.mutations.store.records().flatMap(record=>record.recovery?[record.recovery]:[]);await this.mutations.recovery.collectUnreferenced(refs,preview.before);}),
                         verify:async id=>{await this.mutations.store.load();const record=this.mutations.store.records().find(r=>r.id===id);if(!record?.recovery)throw Error('Copy unavailable');await this.mutations.recovery.verify(record.recovery);},
                         export:async id=>{
                                 await this.mutations.store.load();const record=this.mutations.store.records().find(r=>r.id===id);if(!record?.recovery)throw Error('Copy unavailable');
@@ -2334,7 +2340,18 @@ export default class GitSyncPlugin extends Plugin {
                         exists: (p) => adapter.exists(norm(p)),
                         readBinary: (p) => adapter.readBinary(norm(p)),
                         writeBinary: (p, data) => timed(`write ${data.byteLength}B`, p, () => adapter.writeBinary(norm(p), data)),
-                        createBinary:typeof this.app.vault.createBinary==='function'?async(p,data)=>{await this.app.vault.createBinary(norm(p),data);}:undefined,
+                        createBinary:typeof this.app.vault.createBinary==='function'?async(p,data)=>timed(`create ${data.byteLength}B`,p,async()=>{
+                                await this.assertEditorSaved(p);if(await adapter.exists(norm(p)))throw new SyncFault('local-changed',`Destination was created after planning: ${p}`);
+                                // Hidden config files are absent from Vault's indexed file map.
+                                if(p.startsWith(this.app.vault.configDir+'/')&&Platform.isDesktopApp&&typeof (adapter as unknown as {getBasePath?:()=>string}).getBasePath==='function'){
+                                        const fs:typeof import('node:fs/promises')=require('fs/promises');
+                                        const nodePath:typeof import('node:path')=require('path');
+                                        const base=(adapter as unknown as {getBasePath:()=>string}).getBasePath();
+                                        await fs.writeFile(nodePath.join(base,norm(p)),new Uint8Array(data),{flag:'wx'});
+                                }
+                                else await this.app.vault.createBinary(norm(p),data);
+                        }):undefined,
+                        assertWritable:p=>this.assertEditorSaved(p),
                         compareAndWrite: async (p, data, expected, signal) => {
                                 let previous: string;
                                 let next: string;
@@ -2363,7 +2380,7 @@ export default class GitSyncPlugin extends Plugin {
                         rename: (from, to) => timed(`rename "${from}" ->`, to, () => adapter.rename(norm(from), norm(to))),
                         stat: async (p) => {
                                 const st = await adapter.stat(norm(p));
-                                return st ? { mtime: st.mtime, size: st.size } : null;
+                                return st ? { mtime: st.mtime, size: st.size,type:st.type } : null;
                         },
                         // [overhaul S5/EEXIST] trash — ЕДИНСТВЕННАЯ операция адаптера
                         // поверх высокоуровневого Vault API (все остальные — DataAdapter,
@@ -2485,6 +2502,20 @@ export default class GitSyncPlugin extends Plugin {
                 return this.manifest.dir ?? '';
         }
 
+        private async assertEditorSaved(path:string):Promise<void> {
+                const leaves=this.app.workspace?.getLeavesOfType('markdown')??[];
+                for(const leaf of leaves){const view=leaf.view as unknown as {file?:{path:string};editor?:{getValue():string};data?:string};
+                        if(view.file?.path===normalizePath(path)&&view.editor&&view.editor.getValue()!==await this.app.vault.adapter.read(normalizePath(path)))
+                                throw new SyncFault('unsaved-editor',`Save or close the editor before syncing: ${path}`);
+                }
+        }
+        private async exportSyncDiagnostics():Promise<void>{
+                const data={build:BUILD_TAG,platform:Platform.isDesktopApp?'desktop':'mobile',exportedAt:new Date().toISOString(),
+                        scheduler:this.schedulerSnapshot(),sessions:await this.journal.load(),pending:this.queue.all().map(file=>({...file,reason:diagnosticText(file.reason)}))};
+                const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+                const link=document.createElement('a');link.href=url;link.download='vault-sync-diagnostics.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+        }
+
         private makePluginFs(): FileSystem {
                 const adapter = this.app.vault.adapter;
                 const base = this.manifest.dir ?? '';
@@ -2504,7 +2535,7 @@ export default class GitSyncPlugin extends Plugin {
 
         private makeSyncUI(): SyncUI {
                 return {
-                        confirmSync: async (info) => {
+                        confirmSync: async (info,signal) => {
                                 const accepted = await showConfirmModal(this.app, ['force','retry','scan'].includes(this.currentTrigger)?this.currentTrigger as ConfirmFlow:'sync', {
                                         operations:info.operations,
                                         sources:info.sources,
@@ -2520,7 +2551,7 @@ export default class GitSyncPlugin extends Plugin {
                                         downloadBytes: info.downloadBytes,
                                         noRecovery: info.noRecovery,
                                         blockedDeletions: info.blockedDeletions,
-                                }, this.builtKind);
+                                }, this.builtKind,signal??this.sessionController?.signal);
                                 if (accepted) this.openStatusPopover();
                                 else this.sessionController?.abort();
                                 return accepted;
@@ -2528,10 +2559,11 @@ export default class GitSyncPlugin extends Plugin {
                         confirmRetry: async (count) => {
                                 // [W2-T04] retry-flow: единый шаблон, секция toDownload.
                                 return await showConfirmModal(
-                                        this.app, 'retry', { toDownload: count }, this.builtKind,
+                                        this.app, 'retry', { toDownload: count }, this.builtKind,this.sessionController?.signal,
                                 );
                         },
                         setStatus: (phase, progress) => {
+                                this.sessionProgress=phase==='syncing'?progress:undefined;
                                 this.statusBar.setState(phase, progress);
                                 // [P1/M13 + P2/3.2] popover живёт вместе со статус-баром:
                                 // тот же setStatus-поток координатора, включая фазу
@@ -2563,8 +2595,9 @@ export default class GitSyncPlugin extends Plugin {
         }
 
         // [3-review] мьютекс ask-модалок: следующая открывается после закрытия предыдущей
-        private serializeAsk<T>(fn: () => Promise<T>): Promise<T> {
-                const run = this.askChain.then(fn, fn);
+        private serializeAsk<T>(fn: () => Promise<T>,signal:AbortSignal|undefined=this.sessionController?.signal): Promise<T> {
+                const invoke=()=>{signal?.throwIfAborted();return fn();};
+                const run = this.askChain.then(invoke, invoke);
                 this.askChain = run.then(() => undefined, () => undefined);
                 return run;
         }
@@ -2576,7 +2609,7 @@ export default class GitSyncPlugin extends Plugin {
                 this.settings.failedQueue = this.queue.all();
                 (this.settings.failedQueues ??= {})[this.cache.namespace] = this.queue.all();
                 if (kind === 'success-end') this.settings.totalSyncCount++;
-                await this.saveSettingsImmediate();
+                try{await this.saveSettingsImmediate();}catch(error){if(kind==='success-end')this.settings.totalSyncCount--;throw error;}
         }
 }
 
@@ -2625,15 +2658,14 @@ class GitSyncSettingTab extends PluginSettingTab {
                 new Setting(containerEl).setName(i18n.getLocale() === 'ru' ? 'Восстановительные копии' : 'Recovery copies')
                         .setDesc(i18n.getLocale() === 'ru' ? 'Проверить сохранённую версию, скачать её или восстановить отдельным файлом.' : 'Verify a saved version, download it or restore it as a separate file.')
                         .addButton(btn => btn.setButtonText(i18n.getLocale() === 'ru' ? 'Открыть восстановление' : 'Open recovery').onClick(() => this.plugin.openRecoveryModal()));
-                new Setting(containerEl).setName(t.settMobileWarn).setDesc(t.settMobileWarnDesc)
-                        .addText(text => text.setValue(String(this.plugin.settings.mobileArchiveWarnBytes ?? 200)).onChange(value => {
-                                const limit = Number(value);
-                                if (value.trim() && Number.isFinite(limit) && limit >= 0) {
-                                        this.plugin.settings.mobileArchiveWarnBytes = limit; this.plugin.saveSettings();
-                                }
-                        }));
+                if(Platform.isMobileApp)new Setting(containerEl).setName(i18n.getLocale()==='ru'?'Максимальный размер мобильного архива, МБ':'Maximum mobile archive size, MiB').setDesc(i18n.getLocale()==='ru'?'От 1 до 32 МБ; требуется известный размер ответа. Платформа получает архив целиком в память.':'1–32 MiB; response size must be known. The platform buffers the whole archive.').addText(text=>text.setValue(String(Math.min(this.plugin.settings.mobileArchiveWarnBytes||32,32))).onChange(raw=>{const limit=Number(raw);if(Number.isSafeInteger(limit)&&limit>=1&&limit<=32){this.plugin.settings.mobileArchiveWarnBytes=limit;void this.plugin.saveSettings();}}));
                 new Setting(containerEl).setName(t.settUseTrash).setDesc(t.settUseTrashDesc)
                         .addToggle(toggle=>toggle.setValue(this.plugin.settings.useTrash).onChange(v=>{this.plugin.settings.useTrash=v;this.plugin.saveSettings();}));
+
+                const resourceSetting=(name:string,description:string,value:number,min:number,max:number,save:(value:number)=>void)=>new Setting(containerEl).setName(name).setDesc(description).addText(text=>text.setValue(String(value)).onChange(raw=>{const number=Number(raw);if(Number.isSafeInteger(number)&&number>=min&&number<=max){save(number);void this.plugin.saveSettings();}}));
+                if(Platform.isDesktopApp)resourceSetting(i18n.getLocale()==='ru'?'Максимальный размер загружаемого файла, МБ':'Maximum downloaded file size, MiB',i18n.getLocale()==='ru'?'От 4 до 256 МБ. Повышение требует больше памяти; ZIP-запись ограничена 64 МБ.':'4–256 MiB. Raising this requires more memory; each ZIP entry remains limited to 64 MiB.',this.plugin.settings.maxPayloadMiB??64,4,256,value=>this.plugin.settings.maxPayloadMiB=value);
+                resourceSetting(i18n.getLocale()==='ru'?'Место для восстановительных копий, МБ':'Recovery storage limit, MiB',i18n.getLocale()==='ru'?'При исчерпании запись останавливается. Можно увеличить лимит или удалить старую историю в окне восстановления.':'Writes stop when capacity is exhausted. Raise the limit or remove old history in Recovery.',this.plugin.settings.recoveryLimitMiB??512,1,32768,value=>this.plugin.settings.recoveryLimitMiB=value);
+                resourceSetting(i18n.getLocale()==='ru'?'Лимит операций в истории':'Operation history limit',i18n.getLocale()==='ru'?'От 100 до 100000. Увеличение сохраняет существующую историю; очистка выполняется отдельно в окне восстановления.':'100–100000. Raising this retains existing history; cleanup is a separate action in Recovery.',this.plugin.settings.historyLimit??10000,100,100000,value=>this.plugin.settings.historyLimit=value);
 
                 // --- Security: плагины/сниппеты ---
                 const securityDiv = containerEl.createDiv({ cls: 'callout' });

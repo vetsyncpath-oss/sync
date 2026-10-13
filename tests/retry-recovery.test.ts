@@ -25,7 +25,7 @@ for(const operation of ['write','remove','rotate','publish'])for(const after of 
 });
 test('checkpoint failure is session failure, not a failed download of an applied file',async()=>{
  const f=fixture([entry('a.md'),entry('b.md')]);f.deps.options.concurrency=1;f.deps.options.checkpointInterval=1;
- const write=f.memory.fs.write;f.memory.fs.write=async(p,v)=>{if(p.startsWith('manifest-'))throw Error('Destination file already exists!');await write(p,v);};
+ const write=f.memory.fs.write;let publications=0;f.memory.fs.write=async(p,v)=>{if(p.startsWith('manifest-')&&++publications>1)throw Error('Destination file already exists!');await write(p,v);};
  const result=await f.coordinator.sync();assert.equal(result?.outcome,'error');assert.equal(str(f.files.get('a.md')!),'REMOTE');assert(!f.files.has('b.md'));assert.equal(f.queue.size(),0);
 });
 for(const phase of ['headers','body'] as const)test(`internal ${phase} timeout is diagnosed separately from session cancellation`,async t=>{
@@ -42,10 +42,11 @@ test('user cancellation makes one attempt and remains cancellation',async t=>{
  let attempts=0;const external=new AbortController();t.mock.method(globalThis,'fetch',async()=>{attempts++;external.abort();throw new DOMException('cancelled','AbortError');});
  await assert.rejects(new NetLayer(new FetchTransport()).fetchBuffer('https://example.test',{signal:external.signal,retries:3,retryBackoffMs:[0]}),(e:any)=>e.aborted===true);assert.equal(attempts,1);
 });
-test('transient retries spread out, respect server delay and do not become permanently poisoned',()=>{
- const q=new FailedQueue({maxRetries:1}),e=entry('a');let now=0;
+test('transient retries spread out, respect server delay and stop at their budget',()=>{
+ const q=new FailedQueue({maxRetries:7}),e=entry('a');let now=0;
  for(const delay of [60000,300000,900000,3600000,21600000,21600000]){q.add(e,'timeout',now,'transient');const item=q.all()[0];assert(!item.poisoned);assert(item.nextRetryAt>=now+delay&&item.nextRetryAt<=now+delay*1.2);now=item.nextRetryAt;}
  q.add(e,'429',now,'transient',30_000_000);assert(q.all()[0].nextRetryAt>=now+30_000_000);
+ q.add(e,'timeout',now,'transient');assert(q.all()[0].poisoned);
  q.add(e,'write denied',now,'blocked');assert.equal(q.takeDue(Number.MAX_SAFE_INTEGER).length,0);
 });
 test('Retry-After HTTP-date survives rate-limit exhaustion as deferred retry metadata',async()=>{

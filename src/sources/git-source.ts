@@ -1,3 +1,4 @@
+import type { TransferObserver } from './types';
 // ============================================================
 // --- SOURCES/GIT-SOURCE (фаза 4-1) ---
 // Git-источник как реализация SyncSource: перенос GitHubClient
@@ -87,6 +88,7 @@ export class GitSource implements SyncSource {
 
         private readonly repo: () => { repoUrl: string; accessToken: string; branch: string; baseUrl?: string };
         private readonly net: NetLayer;
+        private manifestObserve?:TransferObserver;
         private readonly messages: GitSourceMessages;
         private readonly onRateLimitWait?: (waitMs: number) => void;
 
@@ -115,7 +117,8 @@ export class GitSource implements SyncSource {
         // --- SyncSource ---
 
         /** Полный манифест репозитория: все блобы ветки (фильтрация — зона PathPolicy). */
-        async getManifest(signal: AbortSignal): Promise<RemoteEntry[]> {
+        async getManifest(signal: AbortSignal,observe?:TransferObserver): Promise<RemoteEntry[]> {
+                this.manifestObserve=event=>observe?.({...event,stage:event.stage==='waiting'?'waiting':'manifest',bytes:undefined,totalBytes:undefined,byteDelta:undefined});
                 const { owner, repo } = this.parseUrlOrThrow();
                 const branch = await this.resolveBranch(owner, repo, this.repo().branch, signal);
                 const tree = await this.fetchRepoTree(owner, repo, branch, signal);
@@ -135,10 +138,10 @@ export class GitSource implements SyncSource {
         }
 
         /** Скачивание блоба по SHA (проверка expectedSize — фикс Б-19). */
-        async fetch(entry: RemoteEntry, signal: AbortSignal): Promise<ArrayBuffer> {
+        async fetch(entry: RemoteEntry, signal: AbortSignal, observe?: TransferObserver): Promise<ArrayBuffer> {
                 const { owner, repo } = this.parseUrlOrThrow();
                 const apiUrl = `${this.apiBase()}/repos/${owner}/${repo}/git/blobs/${entry.hash}`;
-                const buffer = await this.fetchBuffer(apiUrl, true, signal);
+                const buffer = await this.fetchBuffer(apiUrl, true, signal, observe);
                 // Raw media type is the contract; a JSON-looking file is still raw content.
                 if (buffer.byteLength !== entry.size) {
                         throw new Error(`Blob size mismatch for ${entry.hash}: ${buffer.byteLength} != ${entry.size}`);
@@ -154,7 +157,7 @@ export class GitSource implements SyncSource {
                         const res = await this.net.fetchBuffer(
                                 `${this.apiBase()}/repos/${owner}/${repo}/branches/${encodeURIComponent(await this.resolveBranch(owner,repo,branch,new AbortController().signal))}`,
                                 {
-                                        headers: this.getHeaders(false),
+                                        headers: this.getHeaders(false),observe:this.manifestObserve,
                                         retries: 1,
                                         maxRateLimitWaitMs: 1, // тест подключения не ждёт лимиты
                                 }
@@ -225,10 +228,10 @@ export class GitSource implements SyncSource {
                 return repoInfo;
         }
 
-        private async fetchBuffer(url: string, isRaw: boolean, signal: AbortSignal): Promise<ArrayBuffer> {
+        private async fetchBuffer(url: string, isRaw: boolean, signal: AbortSignal, observe?: TransferObserver): Promise<ArrayBuffer> {
                 try {
                         return await this.net.fetchBuffer(url, {
-                                headers: this.getHeaders(isRaw),
+                                headers: this.getHeaders(isRaw), observe:observe??(isRaw?undefined:this.manifestObserve),
                                 signal,
                                 retries: MAX_RETRY_ATTEMPTS,
                                 maxRateLimitWaitMs: MAX_RATE_LIMIT_WAIT_MS,
@@ -259,7 +262,7 @@ export class GitSource implements SyncSource {
                 const cached = this.etagGet(url);
                 const ifNoneMatch = cached?.etag ?? undefined;
                 const res = await this.net.fetchBufferConditional(url, {
-                        headers: this.getHeaders(false),
+                        headers: this.getHeaders(false),observe:this.manifestObserve,
                         signal,
                         retries: MAX_RETRY_ATTEMPTS,
                         maxRateLimitWaitMs: MAX_RATE_LIMIT_WAIT_MS,
