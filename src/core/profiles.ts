@@ -2,7 +2,9 @@ import type { SyncPolicy } from './policy';
 import { validateFileRules, type FileRule, type WriteMode, type DeleteMode, type RuleConflict } from './file-rules';
 import type { MirrorLevel } from './mirror';
 import type { SyncSource } from '../sources/types';
+import { effectiveBehavior, type SyncDirection } from './profile-policy';
 export interface SyncProfile {
+    direction?: SyncDirection;
     id: string; name: string; write: WriteMode; delete: DeleteMode; conflict?: RuleConflict;
     /** Named connection; absent inherits the enclosing assignment's connection. */
     source?: string; builtin?: boolean;
@@ -34,7 +36,8 @@ export function validateProfiles(profiles: readonly SyncProfile[], connections: 
     for (const p of profiles) {
         if (!p.id || seen.has(p.id) || !p.name.trim() || !p.write || !p.delete) throw new Error('Invalid or duplicate profile');
         seen.add(p.id);
-        validateFileRules([{scope:'vault',path:'',write:p.write,delete:p.delete,conflict:p.conflict,source:p.source}]);
+        validateFileRules([{scope:'vault',path:'',write:p.write,delete:p.delete,conflict:p.conflict,source:p.source,direction:p.direction}]);
+        effectiveBehavior(p);
         if (p.source && p.source !== 'primary' && !sources.has(p.source)) throw new Error(`Unknown source in profile: ${p.name}`);
     }
 }
@@ -46,7 +49,7 @@ export function compileProfiles(policy: SyncPolicy, profiles: readonly SyncProfi
         if (a.profileId && !p) throw new Error(`Missing profile: ${a.profileId}`);
         if (!p && !a.source) throw new Error('Assignment needs a profile or source');
         return {scope:a.scope,path:a.path,...(a.names ? {names:[...a.names]} : {}),
-            write:p?.write,delete:p?.delete,conflict:p?.conflict,source:a.source ?? p?.source,remotePath:a.remotePath};
+            write:p?.write,delete:p?.delete,conflict:p?.conflict,direction:p ? p.direction ?? 'pull' : undefined,source:a.source ?? p?.source,remotePath:a.remotePath};
     });
     const fileRules:FileRule[]=[{scope:'vault',path:'',write:'update',delete:'keep'},...assignedRules];
     validateFileRules(fileRules);
@@ -64,7 +67,7 @@ export function migrateProfilePolicy(policy: SyncPolicy, profiles: SyncProfile[]
     const add = (r: FileRule, label: string) => {
         const id=`migrated:${key}:${assignments.length}`;
         if (!profiles.some(p=>p.id===id)) profiles.push({id,name:label,write:r.write ?? 'changes',delete:r.delete ?? 'keep',conflict:r.conflict,source:r.source});
-        assignments.push({scope:r.scope,path:r.path,names:r.names,profileId:id});
+        assignments.push({scope:r.scope,path:r.path,names:r.names,profileId:id,source:r.source,remotePath:r.remotePath});
     };
     const legacy = (l: MirrorLevel): Pick<FileRule,'write'|'delete'|'conflict'> => ({
         write:l==='full'?'remote':'changes',delete:l==='full'?'mirror':l==='light'?'tracked':'keep',
@@ -87,5 +90,5 @@ export function migrateProfilePolicy(policy: SyncPolicy, profiles: SyncProfile[]
 import { resolveFileRule } from './file-rules';
 function resolveMigrated(path:string, assignments:ProfileAssignment[], profiles:SyncProfile[]):FileRule {
     const resolved=resolveFileRule(path,compileProfiles({version:1,mirror:false,folders:[],assignments},profiles).fileRules);
-    return {scope:'file',path,write:resolved.write,delete:resolved.delete,conflict:resolved.conflict,source:resolved.source};
+    return {scope:'file',path,write:resolved.write,delete:resolved.delete,conflict:resolved.conflict,source:resolved.source,remotePath:resolved.remotePath};
 }

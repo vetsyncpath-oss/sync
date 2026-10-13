@@ -3,6 +3,7 @@ export type WriteMode = 'preserve' | 'create' | 'update' | 'remote' | 'changes';
 export type DeleteMode = 'keep' | 'tracked' | 'mirror';
 export type RuleConflict = 'keep-both' | 'local-wins' | 'remote-wins' | 'ask' | 'incoming';
 export interface FileRule {
+    direction?: import('./profile-policy').SyncDirection;
     source?: string;
     remotePath?: string;
     conflict?: RuleConflict;
@@ -13,7 +14,7 @@ export interface FileRule {
     write?: WriteMode;
     delete?: DeleteMode;
 }
-export interface ResolvedFileRule { write?: WriteMode; delete?: DeleteMode; writeRule?: number; deleteRule?: number; source?: string; sourceRule?: number; remotePath?: string; conflict?: RuleConflict }
+export interface ResolvedFileRule { direction?: import('./profile-policy').SyncDirection; write?: WriteMode; delete?: DeleteMode; writeRule?: number; deleteRule?: number; source?: string; sourceRule?: number; remotePath?: string; conflict?: RuleConflict }
 const writes = ['preserve', 'create', 'update', 'remote', 'changes'];
 const deletes = ['keep', 'tracked', 'mirror'];
 function validPath(path: unknown): path is string {
@@ -30,6 +31,7 @@ export function validateFileRules(value: unknown): asserts value is FileRule[] |
         if (!r || typeof r !== 'object' || !['vault', 'folder', 'file'].includes(r.scope)) return fail();
         if (r.scope === 'vault' ? r.path !== '' : !validPath(r.path)) return fail();
         if (r.write !== undefined && !writes.includes(r.write)) return fail();
+        if (r.direction !== undefined && !['pull', 'bidirectional'].includes(r.direction)) return fail();
         if (r.delete !== undefined && !deletes.includes(r.delete)) return fail();
         if (r.source !== undefined && (typeof r.source !== 'string' || !r.source)) return fail();
         if (r.conflict !== undefined && !['keep-both','local-wins','remote-wins','ask','incoming'].includes(r.conflict)) return fail();
@@ -53,6 +55,7 @@ export function resolveFileRule(path: string, rules?: readonly FileRule[]): Reso
     });
     const result: ResolvedFileRule = {};
     for (const { r, i } of matches) {
+        if (r.direction !== undefined) result.direction = r.direction;
         if (r.write !== undefined) { result.write = r.write; result.writeRule = i; }
         if (r.delete !== undefined) { result.delete = r.delete; result.deleteRule = i; }
         if (r.conflict !== undefined) result.conflict = r.conflict;

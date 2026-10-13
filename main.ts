@@ -1,4 +1,5 @@
 import { NodeHttpTransport, BufferedHostTransport } from './src/adapters/host-transport';
+import { AcknowledgedSave } from './src/core/acknowledged-save';
 import { SyncFault, diagnosticText } from './src/core/sync-issue';
 import type { SyncProgress } from './src/sources/types';
 import { sessionLabel } from './src/ui/session-label';
@@ -397,12 +398,12 @@ class StatusBarManager {
 
 class SettingsManager {
         private plugin: GitSyncPlugin;
-        private saveQueued = false;
-        private saveInProgress = false;
+        private readonly writer: AcknowledgedSave<GitSyncSettings>;
         private debouncedSave: ReturnType<typeof debounce>;
 
         constructor(plugin: GitSyncPlugin) {
                 this.plugin = plugin;
+                this.writer = new AcknowledgedSave(snapshot => plugin.saveData(snapshot));
                 this.debouncedSave = debounce(() => this.doSave(), DEBOUNCE_MS);
         }
 
@@ -535,15 +536,7 @@ class SettingsManager {
         }
 
         private async doSave(): Promise<void> {
-                if (this.saveInProgress) { this.saveQueued = true; return; }
-                this.saveInProgress = true;
-                try {
-                        const dataToSave = JSON.parse(JSON.stringify(this.plugin.settings));
-                        await this.plugin.saveData(dataToSave);
-                } finally {
-                        this.saveInProgress = false;
-                        if (this.saveQueued) { this.saveQueued = false; await this.doSave(); }
-                }
+                await this.writer.save(this.plugin.settings);
         }
 }
 
