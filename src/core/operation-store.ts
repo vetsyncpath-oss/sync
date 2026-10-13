@@ -199,7 +199,7 @@ export class OperationStore {
                         // Maintenance precedes a new intention; it cannot turn an already
                         // applied mutation into a spurious download failure.
                         await this.ensureFormat();
-                        if (this.state.sequence - this.checkpointSequence >= Math.max(this.minimumCheckpointEvents, this.count)) await this.compactLocked();
+                        if (this.state.sequence - this.checkpointSequence >= Math.max(this.minimumCheckpointEvents, Math.min(this.count,512))) await this.compactLocked();
                         await this.append(command);
                 });
         }
@@ -316,7 +316,8 @@ export class OperationStore {
                         this.checkpointSequence = this.state.sequence;
                 }
                 // Only verified checkpoints authorize removing superseded metadata.
-                // Keep the previous checkpoint and all its replay events for review.
+                // Both snapshots contain full operation history and recovery references.
+                // Keep only the current anchor event; older deltas are redundant.
                 try {
                         const names = await this.fs.list();
                         const checkpoints = names.filter(name => CHECKPOINT.test(name)).sort();
@@ -326,12 +327,18 @@ export class OperationStore {
                                 || names.some(name => EVENT.test(name) && sequenceOf(EVENT, name) > this.state.sequence)) return;
                         const previous = checkpoints.at(-2);
                         if (previous) {
-                                await this.readCheckpoint(filename('checkpoint', this.checkpointSequence));
+                                const current=await this.readCheckpoint(filename('checkpoint', this.checkpointSequence));
+                                if(current.tip!==this.tip)throw new Error('Journal checkpoint tip mismatch during cleanup');
+                                const anchor=filename('event',this.checkpointSequence);
+                                if(names.includes(anchor)&&(await this.read(anchor)).sha256!==this.tip)throw new Error('Journal anchor mismatch during cleanup');
                                 await this.readCheckpoint(previous);
                                 const boundary = sequenceOf(CHECKPOINT, previous);
-                                for (const name of names) if ((EVENT.test(name) && sequenceOf(EVENT, name) <= boundary)
+                                for (const name of names) if ((EVENT.test(name) && sequenceOf(EVENT, name) < this.checkpointSequence)
                                         || (CHECKPOINT.test(name) && sequenceOf(CHECKPOINT, name) < boundary)) await this.fs.remove(name);
                         }
-                } catch { /* Checkpoint is committed; interrupted cleanup is safe to repeat. */ }
+                } catch(error) {
+                        // Metadata already committed stays authoritative; retry cleanup next session.
+                        console.warn('[VaultSync] Journal cleanup deferred; retained metadata will be checked again:',error);
+                }
         }
 }

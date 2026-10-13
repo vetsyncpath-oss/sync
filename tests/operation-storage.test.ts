@@ -138,15 +138,15 @@ test('an unverified previous checkpoint cannot authorize deleting metadata', asy
   const f = storage(); await write(f, 'one'); await f.store.compact(); await write(f, 'two');
   const previous = checkpoints(f).at(-1)!, original = f.memory.files.get(previous)!;
   f.memory.files.set(previous, '{corrupt'); await f.store.compact();
-  assert(events(f).some(name => name.endsWith('0000000000000001.json')));
+  assert(events(f).some(name => name.endsWith('0000000000000002.json')));
   const r = reopen(f); await r.store.load(); assert.equal(r.store.records().length, 2);
   f.memory.files.set(previous, original); await r.store.compact(); assert.equal(checkpoints(f).length, 2);
-  assert(!events(f).some(name => name.endsWith('0000000000000001.json')));
+  assert(!events(f).some(name => name.endsWith('0000000000000002.json')));
 });
 test('a future checkpoint filename cannot authorize deleting verified history', async () => {
   const f = storage(); await write(f, 'one'); await f.store.compact(); await write(f, 'two');
   f.memory.files.set('sync-operations-v3-checkpoint-0000000000000999.json', '{corrupt'); await f.store.compact();
-  assert(events(f).some(name => name.endsWith('0000000000000001.json')));
+  assert(events(f).some(name => name.endsWith('0000000000000002.json')));
   await assert.rejects(reopen(f).store.load()); assert.equal(str(f.files.get('one.md')!), 'REMOTE');
 });
 test('interrupted metadata cleanup can resume without removing recovery objects or history', async () => {
@@ -238,4 +238,22 @@ test('real filesystem publication and compaction reopen with all applied baselin
     assert.equal((await fs.list()).filter(name => name.startsWith('sync-operations-v3-checkpoint-')).length, 2);
     assert((await fs.list()).every(name => !name.endsWith('.tmp')));
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('default journal bounds event files during long sync and keeps full history in two snapshots',async()=>{
+ const f=storage(256);let peak=0;
+ for(let i=0;i<1200;i++){await write(f,`op${i}`);peak=Math.max(peak,events(f).length);}
+ assert(peak<=514,`event count grew to ${peak}`);
+ await f.store.compact();assert.equal(events(f).length,1);assert.equal(checkpoints(f).length,2);
+ const r=reopen(f);await r.store.load();assert.equal(r.store.records().length,1200);assert.equal(r.store.baseline('test','op1199.md')?.localSha256,sha('REMOTE'));
+});
+test('large existing event chain compacts on reopen without rewriting vault files',async()=>{
+ const f=storage(10000);for(let i=0;i<300;i++)await write(f,`legacy${i}`);
+ assert.equal(events(f).length,600);const operations=f.operations.length,records=f.store.records();
+ const r=reopen(f);await r.store.compact();assert.equal(events(f).length,1);assert.equal(checkpoints(f).length,2);assert.deepEqual(r.store.records(),JSON.parse(JSON.stringify(records)));assert.equal(f.operations.length,operations);
+});
+test('session finalization compacts small batches without waiting for a threshold',async()=>{
+ const f=fixture([entry('a.md'),entry('b.md')]);await f.coordinator.sync();
+ assert.equal(events(f).length,1);assert.equal(checkpoints(f).length,2);
+ const r=reopen(f);await r.store.load();assert.equal(r.store.records().length,2);assert.equal(r.store.baseline('test','b.md')?.localSha256,sha('REMOTE'));
 });

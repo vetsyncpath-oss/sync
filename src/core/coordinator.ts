@@ -647,6 +647,8 @@ export class Coordinator {
                                         ui.setStatus('error');
                                         ui.notify(m.syncFailed(error instanceof Error ? error.message : String(error)));
                                 }
+                                try { await this.current.mutations?.store.compact(); }
+                                catch(error) { console.warn('[VaultSync] Journal compaction deferred; existing history retained:',error); }
                                 try { await this.current.source.dispose?.(); } catch { /* resource release is best effort */ }
                         } finally {
                                 this.activeDeps = undefined;
