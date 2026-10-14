@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DriveCoordinator } from '../src/core/drive-coordinator';
-import { DriveStateStore } from '../src/core/drive-state';
+import { DriveStateStore,driveNamespace } from '../src/core/drive-state';
 import { GoogleDriveRoot } from '../src/sources/gdrive-root';
 import { GoogleDriveClient,DRIVE_FOLDER,type DriveFile,type DriveItem } from '../src/sources/gdrive-client';
 import { OperationStore } from '../src/core/operation-store';
@@ -13,6 +13,7 @@ import { sha256Hex } from '../src/core/hasher';
 import { sourceCandidates,sourcePathForDestination } from '../src/core/source-bindings';
 import { planDrive } from '../src/core/drive-planner';
 import type { FileSystem,VaultAdapter } from '../src/sources/types';
+import { SyncFault } from '../src/core/sync-issue';
 const bytes=(s:string)=>new TextEncoder().encode(s).buffer;
 class Fixture {
     local=new Map<string,ArrayBuffer>();folders=new Set<string>(['']);metadata=new Map<string,string>();remote=new Map<string,{file:DriveFile;data:ArrayBuffer}>();counter=0;
@@ -43,7 +44,8 @@ class Fixture {
     async run(auto=false){return new DriveCoordinator({vault:this.vault,mutations:this.mutations,state:this.state,root:new GoogleDriveRoot(this.client,'root'),queue:this.queue,
         localPaths:async()=>[...this.local.keys()].filter(p=>!p.startsWith('private/')&&!p.startsWith('.trash/')&&!p.includes('.conflict-')),
         localForRemote:p=>p.includes('.conflict-')?[]:[p],remoteForLocal:p=>p.includes('.conflict-')||p.startsWith('private/')||p.startsWith('.trash/')?undefined:p,
-        behavior:()=>effectiveBehavior({direction:'bidirectional',write:'changes',delete:'tracked',conflict:'keep-both'}),guard:()=>{},signal:new AbortController().signal,auto}).run(this.inventory());}
+        behavior:()=>effectiveBehavior({direction:'bidirectional',write:'changes',delete:this.deletions,conflict:'keep-both'}),guard:()=>{},signal:new AbortController().signal,auto}).run(this.inventory());}
+    deletions:'keep'|'tracked'='tracked';
     text(path:string){return this.local.has(path)?new TextDecoder().decode(this.local.get(path)):undefined;}
 }
 test('bootstrap forms a union, adopts identical bytes, and keeps both versions of an initial conflict',async()=>{
@@ -57,6 +59,7 @@ test('verified tracked deletions use trash in both directions; 404 never authori
     const f=new Fixture();for(const n of ['local-delete.md','remote-delete.md','lost.md']){f.local.set(n,bytes('base'));await f.addRemote(n,'base');}await f.run();
     f.local.delete('local-delete.md');f.remote.get('r-remote-delete.md')!.file.trashed=true;f.remote.delete('r-lost.md');
     const stats=await f.run(true);assert.equal(stats.failed,0);assert.equal(f.remote.get('r-local-delete.md')!.file.trashed,true);assert.equal(f.text('remote-delete.md'),undefined);
+    assert.equal(stats.deleted,2);assert.equal(stats.deletedDrive,1);
     assert.equal(f.text('.trash/remote-delete.md'),'base');assert.equal(f.text('lost.md'),'base');assert.equal(stats.deferredDeletions,1);
 });
 test('delete versus edit preserves the edited survivor on both sides before trashing the original',async()=>{
@@ -78,6 +81,13 @@ test('editing during upload preserves the newer local bytes and requests a follo
 test('checkpoint failure stops the session before any remote publication or later file mutation',async()=>{
     const f=new Fixture();f.local.set('a.md',bytes('a'));f.local.set('b.md',bytes('b'));f.failCheckpoint=true;
     const result=await f.run();assert.equal(result.failed,1);assert.equal(result.problems![0].scope,'session');assert.equal(f.inventory().length,0);assert.equal(f.text('b.md'),'b');
+});
+test('a transient file transfer failure queues retry and does not stop independent downloads',async()=>{
+    const f=new Fixture();await f.addRemote('a.md','a');await f.addRemote('b.md','b');const download=f.client.download;
+    f.client.download=async(file,signal)=>{if(file.name==='a.md')throw new SyncFault('network','Connection interrupted','source',true);return download.call(f.client,file,signal);};
+    const partial=await f.run(true);assert.equal(partial.failed,1);assert.equal(f.text('b.md'),'b');assert.equal(f.text('a.md'),undefined);
+    assert.equal(f.queue.all().length,1);assert(!f.queue.all()[0].poisoned);
+    f.client.download=download;const retry=await f.run();assert.equal(retry.failed,0);assert.equal(f.text('a.md'),'a');assert.equal(f.queue.all().length,0);
 });
 test('state corruption cannot reset a deletion baseline; checkpoints remain bounded',async()=>{
     const f=new Fixture();await f.state.load();for(let i=0;i<6;i++)await f.state.save(()=>{});
@@ -123,4 +133,20 @@ test('failed checkpoint cleanup cannot accumulate unbounded generations and resu
     for(let i=0;i<4;i++)await f.state.save(()=>{});await assert.rejects(()=>f.state.save(()=>{}),/cleanup/);
     assert.equal([...f.metadata.keys()].filter(p=>p.startsWith('drive-state-')&&!p.endsWith('.tmp')).length,4);
     f.fs.remove=remove;await f.state.save(()=>{});assert.equal([...f.metadata.keys()].filter(p=>p.startsWith('drive-state-')).length,2);
+});
+test('repairing a conditional write capability resumes one conflict copy without reusing a finalized operation ID',async()=>{
+    const f=new Fixture(),write=f.vault.compareAndWrite;f.vault.compareAndWrite=async()=>undefined;f.local.set('a.md',bytes('mine'));await f.addRemote('a.md','theirs');
+    assert.equal((await f.run()).failed,1);f.vault.compareAndWrite=write;
+    const repaired=await f.run();assert.equal(repaired.failed,0);assert.equal(f.text('a.md'),'theirs');assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,1);
+});
+test('keeping deletions restores a trashed tracked object without changing its file ID',async()=>{
+    const f=new Fixture();f.deletions='keep';f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();f.remote.get(id)!.file.trashed=true;
+    const result=await f.run(true);assert.equal(result.failed,0);assert(!f.remote.get(id)!.file.trashed);assert.equal(f.state.snapshot().baseline['a.md'].remoteId,id);assert.equal(f.inventory().length,1);
+});
+test('Drive baseline identity ignores unrelated provider changes and behavior, while isolating account/root/mount changes',async()=>{
+    const policy={version:1 as const,mirror:false,folders:[],defaultSource:'drive',fileRules:[{scope:'folder' as const,path:'Git',source:'git'},{scope:'folder' as const,path:'Notes',source:'drive',remotePath:'Library'}]};
+    const id=await driveNamespace('SUB','ROOT','drive',policy),changed=structuredClone(policy);
+    changed.fileRules[0].source='different-git';assert.equal(await driveNamespace('SUB','ROOT','drive',changed),id);
+    assert.notEqual(await driveNamespace('OTHER','ROOT','drive',policy),id);assert.notEqual(await driveNamespace('SUB','OTHER','drive',policy),id);
+    changed.fileRules[1].remotePath='Elsewhere';assert.notEqual(await driveNamespace('SUB','ROOT','drive',changed),id);
 });

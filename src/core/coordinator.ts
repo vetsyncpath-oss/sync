@@ -248,7 +248,7 @@ export class Coordinator {
          * подтверждении); иначе — честная статистика, включая отмену
          * посередине (кэш отражает только реально записанное).
          */
-        async sync(opts: { forcedPaths?: Set<string>; forceAll?: boolean; trigger?: 'manual' | 'auto'; missingOnly?:boolean;onlyForcedPaths?:boolean } = {}): Promise<SyncStats | null> {
+        async sync(opts: { forcedPaths?: Set<string>; forceAll?: boolean; trigger?: 'manual' | 'auto'; missingOnly?:boolean;onlyForcedPaths?:boolean;deferQuestions?:boolean } = {}): Promise<SyncStats | null> {
                 opts = { ...opts, forcedPaths: opts.forcedPaths && new Set(opts.forcedPaths) };
                 const { ui, messages: m } = this.current;
                 let o = this.current.options;
@@ -596,7 +596,7 @@ export class Coordinator {
                         // bytes/fileCount в ту же фазу).
                         if (toDownload.length > 0) {
                                 ui.setStatus('syncing', { phase: 4, progressText: m.phaseDownloads });
-                                this.sessionStage='download';await this.processDownloads(toDownload, stats, controller.signal, localToRemote, mirrorModel, opts.trigger !== 'auto');
+                                this.sessionStage='download';await this.processDownloads(toDownload, stats, controller.signal, localToRemote, mirrorModel, opts.trigger !== 'auto'&&!opts.deferQuestions);
                         }
 
                         // Failed/unverified payloads cannot authorize unrelated destructive work.
@@ -623,7 +623,8 @@ export class Coordinator {
                                 try { await this.persist('checkpoint'); }
                                 catch(error){const issue=syncIssue(error,'checkpoint');issue.scope='session';stats.problem=issue.message;stats.problems!.push(issue);stats.outcome='error';}
                                 try { await this.current.mutations?.store.compact(); }
-                                catch(error) { console.warn('[VaultSync] Journal compaction deferred; existing history retained:',diagnosticText(error)); }
+                                catch(error) {const issue=syncIssue(error,'checkpoint');issue.scope='session';stats.problems!.push(issue);stats.problem=issue.message;stats.outcome='error';}
+                                if(this.current.mutations?.store.cleanupProblem){const problem=this.current.mutations.store.cleanupProblem;stats.problems!.push({code:'checkpoint-cleanup',message:problem,stage:'checkpoint',scope:'session',retryable:false});stats.problem=problem;stats.outcome='error';}
                                 try { await this.current.source.dispose?.(); } catch(error) { console.warn('[VaultSync] Source cleanup deferred:',diagnosticText(error)); }
                                 stats.pendingAfter=this.activeFailureCount();
                                 stats.retryScheduled=this.activeFailures().filter(file=>!file.poisoned).length;
@@ -657,7 +658,7 @@ export class Coordinator {
          * записи; они НЕ извлекаются из очереди заранее — повторная ошибка
          * наращивает retryCount через add(), удавшиеся удаляются после.
          */
-        async retryFailed(trigger:'manual'|'auto'='manual',paths?:readonly string[]): Promise<SyncStats | null> {
+        async retryFailed(trigger:'manual'|'auto'='manual',paths?:readonly string[],deferQuestions=false): Promise<SyncStats | null> {
                 const { ui, messages: m } = this.current;
                 // [P1/BUG-20] guard ДО confirm-модалки: при идущей синхронизации
                 // пользователь раньше сначала отвечал на confirm, а уже потом
@@ -689,7 +690,7 @@ export class Coordinator {
                 // «манифест-исключение» и «отмена посередине батча» не могут
                 // вычистить непробованные/прерванные записи. Упавшие здесь уже
                 // обновлены add() (retryCount++, новый backoff).
-                const stats = await this.sync({ forcedPaths: forced, trigger,onlyForcedPaths:true });
+                const stats = await this.sync({ forcedPaths: forced, trigger,onlyForcedPaths:true,deferQuestions });
                 // [overhaul S6 / D-4] финал retry-сессии: если что-то припарковалось
                 // за этот прогон (или было припарковано ранее) — прямо сказать,
                 // что автоповторы для этих файлов прекращены.
@@ -701,10 +702,10 @@ export class Coordinator {
         }
 
         /** Re-download selected source files while retaining the last applied baseline. */
-        async forceResync(): Promise<SyncStats | null> {
+        async forceResync(deferQuestions=false): Promise<SyncStats | null> {
                 if (this.running) { this.current.ui.notify(this.current.messages.alreadyInProgress); return null; }
                 // Refresh payloads without destroying ownership or local baselines.
-                return this.sync({ forceAll: true });
+                return this.sync({ forceAll: true,deferQuestions });
         }
 
         /**

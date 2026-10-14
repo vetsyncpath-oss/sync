@@ -432,6 +432,7 @@ export class SyncPopoverView {
                         return wrap;
                 }
                 if(sched.blockedReason){wrap.append(el('span',{text:tr('Автозапуски остановлены: ','Automatic runs stopped: ')+sched.blockedReason+tr(' Исправьте причину и выполните ручной запуск.',' Fix the cause and run manually.')}));return wrap;}
+                if(sched.running){wrap.append(el('span',{text:tr('Автосинхронизация выполняется.','Automatic synchronization is running.')}));return wrap;}
                 if(sched.pending){wrap.append(el('span',{text:tr('Автозапуск ожидает сеть, доступ или завершение текущей сессии.','Automatic run awaits network, access or the active session.')}));return wrap;}
                 if (sched.minutesUntilNext === null) {
                         // interval='startup-only' после первого тика — nextTickAt=null.

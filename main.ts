@@ -2,7 +2,7 @@ import { NodeHttpTransport, BufferedHostTransport } from './src/adapters/host-tr
 import { GoogleConnections } from './src/adapters/google-connections';
 import { pickGoogleFolder } from './src/ui/gdrive-folder-picker';
 import { DriveCoordinator } from './src/core/drive-coordinator';
-import { DriveStateStore, driveRecoveryReferences } from './src/core/drive-state';
+import { DriveStateStore, driveRecoveryReferences, driveNamespace } from './src/core/drive-state';
 import { GoogleDriveRoot } from './src/sources/gdrive-root';
 import { GDriveOAuthSource } from './src/sources/gdrive-oauth-source';
 import { effectiveBehavior } from './src/core/profile-policy';
@@ -414,7 +414,7 @@ class SettingsManager {
         constructor(plugin: GitSyncPlugin) {
                 this.plugin = plugin;
                 this.writer = new AcknowledgedSave(snapshot => plugin.saveData(snapshot));
-                this.debouncedSave = debounce(() => this.doSave(), DEBOUNCE_MS);
+                this.debouncedSave = debounce(() => {void this.doSave().catch(error=>{const message=diagnosticText(error);console.error('[VaultSync] settings save failed',message);new Notice((i18n.getLocale()==='ru'?'Настройки не сохранены: ':'Settings were not saved: ')+message,10000);});}, DEBOUNCE_MS);
         }
 
         async load(): Promise<GitSyncSettings> {
@@ -687,6 +687,7 @@ export default class GitSyncPlugin extends Plugin {
         private configurationKey = '';
         private preparedConfigRevision = 0;
         private proposedLastSync?:number;
+        private combinedSession=false;
         // [W4-T01] планировщик авто-синхронизации: создается в onload (после buildEngine),
         // интервал из settings.autoSyncInterval; снимается в onunload.
         private scheduler?: Scheduler;
@@ -1127,7 +1128,7 @@ export default class GitSyncPlugin extends Plugin {
                                 deletingFiles: (n) => i18n.t.noticeDeletingFiles(n),
                                 orphanWarning: (n) => i18n.t.noticeOrphanFiles(n),
                                 syncedWithErrors: (n) => i18n.t.noticeSyncedWithErrors(n),
-                                success: (dl, del, conf, dur) => i18n.t.noticeSuccess(dl, del, conf, dur),
+                                success: (dl, del, conf, dur) => this.combinedSession?'':i18n.t.noticeSuccess(dl, del, conf, dur),
                                 fileTooLarge: (sz, limit) => i18n.t.errFileTooLarge(sz, limit),
                                 conflictKeptLocal: (p) => i18n.t.noticeConflictKeptLocal(p),
                                 conflictBoth: (p) => i18n.t.noticeConflictBoth(p),
@@ -1852,7 +1853,7 @@ export default class GitSyncPlugin extends Plugin {
 
         private async executeSync(mode:'manual'|'auto'|'retry'|'force'|'scan'='manual',paths?:readonly string[],autoRetry=false):Promise<import('./src/sources/types').SyncStats|null> {
                 const source=this.coordinator.getCurrentSource(),compiled=this.effectiveProfilePolicy(this.builtSourceId);
-                const rules=compiled.fileRules??[],hasDrive=rules.some(r=>r.direction==='bidirectional');
+                const rules=compiled.fileRules??[],hasDrive=rules.some(r=>r.direction==='bidirectional');this.combinedSession=hasDrive;
                 if(!hasDrive)return mode==='retry'?this.coordinator.retryFailed(autoRetry?'auto':'manual',paths):mode==='force'?this.coordinator.forceResync():this.coordinator.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan'});
                 validateProfileConnections(this.settings.vaultPolicy!,this.settings.profiles??[],this.settings.connections??[]);
                 if(!(source instanceof RoutedSource))throw new SyncFault('routing','Drive requires a routed source','session');
@@ -1863,12 +1864,13 @@ export default class GitSyncPlugin extends Plugin {
                 const members=source.executionMembers().filter(member=>member.source instanceof GDriveOAuthSource)
                         .map(member=>({...member,source:member.source as GDriveOAuthSource,inventory:(member.source as GDriveOAuthSource).inventorySnapshot!}));
                 const states=new Map<string,DriveStateStore>();
-                for(const member of members){const namespace='drive_'+await sha256Hex(new TextEncoder().encode(JSON.stringify([this.cache.namespace,member.id])).buffer);
+                for(const member of members){const connection=this.settings.connections?.find(c=>c.id===member.id);const namespace=await driveNamespace(String(connection?.values.accountSub??''),member.inventory.root.id,member.id,compiled);
                         const state=new DriveStateStore(this.fsAdapter,namespace);await state.load();await this.mutations.recover(namespace,signal);states.set(member.id,state);}
-                const stats=mode==='retry'?await this.coordinator.retryFailed(autoRetry?'auto':'manual',paths):mode==='force'?await this.coordinator.forceResync():await this.coordinator.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan'});
+                const stats=mode==='retry'?await this.coordinator.retryFailed(autoRetry?'auto':'manual',paths,true):mode==='force'?await this.coordinator.forceResync(true):await this.coordinator.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan',deferQuestions:true});
                 if(signal.aborted||stats?.outcome==='cancelled'||stats?.problems?.some(issue=>issue.scope==='session'))return stats;
-                const aggregate:import('./src/sources/types').SyncStats=stats??{totalFiles:0,downloaded:0,deleted:0,skipped:0,failed:0,bytesTransferred:0,duration:0,conflicts:0,outcome:'ok'};
+                const aggregate:import('./src/sources/types').SyncStats=stats?structuredClone(stats):{totalFiles:0,downloaded:0,deleted:0,skipped:0,failed:0,bytesTransferred:0,duration:0,conflicts:0,outcome:'ok'};
                 const started=Date.now(),vault=this.makeVaultAdapter(),basePolicy=this.makePolicy(),defaultSource=compiled.defaultSource??'primary';
+                const questions:{driver:DriveCoordinator;paths:string[]}[]=[];
                 const map=(path:string)=>{const f=compiled.folders.filter(f=>f.target&&(!f.path||path===f.path||path.startsWith(f.path+'/'))).sort((a,b)=>b.path.length-a.path.length)[0];return f?computeLocalPath(path,f.path,f):path;};
                 for(const member of members){
                         signal.throwIfAborted();const pathPolicy=basePolicy.forSources([member.id],compiled.defaultSource,rules,compiled.folders,['bidirectional']);
@@ -1876,7 +1878,7 @@ export default class GitSyncPlugin extends Plugin {
                         const remoteForLocal=(path:string)=>{if(paths&&!paths.includes(path))return undefined;
                                 const remote=sourcePathForDestination(path,member.id,rules,defaultSource,compiled.folders);return remote&&localForRemote(remote).includes(path)?remote:undefined;};
                         const driver=new DriveCoordinator({vault,mutations:this.mutations,state:states.get(member.id)!,root:new GoogleDriveRoot(member.source.client,member.inventory.root.id,()=>{signal.throwIfAborted();if(this.preparedConfigRevision!==this.getConfigurationRevision())throw new SyncFault('configuration-changed','Settings changed during Drive synchronization','session');}),queue:this.queue,
-                                signal,auto:mode==='auto'||autoRetry,restoreOnly:mode==='scan',
+                                signal,auto:mode==='auto'||autoRetry,restoreOnly:mode==='scan',allowQuestions:false,
                                 guard:()=>{signal.throwIfAborted();if(this.preparedConfigRevision!==this.getConfigurationRevision())throw new SyncFault('configuration-changed','Settings changed during Drive synchronization','session');},
                                 localPaths:async()=>{const scan=await scanVaultTree(vault,{signal,pruneFolder:p=>p==='.git'||p==='.trash'||basePolicy.isProtectedPath(p)});return scan.files.filter(p=>remoteForLocal(p)!==undefined);},
                                 localForRemote,remoteForLocal,behavior:path=>{const behavior=effectiveBehavior(resolveFileRule(path,rules));
@@ -1886,12 +1888,33 @@ export default class GitSyncPlugin extends Plugin {
                         });
                         this.makeSyncUI().setStatus('syncing',{stage:'apply',progressText:member.name,lastActivityAt:Date.now()});
                         const result=await driver.run(member.inventory.items.filter(item=>item.file.mimeType!=='application/vnd.google-apps.folder'));
-                        for(const field of ['totalFiles','downloaded','uploaded','deleted','skipped','failed','bytesTransferred','conflicts','deferredConflicts','deferredDeletions'] as const)aggregate[field]=(aggregate[field]??0)+(result[field]??0);
+                        const questionPaths=result.results?.filter(row=>row.reason==='decision-required').map(row=>row.path)??[];if(questionPaths.length)questions.push({driver,paths:questionPaths});
+                        for(const field of ['totalFiles','downloaded','uploaded','deleted','deletedDrive','skipped','failed','bytesTransferred','conflicts','deferredConflicts','deferredDeletions'] as const)aggregate[field]=(aggregate[field]??0)+(result[field]??0);
                         aggregate.problems=[...aggregate.problems??[],...result.problems??[]];aggregate.results=[...aggregate.results??[],...result.results??[]];aggregate.followUp ||= result.followUp;
                         if(result.outcome!=='ok'){aggregate.outcome=result.outcome;aggregate.problem=result.problem;}
                         if(result.problems?.some(issue=>issue.scope==='session')||result.outcome==='cancelled')break;
                 }
-                aggregate.duration+=Date.now()-started;aggregate.pendingAfter=this.queue.size();
+                if(mode!=='auto'&&!autoRetry&&mode!=='scan'&&!signal.aborted&&!aggregate.problems?.some(issue=>issue.scope==='session')){
+                        const mergeAnswers=(answer:import('./src/sources/types').SyncStats|null,oldDeferred:number)=>{
+                                if(!answer)return;for(const field of ['downloaded','uploaded','deleted','deletedDrive','failed','bytesTransferred','conflicts'] as const)aggregate[field]=(aggregate[field]??0)+(answer[field]??0);
+                                aggregate.deferredConflicts=Math.max(0,(aggregate.deferredConflicts??0)-oldDeferred)+(answer.deferredConflicts??0);
+                                aggregate.problems?.push(...answer.problems??[]);aggregate.results?.push(...answer.results??[]);
+                                if(answer.outcome==='error'||answer.outcome==='cancelled'){aggregate.outcome=answer.outcome;aggregate.problem=answer.problem;}
+                        };
+                        if(stats?.deferredConflicts){const before=stats.deferredConflicts,oldDeletes=stats.deferredDeletions??0;
+                                const answer=await this.coordinator.sync({trigger:'manual'});mergeAnswers(answer,before);
+                                if(answer)aggregate.deferredDeletions=Math.max(0,(aggregate.deferredDeletions??0)-oldDeletes)+(answer.deferredDeletions??0);
+                        }
+                        for(const question of questions){if(signal.aborted||aggregate.problems?.some(issue=>issue.scope==='session'))break;
+                                aggregate.results=aggregate.results?.filter(row=>row.reason!=='decision-required'||!question.paths.includes(row.path));
+                                mergeAnswers(await question.driver.resolveQuestions(question.paths),question.paths.length);
+                        }
+                }
+                aggregate.duration+=Date.now()-started;
+                const runIds=source.executionMembers().map(member=>member.id),runPolicy=basePolicy.forSources(runIds,compiled.defaultSource,rules,compiled.folders);
+                aggregate.pendingAfter=this.queue.all().filter(file=>runPolicy.isPathAllowed(file.path)&&!effectiveBehavior(resolveFileRule(file.path,rules)).protected).length;
+                if(signal.aborted)aggregate.outcome='cancelled';
+                else if(!aggregate.failed&&!aggregate.pendingAfter&&!aggregate.notAttempted&&!aggregate.problems?.length)aggregate.outcome=aggregate.deferredDeletions?'error':'ok';
                 await this.persistEngineState('session-end');this.statusBar.setState(aggregate.outcome==='error'?'error':aggregate.deferredConflicts||aggregate.deferredDeletions?'conflicts':'idle');
                 return aggregate;
         }
@@ -1933,7 +1956,7 @@ export default class GitSyncPlugin extends Plugin {
                         let scheduler=this.autoSchedulers.get(job.key);
                         if(!scheduler){scheduler=new Scheduler({queue:this.queue,onAutoRetry:()=>{},
                                 canRun:()=>!this.autoBlockedReason&&!this.sessionOwned&&!this.coordinator?.isRunning()&&navigator.onLine&&isSyncAllowed(this.governance)&&vamAllowsWork(this),
-                                onAutoTick:()=>this.runAutoSession(job.key==='inherit'?this.automaticSourceIds().filter(id=>{const auto=this.settings.connections?.find(c=>c.id===id)?.auto;return auto===undefined||auto==='inherit';}):[job.key]),
+                                onAutoTick:()=>this.runAutoSession(job.key==='inherit'?this.automaticSourceIds().filter(id=>{const auto=this.settings.connections?.find(c=>c.id===id)?.auto;return auto===undefined||auto==='inherit';}):[job.key],scheduler?.snapshot().lastAutoTickAt===null),
                                 onStateChange:()=>this.popoverView?.update(this.snapshotPopoverState())});this.autoSchedulers.set(job.key,scheduler);}
                         if(job.ids.length){scheduler.start(job.interval as SchedulerInterval);if(this.autoPaused)scheduler.pause();}
                         if(job.key==='inherit')this.scheduler=scheduler;
@@ -1963,19 +1986,20 @@ export default class GitSyncPlugin extends Plugin {
                 return {...state,blockedReason:this.autoBlockedReason,paused:states.every(s=>s.paused),pending:states.some(s=>s.pending),running:states.some(s=>s.running)};
         }
 
-        /** Auto-сессия: headless-режим (W4-T02). coordinator.sync с trigger='auto'
-         *  идёт без confirm-модалки; mirrorLevel=fetch/light → удаления откладываются,
-         *  All automatic deletions await a manual accepted plan. */
-        private async runAutoSession(sourceIds?:readonly string[]): Promise<import('./src/core/scheduler').AutoTickResult> {
+        /** Background pull keeps its existing deletion guards. The explicitly
+         *  bidirectional Drive profile propagates confirmed tracked deletions through trash. */
+        private async runAutoSession(sourceIds?:readonly string[],initialCheck=false): Promise<import('./src/core/scheduler').AutoTickResult> {
                 if(!sourceIds?.length)return {accepted:true};
                 const stats=await this.runSession('auto', async () => {
                         await this.prepareSession(sourceIds);
                         return await this.executeSync('auto');
                 },sourceIds);
+                if(stats?.outcome==='cancelled')return {accepted:true};
                 const compiled=this.effectiveProfilePolicy(this.builtSourceId),due=this.queue.all().filter(file=>!file.poisoned&&sourceIds.includes(resolveFileRule(file.path,compiled.fileRules).source??compiled.defaultSource??''));
                 const retryAt=due.length?Math.min(...due.map(file=>file.nextRetryAt)):undefined;
                 const retryableFailure=stats?.problems?.some(issue=>issue.retryable&&(issue.scope==='source'||issue.scope==='session'));
-                return {accepted:stats!==null,retryAt:retryAt??((retryableFailure||!stats&&!this.autoBlockedReason)?Date.now()+60_000:undefined),followUp:stats?.followUp,retryableFailure};
+                const transferred=Boolean(stats&&(stats.downloaded||stats.uploaded||stats.updated||stats.deleted));
+                return {accepted:stats!==null,retryAt:retryAt??((retryableFailure||!stats&&!this.autoBlockedReason)?Date.now()+60_000:undefined),followUp:stats?.followUp||stats?.outcome==='ok'&&(initialCheck||transferred),retryableFailure};
         }
 
         async retryFailedFiles(trigger:'manual'|'auto'='manual',paths?:readonly string[]): Promise<void> {
@@ -2038,14 +2062,14 @@ export default class GitSyncPlugin extends Plugin {
                 const startedAt = Date.now();
                 this.statusBar?.setState('syncing', { phase: -1, pendingCount: 0, bytesTransferred: 0, totalBytes: 0, progressText: i18n.getLocale() === 'ru' ? 'Подготовка запуска…' : 'Preparing run…' });
                 if (trigger !== 'auto' && this.app && this.statusBar && this.queue && this.journal) this.openStatusPopover();
-                try {const stats=await this.runOwnedSession(trigger, fn);if(stats?.problems?.some(issue=>issue.scope==='session'&&!issue.retryable))this.autoBlockedReason=stats.problem;return stats;}
+                try {const stats=await this.runOwnedSession(trigger, fn);if(stats?.problems?.some(issue=>(issue.scope==='session'||issue.code==='auth-required')&&!issue.retryable))this.autoBlockedReason=stats.problem;return stats;}
                 catch (error) {
                         if(!this.sessionController.signal.aborted){this.lastBlockReason=diagnosticText(error);this.statusBar?.setState('error');new Notice(i18n.t.noticeSyncFailed(this.lastBlockReason),10000);}
                         else this.statusBar?.setState('idle');
                         this.autoBlockedReason=this.lastBlockReason;try{await this.recordJournal(trigger, null, startedAt);}catch(journalError){console.error('[VaultSync] journal unavailable',diagnosticText(journalError));}return null;
                 }
                 finally {
-                        this.sessionOwned = false; this.sessionController = undefined;this.sessionProgress=undefined;this.wakeAutoSync();
+                        this.sessionOwned = false; this.sessionController = undefined;this.sessionProgress=undefined;this.combinedSession=false;this.wakeAutoSync();
                         this.popoverView?.update(this.snapshotPopoverState());
                         const modal = this.statusModal;
                         if (modal) void this.journal.load().then(entries => {
@@ -2195,7 +2219,7 @@ export default class GitSyncPlugin extends Plugin {
          *  applyManagerProbe, pauseAutoSync, иные точки смены состояния). */
         private buildVaultSyncState(): VaultSyncState {
                 const mirrorLevel = this.currentMirrorLevel();
-                const syncState = this.coordinator?.isRunning() ? 'syncing' : 'idle';
+                const syncState = this.sessionOwned || this.coordinator?.isRunning() ? 'syncing' : 'idle';
                 return {
                         syncState: syncState as VaultSyncState['syncState'],
                         mirrorLevel,
@@ -2235,7 +2259,7 @@ export default class GitSyncPlugin extends Plugin {
                         engine:this.builtKind,mirrorLevel:this.currentMirrorLevel(),trigger,
                         outcome:stats?.outcome??(this.sessionController?.signal.aborted?'cancelled':'error'),sources:stats?this.coordinator?.getCurrentSource().sources?.map(source=>source.name):this.requestedSources,
                         profilesMode:Boolean(this.settings.profiles?.length),blockedReason:stats?.problem??(stats?undefined:this.lastBlockReason),attemptOnly:!stats,
-                        downloaded:stats?.downloaded??0,uploaded:stats?.uploaded??0,deletedDrive:stats?.deleted??0,updated:stats?.updated??0,received:stats?.received??0,
+                        downloaded:stats?.downloaded??0,uploaded:stats?.uploaded??0,deletedDrive:stats?.deletedDrive??0,updated:stats?.updated??0,received:stats?.received??0,
                         trace:stats?.trace,traceDropped:stats?.traceDropped,sessionId:stats?.sessionId,build:BUILD_TAG,platform:Platform.isDesktopApp?'desktop':'mobile',pendingBefore:stats?.pendingBefore,pendingAfter:stats?.pendingAfter,retryScheduled:stats?.retryScheduled,blocked:stats?.blocked,networkBytes:stats?.networkBytes,problems:stats?.problems,notAttempted:stats?.notAttempted,
                         deletedLight:stats?.deleteLight??0,deletedFull:stats?.deleteFull??0,overwritten:stats?.overwritten??0,
                         conflicts:stats?.conflicts??0,skipped:stats?.skipped??0,errors:stats?.failed??0,
@@ -2579,7 +2603,7 @@ export default class GitSyncPlugin extends Plugin {
         private async assertEditorSaved(path:string):Promise<void> {
                 const leaves=this.app.workspace?.getLeavesOfType('markdown')??[];
                 for(const leaf of leaves){const view=leaf.view as unknown as {file?:{path:string};editor?:{getValue():string};data?:string};
-                        if(view.file?.path===normalizePath(path)&&view.editor&&view.editor.getValue()!==await this.app.vault.adapter.read(normalizePath(path)))
+                        if(view.file?.path.normalize('NFC').toLowerCase()===normalizePath(path).normalize('NFC').toLowerCase()&&view.editor&&view.editor.getValue()!==await this.app.vault.adapter.read(normalizePath(path)))
                                 throw new SyncFault('unsaved-editor',`Save or close the editor before syncing: ${path}`);
                 }
         }
@@ -2645,6 +2669,7 @@ export default class GitSyncPlugin extends Plugin {
                                 this.popoverView?.update(this.snapshotPopoverState());
                         },
                         notify: (message, timeoutMs) => {
+                                if(!message||this.combinedSession&&message===i18n.t.noticeVaultUpToDate)return;
                                 if (timeoutMs !== undefined) new Notice(message, timeoutMs);
                                 else new Notice(message);
                         },

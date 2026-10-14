@@ -18,6 +18,7 @@ export interface DriveExecutionPorts {
     behavior(path:string):EffectiveBehavior;
     guard():void; signal:AbortSignal; auto:boolean; observe?:TransferObserver;
     restoreOnly?:boolean;
+    allowQuestions?:boolean;
     ask?(path:string,localSize:number,remoteSize:number):Promise<ConflictChoice>;
 }
 const sibling=(path:string,id:string,label='local')=>{const slash=path.lastIndexOf('/'),base=path.slice(slash+1),dot=base.lastIndexOf('.');
@@ -85,11 +86,11 @@ export class DriveCoordinator {
                 }
                 if(decision==='conflict'){
                     this.stats.conflicts++;
-                    if(behavior.conflict.action==='ask'){asks.push(path);this.stats.deferredConflicts=(this.stats.deferredConflicts??0)+1;continue;}
+                    if(behavior.conflict.action==='ask'){asks.push(path);this.stats.deferredConflicts=(this.stats.deferredConflicts??0)+1;(this.stats.results??=[]).push({path,status:'pending',reason:'decision-required'});continue;}
                     if(behavior.conflict.action==='keep-local')decision='upload';
                 }
                 if(decision==='delete-edit-local'||decision==='delete-edit-remote')this.stats.conflicts++;
-                const reviewRequired=decision==='upload'&&!!remote;
+                const reviewRequired=decision==='upload'&&!!remote&&!remote.trashed;
                 if(reviewRequired){decision='conflict';this.stats.conflicts++;}
                 const intent:DriveIntent={id:crypto.randomUUID(),kind:decision as DriveIntent['kind'],path,remotePath,local,reviewRequired,
                     remoteId:remote?.id,remoteVersion:remote?.version,remoteHash:observation.kind==='file'?observation.hash:undefined};
@@ -113,7 +114,7 @@ export class DriveCoordinator {
             }
         }
         // Background never waits on a dialog; manual questions occur only after all independent files.
-        try{if(!this.p.auto&&this.p.ask)for(const path of asks){
+        try{if(!this.p.auto&&this.p.ask&&this.p.allowQuestions!==false)for(const path of asks){
             this.guard();const candidate=remotes.get(path)!;const local=await observeLocal(this.p.vault,path);
             const choice=await this.p.ask(path,local.kind==='file'?local.size:0,Number(candidate.file.size));this.guard();
             if(choice==='defer')continue;
@@ -121,13 +122,19 @@ export class DriveCoordinator {
             const child=new DriveCoordinator({...this.p,localPaths:async()=>[path],localForRemote:r=>r===candidate.path?[path]:[],
                 remoteForLocal:p=>p===path?this.p.remoteForLocal(p):undefined,behavior:p=>({...this.p.behavior(p),conflict:{action:choice==='local-wins'?'keep-local':'keep-remote',keepOther:true}}),ask:undefined});
             const result=await child.run(this.inventory);this.stats.downloaded+=result.downloaded;this.stats.uploaded!+=result.uploaded??0;
-            this.stats.failed+=result.failed;this.stats.bytesTransferred+=result.bytesTransferred;this.stats.deferredConflicts!--;
+            this.stats.failed+=result.failed;this.stats.deleted+=result.deleted;this.stats.deletedDrive=(this.stats.deletedDrive??0)+(result.deletedDrive??0);
+            this.stats.bytesTransferred+=result.bytesTransferred;this.stats.deferredConflicts!--;
+            this.stats.results=this.stats.results?.filter(row=>row.path!==path||row.reason!=='decision-required');this.stats.results?.push(...result.results??[]);
             if(result.outcome==='error'){this.stats.outcome='error';this.stats.problems!.push(...result.problems??[]);}
         }}catch(error){if(this.p.signal.aborted)this.stats.outcome='cancelled';else{const issue=syncIssue(error,'confirm');this.stats.problems!.push(issue);this.stats.problem=issue.message;this.stats.failed++;this.stats.outcome='error';}}
         this.stats.pendingAfter=this.p.queue.size();this.stats.duration=Date.now()-started;return this.stats;
     }
+    resolveQuestions(paths:readonly string[]):Promise<SyncStats>{
+        return new DriveCoordinator({...this.p,allowQuestions:true,localPaths:async()=>paths.filter(path=>this.p.remoteForLocal(path)!==undefined),
+            localForRemote:path=>this.p.localForRemote(path).filter(local=>paths.includes(local)),remoteForLocal:path=>paths.includes(path)?this.p.remoteForLocal(path):undefined}).run(this.inventory);
+    }
     private guard():void{this.p.signal.throwIfAborted();this.p.guard();}
-    private async checkpoint(update:Parameters<DriveStateStore['save']>[0]):Promise<void>{this.guard();try{await this.p.state.save(update);}catch{throw new SyncFault('checkpoint','Drive checkpoint could not be saved; session stopped','session');}this.guard();}
+    private async checkpoint(update:Parameters<DriveStateStore['save']>[0]):Promise<void>{this.guard();try{await this.p.state.save(update);}catch{throw new SyncFault('checkpoint','Drive checkpoint could not be saved; session stopped','session');}this.guard();if(this.p.state.cleanupProblem)throw new SyncFault('checkpoint-cleanup',this.p.state.cleanupProblem,'session');}
     private persist(intent:DriveIntent):Promise<void>{return this.checkpoint(s=>s.pending[intent.path]=structuredClone(intent));}
     private clear(path:string):Promise<void>{return this.checkpoint(s=>{delete s.pending[path];delete s.baseline[path];if(s.reviews)delete s.reviews[path];});}
     private async baseline(path:string,remotePath:string,local:LocalVersion,remote:DriveFile,review?:DriveIntent):Promise<void>{
@@ -137,7 +144,9 @@ export class DriveCoordinator {
     }
     private async write(path:string,before:LocalVersion,bytes:ArrayBuffer,id:string):Promise<void>{
         this.guard();await this.dirs.ensure(this.p.vault,path);this.guard();
-        await this.p.mutations.write(this.p.state.namespace,{id,planId:id,path,before,requireConditionalWrite:true,guard:()=>this.guard()},bytes,this.p.signal);
+        const existing=this.p.mutations.store.records(this.p.state.namespace).find(record=>record.id===id);
+        const attempt=existing?.status==='not-applied'?id+'-'+crypto.randomUUID():id;
+        await this.p.mutations.write(this.p.state.namespace,{id:attempt,planId:id,path,before,requireConditionalWrite:true,guard:()=>this.guard()},bytes,this.p.signal);
     }
     private async trashLocal(intent:DriveIntent):Promise<void>{
         if(!this.p.vault.trash)throw new SyncFault('trash-unavailable','Local trash is unavailable; original retained','session');
@@ -147,7 +156,7 @@ export class DriveCoordinator {
     }
     private async trashRemote(id:string):Promise<void>{this.guard();const file=await this.p.root.owned(id,this.p.signal,true);
         if(file.trashed)return;if(file.capabilities?.canTrash===false)throw new SyncFault('access-denied','Drive trash permission is missing');
-        this.guard();await this.p.root.client.metadata(id,{trashed:true},this.p.signal);this.stats.deleted++;}
+        this.guard();await this.p.root.client.metadata(id,{trashed:true},this.p.signal);this.stats.deleted++;this.stats.deletedDrive=(this.stats.deletedDrive??0)+1;}
     private async create(intent:DriveIntent,copy:boolean):Promise<DriveFile>{
         const ref=copy?intent.copyBytes:intent.bytes;if(!ref)throw new SyncFault('recovery-invalid','Upload snapshot is missing','session');
         const bytes=await this.p.mutations.recovery.read(ref),path=(copy?intent.copyRemotePath:intent.remotePath)!;
@@ -195,6 +204,10 @@ export class DriveCoordinator {
             // Restoring a kept, tracked object preserves its ID and never overwrites its content.
             let old=await this.p.root.owned(intent.remoteId,this.p.signal,true,intent.remotePath);
             if(old.trashed){this.guard();old=await this.p.root.client.metadata(old.id,{trashed:false},this.p.signal);}
+            const bytes=await this.p.mutations.recovery.read(intent.bytes!),base=this.p.state.snapshot().baseline[intent.path];
+            if(old.sha256Checksum===intent.bytes!.sha256){await this.baseline(intent.path,intent.remotePath,await versionOf(bytes),old);return;}
+            if(base&&intent.bytes!.sha256===base.localHash){const remoteBytes=await this.p.root.client.download(old,this.p.signal);
+                await this.write(intent.path,intent.local,remoteBytes,intent.id+'-restore');await this.baseline(intent.path,intent.remotePath,await versionOf(remoteBytes),old);this.stats.downloaded++;return;}
             intent.kind='conflict';intent.remoteVersion=old.version;intent.reviewRequired=true;
             intent.copyPath=sibling(intent.path,intent.id);intent.copyRemotePath=sibling(intent.remotePath,intent.id);
             intent.copyBytes=intent.bytes;intent.copyLocal=MISSING;await this.persist(intent);await this.execute(intent);return;

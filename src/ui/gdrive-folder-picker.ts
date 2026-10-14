@@ -14,7 +14,7 @@ export function pickGoogleFolder(app: App, client: GoogleDriveClient, signal: Ab
     return new Promise(resolve => { const modal = new GoogleFolderPicker(app,client,signal,resolve); trackModal(modal); modal.open(); });
 }
 class GoogleFolderPicker extends Modal {
-    private readonly controller = new AbortController();
+    private controller = new AbortController();
     private current?: DriveFile;
     private history: string[] = [];
     private generation = 0;
@@ -28,12 +28,13 @@ class GoogleFolderPicker extends Modal {
         if(!this.resolved){this.resolved=true;this.complete();}
     }
     private async load(id: string): Promise<void> {
-        const generation=++this.generation,box=this.contentEl;box.replaceChildren();box.append(element('p',tr('Загрузка папок…','Loading folders…')));
+        this.controller.abort();this.controller=new AbortController();
+        const signal=this.controller.signal,generation=++this.generation,box=this.contentEl;box.replaceChildren();box.append(element('p',tr('Загрузка папок…','Loading folders…')));
         try {
-            const folder=await this.client.inspect(id,this.controller.signal);
+            const folder=await this.client.inspect(id,signal);
             if(folder.mimeType!==DRIVE_FOLDER||folder.trashed)throw Error(tr('Выберите доступную папку','Select an accessible folder'));
-            const children=await this.client.listChildren(folder.id,this.controller.signal,folder.driveId);
-            if(generation!==this.generation||this.controller.signal.aborted)return;
+            const children=await this.client.listChildren(folder.id,signal,folder.driveId);
+            if(generation!==this.generation||signal.aborted)return;
             this.current=folder;box.replaceChildren();box.append(element('h3',tr('Папка Google Drive','Google Drive folder')),element('p',folder.name));
             if(this.history.length)button(box,tr('Назад','Back'),()=>void this.load(this.history.pop()!));
             for(const child of children.filter(f=>f.mimeType===DRIVE_FOLDER).sort((a,b)=>a.name.localeCompare(b.name)))
@@ -43,7 +44,7 @@ class GoogleFolderPicker extends Modal {
             button(box,tr('Выбрать эту папку','Select this folder'),()=>{
                 if(!this.current)return;this.resolved=true;this.complete(this.current);this.close();
             },'mod-cta');button(box,tr('Отмена','Cancel'),()=>this.close());
-        } catch(error) {if(generation!==this.generation||this.controller.signal.aborted)return;
+        } catch(error) {if(generation!==this.generation||signal.aborted)return;
             box.replaceChildren();box.append(element('p',String(error),'sync-workspace-error'));this.linkControl(box);
             button(box,tr('Вернуться в Мой диск','Return to My Drive'),()=>void this.load('root'));button(box,tr('Отмена','Cancel'),()=>this.close());}
     }

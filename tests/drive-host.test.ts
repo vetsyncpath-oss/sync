@@ -10,7 +10,7 @@ const profiles=structuredClone([...STANDARD_PROFILES]);
 const policy={version:1 as const,mirror:false,folders:[],defaultSource:'drive',assignments:[
     {scope:'vault' as const,path:'',profileId:'standard:drive-bidirectional'},
     {scope:'folder' as const,path:'Git',source:'git',profileId:'standard:safe'}]};
-const connections=[{id:'drive',name:'Drive',kind:'gdrive' as const,values:{authMode:'oauth-desktop',folderId:'root'}},{id:'git',name:'Git',kind:'git' as const,values:{repoUrl:'https://github.com/test/repo'}}];
+const connections=[{id:'drive',name:'Drive',kind:'gdrive' as const,values:{authMode:'oauth-desktop',folderId:'root',accountSub:'SUB'}},{id:'git',name:'Git',kind:'git' as const,values:{repoUrl:'https://github.com/test/repo'}}];
 async function host(){
     const f=fixture(),compiled=compileProfiles(policy,profiles),plugin=Object.create(Plugin.prototype) as any;
     const file={id:'remote',name:'a.md',mimeType:'text/plain',parents:['root'],version:'1',size:String(ab('REMOTE').byteLength),sha256Checksum:entry('a.md').hash};
@@ -39,4 +39,37 @@ test('profile validation rejects bidirectional inheritance into a Git child with
     const invalid:import('../src/core/policy').SyncPolicy=structuredClone(policy);delete invalid.assignments![1].profileId;
     assert.throws(()=>validateProfileConnections(invalid,profiles,connections),/OAuth Google Drive/);
     validateProfileConnections(policy,profiles,connections);
+});
+test('automatic completion verifies initial and repaired transfers, then leaves a no-op startup job completed',async()=>{
+    const h=await host();let stats={totalFiles:0,downloaded:0,deleted:0,skipped:0,failed:0,bytesTransferred:0,duration:0,conflicts:0,outcome:'ok'};
+    h.plugin.runSession=async()=>stats;
+    assert.equal((await h.plugin.runAutoSession(['drive'],true)).followUp,true);
+    assert.equal((await h.plugin.runAutoSession(['drive'],false)).followUp,false);
+    stats={...stats,downloaded:1,failed:1,outcome:'error'};
+    assert.equal((await h.plugin.runAutoSession(['drive'],false)).followUp,false);
+    stats={...stats,downloaded:1,failed:0,outcome:'ok'};
+    assert.equal((await h.plugin.runAutoSession(['drive'],false)).followUp,true);
+});
+test('public synchronization state covers the Drive phase while the pull coordinator is idle',async()=>{
+    const h=await host();h.plugin.currentMirrorLevel=()=> 'fetch';h.plugin.governance={managerEverActive:false,status:'none',lastCheckedAt:null,lastBlockedReason:null};
+    h.plugin.sessionOwned=true;assert.equal(h.plugin.buildVaultSyncState().syncState,'syncing');
+    h.plugin.sessionOwned=false;assert.equal(h.plugin.buildVaultSyncState().syncState,'idle');
+});
+test('mixed manual pipeline applies independent files from both engines before presenting either source question',async()=>{
+    const {parseHTML}=await import('linkedom'),{document,window}=parseHTML('<html><body></body></html>');Object.assign(globalThis,{document,window});
+    const {ConflictAskModal}=await import('../src/ui/conflict-modal');const oldWait=ConflictAskModal.prototype.wait;
+    const h=await host(),p=[...profiles,{id:'ask-drive',name:'Ask Drive',direction:'bidirectional' as const,write:'changes' as const,delete:'tracked' as const,conflict:'ask' as const},
+        {id:'ask-pull',name:'Ask pull',write:'changes' as const,delete:'keep' as const,conflict:'ask' as const}];
+    const next=structuredClone(policy);next.assignments[0].profileId='ask-drive';next.assignments[1].profileId='ask-pull';const compiled=compileProfiles(next,p);
+    h.plugin.settings.profiles=p;h.plugin.settings.vaultPolicy=next;h.plugin.effectiveProfilePolicy=()=>compiled;h.plugin.serializeAsk=(fn:()=>unknown)=>fn();
+    h.f.coordinator.setSyncPolicy(compiled);h.f.coordinator.setPolicy(pathPolicy().forSources(['drive','git'],'drive',compiled.fileRules!,[],['pull']));
+    h.f.files.set('a.md',ab('LOCAL DRIVE'));h.f.files.set('Git/b.md',ab('LOCAL GIT'));
+    const drive=h.plugin.coordinator.getCurrentSource().executionMembers().find((m:any)=>m.id==='drive').source,inventory=drive.client.inventory;
+    drive.client.inventory=async()=>{const original=await inventory();return {...original,items:[...original.items,{path:'other.md',file:{...original.items[0].file,id:'other',name:'other.md'}}]};};
+    h.git.getManifest=async()=>[entry('Git/b.md'),entry('Git/c.md')];let questions=0;
+    const assertReady=()=>{questions++;assert.equal(str(h.f.files.get('Git/c.md')!),'REMOTE');assert.equal(str(h.f.files.get('other.md')!),'REMOTE');};
+    h.f.resolverDeps.ui={askConflict:async()=>{assertReady();return 'defer';}};
+    ConflictAskModal.prototype.wait=async()=>{assertReady();return 'defer';};
+    try{const result=await h.plugin.executeSync('manual');assert.equal(result.failed,0);assert.equal(result.deferredConflicts,2);assert.equal(questions,2);}
+    finally{ConflictAskModal.prototype.wait=oldWait;}
 });

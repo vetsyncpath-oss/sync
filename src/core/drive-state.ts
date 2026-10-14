@@ -4,6 +4,14 @@ import type { DriveBaseline } from './drive-planner';
 import type { DriveUploadState } from '../sources/gdrive-client';
 import type { LocalVersion } from './local-version';
 import type { RecoveryRef } from './operation-store';
+import type { SyncPolicy } from './policy';
+export async function driveNamespace(subject:string,rootId:string,connectionId:string,policy:SyncPolicy):Promise<string>{
+    if(!subject||!rootId||!connectionId)throw Error('Drive identity is incomplete');
+    const rules=policy.fileRules??[],routes=rules.filter(r=>r.source===connectionId).map(r=>({scope:r.scope,path:r.path,names:r.names,remotePath:r.remotePath}));
+    const isDefault=policy.defaultSource===connectionId&&!rules.some(r=>r.scope==='vault'&&!r.names&&r.source);
+    const mapping=policy.folders.filter(r=>r.target).map(r=>({path:r.path,target:r.target}));
+    return 'drive_'+await sha256Hex(new TextEncoder().encode(JSON.stringify({subject,rootId,connectionId,isDefault,routes,mapping})).buffer);
+}
 export interface DriveIntent {
     id:string; path:string; remotePath:string; kind:'upload'|'conflict'|'trash-local'|'trash-remote'|'delete-edit-local'|'delete-edit-remote';
     local:LocalVersion; remoteId?:string; remoteVersion?:string; remoteHash?:string; bytes?:RecoveryRef;
@@ -28,6 +36,8 @@ export class DriveStateStore {
     private state:DriveState={version:1,sequence:0,baseline:{},pending:{}};
     private loaded=false;
     private chain:Promise<void>=Promise.resolve();
+    private cleanupError?:string;
+    get cleanupProblem():string|undefined{return this.cleanupError;}
     private readonly prefix:string;
     constructor(private readonly fs:FileSystem,readonly namespace:string){if(!/^[\w-]+$/.test(namespace))throw Error('Invalid Drive namespace');this.prefix=`drive-state-${namespace}-`;}
     private names(names:string[]):string[]{return names.filter(n=>n.startsWith(this.prefix)&&/^\d{16}\.json$/.test(n.slice(this.prefix.length))).sort();}
@@ -49,8 +59,9 @@ export class DriveStateStore {
         const temp=name+'.tmp';await this.fs.write(temp,json);if(await this.fs.read(temp)!==json)throw Error('Drive checkpoint write failed');
         await this.fs.rename(temp,name);const verified=await this.read(name);this.state=verified;
         // Retain two authoritative generations. Cleanup failure is visible and retried next publication.
+        this.cleanupError=undefined;
         try {await this.cleanup();}
-        catch(error){console.warn('[VaultSync] Drive checkpoint cleanup deferred',error);}
+        catch(error){this.cleanupError='Old Drive checkpoints could not be cleaned; metadata retained';console.warn('[VaultSync] Drive checkpoint cleanup deferred',error);}
     }
     private async cleanup():Promise<void>{
         const names=this.names(await this.fs.list());if(names.length<3)return;

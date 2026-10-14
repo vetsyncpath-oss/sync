@@ -1,11 +1,23 @@
 import type { NetRequest, NetResponse, NetTransport } from '../sources/types';
 import { SyncFault } from '../core/sync-issue';
+import { NetError } from '../core/net';
 
 export const GOOGLE_SCOPES = ['https://www.googleapis.com/auth/drive', 'openid'] as const;
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export interface GoogleClient { clientId: string; clientSecret?: string }
 export interface GoogleGrant { accessToken: string; refreshToken: string; expiresIn: number; subject: string }
 export interface SecretPort { getSecret(id: string): string | null; setSecret(id: string, value: string): void }
+
+/** Transport errors are network failures, not local IO. Never copy a request URL or body into diagnostics. */
+function googleNetworkFailure(error:unknown,signal?:AbortSignal):unknown {
+    signal?.throwIfAborted();
+    if(error instanceof SyncFault||error instanceof NetError||(error as {name?:string})?.name==='AbortError')return error;
+    const status=(error as {status?:number})?.status,code=(error as {code?:string})?.code;
+    if(status!==undefined&&Number.isInteger(status)&&status>=400&&status<=599)
+        return Object.assign(new SyncFault(status===401?'auth-required':'google-api',`Google transport failed: HTTP ${status}`,'source',status===408||status===429||status>=500),{status});
+    if(code&&['file-too-large','redirect-policy','response-format'].includes(code))return new SyncFault(code,'Google transport rejected the response','source');
+    return new SyncFault('network','Google connection interrupted; retry required','source',true);
+}
 
 export function parseGoogleClient(raw: string): GoogleClient {
     const value = JSON.parse(raw)?.installed;
@@ -16,17 +28,18 @@ export function parseGoogleClient(raw: string): GoogleClient {
 }
 export async function googleJson(transport: NetTransport, url: string, request: NetRequest): Promise<any> {
     request.signal?.throwIfAborted();
-    const response = await transport.fetch(url, { ...request, maxBytes: request.maxBytes ?? 1024 * 1024, redirect: 'error' });
-    return googleResponse(response,request.signal);
+    try{const response = await transport.fetch(url, { ...request, maxBytes: request.maxBytes ?? 1024 * 1024, redirect: 'error' });
+        return await googleResponse(response,request.signal);
+    }catch(error){throw googleNetworkFailure(error,request.signal);}
 }
 export async function googleResponse(response:NetResponse,signal?:AbortSignal):Promise<any> {
-    const raw = await response.text(); signal?.throwIfAborted();
+    let raw:string;try{raw=await response.text();}catch(error){throw googleNetworkFailure(error,signal);}signal?.throwIfAborted();
     let data: any;
     try { data = JSON.parse(raw); } catch { data=undefined; }
     if (response.status < 200 || response.status >= 300) {
         const candidate = typeof data?.error === 'string' ? data.error : data?.error?.errors?.[0]?.reason;
         const reason = typeof candidate === 'string' && /^[\w.-]{1,80}$/.test(candidate) ? candidate : undefined;
-        const retryable = response.status === 429 || response.status >= 500 || ['rateLimitExceeded', 'userRateLimitExceeded'].includes(reason ?? '');
+        const retryable = response.status === 408 || response.status === 429 || response.status >= 500 || ['rateLimitExceeded', 'userRateLimitExceeded'].includes(reason ?? '');
         const retry=response.headers['retry-after'];const delay=retry&&/^\d+$/.test(retry)?Number(retry)*1000:retry?Math.max(0,Date.parse(retry)-Date.now()):0;
         throw Object.assign(new SyncFault(reason === 'invalid_grant' || response.status === 401 ? 'auth-required' : reason ?? 'google-api',
             `Google request failed: HTTP ${response.status}${reason ? ` (${reason})` : ''}`, 'source', retryable), { status: response.status,retryAt:retryable&&Number.isFinite(delay)&&delay>0?Date.now()+delay:undefined });
@@ -131,11 +144,25 @@ export class GoogleAuthorizedTransport implements NetTransport {
         const generation = this.tokens.generation;
         for (let attempt = 0; attempt < 2; attempt++) {
             const token = await this.tokens.getToken(false, options.signal);
-            const response = await this.transport.fetch(url, { ...options, redirect: 'error',
-                headers: { ...options.headers, Authorization: `Bearer ${token}` } });
+            let response:NetResponse;
+            try{response = await this.transport.fetch(url, { ...options, redirect: 'error',
+                headers: { ...options.headers, Authorization: `Bearer ${token}` } });}
+            catch(error){
+                if(generation!==this.tokens.generation)throw new SyncFault('auth-required','Google account disconnected','source');
+                options.signal?.throwIfAborted();
+                if((error as {status?:number})?.status===401&&attempt===0){this.tokens.invalidateAccess(token);continue;}
+                throw googleNetworkFailure(error,options.signal);
+            }
             if (generation !== this.tokens.generation) { response.discard?.(); throw new SyncFault('auth-required', 'Google account disconnected', 'source'); }
             if(options.signal?.aborted){response.discard?.();options.signal.throwIfAborted();}
-            if (response.status !== 401 || attempt === 1) return response;
+            if (response.status !== 401 || attempt === 1) {
+                const read=async<T>(body:()=>Promise<T>):Promise<T>=>{
+                    try{const result=await body();options.signal?.throwIfAborted();
+                        if(generation!==this.tokens.generation)throw new SyncFault('auth-required','Google account disconnected','source');return result;
+                    }catch(error){throw googleNetworkFailure(error,options.signal);}
+                };
+                return {...response,text:()=>read(()=>response.text()),arrayBuffer:()=>read(()=>response.arrayBuffer()),discard:()=>response.discard?.()};
+            }
             this.tokens.invalidateAccess(token);response.discard?.();
         }
         throw new SyncFault('auth-required', 'Reconnect Google account', 'source');

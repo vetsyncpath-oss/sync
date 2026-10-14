@@ -99,6 +99,7 @@ export class Scheduler {
     private retryAt:number|null=null;
     private followUps=0;
     private rejectedRuns=0;
+    private generation=0;
     /** Активный таймер: либо setTimeout (до 1-го тика), либо setInterval
      *  (после 1-го тика в периодическом режиме). Для startup-only — setTimeout. */
     private timer: unknown = null;
@@ -135,6 +136,7 @@ export class Scheduler {
      * startDelayMs < 0 не передаёт первый задержанный тик — это мгновенный старт.
      */
     start(interval: SchedulerInterval, startDelayMs: number = DEFAULT_START_DELAY_MS): void {
+        this.generation++;
         this.stopTimer();
         this.interval = interval;
         this.paused = false;
@@ -207,6 +209,7 @@ export class Scheduler {
 
     /** Полная остановка (interval → off, таймер снят). */
     stop(): void {
+        this.generation++;
         this.stopTimer();
         this.interval = 'off';this.pending=false;
         this.paused = false;
@@ -265,17 +268,18 @@ export class Scheduler {
         this.pending=true;
         if(this.interval==='startup-only'&&this.startupConsumed){this.pending=false;return;}
         if(this.ticking||this.paused||this.interval==='off'||!(this.deps.canRun?.()??true)){this.deps.onStateChange?.();return;}
-        this.ticking=true;this.pending=false;this.deps.onStateChange?.();
+        this.ticking=true;this.pending=false;const generation=this.generation;this.deps.onStateChange?.();
         try {
             const outcome=await this.deps.onAutoTick(),result=typeof outcome==='object'?outcome:{accepted:outcome!==false};
+            if(generation!==this.generation)return;
             if(!result.accepted){this.pending=true;if(result.retryAt!==undefined&&++this.rejectedRuns<=5)this.scheduleRetry(result.retryAt);return;}
             if(result.retryableFailure)this.rejectedRuns++;else this.rejectedRuns=0;this.lastAutoTickAt=this.now();
             const followUp=result.followUp&&this.followUps++<3;
             if((result.retryAt!==undefined&&this.rejectedRuns<=5)||followUp)this.scheduleRetry(result.retryAt??this.now()+1000);
             else {if(this.interval==='startup-only')this.startupConsumed=true;this.followUps=0;}
             // Retry work belongs to the accepted plan; a due queue item alone is not evidence of a retry.
-        } catch(error) { console.error('[VaultSync] automatic sync failed:',error);this.pending=true;if(++this.rejectedRuns<=5)this.scheduleRetry(this.now()+60_000); }
-        finally {this.ticking=false;this.deps.onStateChange?.();}
+        } catch(error) {if(generation!==this.generation)return; console.error('[VaultSync] automatic sync failed:',error);this.pending=true;if(++this.rejectedRuns<=5)this.scheduleRetry(this.now()+60_000); }
+        finally {this.ticking=false;this.deps.onStateChange?.();if(generation!==this.generation)this.wake();}
     }
     private scheduleRetry(at:number):void {
         if(this.paused||this.interval==='off')return;

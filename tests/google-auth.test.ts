@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GoogleAuthorizedTransport, GoogleTokenManager, parseGoogleClient } from '../src/auth/google-auth';
+import { GoogleAuthorizedTransport, GoogleTokenManager, parseGoogleClient,googleJson } from '../src/auth/google-auth';
+import { syncIssue } from '../src/core/sync-issue';
 import type { NetTransport } from '../src/sources/types';
 const response=(status:number,data:unknown)=>({status,headers:{},text:async()=>JSON.stringify(data),arrayBuffer:async()=>new ArrayBuffer(0)});
 const secrets={getSecret:()=> 'REFRESH',setSecret:()=>{}};
@@ -24,6 +25,24 @@ test('returned 401 refreshes once, without replaying a second 401 forever',async
 test('desktop import rejects web-app clients rather than accepting a wrong OAuth flow',()=>{
     assert.throws(()=>parseGoogleClient('{"web":{"client_id":"test.apps.googleusercontent.com"}}'),/Desktop/);
     assert.equal(parseGoogleClient('{"installed":{"client_id":"test.apps.googleusercontent.com"}}').clientId,'test.apps.googleusercontent.com');
+});
+test('thrown 401 refreshes once and a second thrown 401 is an authentication failure',async()=>{
+    let refreshes=0,sends=0;
+    const manager=new GoogleTokenManager({clientId:'test'},'ref',secrets,{fetch:async()=>{refreshes++;return response(200,{access_token:'NEW',expires_in:3600});}});
+    manager.setAccess('OLD',3600);
+    const transport=new GoogleAuthorizedTransport({fetch:async()=>{sends++;throw Object.assign(Error('HTTP 401'),{status:401});}},manager);
+    await assert.rejects(()=>transport.fetch('https://www.googleapis.com/drive/v3/files',{}),error=>{
+        const issue=syncIssue(error,'download');return issue.code==='auth-required'&&!issue.retryable;});
+    assert.equal(sends,2);assert.equal(refreshes,1);
+});
+test('Google transport and body interruptions remain retryable and do not expose upload session credentials',async()=>{
+    const secret='https://www.googleapis.com/upload/drive/v3/files?upload_id=PRIVATE_SESSION';
+    await assert.rejects(()=>googleJson({fetch:async()=>{throw Object.assign(Error(secret),{code:'ECONNRESET'});}},secret,{}),error=>{
+        const issue=syncIssue(error,'manifest');return issue.code==='network'&&issue.retryable&&issue.scope==='source'&&!issue.message.includes('PRIVATE_SESSION');});
+    const manager=new GoogleTokenManager({clientId:'test'},'ref',secrets,{fetch:async()=>response(200,{access_token:'NEW',expires_in:3600})});manager.setAccess('OLD',3600);
+    const transport=new GoogleAuthorizedTransport({fetch:async()=>({...response(200,{}),arrayBuffer:async()=>{throw Error('Response body interrupted');}})},manager);
+    const result=await transport.fetch('https://www.googleapis.com/drive/v3/files',{});
+    await assert.rejects(()=>result.arrayBuffer(),error=>{const issue=syncIssue(error,'download');return issue.code==='network'&&issue.retryable;});
 });
 test('refresh cannot rotate credentials or cache access for a different account',async()=>{
     let writes=0;

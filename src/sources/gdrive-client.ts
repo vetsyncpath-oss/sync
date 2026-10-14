@@ -49,6 +49,7 @@ export class GoogleDriveClient {
             if (token) query.pageToken = token;
             const data = await googleJson(this.transport,buildUrl(API,'/files',query),{signal,maxBytes:8 * 1024 * 1024});
             if (data.incompleteSearch || !Array.isArray(data.files)) throw new SyncFault('inventory-incomplete','Drive listing is incomplete','source');
+            if(files.length+data.files.length>100_000)throw new SyncFault('inventory-incomplete','Drive folder exceeds the listing limit','source');
             files.push(...data.files.map(parseFile));
             token = data.nextPageToken;
             if (token !== undefined && (typeof token !== 'string' || seen.has(token) || seen.size >= 1000))

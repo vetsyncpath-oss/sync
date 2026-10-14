@@ -15,6 +15,11 @@ export interface MutationRequest {
 export class DurableMutations {
         constructor(readonly store: OperationStore, readonly recovery: RecoveryStore, private readonly vault: VaultAdapter) {}
         private async commit(namespace: string, request: MutationRequest, kind: OperationRecord['kind'], after: LocalVersion, action: () => Promise<void>, from?: string): Promise<void> {
+                try{await this.store.load();}catch(error){throw new SyncFault('operation-journal',`Operation state could not be read: ${diagnosticText(error)}`,'session');}
+                const paths=[request.path,...(from?[from]:[])].map(p=>p.normalize('NFC').toLowerCase());
+                if(this.store.records().some(record=>record.id!==request.id&&['committing','blocked'].includes(record.status)
+                    &&[record.path,record.from].some(path=>path!==undefined&&paths.includes(path.normalize('NFC').toLowerCase()))))
+                    throw new SyncFault('recovery-overlap','A physical target has an unresolved operation; review recovery before changing it');
                 request.guard(); await this.vault.assertWritable?.(from??request.path);await this.vault.assertWritable?.(request.path); await assertLocal(this.vault, from ?? request.path, request.before);
                 if (from) await assertLocal(this.vault, request.path, MISSING);
                 const recovery = request.before.kind === 'file' && (kind !== 'write' || !sameVersion(request.before, after))

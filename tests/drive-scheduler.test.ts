@@ -24,3 +24,10 @@ test('pause cancels a scheduled retry without losing the pending startup job',as
         setTimeout:run=>{timer=run;return 1;},clearTimeout:()=>{}});
     scheduler.start('startup-only',0);timer();await flush();scheduler.pause();assert.equal(scheduler.snapshot().nextTickAt,null);scheduler.resume();timer();await flush();assert.equal(calls,2);scheduler.stop();
 });
+test('an old running job cannot consume the startup task selected during its execution',async()=>{
+    let complete!:(result:{accepted:boolean})=>void,calls=0,timer=()=>{};
+    const scheduler=new Scheduler({queue:new FailedQueue(),onAutoRetry:()=>{},onAutoTick:()=>{calls++;return calls===1?new Promise(r=>complete=r):{accepted:true};},
+        setTimeout:run=>{timer=run;return 1;},clearTimeout:()=>{},setInterval:()=>2,clearInterval:()=>{}});
+    scheduler.start('15m',0);timer();scheduler.start('startup-only',0);timer();assert.equal(calls,1);
+    complete({accepted:true});await flush();assert.equal(calls,2);assert.equal(scheduler.snapshot().interval,'startup-only');assert.equal(scheduler.snapshot().nextTickAt,null);scheduler.stop();
+});

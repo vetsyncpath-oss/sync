@@ -118,6 +118,8 @@ export class OperationStore {
         private marker?: Marker;
         private count = 0;
         private readonly minimumCheckpointEvents: number;
+        private cleanupError?:string;
+        get cleanupProblem():string|undefined{return this.cleanupError;}
         constructor(private readonly fs: FileSystem, private maxRecords = 10000, options: OperationStoreOptions = {}) {
                 this.minimumCheckpointEvents = options.minimumCheckpointEvents ?? 256;
                 if (!Number.isSafeInteger(maxRecords) || maxRecords < 1 || !Number.isSafeInteger(this.minimumCheckpointEvents)
@@ -339,6 +341,7 @@ export class OperationStore {
                 }
         }
         private async compactLocked(): Promise<void> {
+                this.cleanupError=undefined;
                 const retained=(await this.fs.list()).filter(name=>CHECKPOINT.test(name)).sort();
                 if(retained.length>=8){
                         if(retained.some(name=>sequenceOf(CHECKPOINT,name)>this.checkpointSequence))throw new SyncFault('checkpoint-cleanup','Unexpected future journal generation; history retained','session');
@@ -375,6 +378,7 @@ export class OperationStore {
                                         || (CHECKPOINT.test(name) && sequenceOf(CHECKPOINT, name) < boundary)) await this.fs.remove(name);
                         }
                 } catch(error) {
+                        this.cleanupError='Old operation checkpoints could not be cleaned; metadata retained';
                         // Metadata already committed stays authoritative; retry cleanup next session.
                         console.warn('[VaultSync] Journal cleanup deferred; retained metadata will be checked again:',error);
                 }

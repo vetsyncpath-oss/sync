@@ -52,7 +52,7 @@ export class SourceConnectionModal extends DraftModal {
                 toggle.addEventListener('change', () => c.values[f.key] = toggle.checked); control = toggle;
             } else if (f.type === 'select') control = selectInput((f.options ?? []).map(o => [o.value, resolveLabel(i18n.t, o.labelKey)]), String(value ?? ''), v => c.values[f.key] = v);
             else {
-                const input = textInput(String(value ?? ''), v => c.values[f.key] = f.type === 'number' ? (v === '' ? undefined : Number(v)) : v);
+                const input = textInput(String(value ?? ''), v => {c.values[f.key] = f.type === 'number' ? (v === '' ? undefined : Number(v)) : v;if(f.key==='folderId')delete c.values.folderName;});
                 input.type = f.type === 'secret' || f.secret ? 'password' : f.type === 'number' ? 'number' : f.type === 'url' ? 'url' : 'text';
                 if (f.placeholderKey) input.placeholder = resolveLabel(i18n.t, f.placeholderKey);
                 input.autocomplete = input.type === 'password' ? 'new-password' : 'off'; control = input;
