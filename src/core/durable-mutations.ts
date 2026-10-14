@@ -3,6 +3,7 @@ import type { VaultAdapter } from '../sources/types';
 import { OperationStore, type CacheEffect, type OperationRecord } from './operation-store';
 import { RecoveryStore } from './recovery-store';
 import { assertLocal, MISSING, observeLocal, sameVersion, StalePlanError, versionOf, type LocalVersion } from './local-version';
+import { overlapsPhysical } from './job-policy';
 import { SyncFault,diagnosticText } from './sync-issue';
 class ConditionalWriteUnavailable extends SyncFault { constructor(){super('local-guard-unavailable','Conditional local write unavailable; original retained');} }
 
@@ -18,7 +19,7 @@ export class DurableMutations {
                 try{await this.store.load();}catch(error){throw new SyncFault('operation-journal',`Operation state could not be read: ${diagnosticText(error)}`,'session');}
                 const paths=[request.path,...(from?[from]:[])].map(p=>p.normalize('NFC').toLowerCase());
                 if(this.store.records().some(record=>record.id!==request.id&&['committing','blocked'].includes(record.status)
-                    &&[record.path,record.from].some(path=>path!==undefined&&paths.includes(path.normalize('NFC').toLowerCase()))))
+                    &&[record.path,record.from].some(path=>path!==undefined&&paths.some(target=>overlapsPhysical(target,path)))))
                     throw new SyncFault('recovery-overlap','A physical target has an unresolved operation; review recovery before changing it');
                 request.guard(); await this.vault.assertWritable?.(from??request.path);await this.vault.assertWritable?.(request.path); await assertLocal(this.vault, from ?? request.path, request.before);
                 if (from) await assertLocal(this.vault, request.path, MISSING);
@@ -104,19 +105,19 @@ export class DurableMutations {
                 await this.commit(namespace, request, 'move', request.before, () => this.vault.rename(from, request.path), from);
         }
         /** Complete proven commits; never replay an old destructive command after restart. */
-        async recover(namespace: string,signal?:AbortSignal): Promise<OperationRecord[]> {
+        async recover(namespace: string,signal?:AbortSignal,eligible:(record:OperationRecord)=>boolean=()=>true): Promise<OperationRecord[]> {
                 await this.store.load(); const recovered: OperationRecord[] = [];
-                for (const record of this.store.records(namespace).filter(r => r.status === 'committing' || r.status === 'blocked')) {
+                for (const record of this.store.records(namespace).filter(r => (r.status === 'committing' || r.status === 'blocked')&&eligible(r))) {
                         signal?.throwIfAborted();
-                        if (record.recovery) await this.recovery.verify(record.recovery);
+                        if (record.recovery)try{await this.recovery.verify(record.recovery);}catch(error){throw new SyncFault('recovery-payload',`Saved effect payload needs review: ${diagnosticText(error)}`);}
                         const actual = await observeLocal(this.vault, record.path);
                         const source = record.from ? await observeLocal(this.vault, record.from) : undefined;
                         let status: 'applied' | 'not-applied' | 'blocked';
                         if (sameVersion(actual, record.after) && (!source || source.kind === 'missing')) status = 'applied';
                         else if (record.from ? source && sameVersion(source, record.before) && actual.kind === 'missing' : sameVersion(actual, record.before)) status = 'not-applied';
                         else status = 'blocked';
-                        signal?.throwIfAborted();await this.store.finish(record.id, status);
-                        if (status === 'blocked') throw new Error(`Recovery needs review; local bytes preserved: ${record.path}`);
+                        signal?.throwIfAborted();try{await this.store.finish(record.id, status);}catch(error){throw new SyncFault('operation-journal',`Recovery acknowledgement failed: ${diagnosticText(error)}`,'session');}
+                        if (status === 'blocked') throw new SyncFault('recovery-review',`Recovery needs review; local bytes preserved: ${record.path}`);
                         if (status === 'applied') recovered.push(record);
                 }
                 return recovered;

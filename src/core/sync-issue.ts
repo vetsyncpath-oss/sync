@@ -9,7 +9,7 @@ export function diagnosticText(value: unknown): string {
     }).replace(/(Bearer|Basic)\s+[A-Za-z0-9+/=_-]+/gi,'$1 [redacted]').replace(/(authorization|password|token|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]').slice(0, 1000);
 }
 export class SyncFault extends Error {
-    constructor(readonly code: string, message: string, readonly scope: SyncIssue['scope'] = 'file', readonly retryable = false) {
+    constructor(readonly code: string, message: string, readonly scope: SyncIssue['scope'] = 'file', readonly retryable = false,readonly domain?:'job'|'shared') {
         super(message); this.name = 'SyncFault';
     }
 }
@@ -19,7 +19,7 @@ export function syncIssue(error: unknown, stage: PipelineStage,seen=new Set<unkn
     if(!(error instanceof NetError)&&!(error instanceof SyncFault)&&cause instanceof Error&&!seen.has(cause)){
         seen.add(error);return {...syncIssue(cause,stage,seen),message};
     }
-    if (error instanceof SyncFault) return { code:error.code, message, stage, scope:error.scope, retryable:error.retryable,
+    if (error instanceof SyncFault) return { code:error.code, message, stage, scope:error.scope, retryable:error.retryable,domain:error.domain,
         status:(error as SyncFault&{status?:number}).status,retryAt:(error as SyncFault&{retryAt?:number}).retryAt };
     if (error instanceof NetError) return {
         code: error.code ?? (error.status === 429 ? 'rate-limit' : error.status === 401 || error.status === 403 ? 'access-denied' : error.status === 404 ? 'remote-missing' : 'network'),

@@ -48,6 +48,7 @@ export async function receiveDriveArtifacts(p:DriveExecutionPorts,inventory:Driv
             if(originPaths.length>1)throw new SyncFault('artifact-target-collision','Drive artifact origin has multiple local destinations');
             for(const originPath of originPaths){
                 guard();const behavior=p.behavior(originPath),path=driveConflictSibling(originPath,lineage.proposalId,artifactLabel(lineage.kind));
+                if(p.skipQueued&&p.queue.all().some(entry=>entry.path===path||entry.path===originPath)){effects.stats.skipped++;continue;}
                 if(behavior.protected||behavior.direction!=='bidirectional'||!p.allowArtifact(originPath,path,item.path))continue;
                 const old=p.state.artifact(item.file.id);
                 const receipt:DriveArtifactReceipt={id:item.file.id,proposalId:lineage.proposalId,originId:origin.id,path,originPath,

@@ -6,13 +6,16 @@ import {planDrive} from '../src/core/drive-planner';
 import {effectiveBehavior} from '../src/core/profile-policy';
 import {applyPolicy} from '../src/core/policy';
 import {compileProfiles,STANDARD_PROFILES} from '../src/core/profiles';
-import {pathPolicy} from '../tests/helpers';
+import {pathPolicy,fixture,ab} from '../tests/helpers';
+import {JobBatch,emptyStats} from '../src/core/job-runtime';
+import {JobPolicy} from '../src/core/job-policy';
+import {SyncFault} from '../src/core/sync-issue';
 import {OperationStore} from '../src/core/operation-store';
 import {DurableMutations} from '../src/core/durable-mutations';
 import {versionOf,MISSING} from '../src/core/local-version';
 import {ManifestCache} from '../src/core/manifest-cache';
 import {driveNamespace} from '../src/core/drive-state';
-import {Scheduler} from '../src/core/scheduler';
+import {Scheduler,resolveSchedule} from '../src/core/scheduler';
 const output:Record<string,unknown>[]=[];
 const record=(probe:string,result:unknown)=>output.push({probe,result});
 const response=(value:unknown)=>({status:200,headers:{},text:async()=>JSON.stringify(value),arrayBuffer:async()=>new ArrayBuffer(0)});
@@ -91,11 +94,11 @@ for(const n of [1,20,100]){
 }
 {
     const f=new Fixture();let tick=()=>{},delay=0;
-    const auto='inherit',globalInterval='1h',schedule=auto??globalInterval??'off';
+    const auto='inherit',globalInterval='1h',schedule=resolveSchedule(auto,globalInterval);
     const scheduler=new Scheduler({queue:f.queue,onAutoRetry:()=>{},onAutoTick:()=>true,setTimeout:run=>{tick=run;return 1;},clearTimeout:()=>{},
         setInterval:(_run,ms)=>{delay=ms;return 2;},clearInterval:()=>{}});
     scheduler.start(schedule as any,0);tick();for(let i=0;i<8;i++)await Promise.resolve();
-    record('V6 migration leaves inherit unresolved',{schedule,periodicDelay:Number.isNaN(delay)?'NaN':delay});scheduler.stop();
+    record('V6 migration leaves inherit unresolved',{input:auto,schedule,periodicDelay:Number.isNaN(delay)?'NaN':delay});scheduler.stop();
 }
 {
     const f=new Fixture();f.local.set('note.md',bytes('base'));const id=await f.addRemote('note.md','base');await f.run();f.remote.delete(id);await f.run();const entry=f.state.inbox('note.md');
@@ -119,6 +122,35 @@ for(const n of [1,20,100]){
     const f=new Fixture();f.local.set('note.md',bytes('base'));const id=await f.addRemote('note.md','base');await f.run();f.local.delete('note.md');await f.run();await f.run(false,{probeOnly:true});
     const result=await f.run(false,{resolution:{namespace:'test',entry:f.state.inbox('note.md'),action:'restore-known'}});
     record('explicit same-ID restore',{failed:result.failed,originalId:id,baselineId:f.state.baseline('note.md')?.remoteId,local:f.text('note.md'),stillTrashed:f.remote.get(id).file.trashed,creates:f.counter});
+}
+
+{
+    const batch=new JobBatch(new AbortController().signal,()=>{}),effects:string[]=[];
+    const result=await batch.run([{id:'drive',name:'Drive',kind:'gdrive'},{id:'git',name:'Git',kind:'git'}],async job=>{if(job.id==='drive')throw new SyncFault('network','offline','source',true);return job.id;},async job=>{effects.push(job.id);return {...emptyStats(),downloaded:1};});
+    record('failed observer retains its scope and healthy job applies',{effects,outcomes:batch.snapshot().map(job=>({id:job.connectionId,outcome:job.outcome})),failures:result.reduce((total,run)=>total+run.stats.failed,0)});
+}
+{
+    const authority=new JobPolicy({version:1,mirror:false,folders:[],defaultSource:'drive',fileRules:[{scope:'vault',path:'',source:'drive',direction:'bidirectional',write:'preserve'},
+        {scope:'folder',path:'Notes',source:'drive',remotePath:'Library',direction:'bidirectional',write:'changes'},{scope:'folder',path:'Archive',source:'drive',remotePath:'Library',direction:'bidirectional',write:'changes'}]},'drive');
+    record('future inverse collision is blocked before inventory',{writerBlocked:authority.writerBlocked('drive'),codes:authority.issues.map(issue=>issue.code)});
+}
+{
+    const authority=new JobPolicy({version:1,mirror:false,folders:[],defaultSource:'git',fileRules:[{scope:'folder',path:'Cloud',source:'drive'}]},'git',[{namespace:'retired',path:'Held/a.md'}]);
+    const policy=pathPolicy().withBlockedTargets(authority.blocksFor('git'));
+    record('absent job directories and retired Drive claims stay reserved',{directoryReason:policy.blockReason('CLOUD'),heldParent:policy.blockReason('held'),heldChild:policy.blockReason('HELD/a.md/child'),independent:policy.isPathAllowed('Other/a.md')});
+}
+{
+    const f=fixture();await f.store.begin({id:'old',planId:'old',namespace:'retired',path:'Git',kind:'write',before:{kind:'missing'},after:await versionOf(ab('old')),status:'committing',createdAt:1});
+    let code:string|undefined;try{await f.mutations.write('new',{id:'new',planId:'new',path:'git/a.md',before:{kind:'missing'},guard:()=>{}},ab('new'));}catch(error:any){code=error.code;}
+    await f.mutations.write('new',{id:'safe',planId:'safe',path:'other.md',before:{kind:'missing'},guard:()=>{}},ab('safe'));
+    record('cross-namespace pending target blocks descendant but not sibling',{code,descendantCreated:f.files.has('git/a.md'),independent:f.files.has('other.md')});
+}
+{
+    const f=fixture(),timers=new Map<number,{callback:()=>void;ms:number}>();let token=0,now=1000;const contexts:string[]=[];
+    const scheduler=new Scheduler({queue:f.queue,now:()=>now,onAutoRetry:()=>{},onAutoTick:context=>{contexts.push(context!.trigger);return {accepted:true,followUp:contexts.length===1,outcome:'needs-attention'};},
+        setTimeout:(callback,ms)=>{timers.set(++token,{callback,ms});return token;},clearTimeout:id=>{timers.delete(id as number);}});
+    scheduler.start('startup-only',0);for(let run=0;run<2;run++){const [id,timer]=[...timers][0];timers.delete(id);now+=timer.ms;timer.callback();for(let i=0;i<20;i++)await Promise.resolve();}
+    scheduler.start('startup-only',0);const snapshot=scheduler.snapshot();record('startup finishing preserves configured mode and consumes activation',{contexts,interval:snapshot.interval,cycle:snapshot.startupCycle,finishingRuns:snapshot.finishingRuns,nextTickAt:snapshot.nextTickAt,timers:timers.size});scheduler.stop();
 }
 console.log(JSON.stringify(output,null,2));
 }

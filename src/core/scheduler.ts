@@ -1,290 +1,120 @@
-// Automatic ticks are serialized. Each fresh auto plan includes due failed files;
-// there is no competing manual retry session. off/startup-only retain their semantics.
-
 import type { FailedQueue } from './queue';
-
-/** Интервалы авто-синхронизации. */
-export type SchedulerInterval =
-        /** Дефолт: авто-выключено. */
-        | 'off'
-        /** Один прогон при запуске Obsidian, далее по требованию. */
-        | 'startup-only'
-        /** Каждые 15 минут. */
-        | '15m'
-        /** Каждые 30 минут. */
-        | '30m'
-        /** Каждый час. */
-        | '1h'
-        /** Каждые 2 часа. */
-        | '2h';
-
-/** Минут в интервале (для расчёта следующего тика). 0 для off/startup-only. */
-const INTERVAL_MINUTES: Record<SchedulerInterval, number> = {
-        'off': 0,
-        'startup-only': 0,
-        '15m': 15,
-        '30m': 30,
-        '1h': 60,
-        '2h': 120,
-};
-
-/** Дефолтная стартовая задержка, мс (30 с — нижняя граница 30–60 с из плана). */
-export const DEFAULT_START_DELAY_MS = 30_000;
-
-/**
- * Инъекция зависимостей: триггер сессии и retry, текущее время, таймеры.
- * Все колбэки — внешние; сам Scheduler не знает про Coordinator/main.
- *
- * ВАЖНО о setTimeout vs setInterval: setInterval(handler, ms) первым тиком
- * приходит через ms (а не сразу), поэтому первый (стартовый) тик Scheduler
- * ставит через setTimeout(handler, startDelayMs) — это даёт честную
- * семантику «первый авто-тик через 30 с, далее каждые N мин». После первого
- * тика включается периодический setInterval(handler, ms).
- */
+export type SchedulerInterval='off'|'startup-only'|'15m'|'30m'|'1h'|'2h';
+export type AutoTrigger='startup'|'interval'|'retry'|'finishing';
+export const DEFAULT_START_DELAY_MS=30_000;
+export const FINISHING_DELAY_MS=5_000;
+export const MAX_FINISHING_RUNS=2;
+export const MAX_AUTO_RETRIES=4;
+export const STARTUP_RETRY_WINDOW_MS=30*60_000;
+const MINUTES:Record<SchedulerInterval,number>={off:0,'startup-only':0,'15m':15,'30m':30,'1h':60,'2h':120};
+export function resolveSchedule(input:SchedulerInterval|'inherit'|undefined,global:SchedulerInterval='off'):SchedulerInterval{
+    const resolved=input===undefined||input==='inherit'?global:input;
+    if(!Object.prototype.hasOwnProperty.call(MINUTES,resolved))throw Error('Invalid automatic schedule');return resolved;
+}
+export interface AutoTickResult {accepted:boolean;retryAt?:number;followUp?:boolean;retryableFailure?:boolean;cancelled?:boolean;outcome?:string;blockedReason?:string}
+export interface AutoTickContext {trigger:AutoTrigger;initialCheck:boolean}
 export interface SchedulerDeps {
-        /** Запустить авто-сессию (headless-режим см. W4-T02). */
-        onAutoTick(): void | boolean | AutoTickResult | Promise<void | boolean | AutoTickResult>;
-        canRun?():boolean;
-        onStateChange?():void;
-        /** Legacy callback retained for compatibility; ticks use onAutoTick only. */
-        onAutoRetry(): void | Promise<void>;
-        /** Доступ к failed-очереди для гейта «есть ли дозревшие». */
-        queue: FailedQueue;
-        /** Текущее время, epoch-ms. Дефолт — Date.now. */
-        now?(): number;
-        /** setTimeout override (тесты — fake). Дефолт — глобальный. */
-        setTimeout?(handler: () => void, ms: number): unknown;
-        /** clearTimeout override (тесты — fake). Дефолт — глобальный. */
-        clearTimeout?(timer: unknown): void;
-        /** setInterval override (тесты — fake). Дефолт — глобальный. */
-        setInterval?(handler: () => void, ms: number): unknown;
-        /** clearInterval override (тесты — fake). Дефолт — глобальный. */
-        clearInterval?(timer: unknown): void;
+    onAutoTick(context?:AutoTickContext):void|boolean|AutoTickResult|Promise<void|boolean|AutoTickResult>;
+    canRun?():boolean;onStateChange?():void;onAutoRetry():void|Promise<void>;queue:FailedQueue;
+    now?():number;setTimeout?(handler:()=>void,ms:number):unknown;clearTimeout?(timer:unknown):void;
+    setInterval?(handler:()=>void,ms:number):unknown;clearInterval?(timer:unknown):void;
 }
-export interface AutoTickResult { accepted:boolean; retryAt?:number; followUp?:boolean;retryableFailure?:boolean }
-
-/** Состояние Scheduler для снапшота/отчётности (popover «следующая через N мин»). */
 export interface SchedulerSnapshot {
-        blockedReason?:string;
-        interval: SchedulerInterval;
-        paused: boolean;
-        pending?:boolean; running?:boolean;
-        /** epoch-ms следующего тика, или null если off / paused / startup-only-after-startup. */
-        nextTickAt: number | null;
-        /** Минут до следующего тика (округление вниз); null если нет следующего. */
-        minutesUntilNext: number | null;
-        /** Последний зафиксированный тик auto-сессии. */
-        lastAutoTickAt: number | null;
-        /** Последний зафиксированный retry-тик. */
-        lastRetryAt: number | null;
+    blockedReason?:string;interval:SchedulerInterval;paused:boolean;pending?:boolean;running?:boolean;
+    nextTickAt:number|null;minutesUntilNext:number|null;lastAutoTickAt:number|null;lastRetryAt:number|null;
+    nextPeriodicAt:number|null;nextRetryAt:number|null;nextFinishingAt:number|null;
+    startupCycle:'waiting'|'running'|'retrying'|'finishing'|'completed'|'continuation-required'|'cancelled';
+    finishingRuns:number;retryAttempts:number;continuationRequired:boolean;lastOutcome?:string;
 }
-
-/**
- * Планировщик авто-синхронизации. Один экземпляр владеет одним таймером;
- * переинициализация (start/setInterval) идемпотентно снимает прежний.
- */
+type Slot='regular'|'retry'|'finishing';
+/** One scheduler per connection; continued work belongs to its current automatic cycle. */
 export class Scheduler {
-    private readonly deps: SchedulerDeps;
-    private readonly now: () => number;
-    private readonly _setTimeout: (handler: () => void, ms: number) => unknown;
-    private readonly _clearTimeout: (timer: unknown) => void;
-    private readonly _setInterval: (handler: () => void, ms: number) => unknown;
-    private readonly _clearInterval: (timer: unknown) => void;
-
-    private interval: SchedulerInterval = 'off';
-    private paused = false;
-    private startupConsumed=false;
-    private pending=false;
-    private retryTimer:unknown=null;
-    private retryAt:number|null=null;
-    private followUps=0;
-    private rejectedRuns=0;
-    private generation=0;
-    /** Активный таймер: либо setTimeout (до 1-го тика), либо setInterval
-     *  (после 1-го тика в периодическом режиме). Для startup-only — setTimeout. */
-    private timer: unknown = null;
-    /** true если timer — это setInterval (нужно clearInterval вместо clearTimeout). */
-    private timerIsInterval = false;
-    private startDelayMs: number = DEFAULT_START_DELAY_MS;
-
-    private nextTickAt: number | null = null;
-    private lastAutoTickAt: number | null = null;
-    private lastRetryAt: number | null = null;
-
-    constructor(deps: SchedulerDeps) {
-        this.deps = deps;
-        this.now = deps.now ?? (() => Date.now());
-        this._setTimeout = deps.setTimeout ?? ((h, ms) => setTimeout(h, ms));
-        this._clearTimeout = deps.clearTimeout ?? ((t) => clearTimeout(t as any));
-        this._setInterval = deps.setInterval ?? ((h, ms) => setInterval(h, ms));
-        this._clearInterval = deps.clearInterval ?? ((t) => clearInterval(t as any));
+    private interval:SchedulerInterval='off';private paused=false;private ticking=false;private generation=0;
+    private activationConsumed=false;private cycleActive=false;private startDelayMs=DEFAULT_START_DELAY_MS;
+    private pending=new Set<AutoTrigger>();private timers:Partial<Record<Slot,{id:unknown;interval:boolean}>>={};
+    private tokens:Record<Slot,number>={regular:0,retry:0,finishing:0};
+    private periodicAt:number|null=null;private retryAt:number|null=null;private finishingAt:number|null=null;
+    private lastAutoTickAt:number|null=null;private lastRetryAt:number|null=null;private finishingRuns=0;private retryAttempts=0;
+    private firstFailureAt?:number;private rejected=0;private continuationRequired=false;private lastOutcome?:string;private blockedReason?:string;
+    private startupCycle:SchedulerSnapshot['startupCycle']='waiting';
+    private readonly now:()=>number;
+    constructor(private readonly deps:SchedulerDeps){this.now=deps.now??Date.now;}
+    getInterval():SchedulerInterval{return this.interval;}
+    isPaused():boolean{return this.paused;}
+    /** Reconfiguration preserves the activation already consumed. Explicit re-enable may start a new cycle. */
+    start(interval:SchedulerInterval,delay=DEFAULT_START_DELAY_MS,newActivation=false):void{
+        resolveSchedule(interval);if(this.interval===interval&&!newActivation&&this.startDelayMs===Math.max(0,delay))return;
+        this.generation++;this.clearTimers();this.pending.clear();this.interval=interval;this.startDelayMs=Math.max(0,delay);
+        if(newActivation){this.paused=false;this.activationConsumed=false;this.cycleActive=false;this.resetCycle();}
+        if(interval==='off'){this.paused=false;this.cycleActive=false;this.retryAt=this.finishingAt=this.periodicAt=null;this.changed();return;}
+        this.retryAt=this.finishingAt=null;
+        if(interval==='startup-only'&&this.activationConsumed&&!this.cycleActive){this.periodicAt=null;this.changed();return;}
+        this.armInitial();this.changed();
     }
-
-    /** Текущий интервал. */
-    getInterval(): SchedulerInterval {
-        return this.interval;
+    setInterval(interval:SchedulerInterval,delay=DEFAULT_START_DELAY_MS):void{this.start(interval,delay);}
+    pause():void{if(this.paused||this.interval==='off')return;this.paused=true;this.clearTimers();this.changed();}
+    resume():void{if(!this.paused)return;this.paused=false;
+        if(this.interval!=='off'){
+            if(!this.activationConsumed&&!this.cycleActive&&!this.pending.size)this.armInitial();
+            else if(this.interval!=='startup-only')this.armPeriodic();
+            this.armContinuation('retry');this.armContinuation('finishing');this.wake();
+        }this.changed();
     }
-
-    /** Пауза активна (до явного resume или restart). */
-    isPaused(): boolean {
-        return this.paused;
+    stop():void{this.generation++;this.clearTimers();this.interval='off';this.paused=false;this.pending.clear();this.periodicAt=this.retryAt=this.finishingAt=null;this.cycleActive=false;this.changed();}
+    snapshot():SchedulerSnapshot{
+        const times=this.paused?[]:[this.periodicAt,this.retryAt,this.finishingAt].filter((at):at is number=>at!==null);
+        const next=times.length?Math.min(...times):null;
+        return {interval:this.interval,paused:this.paused,pending:this.pending.size>0,running:this.ticking,blockedReason:this.blockedReason,
+            nextTickAt:next,minutesUntilNext:next===null?null:Math.floor(Math.max(0,next-this.now())/60_000),lastAutoTickAt:this.lastAutoTickAt,lastRetryAt:this.lastRetryAt,
+            nextPeriodicAt:this.paused?null:this.periodicAt,nextRetryAt:this.paused?null:this.retryAt,nextFinishingAt:this.paused?null:this.finishingAt,
+            startupCycle:this.startupCycle,finishingRuns:this.finishingRuns,retryAttempts:this.retryAttempts,continuationRequired:this.continuationRequired,lastOutcome:this.lastOutcome};
     }
-
-    /**
-     * Запустить планировщик с интервалом и стартовой задержкой.
-     * Идемпотентен: повторный вызов снимает прежний таймер и ставит новый.
-     * startDelayMs < 0 не передаёт первый задержанный тик — это мгновенный старт.
-     */
-    start(interval: SchedulerInterval, startDelayMs: number = DEFAULT_START_DELAY_MS): void {
-        this.generation++;
-        this.stopTimer();
-        this.interval = interval;
-        this.paused = false;
-        this.startDelayMs = Math.max(0, startDelayMs);
-
-        // off: нет таймера, нет следующего тика.
-        if (interval === 'off') {
-            this.nextTickAt = null;
-            return;
+    wake():void{if(this.pending.size&&!this.ticking&&!this.paused&&this.interval!=='off'&&(this.deps.canRun?.()??true))void this.runTick();}
+    private changed():void{this.deps.onStateChange?.();}
+    private clear(slot:Slot):void{this.tokens[slot]++;const timer=this.timers[slot];if(timer){if(timer.interval)(this.deps.clearInterval??(id=>clearInterval(id as any)))(timer.id);else(this.deps.clearTimeout??(id=>clearTimeout(id as any)))(timer.id);delete this.timers[slot];}}
+    private clearTimers():void{for(const slot of ['regular','retry','finishing'] as const)this.clear(slot);}
+    private arm(slot:Slot,at:number,run:()=>void,interval=false):void{
+        this.clear(slot);if(this.paused||this.interval==='off')return;const token=this.tokens[slot],generation=this.generation;
+        const callback=()=>{if(generation!==this.generation||token!==this.tokens[slot]||this.paused||this.interval==='off')return;if(!interval)delete this.timers[slot];run();};
+        const ms=Math.max(0,at-this.now()),id=interval?(this.deps.setInterval??((fn,delay)=>setInterval(fn,delay)))(callback,ms):(this.deps.setTimeout??((fn,delay)=>setTimeout(fn,delay)))(callback,ms);
+        this.timers[slot]={id,interval};
+    }
+    private armInitial():void{this.periodicAt=this.now()+this.startDelayMs;this.startupCycle='waiting';this.arm('regular',this.periodicAt,()=>{
+        this.periodicAt=null;this.request('startup');if(this.interval!=='startup-only'&&this.interval!=='off')this.armPeriodic();
+    });}
+    private armPeriodic():void{const ms=MINUTES[this.interval]*60_000;if(!ms)return;this.periodicAt=this.now()+ms;this.arm('regular',this.periodicAt,()=>{this.periodicAt=this.now()+ms;this.request('interval');},true);}
+    private request(trigger:AutoTrigger):void{this.pending.add(trigger);this.changed();this.wake();}
+    private armContinuation(slot:'retry'|'finishing'):void{const at=slot==='retry'?this.retryAt:this.finishingAt;if(at===null)return;
+        this.arm(slot,Math.max(this.now()+1000,at),()=>{if(slot==='retry')this.retryAt=null;else this.finishingAt=null;this.request(slot);});}
+    private resetCycle():void{this.finishingRuns=0;this.retryAttempts=0;this.firstFailureAt=undefined;this.rejected=0;this.continuationRequired=false;this.blockedReason=undefined;}
+    private choose():AutoTrigger|undefined{return (['startup','retry','finishing','interval'] as const).find(trigger=>this.pending.has(trigger));}
+    private async runTick():Promise<void>{
+        if(this.ticking||this.paused||this.interval==='off'||!(this.deps.canRun?.()??true))return;
+        const trigger=this.choose();if(!trigger)return;
+        if(trigger==='startup'&&this.activationConsumed&&!this.cycleActive){this.pending.delete(trigger);this.changed();return;}
+        if(trigger==='retry'&&this.interval==='startup-only'&&this.firstFailureAt!==undefined&&this.now()>this.firstFailureAt+STARTUP_RETRY_WINDOW_MS){this.pending.delete(trigger);this.continuationRequired=true;this.cycleActive=false;this.activationConsumed=true;this.startupCycle='continuation-required';this.changed();return;}
+        this.pending.delete(trigger);if(trigger==='startup'||trigger==='interval'){
+            if(trigger==='startup'&&this.interval==='startup-only'){this.clear('regular');this.periodicAt=null;}
+            if(!this.cycleActive){this.resetCycle();this.cycleActive=true;}else if(trigger==='interval'){this.pending.add(trigger);return;}
+            this.pending.delete('interval');
         }
-
-        // startup-only: один прогон через startDelayMs, затем стоп.
-        // setTimeout (НЕ setInterval) — нам нужен ровно один тик.
-        if (interval === 'startup-only') {
-            if(this.startupConsumed){this.nextTickAt=null;return;}
-            this.nextTickAt = this.now() + this.startDelayMs;
-            this.timer = this._setTimeout(() => {
-                this.timer = null;
-                this.timerIsInterval = false;
-                this.nextTickAt = null;
-                this.pending=true;
-                // [W4-T01] гейт retry активен и в startup-only: пользователь
-                // вернулся, например, к неработающему vault — нужны дозревшие
-                // ретраи.
-                void this.runTick();
-            }, this.startDelayMs);
-            return;
-        }
-
-        // Периодический: первый тик через startDelayMs (setTimeout),
-        // далее — каждые N мин (setInterval в handler первого тика).
-        const ms = INTERVAL_MINUTES[interval] * 60_000;
-        this.nextTickAt = this.now() + this.startDelayMs;
-        this.timer = this._setTimeout(() => {
-            // 1-й тик сработал — переключаемся на периодический режим.
-            this.pending=true;
-            this.nextTickAt = this.now() + ms;
-            void this.runTick();
-            // Дальнейшие тики — каждые ms через setInterval.
-            this.timer = this._setInterval(() => {
-                this.pending=true;
-                this.nextTickAt = this.now() + ms;
-                void this.runTick();
-            }, ms);
-            this.timerIsInterval = true;
-        }, this.startDelayMs);
-    }
-
-    /**
-     * Поставить на паузу «до перезапуска»: таймер снимается,
-     * интервал остаётся в настройках, nextTickAt обнуляется.
-     * resume() рестартует с полной стартовой задержкой (паритет
-     * «новой сессии», без накопленного остатка — простота и
-     * предсказуемость для пользователя «я вернусь через час, и тогда
-     * первый авто-тик через 30 с после моего возврата»).
-     */
-    pause(): void {
-        if (this.paused || this.interval === 'off') return;
-        this.paused = true;
-        this.stopTimer();
-        this.nextTickAt = null;this.deps.onStateChange?.();
-    }
-
-    /** Снять паузу: рестарт с тем же интервалом и стартовой задержкой. */
-    resume(): void {
-        if (!this.paused) return;
-        this.paused = false;
-        const pending=this.pending;this.start(this.interval, this.startDelayMs);this.pending=pending;this.wake();this.deps.onStateChange?.();
-    }
-
-    /** Полная остановка (interval → off, таймер снят). */
-    stop(): void {
-        this.generation++;
-        this.stopTimer();
-        this.interval = 'off';this.pending=false;
-        this.paused = false;
-        this.nextTickAt = null;
-    }
-
-    /** Горячая переконфигурация интервала (сохраняет paused-флаг). */
-    setInterval(interval: SchedulerInterval, startDelayMs: number = DEFAULT_START_DELAY_MS): void {
-        const wasPaused = this.paused;
-        this.start(interval, startDelayMs);
-        if (wasPaused && interval !== 'off') {
-            this.paused = true;
-            this.stopTimer();
-            this.nextTickAt = null;
-        }
-    }
-
-    /** Снимок состояния для popover/статус-бара. */
-    snapshot(): SchedulerSnapshot {
-        const now = this.now();
-        let minutesUntilNext: number | null = null;
-        const nextTickAt=this.retryAt===null?this.nextTickAt:this.nextTickAt===null?this.retryAt:Math.min(this.retryAt,this.nextTickAt);
-        if (nextTickAt !== null) {
-            const deltaMs = Math.max(0, nextTickAt - now);
-            minutesUntilNext = Math.floor(deltaMs / 60_000);
-        }
-        return {
-            interval: this.interval,
-            paused: this.paused,pending:this.pending,running:this.ticking,
-            nextTickAt,
-            minutesUntilNext,
-            lastAutoTickAt: this.lastAutoTickAt,
-            lastRetryAt: this.lastRetryAt,
-        };
-    }
-
-    // ── внутреннее ─
-
-    private stopTimer(): void {
-        if(this.retryTimer!==null){this._clearTimeout(this.retryTimer);this.retryTimer=null;}this.retryAt=null;
-        if (this.timer !== null) {
-            if (this.timerIsInterval) {
-                this._clearInterval(this.timer);
-            } else {
-                this._clearTimeout(this.timer);
-            }
-            this.timer = null;
-            this.timerIsInterval = false;
-        }
-    }
-
-    private ticking=false;
-    /** One coalesced catch-up, after online/unbusy/access-change. */
-    wake():void {if(this.pending&&!this.paused&&this.interval!=='off'&&!this.ticking&&(this.deps.canRun?.()??true))void this.runTick();}
-    private async runTick():Promise<void> {
-        this.pending=true;
-        if(this.interval==='startup-only'&&this.startupConsumed){this.pending=false;return;}
-        if(this.ticking||this.paused||this.interval==='off'||!(this.deps.canRun?.()??true)){this.deps.onStateChange?.();return;}
-        this.ticking=true;this.pending=false;const generation=this.generation;this.deps.onStateChange?.();
-        try {
-            const outcome=await this.deps.onAutoTick(),result=typeof outcome==='object'?outcome:{accepted:outcome!==false};
+        if(trigger==='finishing')this.finishingRuns++;
+        if(trigger==='retry'){this.retryAttempts++;this.lastRetryAt=this.now();}
+        this.ticking=true;this.startupCycle=trigger==='retry'?'retrying':trigger==='finishing'?'finishing':'running';const generation=this.generation;let catchup=true;this.changed();
+        try{
+            const outcome=await this.deps.onAutoTick({trigger,initialCheck:trigger==='startup'}),result:AutoTickResult=typeof outcome==='object'?outcome:{accepted:outcome!==false};
             if(generation!==this.generation)return;
-            if(!result.accepted){this.pending=true;if(result.retryAt!==undefined&&++this.rejectedRuns<=5)this.scheduleRetry(result.retryAt);return;}
-            if(result.retryableFailure)this.rejectedRuns++;else this.rejectedRuns=0;this.lastAutoTickAt=this.now();
-            const followUp=result.followUp&&this.followUps++<3;
-            if((result.retryAt!==undefined&&this.rejectedRuns<=5)||followUp)this.scheduleRetry(result.retryAt??this.now()+1000);
-            else {if(this.interval==='startup-only')this.startupConsumed=true;this.followUps=0;}
-            // Retry work belongs to the accepted plan; a due queue item alone is not evidence of a retry.
-        } catch(error) {if(generation!==this.generation)return; console.error('[VaultSync] automatic sync failed:',error);this.pending=true;if(++this.rejectedRuns<=5)this.scheduleRetry(this.now()+60_000); }
-        finally {this.ticking=false;this.deps.onStateChange?.();if(generation!==this.generation)this.wake();}
-    }
-    private scheduleRetry(at:number):void {
-        if(this.paused||this.interval==='off')return;
-        if(this.retryTimer!==null)this._clearTimeout(this.retryTimer);
-        this.retryAt=Math.max(this.now()+1000,at);
-        this.retryTimer=this._setTimeout(()=>{this.retryTimer=null;this.retryAt=null;void this.runTick();},this.retryAt-this.now());
+            if(!result.accepted){catchup=false;if(++this.rejected<=MAX_AUTO_RETRIES&&result.retryAt!==undefined){this.firstFailureAt??=this.now();this.retryAt=result.retryAt;this.armContinuation('retry');}
+                else {this.continuationRequired=true;this.pending.add(trigger);this.blockedReason=result.blockedReason;}return;}
+            this.activationConsumed=true;this.lastAutoTickAt=this.now();this.lastOutcome=result.outcome;this.blockedReason=result.blockedReason;
+            if(result.cancelled){this.clear('retry');this.clear('finishing');this.pending.clear();this.retryAt=this.finishingAt=null;this.cycleActive=false;this.startupCycle='cancelled';return;}
+            if(result.retryAt!==undefined){this.firstFailureAt??=this.now();const withinWindow=this.interval!=='startup-only'||result.retryAt<=this.firstFailureAt+STARTUP_RETRY_WINDOW_MS;
+                if(this.retryAttempts<MAX_AUTO_RETRIES&&withinWindow){this.retryAt=Math.max(this.now()+1000,result.retryAt);this.armContinuation('retry');}else this.continuationRequired=true;}
+            if(result.followUp){if(this.finishingRuns<MAX_FINISHING_RUNS&&this.finishingAt===null&&!this.pending.has('finishing')){this.finishingAt=this.now()+FINISHING_DELAY_MS;this.armContinuation('finishing');}
+                else if(this.finishingRuns>=MAX_FINISHING_RUNS)this.continuationRequired=true;}
+            if(this.retryAt===null&&this.finishingAt===null&&!this.pending.has('retry')&&!this.pending.has('finishing')){this.cycleActive=false;this.startupCycle=this.continuationRequired?'continuation-required':'completed';}
+        }catch(error){if(generation!==this.generation)return;console.error('[VaultSync] automatic sync failed:',error);this.firstFailureAt??=this.now();
+            if(this.retryAttempts<MAX_AUTO_RETRIES&&(this.interval!=='startup-only'||this.now()+60_000<=this.firstFailureAt+STARTUP_RETRY_WINDOW_MS)){this.retryAt=this.now()+60_000;this.armContinuation('retry');}else{this.continuationRequired=true;this.cycleActive=false;this.activationConsumed=true;this.startupCycle='continuation-required';}}
+        finally{this.ticking=false;this.changed();if(generation!==this.generation||catchup&&(this.choose()!=='interval'||!this.cycleActive))this.wake();}
     }
 }

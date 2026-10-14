@@ -152,6 +152,7 @@ export interface TransferEvent {
 }
 export type TransferObserver = (event: TransferEvent) => void;
 export interface SyncIssue {
+        jobId?:string;connectionId?:string;domain?:'job'|'shared';
         code: string; message: string; stage: PipelineStage;
         retryable: boolean; scope: 'file' | 'source' | 'session';
         status?: number; attempt?: number; retryAt?: number; host?: string;
@@ -321,6 +322,7 @@ export interface FailedFile {
 
 /** Статистика одной сессии синхронизации (перенос из main.ts). */
 export interface SyncStats {
+        jobResults?:import('../core/job-runtime').JobRunResult[];
         uploaded?: number;
         /** Confirmed trash operations on Google Drive, separate from local deletions. */
         deletedDrive?: number;

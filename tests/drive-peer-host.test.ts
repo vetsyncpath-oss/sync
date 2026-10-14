@@ -206,3 +206,8 @@ test('actual restore action does not fetch peer artifacts or independent canonic
     remote.add('other','other.md','ready');const copy=remote.artifact('origin','a.md'),{store}=await a.state();await a.run(['a.md'],'retry',{namespace:store.namespace});const entry=(await a.state()).store.inbox('a.md')!;
     const result=await a.run(['a.md'],'retry',{namespace:store.namespace,resolution:{namespace:store.namespace,entry,action:'restore-known'}});assert.equal(result.failed,0);assert.equal(str(a.f.files.get('a.md')!),'base');assert(!a.f.files.has(copy));assert(!a.f.files.has('other.md'));assert.equal((await a.state()).store.artifacts().length,0);
 });
+test('automatic finishing leaves queued canonical and peer-copy retries to the retry schedule',async()=>{
+ const remote=new Remote();remote.add('origin','a.md','base');remote.add('independent','b.md','safe');const copy=remote.artifact('origin','a.md'),h=await peer(remote);
+ h.f.queue.add({path:'a.md',hash:sha('base'),size:4},'retry later',Date.now()-100000);
+ const result=await h.plugin.executeSync('auto',undefined,false,undefined,'finishing');assert.equal(result.failed,0);assert.equal(str(h.f.files.get('b.md')!),'safe');assert(!h.f.files.has('a.md'));assert(!h.f.files.has(copy));assert.equal(h.f.queue.size(),1);assert.equal(remote.uploads,0);
+});

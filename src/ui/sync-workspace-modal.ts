@@ -5,6 +5,7 @@ import { resolveFileRule, PLUGIN_CODE_FILES } from '../core/file-rules';
 import { computeLocalPath, type SyncPolicy, type FolderPolicy } from '../core/policy';
 import { pathState, scopeMode, setScope, setParticipation, type ScopeMode } from '../core/workspace-state';
 import type { PathPolicy } from '../core/path-policy';
+import { jobScheduleLabel } from './job-cards';
 import { sourceCandidates } from '../core/source-bindings';
 import { buildLocalTree, buildRemoteTree, buildBrowseTree, treeNodeKey, sortChildren, type TreeNode } from './tree-walk';
 import type { SourceBrowseResult, RemoteBrowseNode } from '../sources/remote-browse';
@@ -19,6 +20,8 @@ import { SourcePathModal } from './source-path-modal';
 import type { GoogleConnectionActions } from './gdrive-folder-picker';
 
 export interface WorkspaceDeps {
+    jobs?():import('../core/job-runtime').JobProjection[];
+    subscribeJobs?(listener:()=>void):()=>void;
     google?: GoogleConnectionActions;
     policy: SyncPolicy; profiles: SyncProfile[]; connections: SourceConnection[];
     pathPolicy: PathPolicy; pluginDir: string; isRunning(): boolean;
@@ -56,6 +59,7 @@ export class SyncWorkspaceModal extends DraftModal {
     private profiles: SyncProfile[];
     private savedProfiles: SyncProfile[];
     private savedPolicy: SyncPolicy;
+    private stopJobUpdates?:()=>void;
     private savedConnections: SourceConnection[];
     private initial: string;
     private readonly inventories = new SourceInventories();
@@ -87,6 +91,7 @@ export class SyncWorkspaceModal extends DraftModal {
     protected isDirty(): boolean { return this.fingerprint() !== this.initial; }
     protected async saveDraft(): Promise<void> { await this.save(); }
     onOpen(): void {
+        this.stopJobUpdates=this.deps.subscribeJobs?.(()=>{if(!this.closed){this.renderSources();this.renderSummary();}});
         if (this.modalEl) { this.modalEl.style.width = 'min(1180px, 96vw)'; this.modalEl.style.maxWidth = '96vw'; }
         const box = this.contentEl; box.replaceChildren(); box.classList.add('sync-workspace');
         box.dataset.pane = 'tree';
@@ -162,7 +167,9 @@ export class SyncWorkspaceModal extends DraftModal {
             choose.setAttribute('aria-pressed', String(this.view === c.id));
             group.append(element('small', c.kind + ' · ' + (state.status === 'loading' ? tr('Загрузка…', 'Loading…') : state.status === 'error' ? (state.loadedAt ? tr('Снимок устарел', 'Stale snapshot') : tr('Ошибка загрузки', 'Load failed')) :
                 state.loadedAt ? tr('Снимок: ', 'Snapshot: ') + new Date(state.loadedAt).toLocaleString() : tr('Не загружен', 'Not loaded'))));
-            group.append(element('small',tr('Авто: ','Auto: ')+(c.auto==='off'?tr('только вручную','manual only'):c.auto??tr('общий интервал','global interval'))));
+            const job=this.deps.jobs?.().find(job=>job.connectionId===c.id);
+            group.append(element('small',job?(this.isDirty()?tr('По сохранённым настройкам: ','Saved settings: '):'')+jobScheduleLabel(job):tr('Авто: ','Auto: ')+(c.auto==='off'?tr('только вручную','manual only'):c.auto??tr('общий интервал','global interval'))));
+            if(job?.run)group.append(element('small',tr('Получено: ','Downloaded: ')+job.run.downloaded+' · '+tr('Требуют решения: ','Need attention: ')+job.run.attention+' · '+tr('Ошибок: ','Failures: ')+job.run.failed));
             const check = this.checks.get(c.id); if (check) group.append(element('small', check.loading ? tr('Проверка доступа…', 'Checking access…') : check.message));
             const actions = element('details', '', 'sync-source-actions'); actions.append(element('summary', tr('Действия', 'Actions')));
             button(actions, tr('Настроить', 'Configure'), () => this.editSource(c));
@@ -514,5 +521,5 @@ export class SyncWorkspaceModal extends DraftModal {
         for(const id of selected){const connection=this.connections.find(c=>c.id===id);if(!connection||connectionIssues(connection).length){new Notice((connection?.name??id)+': '+tr('проверьте поля подключения','check the connection fields'));return;}}
         this.acceptClose(); await this.deps.run(ids);
     }
-    onClose(): void { this.closed = true; this.controller.abort(); this.inventories.dispose(); this.deps.dispose(); this.contentEl.replaceChildren(); }
+    onClose(): void { this.closed = true; this.stopJobUpdates?.(); this.controller.abort(); this.inventories.dispose(); this.deps.dispose(); this.contentEl.replaceChildren(); }
 }

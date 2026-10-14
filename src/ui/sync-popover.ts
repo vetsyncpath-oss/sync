@@ -27,6 +27,7 @@ import type { JournalEntry, JournalOutcome, JournalTrigger } from '../core/journ
 import type { MirrorLevel } from '../core/mirror';
 import { tr } from './dom';
 import { operationTable } from './operation-table';
+import { jobCards, jobHistory } from './job-cards';
 import { sessionLabel } from './session-label';
 
 /** Короткая подпись idle-бейджа — из словаря (раньше module-local TODO). */
@@ -36,6 +37,7 @@ const IDLE_BADGE = () => i18n.t.pop.statusIdle;
  *  Source-of-truth: main.ts StatusBarManager.setStatus копирует сюда поля
  *  из SyncState + сессии (phase/file* из coordinator events). */
 export interface PopoverState extends Pick<SyncProgress,'stage'|'activities'|'currentFailed'|'issues'|'lastActivityAt'|'networkBytes'> {
+        jobs?:import('../core/job-runtime').JobProjection[];
         status: 'idle' | 'syncing' | 'error' | 'offline' | 'conflicts' | 'unconfigured' | 'blocked';
         profilesMode?: boolean;
         blockedReason?: string;
@@ -61,6 +63,7 @@ export interface PopoverState extends Pick<SyncProgress,'stage'|'activities'|'cu
          *  null = scheduler не инициализирован (W4-T04 не активирован в main.ts). */
         scheduler?: {
                 blockedReason?:string;
+                startupCycle?:import('../core/scheduler').SchedulerSnapshot['startupCycle'];continuationRequired?:boolean;
                 interval: 'off' | 'startup-only' | '15m' | '30m' | '1h' | '2h';
                 paused: boolean; pending?:boolean;running?:boolean;
                 minutesUntilNext: number | null;
@@ -199,7 +202,7 @@ export class SyncPopoverView {
         render(): void {
                 const { contentEl } = this.deps;
                 const activeElement=contentEl.contains(document.activeElement)?document.activeElement as HTMLElement:undefined;
-                const detailsState=Array.from(contentEl.querySelectorAll<HTMLDetailsElement>('details')).map(item=>({cls:item.className,open:item.open}));
+                const detailsState=Array.from(contentEl.querySelectorAll<HTMLDetailsElement>('details')).map(item=>({cls:item.className,key:item.dataset.jobId,open:item.open}));
                 const focused=contentEl.contains(document.activeElement)?{cls:(document.activeElement as HTMLElement).className,text:document.activeElement?.textContent}:undefined;
                 contentEl.replaceChildren();
                 contentEl.classList.add('pop-popover');
@@ -217,6 +220,7 @@ export class SyncPopoverView {
 
                 // 3.5 [W4-T04] Scheduler indicator «следующая через N мин» —
                 // рендерится когда есть snapshot и интервал != 'off'.
+                if(this.state.jobs?.length)this.deps.contentEl.append(jobCards(this.state.jobs));
                 if (this.state.scheduler && this.state.scheduler.interval !== 'off') {
                         contentEl.append(this.renderScheduler());
                 }
@@ -236,7 +240,7 @@ export class SyncPopoverView {
 
                 // 7. Ссылки внизу.
                 contentEl.append(this.renderLinks());
-                for(const item of detailsState){const details=Array.from(contentEl.querySelectorAll<HTMLDetailsElement>('details')).find(node=>node.className===item.cls);if(item.cls&&details)details.open=item.open;}
+                for(const item of detailsState){const details=Array.from(contentEl.querySelectorAll<HTMLDetailsElement>('details')).find(node=>node.className===item.cls&&node.dataset.jobId===item.key);if(item.cls&&details)details.open=item.open;}
                 if(activeElement&&contentEl.contains(activeElement))activeElement.focus();
                 else if(focused)Array.from(contentEl.querySelectorAll<HTMLElement>('button')).find(button=>button.className===focused.cls&&button.textContent===focused.text)?.focus();
         }
@@ -434,6 +438,7 @@ export class SyncPopoverView {
                 if(sched.blockedReason){wrap.append(el('span',{text:tr('Автозапуски остановлены: ','Automatic runs stopped: ')+sched.blockedReason+tr(' Исправьте причину и выполните ручной запуск.',' Fix the cause and run manually.')}));return wrap;}
                 if(sched.running){wrap.append(el('span',{text:tr('Автосинхронизация выполняется.','Automatic synchronization is running.')}));return wrap;}
                 if(sched.pending){wrap.append(el('span',{text:tr('Автозапуск ожидает сеть, доступ или завершение текущей сессии.','Automatic run awaits network, access or the active session.')}));return wrap;}
+                if(sched.continuationRequired){wrap.append(el('span',{text:tr('Автоматический цикл достиг лимита; незавершённое видно в источнике. Нужен ручной запуск.','Automatic cycle reached its limit; unresolved work remains visible. Run manually.')}));return wrap;}
                 if (sched.minutesUntilNext === null) {
                         // interval='startup-only' после первого тика — nextTickAt=null.
                         // Но startup-only сам по себе не должен здесь оказаться (одноразовый),
@@ -481,6 +486,7 @@ export class SyncPopoverView {
                         const actions=el('div',{cls:'pop-targeted-retries'});
                         for(const row of e.results.filter(row=>row.status==='error').slice(0,20)){const retry=el('button',{text:tr('Повторить: ','Retry: ')+row.path});retry.disabled=this.state.status==='syncing';retry.addEventListener('click',()=>this.deps.onRetry([row.path]));actions.append(retry);}wrap.append(actions);
                 }
+                if(e.jobResults?.length)wrap.append(jobHistory(e.jobResults,e.jobResultsTotal));
                 if(e.results?.length){const details=el('details');details.append(el('summary',{text:tr('Результаты по файлам','File results')}),operationTable(e.results));wrap.append(details);}
 
                 // Счётчики — только ненулевые, через ' · '.

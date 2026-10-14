@@ -1,10 +1,10 @@
 # Google Drive: пилотная интеграция
 
-Состояние на 2026-10-14, сборка `overhaul-s0-lifecycle-2026-10-14`. Текущая база ветки — `overhaul/2b1-recovered`, commit `3e03d69357e0273194aa43357ee0b41b90af221a`.
+Состояние на 2026-10-14, сборка `overhaul-jobs-startup-2026-10-14`. Текущая база ветки — `overhaul/2b1-recovered`, commit `3e03d69357e0273194aa43357ee0b41b90af221a`.
 
 Это проверяемая реализация первого этапа, предназначенная для испытаний на отдельном vault и отдельной папке Drive. OAuth, executor и интерфейс ещё не проверены в настоящем Obsidian с настоящим Google-аккаунтом. Установочного manifest в репозитории нет; этот checkout не является готовым релизом.
 
-Критическая [сверка Drive-аудита и Per-Source Jobs](audits/drive-jobs-cross-review.md) остаётся историческим baseline. Реализованы [S0a/S0b/S0c](overhaul-vnext/implementation-status.md): ID-aware browse, own-key metadata, zero warm writes, fresh consent, несколько proposals и content dedup. Новая Drive-копия с проверенной portable lineage **получается другим vault** в bidirectional области исходного файла, включая named mapping. Legacy copies автоматически не импортируются. Canonical unknown/deletion inbox, read-only probe и same-ID restore реализованы; полного proposal/artifact inbox и per-job execution ещё нет; точный [S0b runtime contract](overhaul-vnext/07-s0b-proposals.md) и [S0c lifecycle](overhaul-vnext/08-s0c-lifecycle.md) отделён от target specification.
+Критическая [сверка Drive-аудита и Per-Source Jobs](audits/drive-jobs-cross-review.md) остаётся историческим baseline. Реализованы [S0a/S0b/S0c и переходные S1a/S2a](overhaul-vnext/implementation-status.md): ID-aware browse, own-key metadata, zero warm writes, fresh consent, несколько proposals и content dedup. Новая Drive-копия с проверенной portable lineage **получается другим vault** в bidirectional области исходного файла, включая named mapping. Legacy copies автоматически не импортируются. Canonical unknown/deletion inbox, read-only probe и same-ID restore реализованы; обычный запуск теперь разделён по jobs, а полный proposal/artifact inbox и физические per-job stores ещё не включены; точный [S0b runtime contract](overhaul-vnext/07-s0b-proposals.md) и [S0c lifecycle](overhaul-vnext/08-s0c-lifecycle.md) и [jobs/startup](overhaul-vnext/09-jobs-startup.md) отделены от target specification.
 
 ## Что реализовано
 
@@ -84,7 +84,7 @@ Grant разрешает доступ ко всему Drive, но executor ог�
 | Следующая функция | Почему пока не заявляется |
 |---|---|
 | In-place content update существующего ID | Требуются live-проверки параллельных чужих правок и восстановления ревизий; сейчас включён согласованный conflict-copy gate |
-| Перенос rename и tombstone жизненного цикла | Стабильные Drive ID уже есть, но идентичность локального rename и долговременные tombstone не реализованы. Переименование может выглядеть как создание/удаление или неизвестное отсутствие |
+| Перенос rename и tombstone жизненного цикла | Стабильные Drive ID и retained tombstones уже есть; идентичность локального rename и compact retention не реализованы. Переименование может выглядеть как создание/удаление или неизвестное отсутствие |
 | Пустые папки | Создаются только необходимые родители файлов; самостоятельная синхронизация и удаление пустых каталогов не реализованы |
 | Changes API, realtime и warm incremental scan | Пока выполняется полное перечисление выбранной папки и локальное хеширование. Листинг не является атомарным snapshot; согласованность при внешних изменениях требует повторной сверки |
 | Потоковая передача и multipart small-file path | Сейчас ограниченные ArrayBuffer, последовательный executor и resumable chunks по 8 MiB. Это не скорость и память Sync Engine; default file cap — 64 MiB, настройка 4–256 MiB |
@@ -94,9 +94,10 @@ Grant разрешает доступ ко всему Drive, но executor ог�
 | Межустройственная синхронизация conflict artifacts | S0b receiver реализован для marked artifacts; edited peer publication, review actions и legacy import требуют продолжения |
 | No-op Drive state | Warm canonical/artifact run не переписывает checkpoint. Effectful saves пока полные snapshots; delta backend остаётся следующим этапом |
 | OAuth lifecycle polish | Нужны явный revoke и очистка уже сохранённых неиспользуемых credential references; отменённые новые черновики уже очищают свои secrets |
+| Независимые jobs / расписание | Shared ledger/serial apply, per-source status и startup finishing включены. Физические per-job stores, pair reconcile, AccountContext и полный settings fence требуют следующего этапа |
 | Производительность | Нет live benchmark и обещания равной Sync Engine скорости; concurrency, Changes и stat/hash cache должны пройти отдельные измерения |
 
-До этих работ пилот нельзя называть полной заменой Sync Engine или готовой двусторонней production-синхронизацией. Откат к pull-профилю прекращает новые push/trash решения, но не отменяет опубликованные файлы. Prepared trash блокируется при текущем `keep` без стирания pending. Не удаляйте ledger/recovery для «сброса ошибки»: это убирает сведения о незавершённых эффектах. После v2 fence старая сборка v1 не должна запускать effects; возврат требует отдельного verified recovery/export, которого пока нет в UI.
+До этих работ пилот нельзя называть полной заменой Sync Engine или готовой двусторонней production-синхронизацией. Откат к pull-профилю прекращает новые push/trash решения, но не отменяет опубликованные файлы. Prepared trash блокируется при текущем `keep` без стирания pending. Не удаляйте ledger/recovery для «сброса ошибки»: это убирает сведения о незавершённых эффектах. После v3 fence старые сборки v1/v2 не должна запускать effects; возврат требует отдельного verified recovery/export, которого пока нет в UI.
 
 ## Проверки
 
@@ -104,7 +105,7 @@ Grant разрешает доступ ко всему Drive, но executor ог�
 
 До исправления ожидания OAuth: **382/382 теста**, TypeScript и production build прошли. Дополнительные проверки исправления покрывают отсутствие callback, отмену с повторным входом, зависшее чтение ответа, timeout обновления токена и позднюю ротацию credentials. Это локальные/fake-API проверки, без live Google/Obsidian; доступность регионального Google-домена ими не подтверждается.
 
-Текущий S0a/S0b/S0c: **490/490 тестов**, TypeScript, styles и production build прошли; `git diff --check` без ошибок. Тег bundle — `overhaul-s0-lifecycle-2026-10-14`; [статус реализации и сравнение probes](overhaul-vnext/implementation-status.md). S0a проходил 415/415; S0b добавил 38 regression cases, S0c — ещё 37. Два vaults проверены через реальный host dispatch с fake API/FS; live Google/Obsidian verification ещё не выполнена.
+Текущий S0a/S0b/S0c + S1a/S2a: **534/534 тестов**, TypeScript, styles и production build прошли; `git diff --check` без ошибок. Тег bundle — `overhaul-jobs-startup-2026-10-14`; [статус реализации и сравнение probes](overhaul-vnext/implementation-status.md). S0a проходил 415/415; S0b добавил 38 regression cases, S0c — ещё 37; S1a/S2a — ещё 44. Два vaults проверены через реальный host dispatch с fake API/FS; live Google/Obsidian verification ещё не выполнена.
 
 - Возвращённые и выброшенные 401, конкурентный refresh, потерянный/отозванный grant, отменённый callback и поздний refresh без восстановления credentials.
 - Полная пагинация, `incompleteSearch`, alias/case/NFC collisions, корень вне доступа, одинаковый размер с разными байтами, проверка checksum и version.

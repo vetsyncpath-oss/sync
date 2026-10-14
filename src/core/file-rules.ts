@@ -75,3 +75,19 @@ export function deletionLevel(path: string, rules: readonly FileRule[] | undefin
     return mode === 'keep' ? 'fetch' : mode === 'tracked' ? 'light' : mode === 'mirror' ? 'full' : fallback;
 }
 export const PLUGIN_CODE_FILES = ['main.js', 'manifest.json', 'styles.css'];
+
+/** Prefix/exact/basename classes include absent descendants. Fresh segments represent
+ * the complement of every literal in the rules, rather than an observed file. */
+export function symbolicRulePaths(rules:readonly FileRule[],extraRoots:readonly string[]=[]):string[]{
+    const roots=new Set(['',...extraRoots]),names=new Set<string>(),segments=new Set<string>();
+    for(const rule of rules){for(const segment of rule.path.split('/'))segments.add(canonical(segment));
+        if(rule.scope==='file'){roots.add(rule.path);roots.add(rule.path.split('/').slice(0,-1).join('/'));names.add(rule.path.split('/').pop()!);}
+        else roots.add(rule.path);
+        for(const name of rule.names??[])names.add(name);
+    }
+    let fresh='__sync_scope__';while(segments.has(canonical(fresh))||[...names].some(name=>canonical(name)===canonical(fresh)))fresh+='_';
+    names.add(fresh);const paths=new Set<string>();
+    for(const root of roots){if(root)paths.add(root);for(const name of names){paths.add([root,name].filter(Boolean).join('/'));paths.add([root,fresh,name].filter(Boolean).join('/'));}
+        if(paths.size>100_000)throw Error('Policy symbolic partition exceeds its limit; narrow the assignments before activation');}
+    return [...paths];
+}

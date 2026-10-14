@@ -43,7 +43,7 @@ test('source editor persists independent automatic sync selection',async()=>{
 test('plugin schedules only assigned sources and manual-only Yandex stays out of the inherited job',async()=>{
  dom();const plugin=new Plugin(new App(),{} as any) as any,f=fixture(),calls:string[][]=[];Object.assign(plugin,{queue:f.queue,settings:{autoSyncInterval:'15m',vaultPolicy:{version:1,mirror:false,folders:[],defaultSource:'git',fileRules:[{scope:'folder',path:'Cloud',source:'disk'},{scope:'folder',path:'Other',source:'other'}]},connections:[{id:'git',auto:'inherit'},{id:'disk',auto:'off'},{id:'other',auto:'1h'}]},builtSourceId:'test',runAutoSession:async(ids:string[])=>{calls.push(ids);return true;}});
  plugin.startAutoSync();try{
-  await plugin.autoSchedulers.get('inherit').deps.onAutoTick();await plugin.autoSchedulers.get('other').deps.onAutoTick();assert.deepEqual(calls,[['git'],['other']]);assert.equal(plugin.autoSchedulers.get('disk').getInterval(),'off');
+  await plugin.autoSchedulers.get('git').deps.onAutoTick();await plugin.autoSchedulers.get('other').deps.onAutoTick();assert.deepEqual(calls,[['git'],['other']]);assert.equal(plugin.autoSchedulers.get('disk').getInterval(),'off');
   let updates=0;plugin.snapshotPopoverState=()=>state();plugin.popoverView={update:()=>updates++};plugin.pauseAutoSync();assert(updates>0);assert(plugin.schedulerSnapshot().paused);plugin.restartAutoSync();assert(plugin.schedulerSnapshot().paused);plugin.pauseAutoSync();assert(!plugin.schedulerSnapshot().paused);
  }finally{for(const scheduler of plugin.autoSchedulers.values())scheduler.stop();}
 });
@@ -54,4 +54,26 @@ test('Yandex concurrency limit does not throttle independent Git source requests
  const routed=new RoutedSource([{id:'cloud',name:'Disk',source:cloud},{id:'git',name:'Git',source:git}],[{scope:'vault',path:'',source:'git'},{scope:'folder',path:'Cloud',source:'cloud',remotePath:''}],p=>p,'git');
  const manifest=await routed.getManifest(new AbortController().signal),controller=new AbortController(),downloads=manifest.filter(e=>e.connectionId==='cloud').map(e=>routed.fetch(e,controller.signal));await started.promise;
  assert.equal(cloudActive,2);await Promise.all(manifest.filter(e=>e.connectionId==='git').map(e=>routed.fetch(e,controller.signal)));assert.equal(gitActive,2);gate.resolve();await Promise.all(downloads);await routed.dispose();
+});
+test('a per-source startup-only schedule remains enabled and completed when the global interval is off',async()=>{
+ dom();const plugin=new Plugin(new App(),{} as any) as any,f=fixture();Object.assign(plugin,{queue:f.queue,settings:{autoSyncInterval:'off',vaultPolicy:{version:1,mirror:false,folders:[],defaultSource:'drive'},connections:[{id:'drive',name:'Drive',kind:'gdrive',auto:'startup-only'}]},builtSourceId:'test',runAutoSession:async()=>({accepted:true,outcome:'needs-attention'})});
+ plugin.startAutoSync();try{const scheduler=plugin.autoSchedulers.get('drive');await scheduler.runTick.call(Object.assign(scheduler,{pending:new Set(['startup'])}));const jobs=plugin.automaticJobSnapshots();assert.equal(jobs[0].schedule.interval,'startup-only');assert.equal(jobs[0].schedule.startupCycle,'completed');assert.equal(jobs[0].schedule.nextPeriodicAt,null);
+  const {jobCards}=await import('../src/ui/job-cards'),cards=jobCards(jobs);assert.match(cards.textContent??'',/At startup.*Startup cycle completed/);assert(!/Off/.test(cards.textContent??''));plugin.restartAutoSync();assert.equal(scheduler.snapshot().nextTickAt,null);
+ }finally{for(const scheduler of plugin.autoSchedulers.values())scheduler.stop();}
+});
+test('inheriting sources each keep their own scheduler and pause/resume does not erase a consumed startup',async()=>{
+ dom();const plugin=new Plugin(new App(),{} as any) as any,f=fixture();Object.assign(plugin,{queue:f.queue,settings:{autoSyncInterval:'startup-only',vaultPolicy:{version:1,mirror:false,folders:[],defaultSource:'git',fileRules:[{scope:'folder',path:'Cloud',source:'drive'}]},connections:[{id:'git',name:'Git',kind:'git',auto:'inherit'},{id:'drive',name:'Drive',kind:'gdrive',auto:'inherit'}]},builtSourceId:'test',runAutoSession:async()=>({accepted:true})});
+ plugin.startAutoSync();try{assert.notEqual(plugin.autoSchedulers.get('git'),plugin.autoSchedulers.get('drive'));const scheduler=plugin.autoSchedulers.get('git');scheduler.pending.add('startup');await scheduler.runTick();plugin.pauseAutoSync();plugin.pauseAutoSync();plugin.restartAutoSync();assert.equal(scheduler.snapshot().startupCycle,'completed');assert.equal(scheduler.snapshot().nextTickAt,null);assert.equal(plugin.autoSchedulers.get('drive').snapshot().startupCycle,'waiting');
+ }finally{for(const scheduler of plugin.autoSchedulers.values())scheduler.stop();}
+});
+test('job cards preserve per-connection expanded details through status updates',async()=>{
+ const {Scheduler}=await import('../src/core/scheduler'),base=new Scheduler({queue:fixture().queue,onAutoRetry:()=>{},onAutoTick:()=>{}}).snapshot();const jobs=[{jobId:'job:a',connectionId:'a',name:'A',kind:'git' as const,configuredAuto:'off' as const,schedule:base},{jobId:'job:b',connectionId:'b',name:'B',kind:'gdrive' as const,configuredAuto:'off' as const,schedule:base}];
+ const f=pop({...state(),jobs},last),details=Array.from(f.box.querySelectorAll<HTMLDetailsElement>('.sync-job-card'));details[1].open=true;f.view.update({...state(),jobs});assert.equal(Boolean(f.box.querySelector<HTMLDetailsElement>('[data-job-id="a"]')!.open),false);assert.equal(f.box.querySelector<HTMLDetailsElement>('[data-job-id="b"]')!.open,true);
+});
+test('journal reload retains bounded per-source outcomes and history renders without current automatic settings',async()=>{
+ const {FileJournal}=await import('../src/core/journal'),{jobHistory}=await import('../src/ui/job-cards');dom();let raw:string|null=null;
+ const jobs=Array.from({length:103},(_,i)=>({jobId:'job:'+i,connectionId:String(i),name:'Source '+i,kind:'git' as const,runId:'run',activity:'idle' as const,outcome:i?'success' as const:'partial' as const,downloaded:i?1:2,uploaded:0,deleted:0,failed:i?0:1,pending:i?0:1,attention:0,startedAt:1,completedAt:2,issues:i?[]:[{code:'network',message:'Offline',scope:'source' as const,stage:'manifest' as const,retryable:true}]}));
+ const store=new FileJournal({read:async()=>raw,write:async value=>{raw=value;}});await store.append({...last,jobResults:jobs});assert.equal(JSON.parse(raw!)[0].jobResults.length,100);const history=(await store.load())[0];assert.equal(history.jobResultsTotal,103);assert.equal(history.jobResults![0].outcome,'partial');
+ const rendered=jobHistory(history.jobResults!,history.jobResultsTotal);assert.match(rendered.textContent??'',/Source 0.*Partially completed.*Offline/);assert.match(rendered.textContent??'',/100 \/ 103/);assert(!/At startup|Every hour|Automatic/.test(rendered.textContent??''));
+ const f=pop({...state(),status:'error'},history);assert(f.box.querySelector('.sync-job-history'));assert.match(f.box.querySelector('.sync-job-history')!.textContent??'',/Source 0/);
 });

@@ -22,6 +22,7 @@ export interface DriveExecutionPorts {
     guard():void; signal:AbortSignal; auto:boolean; observe?:TransferObserver;
     restoreOnly?:boolean;
     probeOnly?:boolean;
+    skipQueued?:boolean;
     resolution?:DriveResolution;
     allowQuestions?:boolean;
     /** Evaluates actual artifact protections/exclusions and inherited origin ownership. Default is deny. */
@@ -64,6 +65,7 @@ export class DriveCoordinator {
                 if(/\.conflict-/i.test(path.split('/').pop()!)){this.stats.skipped++;continue;}
                 if(!remotePath||behavior.direction!=='bidirectional'||behavior.protected){this.stats.skipped++;continue;}
                 const queued=this.p.queue.all().find(q=>q.path===path);
+                if(this.p.skipQueued&&queued){this.stats.skipped++;continue;}
                 if(this.p.auto&&queued&&(queued.poisoned||queued.nextRetryAt>Date.now())){this.stats.skipped++;continue;}
                 const stat=await this.p.vault.stat(path);if(stat&&stat.size>this.p.root.client.maxFileBytes)throw new SyncFault('file-too-large','Local file exceeds transfer limit');
                 const pending=this.p.state.pending(path);

@@ -31,6 +31,7 @@ import { destinationIsRouted } from './source-bindings';
 import type { FolderPolicy } from './policy';
 /** Опции политики путей (в main.ts — поля settings). */
 export interface PathPolicyOptions {
+        blockedTargets?:readonly PathBlock[];
         syncMode: 'config-only' | 'full-vault';
         allowedFolders: string;    // многострочник
         ignoredFolders: string;    // многострочник
@@ -40,6 +41,7 @@ export interface PathPolicyOptions {
         protectedPaths?: readonly string[];
         executionSources?: { ids: string[]; defaultSource?: string; rules: FileRule[]; folders?:FolderPolicy[]; directions?:('pull'|'bidirectional')[] };
 }
+export interface PathBlock {path:string;descendants?:boolean;ancestors?:boolean;reason:string}
 
 /** Расширения, не синхронизируемые никогда (порт из main.ts). */
 const BLOCKED_EXTENSIONS: readonly string[] = [
@@ -74,21 +76,30 @@ function hasWindowsReservedName(path: string): boolean {
         });
 }
 
+interface BlockIndex {exact:Map<string,string>;descendants:Map<string,string>}
 export class PathPolicy {
         /** Алиасы модульных констант (контракт требует static; значения — порт из main.ts). */
         static readonly BLOCKED_EXTENSIONS: readonly string[] = BLOCKED_EXTENSIONS;
         static readonly SCRIPT_EXTENSIONS: readonly string[] = SCRIPT_EXTENSIONS;
 
         private readonly opts: PathPolicyOptions;
+        private readonly blockIndex:BlockIndex;
 
-        constructor(opts: PathPolicyOptions) {
+        constructor(opts: PathPolicyOptions,reuseIndex?:BlockIndex) {
                 // Защитная копия: политика фиксирует снимок настроек на момент
                 // создания (в main.ts isPathAllowed читал живой this.settings).
-                this.opts = { ...opts, protectedPaths: [...(opts.protectedPaths ?? [])], executionSources: opts.executionSources && structuredClone(opts.executionSources) };
+                this.opts = { ...opts, blockedTargets:reuseIndex?opts.blockedTargets:structuredClone(opts.blockedTargets??[]),protectedPaths: [...(opts.protectedPaths ?? [])], executionSources: opts.executionSources && structuredClone(opts.executionSources) };
+            this.blockIndex=reuseIndex??{exact:new Map(),descendants:new Map()};
+            if(!reuseIndex)for(const block of this.opts.blockedTargets??[]){const root=block.path.normalize('NFC').toLowerCase();this.blockIndex.exact.set(root,block.reason);if(block.descendants)this.blockIndex.descendants.set(root,block.reason);
+                if(block.ancestors){const parts=root.split('/');for(let i=1;i<parts.length;i++)this.blockIndex.exact.set(parts.slice(0,i).join('/'),block.reason);}}
         }
-        snapshot(): PathPolicy { return new PathPolicy(this.opts); }
+        snapshot(): PathPolicy { return new PathPolicy(this.opts,this.blockIndex); }
+        withBlockedTargets(blocks:readonly PathBlock[]):PathPolicy{return new PathPolicy({...this.opts,blockedTargets:[...this.opts.blockedTargets??[],...blocks]});}
+        blockReason(path:string):string|undefined{const key=path.normalize('NFC').toLowerCase(),exact=this.blockIndex.exact.get(key);if(exact)return exact;const parts=key.split('/');
+                for(let i=1;i<=parts.length;i++){const reason=this.blockIndex.descendants.get(parts.slice(0,i).join('/'));if(reason)return reason;}return undefined;}
+
         forSources(ids: readonly string[], defaultSource: string | undefined, rules: readonly FileRule[],folders:readonly FolderPolicy[]=[],directions?:('pull'|'bidirectional')[]): PathPolicy {
-                return new PathPolicy({ ...this.opts, executionSources: { ids: [...ids], defaultSource, rules: structuredClone([...rules]),folders:structuredClone([...folders]),directions } });
+                return new PathPolicy({ ...this.opts, executionSources: { ids: [...ids], defaultSource, rules: structuredClone([...rules]),folders:structuredClone([...folders]),directions } },this.blockIndex);
         }
 
         /**
@@ -117,6 +128,7 @@ export class PathPolicy {
          * отдельная ответственность вызывающего до записи на диск).
          */
         isPathAllowed(rawPath: string): boolean {
+                if(this.blockReason(rawPath))return false;
                 if (!this.isInventoryPathAllowed(rawPath)) return false;
                 const run = this.opts.executionSources;
                 if (run) {
@@ -133,7 +145,7 @@ export class PathPolicy {
 
         /** Only a separately verified Drive lineage may inherit the origin's named rule. Hard guards apply to both paths. */
         isArtifactPathAllowed(originPath:string,artifactPath:string):boolean {
-                return this.isPathSafe(originPath)&&this.isPathSafe(artifactPath)&&this.isPathAllowed(originPath)
+                return !this.blockReason(artifactPath)&&this.isPathSafe(originPath)&&this.isPathSafe(artifactPath)&&this.isPathAllowed(originPath)
                         &&this.inventoryAllowed(artifactPath,true);
         }
         private inventoryAllowed(rawPath:string,artifact:boolean):boolean {

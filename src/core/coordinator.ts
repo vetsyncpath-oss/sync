@@ -230,6 +230,12 @@ export class Coordinator {
         // deps.policy/deps.cache заменяемы через setPolicy/setCache (настройки/источник)
         constructor(private deps: CoordinatorDeps) {}
 
+        /** Ephemeral runner shares the acknowledged legacy cache, queue and global mutation ledger. */
+        executionContext(source:import('../sources/types').SyncSource,policy:PathPolicy):Coordinator {
+                if(this.running)throw new SyncFault('configuration-changed','Cannot create another context during an active run','session');
+                return new Coordinator({...this.deps,source,policy,options:{...this.deps.options,isConfigured:()=>true}});
+        }
+
         isRunning(): boolean {
                 return this.running;
         }
@@ -248,7 +254,7 @@ export class Coordinator {
          * подтверждении); иначе — честная статистика, включая отмену
          * посередине (кэш отражает только реально записанное).
          */
-        async sync(opts: { forcedPaths?: Set<string>; forceAll?: boolean; trigger?: 'manual' | 'auto'; missingOnly?:boolean;onlyForcedPaths?:boolean;deferQuestions?:boolean } = {}): Promise<SyncStats | null> {
+        async sync(opts: { forcedPaths?: Set<string>; forceAll?: boolean; trigger?: 'manual' | 'auto'; missingOnly?:boolean;onlyForcedPaths?:boolean;deferQuestions?:boolean;finishing?:boolean } = {}): Promise<SyncStats | null> {
                 opts = { ...opts, forcedPaths: opts.forcedPaths && new Set(opts.forcedPaths) };
                 const { ui, messages: m } = this.current;
                 let o = this.current.options;
@@ -289,7 +295,8 @@ export class Coordinator {
                         ui.setStatus('syncing', { phase: 0, stage:'recovery',lastActivityAt:Date.now(), progressText: m.phaseManifest });
                         const mutations = this.current.mutations;
                         if (mutations) {
-                                const recovered = await mutations.recover(this.current.cache.namespace,controller.signal);
+                                const recovered = await mutations.recover(this.current.cache.namespace,controller.signal,record=>{const origin=record.effect?.kind==='set'?record.effect.remote.path:record.path;return this.current.policy.isPathAllowed(origin)&&(!record.from||this.current.policy.isPathAllowed(record.from))
+                                    &&(this.current.policy.isPathAllowed(record.path)||this.current.policy.isArtifactPathAllowed(origin,record.path));});
                                 mutations.projectCache(this.current.cache.namespace, this.current.cache);
                                 for (const record of recovered) {
                                         const effect = record.effect;
@@ -514,6 +521,7 @@ export class Coordinator {
                         const failures = new Map(this.current.queue.all().map(file => [file.path, file]));
                         toDownload = toDownload.filter(file => {
                                 const failed = failures.get(file.path);
+                                if(opts.finishing&&failed)return false;
                                 if (!failed || opts.forceAll || opts.forcedPaths?.has(file.path)) return true;
                                 if (failed.hash !== file.hash) return true;
                                 return !failed.poisoned && failed.nextRetryAt <= Date.now();
@@ -589,7 +597,13 @@ export class Coordinator {
                                 if(capacity.used+plan.downloads.length+plan.moves.length+plan.deletions.length>capacity.limit)throw new SyncFault('history-quota','Operation history has insufficient capacity for this plan; no payloads downloaded','session');
                                 await this.current.mutations.recovery.preflight([...plan.downloads.map(file=>file.expected),...plan.moves.map(file=>file.expected),...plan.deletions.map(file=>file.expected)]);
                         }
-                        for(const file of plan.downloads)await this.preflightParents(file.entry.path);
+                        const blockedParents=new Set<string>();
+                        for(const file of plan.downloads){this.guard();try{await this.preflightParents(file.entry.path);}catch(error){
+                                if(controller.signal.aborted)throw error;const issue=syncIssue(error,'prepare-directory');if(issue.scope==='session'||issue.code!=='path-collision')throw error;
+                                blockedParents.add(file.entry.path);stats.failed++;stats.problems!.push(issue);stats.results!.push({path:file.entry.path,source:file.entry.provider,status:'error',reason:issue.code,issue});
+                                this.current.queue.add(file.entry,issue.message,Date.now(),'blocked',0,issue);
+                        }}
+                        toDownload=toDownload.filter(file=>!blockedParents.has(file.path));
                         if (plan.moves.length > 0) await this.processRenames(plan.moves,stats);
 
                         // [P2/3.2] фаза 4 — загрузки (пофайловый прогресс ниже докладывает
@@ -805,7 +819,7 @@ export class Coordinator {
         private async preflightParents(path:string):Promise<void>{
                 const parts=path.split('/');for(let i=1;i<parts.length;i++){
                         const parent=parts.slice(0,i).join('/'),stat=await this.current.vault.stat(parent);
-                        if(stat?.type==='file')throw new SyncFault('path-collision',`Parent is a file: ${parent}`,'session');
+                        if(stat?.type==='file')throw new SyncFault('path-collision',`Parent is a file: ${parent}`);
                 }
         }
 

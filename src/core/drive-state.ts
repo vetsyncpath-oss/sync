@@ -261,3 +261,8 @@ export async function driveLifecycleHistory(fs:FileSystem):Promise<{namespace:st
     const namespaces=new Set((await fs.list()).flatMap(name=>{const m=/^drive-state-([\w-]+)-(?:\d{16}|v[12]-backup)\.json$/.exec(name);return m?[m[1]]:[];}));
     const histories=[];for(const namespace of namespaces){const store=new DriveStateStore(fs,namespace);await store.load();histories.push({namespace,inbox:store.inboxEntries(),tombstones:store.tombstones()});}return histories;
 }
+/** Discovery is read-only. Any unreadable retained namespace prevents guessing that its targets are free. */
+export async function discoverDriveStates(fs:FileSystem):Promise<DriveStateStore[]>{
+    const namespaces=new Set((await fs.list()).flatMap(name=>{const m=/^drive-state-([\w-]+)-(?:\d{16}|v[12]-backup)\.json$/.exec(name);return m?[m[1]]:[];}));
+    const stores=[];for(const namespace of namespaces){const store=new DriveStateStore(fs,namespace);await store.load();stores.push(store);}return stores;
+}
