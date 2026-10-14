@@ -7,6 +7,27 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export interface GoogleClient { clientId: string; clientSecret?: string }
 export interface GoogleGrant { accessToken: string; refreshToken: string; expiresIn: number; subject: string }
 export interface SecretPort { getSecret(id: string): string | null; setSecret(id: string, value: string): void }
+export type GoogleSignInEvent = {stage:'waiting-browser';authorizationUrl:string} | {stage:'exchanging-code'};
+
+/** Logical cancellation also bounds transports which cannot physically abort a request. */
+export function waitForGoogle<T>(pending:Promise<T>,signal?:AbortSignal,discardLate?:(value:T)=>void):Promise<T> {
+    if(!signal)return pending;
+    return new Promise((resolve,reject)=>{
+        const cleanup=()=>signal.removeEventListener('abort',abort);
+        const abort=()=>{cleanup();reject(signal.reason??new DOMException('Google request cancelled','AbortError'));};
+        signal.addEventListener('abort',abort,{once:true});
+        pending.then(value=>{cleanup();if(signal.aborted){discardLate?.(value);return;}resolve(value);},error=>{cleanup();reject(error);});
+        if(signal.aborted)abort();
+    });
+}
+export async function withGoogleTimeout<T>(signal:AbortSignal,timeoutMs:number,error:Error,run:(signal:AbortSignal)=>Promise<T>):Promise<T> {
+    signal.throwIfAborted();
+    const controller=new AbortController(),abort=()=>controller.abort(signal.reason);
+    signal.addEventListener('abort',abort,{once:true});
+    const timer=setTimeout(()=>controller.abort(error),timeoutMs);
+    try{return await waitForGoogle(Promise.resolve().then(()=>{controller.signal.throwIfAborted();return run(controller.signal);}),controller.signal);}
+    finally{clearTimeout(timer);signal.removeEventListener('abort',abort);}
+}
 
 /** Transport errors are network failures, not local IO. Never copy a request URL or body into diagnostics. */
 function googleNetworkFailure(error:unknown,signal?:AbortSignal):unknown {
@@ -28,12 +49,12 @@ export function parseGoogleClient(raw: string): GoogleClient {
 }
 export async function googleJson(transport: NetTransport, url: string, request: NetRequest): Promise<any> {
     request.signal?.throwIfAborted();
-    try{const response = await transport.fetch(url, { ...request, maxBytes: request.maxBytes ?? 1024 * 1024, redirect: 'error' });
+    try{const response = await waitForGoogle(transport.fetch(url, { ...request, maxBytes: request.maxBytes ?? 1024 * 1024, redirect: 'error' }),request.signal,response=>response.discard?.());
         return await googleResponse(response,request.signal);
     }catch(error){throw googleNetworkFailure(error,request.signal);}
 }
 export async function googleResponse(response:NetResponse,signal?:AbortSignal):Promise<any> {
-    let raw:string;try{raw=await response.text();}catch(error){throw googleNetworkFailure(error,signal);}signal?.throwIfAborted();
+    let raw:string;try{raw=await waitForGoogle(response.text(),signal);}catch(error){response.discard?.();throw googleNetworkFailure(error,signal);}signal?.throwIfAborted();
     let data: any;
     try { data = JSON.parse(raw); } catch { data=undefined; }
     if (response.status < 200 || response.status >= 300) {
@@ -80,7 +101,7 @@ export class GoogleTokenManager {
     private disconnected = false;
     constructor(private readonly client: GoogleClient, private readonly secretRef: string,
         private readonly secrets: SecretPort, private readonly transport: NetTransport, private readonly now = Date.now,
-        private readonly expectedSubject?: string) {}
+        private readonly expectedSubject?: string,private readonly refreshTimeoutMs=60_000) {}
     get generation(): number { return this.epoch; }
     setAccess(token: string, expiresIn: number): void { this.token = token; this.expiresAt = this.now() + expiresIn * 1000; }
     invalidateAccess(token:string):void{if(this.token===token)this.expiresAt=0;}
@@ -103,18 +124,22 @@ export class GoogleTokenManager {
         return token;
     }
     private async refresh(epoch: number): Promise<string> {
+        return withGoogleTimeout(this.controller.signal,this.refreshTimeoutMs,new SyncFault('network','Google token refresh timed out; retry required','source',true),signal=>this.refreshRequest(epoch,signal));
+    }
+    private async refreshRequest(epoch:number,signal:AbortSignal):Promise<string> {
         const refresh = this.secrets.getSecret(this.secretRef);
         if (!refresh) throw new SyncFault('auth-required', 'Connect your Google account', 'source');
         const data = await googleJson(this.transport, TOKEN_URL, tokenRequest(this.client,
-            { refresh_token: refresh, grant_type: 'refresh_token' }, this.controller.signal));
+            { refresh_token: refresh, grant_type: 'refresh_token' }, signal));
         validateToken(data);
         if(data.scope!==undefined&&!GOOGLE_SCOPES.every(scope=>String(data.scope).split(' ').includes(scope)))
             throw new SyncFault('auth-required','Reconnect Google with read/write Drive access','source');
         if(this.expectedSubject){
             const user=await googleJson(this.transport,'https://openidconnect.googleapis.com/v1/userinfo',
-                {signal:this.controller.signal,headers:{Authorization:`Bearer ${data.access_token}`}});
+                {signal,headers:{Authorization:`Bearer ${data.access_token}`}});
             if(user.sub!==this.expectedSubject)throw new SyncFault('auth-required','Google account identity changed; reconnect','source');
         }
+        signal.throwIfAborted();
         if (epoch !== this.epoch || this.disconnected) throw new SyncFault('auth-required', 'Google account disconnected', 'source');
         if (data.refresh_token !== undefined) {
             if (typeof data.refresh_token !== 'string' || !data.refresh_token) throw new SyncFault('response-format', 'Invalid refresh token', 'source');
@@ -145,8 +170,8 @@ export class GoogleAuthorizedTransport implements NetTransport {
         for (let attempt = 0; attempt < 2; attempt++) {
             const token = await this.tokens.getToken(false, options.signal);
             let response:NetResponse;
-            try{response = await this.transport.fetch(url, { ...options, redirect: 'error',
-                headers: { ...options.headers, Authorization: `Bearer ${token}` } });}
+            try{response = await waitForGoogle(this.transport.fetch(url, { ...options, redirect: 'error',
+                headers: { ...options.headers, Authorization: `Bearer ${token}` } }),options.signal,response=>response.discard?.());}
             catch(error){
                 if(generation!==this.tokens.generation)throw new SyncFault('auth-required','Google account disconnected','source');
                 options.signal?.throwIfAborted();
@@ -157,7 +182,7 @@ export class GoogleAuthorizedTransport implements NetTransport {
             if(options.signal?.aborted){response.discard?.();options.signal.throwIfAborted();}
             if (response.status !== 401 || attempt === 1) {
                 const read=async<T>(body:()=>Promise<T>):Promise<T>=>{
-                    try{const result=await body();options.signal?.throwIfAborted();
+                    try{const result=await waitForGoogle(body(),options.signal);options.signal?.throwIfAborted();
                         if(generation!==this.tokens.generation)throw new SyncFault('auth-required','Google account disconnected','source');return result;
                     }catch(error){throw googleNetworkFailure(error,options.signal);}
                 };

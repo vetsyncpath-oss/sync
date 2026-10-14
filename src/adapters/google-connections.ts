@@ -38,9 +38,9 @@ export class GoogleConnections {
         const discard=(ref:string)=>{if(!created.has(ref)||this.host.connections().some(c=>c.values.secretRef===ref))return;
             this.pool.get(ref)?.manager.disconnect();this.pool.delete(ref);this.host.secrets().setSecret(ref,'');created.delete(ref);};
         return {
-            signIn:async(values,signal)=>{
+            signIn:async(values,signal,observe)=>{
                 this.host.guard();const client=this.client(values);
-                const grant=await authorizeGoogleDesktop(client,this.host.transport(),signal,url=>this.host.openBrowser(url));
+                const grant=await authorizeGoogleDesktop(client,this.host.transport(),signal,url=>this.host.openBrowser(url),{observe});
                 signal.throwIfAborted();this.host.guard();
                 const ref='vault-sync-google-'+crypto.randomUUID();created.add(ref);
                 try {this.host.secrets().setSecret(ref,grant.refreshToken);

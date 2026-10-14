@@ -67,3 +67,30 @@ test('desktop cancellation after token response cannot return a grant',async()=>
         const url=new URL(auth);const result=await local.fetch(url.searchParams.get('redirect_uri')+`?state=${url.searchParams.get('state')}&code=accepted`,{});await result.text();
     },5000),/cancelled|aborted/i);
 });
+test('unreturned browser sign-in times out and releases its callback listener',async()=>{
+    let callback='';const local=new NodeHttpTransport();
+    await assert.rejects(()=>authorizeGoogleDesktop({clientId:'test'},{fetch:async()=>{throw Error('No code should be exchanged');}},new AbortController().signal,
+        auth=>{const url=new URL(auth);assert.equal(url.origin,'https://accounts.google.com');callback=url.searchParams.get('redirect_uri')!;},500),
+        (error:any)=>error.code==='oauth-timeout');
+    assert(callback);await assert.rejects(()=>local.fetch(callback,{}));
+});
+test('token exchange timeout ends sign-in despite a noncancellable network request',async()=>{
+    let release!:(value:NetResponse)=>void,userinfo=0;const stages:string[]=[],local=new NodeHttpTransport();
+    const transport:NetTransport={fetch:async url=>{if(url.includes('/token'))return new Promise(resolve=>release=resolve);userinfo++;return response(200,{sub:'account'});}};
+    await assert.rejects(()=>authorizeGoogleDesktop({clientId:'test'},transport,new AbortController().signal,async auth=>{
+        const url=new URL(auth),result=await local.fetch(url.searchParams.get('redirect_uri')+`?state=${url.searchParams.get('state')}&code=accepted`,{});await result.text();
+    },{timeoutMs:5000,exchangeTimeoutMs:25,observe:event=>stages.push(event.stage)}),(error:any)=>error.code==='network'&&error.retryable);
+    release(response(200,{access_token:'LATE',refresh_token:'LATE',expires_in:3600,scope:'openid https://www.googleapis.com/auth/drive'}));
+    for(let i=0;i<8;i++)await Promise.resolve();assert.equal(userinfo,0);assert.deepEqual(stages,['waiting-browser','exchanging-code']);
+});
+test('cancelling browser sign-in releases the listener so a fresh attempt has a new state',async()=>{
+    const local=new NodeHttpTransport(),states:string[]=[];
+    for(let i=0;i<2;i++){
+        const controller=new AbortController();let callback='';
+        await assert.rejects(()=>authorizeGoogleDesktop({clientId:'test'},{fetch:async()=>{throw Error('Unexpected exchange');}},controller.signal,auth=>{
+            const url=new URL(auth);callback=url.searchParams.get('redirect_uri')!;states.push(url.searchParams.get('state')!);controller.abort();
+        },5000),{name:'AbortError'});
+        await assert.rejects(()=>local.fetch(callback,{}));
+    }
+    assert.notEqual(states[0],states[1]);
+});
