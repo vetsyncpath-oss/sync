@@ -1,5 +1,7 @@
 # Поэтапный overhaul
 
+Полная спецификация следующей переработки: [Overhaul vNext](overhaul-vnext/README.md), с per-job runtime, общей authority, ID-aware tree/UI, state/migration и этапами приёмки. Это проект реализации, не утверждение о готовности новых функций.
+
 Дополнение 2026-10-14: [критическая сверка Drive и V6](audits/drive-jobs-cross-review.md) и [исправленный per-source jobs plan](per-source-jobs-plan.md) уточняют следующие архитектурные этапы. Исторические описания ниже относятся к своему этапу; фактический статус Drive-пилота указан в [руководстве интеграции](google-drive-integration.md).
 
 ## Этап 1: защита существующего pipeline
