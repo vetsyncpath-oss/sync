@@ -294,6 +294,8 @@ export type WriteOutcome =
 // --- Очередь неудачных загрузок (перенос FailedFile из main.ts) ---
 
 export interface FailedFile {
+        /** Retry routing hint; a fresh artifact lineage still has to authorize every effect. */
+        originPath?: string;
         failureKind?:'transient'|'blocked';
         issue?: SyncIssue;
         path: string;
@@ -402,7 +404,7 @@ export interface SyncPlanRow {
         path: string; remotePath?: string; source?: string;
         reason: 'missing' | 'source-changed' | 'match-source' | 'baseline-check' | 'mapping' | 'absent' | 'preserve' | 'create-only' | 'background' | 'unverified' | 'file-too-large';
 }
-export interface SyncFileResult { path: string; remotePath?:string; source?: string; status: 'applied' | 'unchanged' | 'skipped' | 'pending' | 'error'; reason: string; issue?: SyncIssue; conflictPath?: string }
+export interface SyncFileResult { path: string; remotePath?:string; source?: string; status: 'applied' | 'unchanged' | 'skipped' | 'pending' | 'error'; reason: string; issue?: SyncIssue; conflictPath?: string; proposalIds?:string[]; conflictPaths?:string[]; proposalCount?:number }
 
 /** Прогресс для статус-бара. */
 export interface SyncProgress {

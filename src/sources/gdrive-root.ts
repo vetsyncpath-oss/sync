@@ -12,6 +12,8 @@ export class GoogleDriveRoot {
         let current=file;const seen=new Set<string>(),names:string[]=[];
         for(let depth=0;current.id!==this.rootId;depth++){
             if(depth>100||seen.has(current.id)||current.parents.length!==1)throw new SyncFault('root-boundary','Drive locator is outside the selected folder','source');
+            if(!current.name||/[\\/\x00-\x1f]/.test(current.name)||current.name==='.'||current.name==='..')
+                throw new SyncFault('root-boundary','Drive locator has unsafe path segments; identity cannot be projected','source');
             names.push(current.name);seen.add(current.id);current=await this.client.inspect(current.parents[0],signal);
             if(current.trashed)throw new SyncFault('root-unavailable','A Drive ancestor is in trash','source');
         }

@@ -64,7 +64,7 @@ for(const n of [1,20,100]){
 }
 {
     const f=new Fixture();f.local.set('note.md',bytes('base'));await f.addRemote('note.md','base');await f.run();
-    const results=[];for(const edit of ['first','second','first']){f.local.set('note.md',bytes(edit));const result=await f.run();results.push({edit,deferred:result.deferredConflicts,reviewCount:Object.keys(f.state.snapshot().reviews??{}).length,copyCount:f.inventory().filter(i=>i.path.includes('.conflict-')).length});}
+    const results=[];for(const edit of ['first','second','first']){f.local.set('note.md',bytes(edit));const result=await f.run();results.push({edit,deferred:result.deferredConflicts,reviewCount:Object.keys(f.state.snapshot().reviews??{}).length,proposalCount:f.state.proposals('note.md').length,copyCount:f.inventory().filter(i=>i.path.includes('.conflict-')).length});}
     record('review counters and repeated identical proposal',results);
 }
 {

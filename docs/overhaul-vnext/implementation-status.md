@@ -1,8 +1,8 @@
 # Статус реализации Overhaul vNext
 
-Дата: 2026-10-14, Europe/Moscow. Сборка: `overhaul-s0-id-browse-2026-10-14`.
+Дата: 2026-10-14, Europe/Moscow. Сборка: `overhaul-s0-proposals-2026-10-14`.
 
-Реализован **первый вертикальный участок S0a**, без включения JobManager, изменения профилей/settings schema или переноса durable stores. Остальные требования [полной спецификации](README.md) остаются target contracts. Drive checkpoint сохраняет формат v1; новая generation и uploads/deletions при upgrade не выводятся из пустого состояния.
+Реализованы **S0a и основной участок S0b**, без включения JobManager, изменения профилей/settings schema или переноса durable stores. Остальные требования [полной спецификации](README.md) остаются target contracts. Drive checkpoint теперь v2 с verified v1 import и writer fence до effects; namespace fingerprint не изменён. Полный протокол и ограничения описаны в [S0b implementation contract](07-s0b-proposals.md).
 
 ## Сделано
 
@@ -16,6 +16,11 @@
 | Metadata keys/checksums, A10 | Own-key getters, null-prototype Drive dictionaries и legacy directory-map защита; `constructor`, `toString`, `__proto__` проходят sync и checkpoint reload. API checksums нормализуются к lowercase |
 | Warm state IO, A66/A75 (частично) | По неизменённым файлам нет baseline save; runner читает отдельные entries, без полного snapshot clone на файл. Проверены 80 файлов в regression и 1/20/100 в probes |
 | Review counters, A09 (частично) | Один pending conflict path считается один раз, включая новое review на том же пути |
+| Stable proposals, A08/A09 | Несколько proposals сохраняются по ID; key включает namespace, origin ID/version/hash, payload hash и kind. `first → second → first` на неизменном base даёт две copies. Attempt mutation IDs отдельны от publication ID |
+| Peer copies, A07/A31/A33 (fixture evidence) | Public portable marker, fresh root/parent/origin/digest guards; actual host dispatch доставляет copy через named mount. Copy не попадает в canonical/pull manifest и не создаёт copy of copy |
+| Copy lifecycle | Local edit/missing, remote edit/trash/404/marker change сохраняют pending receipt и пользовательские байты. Нет automatic overwrite/trash/recreation полученной копии; scan может восстановить проверенные missing bytes |
+| Version fence/import, A65/A69–A71 (частично) | Immutable checksum backup retained v1 generations до first v2; pending IDs, URL/offset, bytes/copy/directory refs сохранены. Future/corrupt backup и loss active checkpoint блокируют writes. All-generation GC roots включают proposal payloads и migration backup |
+| Scope/current policy | Origin remote/local и outgoing-copy excludes проверяются до effects; hard control paths не обходятся marker. Prepared trash заблокирован при текущем `keep` или surviving unsaved editor |
 | Fresh conflict decisions, A45 | До вопроса inspect actual ID; после ответа fresh local/remote comparison. Stale consent остаётся pending. Unsupported choice rejected, следующие независимые questions продолжаются |
 | Provider lifetime, A43 (частично) | Dispose очищает run inventory; повторное использование получает новый snapshot |
 | Picker, A56 | History меняется после successful load; breadcrumbs/duplicate-folder IDs, retry, return-current и cancel во время loading |
@@ -24,7 +29,7 @@
 
 ## Измеренные изменения
 
-[Новые 20 probes](../audits/overhaul-s0-probes.json) сравниваются с [историческими](../audits/drive-jobs-probes.json); старый snapshot не перезаписан. Скрипт разделяет browse и execution outcomes, чтобы успешный raw browse не выдавать за разрешённую запись.
+[S0a probes](../audits/overhaul-s0-probes.json) и [текущие S0b probes](../audits/overhaul-s0b-probes.json) сравниваются с [историческими](../audits/drive-jobs-probes.json); прежние snapshots не перезаписаны. Скрипт разделяет browse и execution outcomes, чтобы успешный raw browse не выдавать за разрешённую запись. Name-only probe по-прежнему исключает unmarked copy; получение portable artifact доказано отдельными actual host tests.
 
 | Probe | До | После |
 |---|---|---|
@@ -36,13 +41,14 @@
 | Warm 100 файлов | 100 checkpoint / 2,572,200 bytes | 0 / 0 |
 | `constructor` + независимый файл | Session IO failure, второй файл не скачан | 0 failures, второй файл скачан |
 | Новый edit существующего review | Pending counter 2 на один path | Counter 1 |
+| `first → second → first` | 3 copies; одна review pointer | 2 copies, 2 retained proposals; unique pending path 1 |
 
 Это metadata/fixture measurements, не замеры real Drive. Cold adoption/реальные changes всё ещё публикуют полный checkpoint per acknowledged effect; delta backend — S4 gate.
 
 ## Что пока не включено
 
-- Versioned proposals/history/content dedup, artifact lineage и получение copies вторым vault. `first → second → first` всё ещё создаёт 3 copies; исправлен только counter. Глобальный `.conflict-*` фильтр ещё не снят.
-- Persisted unknown/conflict inbox и guarded 404 resolution; deletion/tombstone lifecycle остаётся пилотным.
+- Полный proposal/unknown inbox с acknowledge/decline/restore/rebind actions. Artifact issues уже durable по ID, но edited artifacts не публикуются обратно; old unmarked copies автоматически не импортируются. Старый name-only фильтр сохранён для pull/legacy copies; новый receiver допускает только проверенные artifacts.
+- Canonical 404 resolution и tombstone lifecycle. Retained proposal lineage уже блокирует guessed new-ID upload после потери baseline, но это не полный tombstone contract для файлов без proposals.
 - ID anchors/object-specific exclusions в saved policy. Duplicate rows можно осмотреть, но path-only binding для них disabled; произвольный ID не выбирается.
 - Post-policy collision isolation и independent per-job execution. Combined inventory failure по-прежнему останавливает writes выбранного общего запуска; broad collisions ещё не обходятся через exclusions.
 - Pair-specific namespace reconcile, settings writer fence, shared symbolic authority и verified per-job migration.
@@ -53,8 +59,8 @@
 
 ## Следующий участок
 
-S0b: versioned Drive reader/writer fence, stable proposals и peer artifact routing через реальную policy; затем durable unknown inbox. После этого S1 authority compiler и S2 independent jobs, с общим ledger и serial apply. Persistent runners/раздельные stores требуют передачи routing и recovery reservations.
+S0c: durable canonical unknown inbox, guarded resolution и deletion/tombstone lineage. Затем S1 authority compiler и S2 independent jobs, с общим ledger и serial apply. Persistent runners/раздельные stores требуют передачи routing и recovery reservations. Proposal acknowledge/retention и versioned publication edited peer artifacts — отдельные actions; существующие копии не перезаписываются автоматически. Advanced-legacy-after-backup требует verified reconciliation до activation, не blind backup overwrite.
 
 ## Верификация
 
-`npm run verify`: **415/415** тестов, TypeScript, styles и production build прошли. Добавлены 25 regression cases к предыдущим 390. Проверены `git diff --check`, relative links и BUILD_TAG/MIT notice в bundle. 20 architectural probes повторены; current snapshot опубликован отдельно. Отрицательные результаты по ещё не включённым contracts остаются видимыми.
+`npm run verify`: **453/453** теста, TypeScript, styles и production build прошли. S0b добавляет 38 regression cases к предыдущим 415, включая реальные policy/routing/host seams с fake Drive и два vaults. Проверены `git diff --check`, relative links и BUILD_TAG/MIT notice в bundle. 20 architectural probes повторены; S0b snapshot опубликован отдельно. Это не live Google/Obsidian acceptance A80–A87. Отрицательные результаты по ещё не включённым contracts остаются видимыми.

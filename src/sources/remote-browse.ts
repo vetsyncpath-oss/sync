@@ -13,6 +13,8 @@ export interface RemoteBrowseNode {
     name: string; path: string; kind: 'file' | 'folder';
     mimeType: string; version: string; unsupported: boolean;
     blocked?: string; entry?: RemoteEntry;
+    copyKind?:'proposal'|'legacy'|'invalid';
+    artifact?:{proposalId:string;originId:string;hash:string;kind:string};
 }
 export interface RemoteBrowseSnapshot {
     rootId: string; rootName: string; nodes: RemoteBrowseNode[];
@@ -33,6 +35,8 @@ export function validateBrowseSnapshot(snapshot: RemoteBrowseSnapshot): void {
             || typeof node.objectId !== 'string' || !node.objectId || typeof node.parentId !== 'string' || !node.parentId || typeof node.name !== 'string' || typeof node.path !== 'string'
             || typeof node.mimeType !== 'string' || typeof node.version !== 'string' || typeof node.unsupported !== 'boolean'
             || node.blocked!==undefined&&typeof node.blocked!=='string'
+            || node.copyKind!==undefined&&!['proposal','legacy','invalid'].includes(node.copyKind)
+            || node.artifact!==undefined&&(!node.artifact||typeof node.artifact.proposalId!=='string'||typeof node.artifact.originId!=='string'||typeof node.artifact.hash!=='string'||typeof node.artifact.kind!=='string')
             || !['file', 'folder'].includes(node.kind)) throw Error('Invalid browse node identity');
         keys.add(node.key); parents.set(node.key, node.parentKey);kinds.set(node.key,node.kind);
     }

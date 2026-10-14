@@ -180,6 +180,76 @@ test('a newer review on the same path counts one pending file',async()=>{
     assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,2);
 });
 
+test('first, second, first proposals reuse one published copy ID per payload on an unchanged canonical base',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();
+    for(const content of ['first','second','first']){f.local.set('a.md',bytes(content));const result=await f.run(true);assert.equal(result.failed,0);assert.equal(result.deferredConflicts,1);}
+    const proposals=f.state.proposals('a.md');assert.equal(proposals.length,2);assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,2);
+    assert.equal(f.text('a.md'),'base');assert.equal(f.remote.get(id)?.data&&new TextDecoder().decode(f.remote.get(id)!.data),'base');
+    assert.equal((await f.run(true)).results?.find(r=>r.path==='a.md')?.proposalIds?.length,2);
+    const references=await f.state.recoveryReferences();for(const p of proposals)assert(references.some(ref=>ref.sha256===p.hash));
+});
+test('proposal dedup is scoped to canonical ID, version, payload and kind, never to path alone',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));await f.addRemote('a.md','base');await f.run();
+    f.local.set('a.md',bytes('edit'));await f.run();const first=f.state.proposals('a.md')[0];
+    f.remote.get('r-a.md')!.file.version='2';await f.run();f.local.set('a.md',bytes('edit'));await f.run();
+    const proposals=f.state.proposals('a.md');assert.equal(proposals.length,2);assert.notEqual(proposals[0].key,proposals[1].key);
+    assert.notEqual(proposals[1].copyId,first.copyId);assert.equal(f.remote.get('r-a.md')!.file.id,'r-a.md');
+});
+test('an unavailable published proposal is not recreated when identical local bytes are proposed again',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));await f.addRemote('a.md','base');await f.run();
+    f.local.set('a.md',bytes('edit'));await f.run();const proposal=f.state.proposals('a.md')[0],reserved=f.counter;
+    f.remote.delete(proposal.copyId!);f.local.set('a.md',bytes('edit'));const result=await f.run();
+    assert.equal(result.failed,1);assert.equal(result.problems?.[0].code,'artifact-unavailable');assert.equal(f.counter,reserved);
+    assert.equal(f.text('a.md'),'edit');assert.equal(f.state.proposals('a.md').length,1);assert.equal(f.state.pending('a.md')?.copyId,proposal.copyId);
+});
+test('canonical convergence closes only the matching proposal and preserves the other history and payload',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));await f.addRemote('a.md','base');await f.run();
+    for(const content of ['first','second']){f.local.set('a.md',bytes(content));await f.run();}
+    const remote=f.remote.get('r-a.md')!;remote.data=bytes('first');remote.file.sha256Checksum=await sha256Hex(remote.data);remote.file.size='5';remote.file.version='2';
+    await f.run();const result=await f.run();assert.equal(result.deferredConflicts,1);
+    const proposals=f.state.proposals('a.md');assert.equal(proposals.find(p=>p.hash===remote.file.sha256Checksum)?.status,'converged');
+    assert.equal(proposals.find(p=>p.hash!==remote.file.sha256Checksum)?.status,'published');assert.equal(result.results?.find(r=>r.path==='a.md')?.proposalIds?.length,1);
+});
+
+test('a legacy reserved pending copy is fenced to v2 before any resumed local or remote effect',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('mine'));await f.addRemote('a.md','theirs');f.unknownUpload=true;await f.run();
+    const state:any=f.state.snapshot(),copyId=state.pending['a.md'].copyId;state.version=1;delete state.proposals;delete state.artifacts;delete state.pending['a.md'].proposalId;state.sequence=1;
+    for(const name of [...f.metadata.keys()])if(name.startsWith('drive-state-'))f.metadata.delete(name);
+    const payload=JSON.stringify(state);f.metadata.set('drive-state-test-0000000000000001.json',JSON.stringify({payload,sha256:await sha256Hex(bytes(payload))}));
+    const reloaded=new DriveStateStore(f.fs,'test');Object.defineProperty(f,'state',{value:reloaded});
+    const create=f.vault.createBinary!;let effects=0;f.vault.createBinary=async(path,data)=>{effects++;
+        const latest=[...f.metadata.keys()].filter(n=>/^drive-state-test-\d{16}\.json$/.test(n)).sort().at(-1)!;
+        assert.equal(JSON.parse(JSON.parse(f.metadata.get(latest)!).payload).version,2);await create(path,data);};
+    const result=await f.run();assert.equal(result.failed,0);assert(effects>0);assert.equal(f.text('a.md'),'theirs');
+    assert.equal(f.state.proposals('a.md')[0].copyId,copyId);assert.equal(f.state.proposals('a.md')[0].portable,false);assert(f.metadata.has('drive-state-test-v1-backup.json'));
+});
+
+test('proposal history admission is bounded while identical reuse and independent downloads still work at the limit',async()=>{
+    const f=new Fixture();Object.defineProperty(f,'state',{value:new DriveStateStore(f.fs,'test',2)});
+    f.local.set('a.md',bytes('base'));await f.addRemote('a.md','base');await f.run();
+    for(const content of ['first','second','first']){f.local.set('a.md',bytes(content));assert.equal((await f.run()).failed,0);}
+    const before=f.counter;f.local.set('a.md',bytes('third'));await f.addRemote('independent.md','ready');const blocked=await f.run();
+    assert.equal(blocked.problems?.[0].code,'proposal-limit');assert.equal(f.state.proposalCount,2);assert.equal(f.counter,before);assert.equal(f.text('a.md'),'third');assert.equal(f.text('independent.md'),'ready');
+});
+
+test('a changed keep-deletions profile blocks an old prepared trash while retaining its intent and finishing independent files',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));await f.addRemote('a.md','base');await f.run();f.local.delete('a.md');
+    const metadata=f.client.metadata;f.client.metadata=async()=>{throw new SyncFault('network','Interrupted before trash','file',true);};
+    assert.equal((await f.run()).failed,1);assert.equal(f.state.pending('a.md')?.kind,'trash-remote');
+    f.client.metadata=metadata;f.deletions='keep';await f.addRemote('other.md','ready');const result=await f.run();
+    assert.equal(result.problems?.[0].code,'configuration-changed');assert.equal(result.problems?.[0].scope,'file');assert(!f.remote.get('r-a.md')!.file.trashed);
+    assert.equal(f.state.pending('a.md')?.kind,'trash-remote');assert.equal(f.text('other.md'),'ready');
+});
+
+test('recovery of a copy without API checksums verifies actual SHA-256 bytes before replacing the primary',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));await f.addRemote('a.md','base');await f.run();f.local.set('a.md',bytes('edit'));
+    f.unknownUpload=true;assert.equal((await f.run()).failed,1);const copy=f.remote.get(f.state.pending('a.md')!.copyId!)!;
+    copy.data=bytes('evil');delete copy.file.sha256Checksum;delete copy.file.md5Checksum;copy.file.version='2';
+    f.client.verify=GoogleDriveClient.prototype.verify.bind(f.client);await f.addRemote('other.md','ready');const result=await f.run();
+    assert.equal(result.problems?.[0].code,'integrity');assert.equal(f.text('a.md'),'edit');assert.equal(f.text('other.md'),'ready');
+    assert.equal(f.state.proposals('a.md')[0].status,'prepared');assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,1);
+});
+
 const asking=(f:Fixture,ask:NonNullable<import('../src/core/drive-coordinator').DriveExecutionPorts['ask']>)=>new DriveCoordinator({
     vault:f.vault,mutations:f.mutations,state:f.state,root:new GoogleDriveRoot(f.client,'root'),queue:f.queue,
     localPaths:async()=>[...f.local.keys()].filter(p=>!p.startsWith('private/')&&!p.startsWith('.trash/')&&!p.includes('.conflict-')),

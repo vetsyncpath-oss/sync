@@ -3,6 +3,7 @@ import { GoogleDriveClient, DRIVE_FOLDER, type DriveFile } from './gdrive-client
 import type { RemoteBrowseSnapshot } from './remote-browse';
 import { validateManifest } from '../core/source-validation';
 import { SyncFault } from '../core/sync-issue';
+import { isDriveArtifactCandidate, readArtifactLineage } from '../core/drive-artifact';
 const manifestHash=(file:DriveFile)=>file.sha256Checksum?.toLowerCase()??`gdrive:${file.md5ChecksumToken??file.md5Checksum??file.version}`;
 export class GDriveOAuthSource implements SyncSource {
     readonly kind = 'gdrive' as const;
@@ -15,7 +16,8 @@ export class GDriveOAuthSource implements SyncSource {
         signal.throwIfAborted();
         this.files.clear(); const inventory = this.inventorySnapshot ??= await this.client.inventory(this.rootId,signal);
         if (inventory.completeness === 'unstable') throw new SyncFault('inventory-unstable',inventory.diagnostics.filter(d=>d.severity==='error').map(d=>d.message).slice(0,3).join('; '),'source',true);
-        const eligible = inventory.items.filter(item=>item.file.mimeType === DRIVE_FOLDER || !item.file.mimeType.startsWith('application/vnd.google-apps.'));
+        // Artifacts use the separately guarded receiver, never the ordinary pull/canonical manifest.
+        const eligible = inventory.items.filter(item=>item.file.mimeType === DRIVE_FOLDER || !item.file.mimeType.startsWith('application/vnd.google-apps.')&&!isDriveArtifactCandidate(item.file));
         const unsafeById=new Map(inventory.diagnostics.filter(d=>d.code==='unsafe-name').flatMap(d=>d.objectIds.map(id=>[id,d.message] as const)));
         const paths = new Map<string, typeof eligible[number]>();
         for (const item of eligible) {
@@ -44,11 +46,14 @@ export class GDriveOAuthSource implements SyncSource {
         return {rootId:inventory.root.id,rootName:inventory.root.name,completeness:inventory.completeness,diagnostics:inventory.diagnostics,
             nodes:inventory.items.map(({path,file,parentId})=>{
                 const unsupported=file.mimeType.startsWith('application/vnd.google-apps.')&&file.mimeType!==DRIVE_FOLDER;
-                const blocked=inventory.completeness==='unstable'?'Drive observations are inconsistent':unsupported?'Google-native objects are not supported':unsafe.get(file.id)??ambiguous.get(file.id)??blockedById.get(parentId!);
+                const artifact=readArtifactLineage(file),copyKind=isDriveArtifactCandidate(file)?artifact?'proposal' as const:file.properties?.vetsync_artifact!==undefined?'invalid' as const:'legacy' as const:undefined;
+                const copyReason=copyKind==='proposal'?'Drive proposal: inherits its verified origin assignment during synchronization':copyKind==='legacy'?'Legacy conflict copy: automatic import is disabled':copyKind==='invalid'?'Invalid Drive artifact marker: automatic import is disabled':undefined;
+                const blocked=inventory.completeness==='unstable'?'Drive observations are inconsistent':unsupported?'Google-native objects are not supported':unsafe.get(file.id)??ambiguous.get(file.id)??blockedById.get(parentId!)??copyReason;
                 if(blocked)blockedById.set(file.id,blocked);
                 return {key:keys.get(file.id)!,parentKey:parentId===inventory.root.id?'':keys.get(parentId!)!,parentId:parentId!,objectId:file.id,
                     name:file.name,path,kind:file.mimeType===DRIVE_FOLDER?'folder' as const:'file' as const,mimeType:file.mimeType,version:file.version,unsupported,
                     blocked,
+                    copyKind,artifact:artifact&&{proposalId:artifact.proposalId,originId:artifact.originId,hash:artifact.hash,kind:artifact.kind},
                     entry:unsupported||file.mimeType===DRIVE_FOLDER?undefined:{path,size:Number(file.size),hash:manifestHash(file),hashAlg:file.sha256Checksum?'sha256' as const:'weak' as const}};
             })};
     }

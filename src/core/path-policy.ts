@@ -10,7 +10,9 @@
 //      COM1..COM9, LPT1..LPT9) — раньше 'notes/CON' проходил валидацию, а
 //      запись на Windows молча падала с невнятной ошибкой файловой системы;
 //   2) isPathAllowed первым делом отклоняет конфликт-копии (*.conflict-*):
-//      они не синхронизируются ни в одну сторону (§9.4). Как orphan они не
+//      canonical/pull pipeline исключает их (§9.4). S0b принимает verified
+//      Drive artifacts отдельным receiver через isArtifactPathAllowed;
+//      marker не обходит hard guards. Как orphan они не
 //      удаляются автоматически: diff работает по кэшу, конфликт-копий в нём
 //      нет (забота вызывающего — не класть их в кэш);
 //   3) obsidian'овский normalizePath заменён локальной normalize (ядро core/
@@ -127,20 +129,27 @@ export class PathPolicy {
         }
 
         /** Raw inventory paths are routed before the final destination's run ownership is checked. */
-        isInventoryPathAllowed(rawPath: string): boolean {
+        isInventoryPathAllowed(rawPath: string): boolean { return this.inventoryAllowed(rawPath,false); }
+
+        /** Only a separately verified Drive lineage may inherit the origin's named rule. Hard guards apply to both paths. */
+        isArtifactPathAllowed(originPath:string,artifactPath:string):boolean {
+                return this.isPathSafe(originPath)&&this.isPathSafe(artifactPath)&&this.isPathAllowed(originPath)
+                        &&this.inventoryAllowed(artifactPath,true);
+        }
+        private inventoryAllowed(rawPath:string,artifact:boolean):boolean {
                 const path = this.normalize(rawPath);
                 if (this.isProtectedPath(path)) return false;
                 if(path.normalize('NFC').toLowerCase()==='.trash'||path.normalize('NFC').toLowerCase().startsWith('.trash/'))return false;
                 // [3-8б] Конфликт-копии не синхронизируются ни в одну сторону —
                 // проверка ПЕРВОЙ, до любых флагов и режимов (дизайн §9.4).
-                if (this.isConflictCopy(path)) return false;
+                if (!artifact && this.isConflictCopy(path)) return false;
                 const filename = path.split('/').pop() || '';
                 const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')).toLowerCase() : '';
                 if (BLOCKED_EXTENSIONS.includes(ext)) return false;
                 if (this.opts.syncMode === 'config-only') {
                         if (!path.startsWith('.obsidian/')) return false;
                 } else {
-                        if (path.startsWith('.git/')) return false;
+                        if (path.normalize('NFC').toLowerCase()==='.git'||path.normalize('NFC').toLowerCase().startsWith('.git/')) return false;
                         if (this.opts.ignoredFolders) {
                                 const ignored = this.opts.ignoredFolders.split('\n').map(p => p.trim()).filter(p => p);
                                 if (this.folderMatch(path, ignored)) return false;

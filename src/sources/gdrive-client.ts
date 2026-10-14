@@ -11,13 +11,15 @@ import type { RemoteBrowseDiagnostic } from './remote-browse';
 export const DRIVE_FOLDER = 'application/vnd.google-apps.folder';
 const API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
-const FIELDS = 'id,name,mimeType,parents,size,modifiedTime,version,headRevisionId,sha256Checksum,md5Checksum,trashed,driveId,capabilities(canEdit,canDownload,canTrash,canAddChildren)';
+const FIELDS = 'id,name,mimeType,parents,size,modifiedTime,version,headRevisionId,sha256Checksum,md5Checksum,trashed,driveId,properties,capabilities(canEdit,canDownload,canTrash,canAddChildren)';
 export interface DriveFile {
     id: string; name: string; mimeType: string; parents: string[]; size?: string; version: string;
     modifiedTime?: string; headRevisionId?: string; sha256Checksum?: string; md5Checksum?: string;
     /** Original API token casing preserves already-saved opaque pull manifest versions. */
     md5ChecksumToken?: string;
     trashed?: boolean; driveId?: string;
+    /** Public custom properties: readable by peer vaults using another OAuth client. Untrusted input. */
+    properties?:Record<string,string>;
     capabilities?: { canEdit?: boolean; canDownload?: boolean; canTrash?: boolean; canAddChildren?: boolean };
 }
 export interface DriveItem { path: string; file: DriveFile; parentId?: string }
@@ -37,12 +39,16 @@ function parseFile(value: any): DriveFile {
         throw new SyncFault('response-format','Drive file size is missing or invalid','source');
     for (const [key,length] of [['sha256Checksum',64],['md5Checksum',32]] as const)
         if (value[key] !== undefined && !new RegExp(`^[a-fA-F0-9]{${length}}$`).test(value[key])) throw new SyncFault('response-format','Invalid Drive checksum','source');
+    if(value.properties!==undefined&&(!value.properties||typeof value.properties!=='object'||Array.isArray(value.properties)
+        ||Object.keys(value.properties).length>100||Object.entries(value.properties).some(([k,v])=>typeof v!=='string'||new TextEncoder().encode(k+v).length>124)))
+        throw new SyncFault('response-format','Invalid Drive custom properties','source');
     return { ...value, ...(value.sha256Checksum ? { sha256Checksum: value.sha256Checksum.toLowerCase() } : {}),
-        ...(value.md5Checksum ? { md5Checksum: value.md5Checksum.toLowerCase(), md5ChecksumToken: value.md5Checksum } : {}) };
+        ...(value.md5Checksum ? { md5Checksum: value.md5Checksum.toLowerCase(), md5ChecksumToken: value.md5Checksum } : {}),
+        ...(value.properties?{properties:Object.assign(Object.create(null),value.properties)}:{}) };
 }
 const fingerprint=(file:DriveFile)=>JSON.stringify([file.id,file.name,file.mimeType,file.parents,file.size,file.version,file.modifiedTime,
     file.headRevisionId,file.sha256Checksum,file.md5Checksum,file.trashed,file.driveId,file.capabilities?.canEdit,file.capabilities?.canDownload,
-    file.capabilities?.canTrash,file.capabilities?.canAddChildren]);
+    file.capabilities?.canTrash,file.capabilities?.canAddChildren,Object.entries(file.properties??{}).sort(([a],[b])=>a.localeCompare(b))]);
 export class GoogleDriveClient {
     constructor(private readonly transport: NetTransport, readonly maxFileBytes = 64 * 1024 * 1024,
         readonly maxInventoryObservations = 200_000) {
@@ -140,7 +146,7 @@ export class GoogleDriveClient {
     }
     async reserveId(signal: AbortSignal): Promise<string> {
         const data = await googleJson(this.transport,buildUrl(API,'/files/generateIds',{count:'1',space:'drive',type:'files'}),{signal});
-        if (!Array.isArray(data.ids) || data.ids.length !== 1 || typeof data.ids[0] !== 'string') throw new SyncFault('response-format','Drive file ID was not returned','source');
+        if (!Array.isArray(data.ids) || data.ids.length !== 1 || typeof data.ids[0] !== 'string'||!data.ids[0].trim()) throw new SyncFault('response-format','Drive file ID was not returned','source');
         return data.ids[0];
     }
     async mkdir(id: string, name: string, parent: string, signal: AbortSignal): Promise<DriveFile> {

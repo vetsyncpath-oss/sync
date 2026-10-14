@@ -10,6 +10,22 @@ import { NodeHttpTransport } from '../src/adapters/host-transport';
 import type { NetResponse, NetTransport } from '../src/sources/types';
 const response=(status:number,value:unknown,headers:Record<string,string>={}):NetResponse=>({status,headers,text:async()=>JSON.stringify(value),arrayBuffer:async()=>new ArrayBuffer(0)});
 const file=(id:string,name:string,size=4)=>({id,name,size:String(size),version:'1',parents:['root-id'],mimeType:'text/markdown'});
+test('public Drive properties are requested, bounded and compared across repeated inventory observations',async()=>{
+    let page=0;const client=new GoogleDriveClient({fetch:async url=>{assert(new URL(url).searchParams.get('fields')?.includes('properties'));
+        if(new URL(url).pathname.endsWith('/root-id'))return response(200,{id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1'});
+        return response(200,{files:[{...file('same','a.md'),properties:{vetsync_artifact:page?'2':'1'}}],...(page++===0?{nextPageToken:'next'}:{})});}});
+    const snapshot=await client.inventory('root-id',new AbortController().signal);assert.equal(snapshot.completeness,'unstable');assert.equal(snapshot.diagnostics[0].code,'inconsistent-object');
+    for(const properties of [{bad:42},{bad:'x'.repeat(125)},Array(101).fill('x')]){
+        const bad=new GoogleDriveClient({fetch:async()=>response(200,{...file('bad','a.md'),properties})});
+        await assert.rejects(()=>bad.inspect('bad',new AbortController().signal),(e:any)=>e.code==='response-format');
+    }
+});
+
+test('empty or missing generated IDs cannot authorize an upload without a stable reservation',async()=>{
+    for(const ids of [undefined,[],[''],[' '],[null],['one','two']]){
+        const client=new GoogleDriveClient({fetch:async()=>response(200,{ids})});await assert.rejects(()=>client.reserveId(new AbortController().signal),(e:any)=>e.code==='response-format');
+    }
+});
 test('Drive MD5 verification matches independent Node implementation including padding boundaries',()=>{
     for(const size of [0,1,3,55,56,63,64,65,1025]){
         const data=Uint8Array.from({length:size},(_,i)=>i%251);

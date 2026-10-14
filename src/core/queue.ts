@@ -68,7 +68,7 @@ export class FailedQueue {
          * Паркинг идемпотентен: повторные add() на parked-запись не растят
          * retryCount дальше потолка и не снимают паркинг.
          */
-        add(f: { path: string; hash: string; size: number }, reason: string, now: number, failureKind?:'transient'|'blocked',minimumDelayMs=0,issue?:import('../sources/types').SyncIssue): void {
+        add(f: { path: string; hash: string; size: number; originPath?:string }, reason: string, now: number, failureKind?:'transient'|'blocked',minimumDelayMs=0,issue?:import('../sources/types').SyncIssue): void {
                 const existing = this.entries.get(f.path);
                 if(failureKind){
                         const changed=existing?.hash!==f.hash;

@@ -14,6 +14,18 @@ export function reasonLabel(reason: string): string {
         'package-not-ready':tr('Пакет плагина или темы не прошёл все проверки; остальные записи отложены','Plugin or theme package did not pass all checks; remaining writes deferred'),
         'source-paused':tr('Источник остановлен после повторяющихся ошибок; файл ещё не загружался','Source paused after repeated failures; file has not been downloaded'),
         'file-too-large': tr('Превышен допустимый размер', 'File size limit exceeded'), 'io-error': tr('Операция не выполнена; проверьте подробности ошибки', 'Operation failed; check the error details'),
+        'drive-proposal-received':tr('Получена копия предложения; исходный файл сохраняет свой ID','Proposal copy received; original file retains its ID'),
+        'drive-proposals-review':tr('Исходный Drive ID сохранён; предложения требуют проверки','Original Drive ID retained; proposals need review'),
+        'artifact-local-edited':tr('Полученная копия изменена локально; нужна проверка','Received copy was edited locally; review required'),
+        'artifact-remote-edited':tr('Содержимое удалённой копии изменено; текущие байты сохранены','Remote copy content changed; current bytes retained'),
+        'artifact-local-missing':tr('Полученная копия удалена локально; автоматическое восстановление отложено','Received copy was deleted locally; automatic restoration deferred'),
+        'artifact-remote-trashed':tr('Удалённая копия в корзине; локальная копия сохранена','Remote copy is in trash; local copy retained'),
+        'artifact-unavailable':tr('Полученная копия недоступна в Drive; локальные файлы сохранены','Received copy is unavailable in Drive; local files retained'),
+        'artifact-origin-unavailable':tr('Исходный Drive ID недоступен; область копии нельзя подтвердить','Origin Drive ID is unavailable; artifact scope cannot be verified'),
+        'artifact-unlisted':tr('Копия существует по ID, но отсутствует в дереве; нужна проверка','Copy exists by ID but is missing from the tree; review required'),
+        'artifact-lineage-changed':tr('Связь копии с исходным файлом изменилась; нужна проверка','Artifact lineage changed; review required'),
+        'artifact-target-collision':tr('Несколько копий назначены на один локальный путь','Multiple artifacts target one local path'),
+        'tracked-lineage-without-baseline':tr('У файла есть прежний Drive ID в истории; создание нового объекта требует проверки','History contains a previous Drive ID; creating another object requires review'),
     } as Record<string, string>)[reason] ?? reason;
 }
 const actionLabel = (action: SyncPlanRow['action']) => ({ add: tr('Добавить', 'Add'), restore: tr('Восстановить', 'Restore'), update: tr('Обновить', 'Update'), check: tr('Проверить и обновить', 'Check and update'), move: tr('Переместить', 'Move'), delete: tr('Удалить', 'Delete'), skip: tr('Пропустить', 'Skip'), defer: tr('Отложить', 'Defer'), blocked: tr('Заблокировано', 'Blocked') })[action];
@@ -32,7 +44,9 @@ export function operationTable(rows: readonly SyncPlanRow[] | readonly SyncFileR
         for (const row of filtered.slice(page * 100, (page + 1) * 100)) {
             const line = element('tr');
             const label = 'action' in row ? actionLabel(row.action) : statusLabel(row.status);
-            for (const text of [label, row.source ?? '—', 'remotePath' in row ? row.remotePath ?? '—' : '—', row.path, reasonLabel(row.reason)+('issue' in row&&row.issue?' · '+row.issue.stage+': '+row.issue.message+(row.issue.status?' · HTTP '+row.issue.status:'')+(row.issue.attempt?' · '+tr('попытка ','attempt ')+row.issue.attempt:'')+(row.issue.retryAt&&row.issue.retryAt<Number.MAX_SAFE_INTEGER?' · '+tr('повтор после ','retry after ')+new Date(row.issue.retryAt).toLocaleString():''):'')+('conflictPath' in row&&row.conflictPath?' · '+row.conflictPath:'')]) line.append(element('td', text));
+            const copyPaths='conflictPaths' in row&&Array.isArray(row.conflictPaths)?row.conflictPaths.slice(0,50):'conflictPath' in row&&row.conflictPath?[row.conflictPath]:[];
+            const proposalCount='proposalCount' in row&&typeof row.proposalCount==='number'?` · ${row.proposalCount}`:'';
+            for (const text of [label, row.source ?? '—', 'remotePath' in row ? row.remotePath ?? '—' : '—', row.path, reasonLabel(row.reason)+proposalCount+('issue' in row&&row.issue?' · '+row.issue.stage+': '+row.issue.message+(row.issue.status?' · HTTP '+row.issue.status:'')+(row.issue.attempt?' · '+tr('попытка ','attempt ')+row.issue.attempt:'')+(row.issue.retryAt&&row.issue.retryAt<Number.MAX_SAFE_INTEGER?' · '+tr('повтор после ','retry after ')+new Date(row.issue.retryAt).toLocaleString():''):'')+(copyPaths.length?' · '+copyPaths.join(' · '):'')]) line.append(element('td', text));
             data.append(line);
         }
         table.append(data); body.append(table);

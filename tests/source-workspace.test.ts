@@ -13,6 +13,8 @@ import { GDriveOAuthSource } from '../src/sources/gdrive-oauth-source';
 import { GoogleDriveClient, DRIVE_FOLDER, type DriveFile } from '../src/sources/gdrive-client';
 import { SourcePathModal } from '../src/ui/source-path-modal';
 import { validateBrowseSnapshot } from '../src/sources/remote-browse';
+import { artifactProperties, driveConflictSibling } from '../src/core/drive-artifact';
+import { operationTable } from '../src/ui/operation-table';
 const signal=()=>new AbortController().signal;
 const connections:SourceConnection[]=[{id:'git',name:'Plugin repository',kind:'git',values:{repoUrl:'https://github.com/test/plugins',branch:'main'}},{id:'disk',name:'Documents disk',kind:'yandex',values:{vaultUrl:'https://disk.example/docs'}}];
 const profiles=[...STANDARD_PROFILES];
@@ -165,4 +167,19 @@ test('raw browse refresh retains stale identities, while legacy invalid manifest
 test('malformed/cyclic browse graphs cannot bypass UI admission',async()=>{
  const snapshot=await driveBrowse(new Map([['root',[driveFile('one','a.md')]]]));snapshot.nodes[0].parentKey=snapshot.nodes[0].key;
  assert.throws(()=>validateBrowseSnapshot(snapshot),/parent graph/);const inventories=new SourceInventories();await inventories.load('drive',async()=>snapshot);assert.equal(inventories.state('drive').status,'error');
+});
+
+test('Drive tree distinguishes proposal claims from legacy copies and exposes origin IDs without enabling a canonical binding',async()=>{
+ dom();const proposalId='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',name=driveConflictSibling('a.md',proposalId);
+ const snapshot=await driveBrowse(new Map([['root',[driveFile('origin','a.md'),{...driveFile('copy',name),properties:artifactProperties({proposalId,originId:'origin',hash:entry('a').hash,baseVersion:'1',baseHash:entry('b').hash,kind:'gated-upload'})},driveFile('legacy','a.conflict-old.md')]]]));
+ const w=driveWorkspace(snapshot);await tick();click(w.modal.contentEl,'Drive · default');await tick();
+ const row=objectRow(w.modal.contentEl,'copy');assert(row.textContent?.includes('Proposal'));assert(objectRow(w.modal.contentEl,'legacy').textContent?.includes('Legacy conflict copy'));
+ row.click();const inspector=w.modal.contentEl.querySelector('.sync-workspace-inspector')!;assert(inspector.textContent?.includes('origin ID origin'));assert(inspector.textContent?.includes(proposalId));
+ assert(inspector.querySelector<HTMLButtonElement>('.mod-cta')!.disabled);
+ const inventories=new SourceInventories();await inventories.load('drive',async()=>snapshot);assert.deepEqual(inventories.state('drive').entries.map(e=>e.path),['a.md']);
+});
+
+test('file results display all retained proposal copy paths and do not turn artifact-local-edited into an upload action',()=>{
+ dom();const table=operationTable([{path:'a.md',status:'pending',reason:'artifact-local-edited',proposalIds:['one','two'],conflictPaths:['a.conflict-first.md','a.conflict-second.md']}]);
+ assert(table.textContent?.includes('Received copy was edited locally'));assert(table.textContent?.includes('a.conflict-first.md'));assert(table.textContent?.includes('a.conflict-second.md'));
 });
