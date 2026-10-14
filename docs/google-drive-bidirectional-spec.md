@@ -4,6 +4,8 @@ Implementation status (2026-10-14): the desktop OAuth and cautious bidirectional
 
 User decision after the original design: preserve existing Drive IDs; until live concurrency tests, publish proposed updates to existing objects as reviewed conflict copies rather than updating/replacing their canonical content.
 
+Architecture review 2026-10-14: [Drive/V6 cross-review](audits/drive-jobs-cross-review.md) confirms current gaps in artifact visibility, unresolved absence/review UX and no-op state writes. [Per-source jobs plan](per-source-jobs-plan.md) adds independent RunContext while retaining global mutation authority, pair generations and safe migration; it does not relax the existing-ID update gate.
+
 
 Date: 2026-10-14, Europe/Moscow.
 Target: vetsyncpath-oss/sync, overhaul/2b1-recovered, d74128619b151af58f4ebdc22e8a61b270e81c8d.

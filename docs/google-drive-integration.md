@@ -4,6 +4,8 @@
 
 Это проверяемая реализация первого этапа, предназначенная для испытаний на отдельном vault и отдельной папке Drive. OAuth, executor и интерфейс ещё не проверены в настоящем Obsidian с настоящим Google-аккаунтом. Установочного manifest в репозитории нет; этот checkout не является готовым релизом.
 
+Дополнительная критическая [сверка Drive-аудита и Per-Source Jobs](audits/drive-jobs-cross-review.md) выявила проблемы, не закрытые текущими regression tests. Созданная конфликтная копия находится в Drive и на создавшем её устройстве, но **другой vault не скачивает её автоматически** из-за общего `.conflict-*` фильтра. 404/review пока не имеют полного интерфейса закрытия. Drive no-op сохраняет полный checkpoint для каждого файла. Эти пункты включены в приоритеты [следующего этапа](per-source-jobs-plan.md).
+
 ## Что реализовано
 
 | Область | Поведение в этой ветке |
@@ -87,6 +89,8 @@ Grant разрешает доступ ко всему Drive, но executor ог�
 | Shared Drives и resource keys | API-флаги предусмотрены, но создание с заранее выделенными ID, полномочия и link/resource-key сценарии не проверены на аккаунте. Пилотная область — папка My Drive |
 | Google Docs/Sheets/Slides, shortcuts | Эти объекты исключены, экспорт и следование shortcut не реализованы |
 | Полный bidirectional preview, решение review, remote repair UI | Legacy preview и local recovery не покрывают все новые удалённые намерения |
+| Межустройственная синхронизация conflict artifacts | Общий name-фильтр исключает `.conflict-drive-*`; нужна lineage-aware политика, сохраняющая hard protection |
+| No-op Drive state | При совпадающих байтах baseline сейчас перепубликуется для каждого файла; нужна проверка неизменности и затем item deltas |
 | OAuth lifecycle polish | Нужны явный revoke и очистка уже сохранённых неиспользуемых credential references; отменённые новые черновики уже очищают свои secrets |
 | Производительность | Нет live benchmark и обещания равной Sync Engine скорости; concurrency, Changes и stat/hash cache должны пройти отдельные измерения |
 
