@@ -2,6 +2,8 @@
 
 Implementation status (2026-10-14): this branch adds the compatible effective-policy compiler, explicit direction, connection validation, an explicitly selected Drive preset and acknowledged settings saves. Existing scope, profile IDs and pull behavior remain compatible. The complete UI/runtime replacement and v5 schema migration proposed in the attachment have not been performed. See [google-drive-integration.md](google-drive-integration.md).
 
+The later [per-source jobs review](audits/drive-jobs-cross-review.md) and [integration plan](per-source-jobs-plan.md) preserve this policy model: scope belongs to one compiled assignment tree, profiles retain per-path overrides, schedules have one canonical input, and job identity is distinct from content generation. The V6 draft's separate coverage/schedule authorities and rename-only migration are not accepted as implementation contracts.
+
 The attachment remains a design proposal. Its sample migration/deletion code is not executed. The implementation keeps legacy axes as compatible input and derives effective behavior; it does not introduce a second independently editable policy authority.
 
 
