@@ -2,9 +2,10 @@ import { App, Modal } from 'obsidian';
 import { GoogleDriveClient, DRIVE_FOLDER, type DriveFile } from '../sources/gdrive-client';
 import { button, element, textInput, tr } from './dom';
 import { trackModal } from './modal-registry';
+import type { GoogleSignInEvent } from '../auth/google-auth';
 
 export interface GoogleConnectionActions {
-    signIn(values: Record<string,unknown>, signal: AbortSignal): Promise<Record<string,unknown>>;
+    signIn(values: Record<string,unknown>, signal: AbortSignal,observe?:(event:GoogleSignInEvent)=>void): Promise<Record<string,unknown>>;
     pickFolder(values: Record<string,unknown>, signal: AbortSignal): Promise<DriveFile | undefined>;
     discardSecret?(ref: string): void;
     releaseDraft?(): void;

@@ -1,9 +1,18 @@
-import { exchangeGoogleCode, GOOGLE_SCOPES, type GoogleClient, type GoogleGrant } from '../auth/google-auth';
+import { exchangeGoogleCode, GOOGLE_SCOPES,withGoogleTimeout, type GoogleClient, type GoogleGrant,type GoogleSignInEvent } from '../auth/google-auth';
 import type { NetTransport } from '../sources/types';
+import { SyncFault } from '../core/sync-issue';
 
 const base64url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-export async function authorizeGoogleDesktop(client: GoogleClient, transport: NetTransport, signal: AbortSignal,
-    openBrowser: (url: string) => void | Promise<void>, timeoutMs = 300_000): Promise<GoogleGrant> {
+export interface GoogleDesktopOAuthOptions { timeoutMs?:number;exchangeTimeoutMs?:number;observe?:(event:GoogleSignInEvent)=>void }
+export function authorizeGoogleDesktop(client: GoogleClient, transport: NetTransport, signal: AbortSignal,
+    openBrowser: (url: string) => void | Promise<void>, options:number|GoogleDesktopOAuthOptions=300_000):Promise<GoogleGrant> {
+    const config=typeof options==='number'?{timeoutMs:options}:options;
+    return withGoogleTimeout(signal,config.timeoutMs??300_000,
+        new SyncFault('oauth-timeout','Google sign-in did not return to Obsidian within five minutes; check the browser and retry','source'),
+        attemptSignal=>authorizeAttempt(client,transport,attemptSignal,openBrowser,config));
+}
+async function authorizeAttempt(client:GoogleClient,transport:NetTransport,signal:AbortSignal,
+    openBrowser:(url:string)=>void|Promise<void>,options:GoogleDesktopOAuthOptions):Promise<GoogleGrant> {
     signal.throwIfAborted();
     const state = base64url(crypto.getRandomValues(new Uint8Array(32)));
     const verifier = base64url(crypto.getRandomValues(new Uint8Array(32)));
@@ -26,13 +35,12 @@ export async function authorizeGoogleDesktop(client: GoogleClient, transport: Ne
             response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
                 'Content-Security-Policy': "default-src 'none'", 'Referrer-Policy': 'no-referrer', Connection: 'close' });
             response.once('finish', () => server.closeAllConnections());
-            response.end('You may close this page and return to Obsidian.');
-            finish(error ? new Error('Google authorization was denied') : undefined, code ?? undefined);
+            response.end('Google returned the authorization response. Return to Obsidian to check that sign-in completed.');
+            finish(error ? new SyncFault('auth-denied','Google authorization was denied','source') : undefined, code ?? undefined);
         });
-        const abort = () => finish(new DOMException('Google authorization cancelled', 'AbortError'));
-        const timer = setTimeout(() => finish(new Error('Google authorization timed out')), timeoutMs);
+        const abort = () => finish(signal.reason instanceof Error?signal.reason:new DOMException('Google authorization cancelled', 'AbortError'));
         function finish(error?: Error, value?: string) {
-            if (finished) return; finished = true; clearTimeout(timer); signal.removeEventListener('abort', abort);
+            if (finished) return; finished = true; signal.removeEventListener('abort', abort);
             server.close(); if (error) server.closeAllConnections(); else server.closeIdleConnections();
             if (error) reject(error); else resolve(value!);
         }
@@ -47,10 +55,14 @@ export async function authorizeGoogleDesktop(client: GoogleClient, transport: Ne
             for (const [key, value] of Object.entries({ client_id: client.clientId, redirect_uri: redirectUri,
                 response_type: 'code', scope: GOOGLE_SCOPES.join(' '), state, code_challenge: challenge,
                 code_challenge_method: 'S256', access_type: 'offline', prompt: 'consent select_account' })) url.searchParams.set(key, value);
-            Promise.resolve().then(() => openBrowser(url.href)).catch(error => finish(error));
+            Promise.resolve().then(()=>{signal.throwIfAborted();options.observe?.({stage:'waiting-browser',authorizationUrl:url.href});return openBrowser(url.href);})
+                .catch(()=>finish(signal.aborted?signal.reason:new SyncFault('oauth-browser','Could not open the system browser; retry Google sign-in','source')));
         });
         if (signal.aborted) abort();
     });
     signal.throwIfAborted();
-    return exchangeGoogleCode(transport, client, code, verifier, redirectUri, signal);
+    options.observe?.({stage:'exchanging-code'});
+    return withGoogleTimeout(signal,options.exchangeTimeoutMs??60_000,
+        new SyncFault('network','Google token exchange timed out; check connectivity and retry sign-in','source',true),
+        exchangeSignal=>exchangeGoogleCode(transport,client,code,verifier,redirectUri,exchangeSignal));
 }
