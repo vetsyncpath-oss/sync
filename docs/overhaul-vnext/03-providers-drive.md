@@ -29,6 +29,8 @@ interface WritableProviderRun extends ProviderRun {
 
 Writer методы не возвращают только boolean. Postcondition содержит ID/version/digest/trashed/parent evidence либо `unknown` с reason. Download locator привязан к provider object и run revision, не только `path`. Provider capabilities разделяют inspect/read/list, create, trash, restore, conditional replacement, streaming и immutable inventory deletion evidence. OAuth scope сам по себе не доказывает object permission.
 
+Returned metadata ID обязан совпадать с requested/reserved object ID. Alias `root` разрешается в actual ID на read boundary и не служит mutation identity. Checksum normalization не меняет уже сохранённые opaque legacy manifest tokens: canonical checksum и совместимый version token могут храниться отдельно.
+
 Optional restore метод доступен только при verified restore capability. Методы rename/move/existing-ID content replacement добавляются отдельными capability amendments; наличие writable interface не делает их разрешёнными. Все writer порты требуют prepared intent из общей authority, обычный browse порт не имеет mutation методов.
 
 Legacy SyncSource adapters сохраняются на transition. Git immutable commit/tree может давать соответствующую mirror evidence; ZIP, WebDAV и другие источники сохраняют реально доказанную capability, не получают immutable по умолчанию. Проверка inventory, retries и parsing не пропадает при переносе orchestration.
@@ -136,6 +138,8 @@ Legacy `.conflict-*` без lineage не массово включаются п�
 ## 7. API полнота, ограничения и продолжение
 
 Drive listing сохраняет pagination, depth/node/response bounds и signal checks. Недостижение полноты сообщает diagnostics и loaded subset; не подменяет пустым successful manifest. Google-native Docs/export и shortcuts требуют отдельных contracts, показываются unsupported; shortcuts нельзя обходить с escape selected root.
+
+S0a вводит global observation budget 200,000 поверх unique-node limit 100,000: repeated IDs не обходят ограничение traversal. До incremental partial-browse контракта превышение budget даёт visible inventory error и сохраняет прежний stale snapshot; оно не считается complete empty tree.
 
 Project/account budgets учитывают современную quota configuration проекта; значения старых запросов/100 секунд не hardcoded как универсальные. List/download/upload имеют разные costs; принимать server hints и возвращать cooldown в JobSnapshot. Metadata-only warm run не делает N полных checkpoints, а actual transfer throughput сравнивается отдельно.
 

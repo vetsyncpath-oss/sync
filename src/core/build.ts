@@ -17,4 +17,4 @@
 // Ядро без obsidian/node — константа безопасна для всех окружений.
 
 /** Тег текущей сборки конвейера (этап overhaul). */
-export const BUILD_TAG = 'drive-oauth-wait-fix-2026-10-14';
+export const BUILD_TAG = 'overhaul-s0-id-browse-2026-10-14';

@@ -1,6 +1,7 @@
 // @ts-ignore Virtual module supplied by audit-drive-jobs.mjs.
 import {Fixture,bytes} from '@audit/fixture';
 import {GoogleDriveClient,DRIVE_FOLDER} from '../src/sources/gdrive-client';
+import {GDriveOAuthSource} from '../src/sources/gdrive-oauth-source';
 import {planDrive} from '../src/core/drive-planner';
 import {effectiveBehavior} from '../src/core/profile-policy';
 import {applyPolicy} from '../src/core/policy';
@@ -20,7 +21,9 @@ async function listing(files:any[],repeat=false){let pages=0;
     const client=new GoogleDriveClient({fetch:async url=>new URL(url).pathname.endsWith('/root')?
         response({id:'root',name:'Root',mimeType:DRIVE_FOLDER,version:'1'}):
         response({files,...(repeat&&pages++===0?{nextPageToken:'next'}:{})})});
-    try{const inventory=await client.inventory('root',new AbortController().signal);return {ok:true,count:inventory.items.length,excluded:inventory.excluded};}
+    try{const inventory=await client.inventory('root',new AbortController().signal),source=new GDriveOAuthSource(client,'root');source.inventorySnapshot=inventory;
+        let execution:unknown;try{execution={ok:true,count:(await source.getManifest(new AbortController().signal)).length};}catch(error:any){execution={ok:false,code:error.code,message:error.message};}
+        return {ok:true,count:inventory.items.length,excluded:inventory.excluded,completeness:inventory.completeness,diagnostics:inventory.diagnostics.map(d=>d.code),execution};}
     catch(error:any){return {ok:false,code:error.code,message:error.message};}
 }
 async function pluginTree(repeat=false){let pages=0;
@@ -35,7 +38,7 @@ async function pluginTree(repeat=false){let pages=0;
         const parent=parsed.searchParams.get('q')!.match(/'([^']+)' in parents/)![1];
         return response({files:children[parent]??[],...(repeat&&parent==='plugin'&&pages++===0?{nextPageToken:'next'}:{})});
     }});
-    try{const result=await client.inventory('root',new AbortController().signal);return {ok:true,files:result.items.filter(item=>item.file.mimeType!==DRIVE_FOLDER).map(item=>item.path)};}
+    try{const result=await client.inventory('root',new AbortController().signal);return {ok:true,files:result.items.filter(item=>item.file.mimeType!==DRIVE_FOLDER).map(item=>item.path),diagnostics:result.diagnostics.map(d=>d.code)};}
     catch(error:any){return {ok:false,code:error.code,message:error.message};}
 }
 async function main(){
@@ -78,13 +81,13 @@ for(const n of [1,20,100]){
     catch(error:any){record('rename-only manifest migration',error.message);}
 }
 {
-    const a={version:1 as const,mirror:false,defaultSource:'drive',folders:[],fileRules:[{scope:'folder' as const,path:'Notes',source:'drive'}]};
-    const b={...a,folders:[{path:'Git',target:'Code'}]};
+    const a={version:1 as const,mirror:false,defaultSource:'git',folders:[],fileRules:[{scope:'folder' as const,path:'Notes',source:'drive',remotePath:'Library'},{scope:'folder' as const,path:'Code',source:'git',remotePath:'repo'}]};
+    const b={...a,folders:[{path:'Git',include:'inherit' as const,target:{kind:'move' as const,localPath:'Code'}}]};
     record('unrelated legacy folder mapping resets Drive identity',(await driveNamespace('sub','root','drive',a))!==(await driveNamespace('sub','root','drive',b)));
 }
 {
     const f=new Fixture();await f.addRemote('constructor','first');await f.addRemote('other.md','other');const result=await f.run();
-    record('extensionless filename shadows a plain-object prototype key',{failed:result.failed,problem:result.problem,scope:result.problems?.[0].scope,otherDownloaded:f.local.has('other.md')});
+    record('extensionless filename shadows a plain-object prototype key',{failed:result.failed,problem:result.problem,scope:result.problems?.[0]?.scope,otherDownloaded:f.local.has('other.md')});
 }
 {
     const f=new Fixture();let tick=()=>{},delay=0;

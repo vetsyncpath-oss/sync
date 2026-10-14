@@ -52,6 +52,8 @@ export interface RemoteEntry {
  * (дизайн §3.2). [W6-T03] добавлен 'gdrive'; [W6-T05] добавлен 'webdav'.
  */
 export interface SyncSource {
+        /** Optional ID-aware, read-only inventory for UI; never an execution manifest. */
+        getBrowseSnapshot?(signal: AbortSignal): Promise<import('./remote-browse').RemoteBrowseSnapshot>;
         readonly sources?: readonly { id: string; name: string; kind: string }[];
         readonly maxConcurrentDownloads?: number;
         readonly kind: 'git' | 'yandex' | 'zip-url' | 'gdrive' | 'webdav';

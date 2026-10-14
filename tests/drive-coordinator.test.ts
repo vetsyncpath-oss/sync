@@ -150,3 +150,57 @@ test('Drive baseline identity ignores unrelated provider changes and behavior, w
     assert.notEqual(await driveNamespace('OTHER','ROOT','drive',policy),id);assert.notEqual(await driveNamespace('SUB','OTHER','drive',policy),id);
     changed.fileRules[1].remotePath='Elsewhere';assert.notEqual(await driveNamespace('SUB','ROOT','drive',changed),id);
 });
+
+test('warm no-op uses item reads and publishes no Drive baseline checkpoints',async()=>{
+    const f=new Fixture();for(let i=0;i<80;i++){f.local.set(`n${i}.md`,bytes('base'));await f.addRemote(`n${i}.md`,'base');}await f.run();
+    let writes=0;const write=f.fs.write;f.fs.write=async(path,data)=>{if(path.startsWith('drive-state-'))writes++;await write(path,data);};
+    f.state.snapshot=()=>{throw Error('Warm execution must not clone the entire checkpoint per file');};
+    const result=await f.run(true);assert.equal(result.failed,0);assert.equal(result.downloaded,0);assert.equal(result.uploaded,0);assert.equal(writes,0);
+});
+
+test('prototype-key filenames survive mutation, adoption and checkpoint reload',async()=>{
+    const f=new Fixture();for(const path of ['constructor','toString','__proto__','other.md'])await f.addRemote(path,'content');
+    const result=await f.run(true);assert.equal(result.failed,0);assert.equal(result.downloaded,4);
+    for(const path of ['constructor','toString','__proto__','other.md'])assert.equal(f.text(path),'content');
+    const reloaded=new DriveStateStore(f.fs,'test');await reloaded.load();assert.equal(reloaded.pending('constructor'),undefined);
+    assert.equal(reloaded.baseline('__proto__')?.remoteId,'r-__proto__');assert.equal(reloaded.snapshot().pending['toString'],undefined);
+    assert.equal((await f.run(true)).failed,0);
+});
+
+test('a plain legacy directory dictionary cannot select an inherited reserved ID',async()=>{
+    const f=new Fixture(),intent={id:'intent',path:'constructor/file.md',remotePath:'constructor/file.md',kind:'upload' as const,local:{kind:'missing' as const},directories:{}};
+    let persisted=0;const parent=await new GoogleDriveRoot(f.client,'root').parent(intent.remotePath,intent,async()=>{persisted++;},new AbortController().signal);
+    assert.equal(f.remote.get(parent)?.file.name,'constructor');assert.equal(persisted,1);assert.equal((intent.directories as Record<string,string>)['constructor'],parent);
+});
+
+test('a newer review on the same path counts one pending file',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));await f.addRemote('a.md','base');await f.run();
+    for(const content of ['first','second']){f.local.set('a.md',bytes(content));const result=await f.run(true);assert.equal(result.failed,0);assert.equal(result.deferredConflicts,1);
+        assert.equal(result.results?.filter(row=>row.path==='a.md'&&row.status==='pending').length,1);}
+    assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,2);
+});
+
+const asking=(f:Fixture,ask:NonNullable<import('../src/core/drive-coordinator').DriveExecutionPorts['ask']>)=>new DriveCoordinator({
+    vault:f.vault,mutations:f.mutations,state:f.state,root:new GoogleDriveRoot(f.client,'root'),queue:f.queue,
+    localPaths:async()=>[...f.local.keys()].filter(p=>!p.startsWith('private/')&&!p.startsWith('.trash/')&&!p.includes('.conflict-')),
+    localForRemote:p=>p.includes('.conflict-')?[]:[p],remoteForLocal:p=>p,behavior:()=>effectiveBehavior({direction:'bidirectional',write:'changes',delete:'tracked',conflict:'ask'}),
+    guard:()=>{},signal:new AbortController().signal,auto:false,ask,
+});
+test('a remote edit during a conflict question invalidates consent without stopping independent files',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('mine'));await f.addRemote('a.md','theirs');await f.addRemote('b.md','independent');
+    const result=await asking(f,async()=>{await f.addRemote('a.md','new remote');f.remote.get('r-a.md')!.file.version='2';return 'keep-both';}).run(f.inventory());
+    assert.equal(result.failed,0);assert.equal(result.deferredConflicts,1);assert(result.results?.some(row=>row.reason==='decision-stale'));
+    assert.equal(f.text('a.md'),'mine');assert.equal(f.text('b.md'),'independent');assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,0);
+});
+test('a local edit during a conflict question remains intact',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('mine'));await f.addRemote('a.md','theirs');
+    const result=await asking(f,async()=>{f.local.set('a.md',bytes('new local'));return 'keep-both';}).run(f.inventory());
+    assert.equal(result.failed,0);assert.equal(f.text('a.md'),'new local');assert.equal(result.deferredConflicts,1);
+});
+test('conflict questions use fresh metadata and reject unsupported choices per file',async()=>{
+    const f=new Fixture();for(const path of ['a.md','b.md']){f.local.set(path,bytes('mine'));await f.addRemote(path,'theirs');}
+    const inventory=f.inventory();await f.addRemote('b.md','latest');f.remote.get('r-b.md')!.file.version='2';let asks=0;
+    const result=await asking(f,async path=>{asks++;return path==='a.md'?'local-wins':'keep-both';}).run(inventory);
+    assert.equal(asks,2);assert.equal(result.failed,1);assert.equal(result.problems?.[0].code,'unsupported-choice');assert.equal(f.text('a.md'),'mine');assert.equal(f.text('b.md'),'latest');
+    assert.equal(result.deferredConflicts,1);
+});

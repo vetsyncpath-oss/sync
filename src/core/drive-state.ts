@@ -22,6 +22,14 @@ export interface DriveIntent {
 export interface DriveReview { copyPath:string;copyId:string;hash:string }
 export interface DriveState { version:1; sequence:number; baseline:Record<string,DriveBaseline>; pending:Record<string,DriveIntent>;reviews?:Record<string,DriveReview> }
 const hex=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/.test(v);
+export const ownEntry = <T>(record:Record<string,T>|undefined,key:string):T|undefined =>
+    record&&Object.prototype.hasOwnProperty.call(record,key)?record[key]:undefined;
+function dictionaries(state:DriveState):DriveState {
+    state.baseline=Object.assign(Object.create(null),state.baseline);
+    state.pending=Object.assign(Object.create(null),state.pending);
+    if(state.reviews)state.reviews=Object.assign(Object.create(null),state.reviews);
+    return state;
+}
 function validate(value:any):asserts value is DriveState {
     if(!value||value.version!==1||!Number.isSafeInteger(value.sequence)||value.sequence<1||!value.baseline||!value.pending
         ||typeof value.baseline!=='object'||typeof value.pending!=='object'||Array.isArray(value.baseline)||Array.isArray(value.pending))throw Error('Invalid Drive checkpoint');
@@ -33,7 +41,7 @@ function validate(value:any):asserts value is DriveState {
 }
 /** Immutable, verified generations. Never silently reset a corrupt or foreign checkpoint. */
 export class DriveStateStore {
-    private state:DriveState={version:1,sequence:0,baseline:{},pending:{}};
+    private state:DriveState=dictionaries({version:1,sequence:0,baseline:{},pending:{}});
     private loaded=false;
     private chain:Promise<void>=Promise.resolve();
     private cleanupError?:string;
@@ -43,17 +51,22 @@ export class DriveStateStore {
     private names(names:string[]):string[]{return names.filter(n=>n.startsWith(this.prefix)&&/^\d{16}\.json$/.test(n.slice(this.prefix.length))).sort();}
     private async read(name:string):Promise<DriveState>{const raw=await this.fs.read(name);if(raw===null)throw Error('Drive checkpoint missing');const envelope=JSON.parse(raw);
         if(typeof envelope.payload!=='string'||!hex(envelope.sha256)||await sha256Hex(new TextEncoder().encode(envelope.payload).buffer)!==envelope.sha256)throw Error('Drive checkpoint checksum mismatch');
-        const state=JSON.parse(envelope.payload);validate(state);if(name!==this.filename(state.sequence))throw Error('Drive checkpoint generation mismatch');return state;}
+        const state=JSON.parse(envelope.payload);validate(state);if(name!==this.filename(state.sequence))throw Error('Drive checkpoint generation mismatch');return dictionaries(state);}
     private filename(sequence:number):string{return this.prefix+String(sequence).padStart(16,'0')+'.json';}
     async load():Promise<void>{if(this.loaded)return;const names=this.names(await this.fs.list());if(names.length)this.state=await this.read(names.at(-1)!);this.loaded=true;}
-    snapshot():DriveState{if(!this.loaded)throw Error('Drive state not loaded');return structuredClone(this.state);}
+    snapshot():DriveState{if(!this.loaded)throw Error('Drive state not loaded');return dictionaries(structuredClone(this.state));}
+    private entry<T>(record:Record<string,T>|undefined,path:string):T|undefined{if(!this.loaded)throw Error('Drive state not loaded');const value=ownEntry(record,path);return value===undefined?undefined:structuredClone(value);}
+    baseline(path:string):DriveBaseline|undefined{return this.entry(this.state.baseline,path);}
+    pending(path:string):DriveIntent|undefined{return this.entry(this.state.pending,path);}
+    review(path:string):DriveReview|undefined{return this.entry(this.state.reviews,path);}
+    paths():string[]{if(!this.loaded)throw Error('Drive state not loaded');return [...new Set([...Object.keys(this.state.baseline),...Object.keys(this.state.pending),...Object.keys(this.state.reviews??{})])];}
     async recoveryReferences():Promise<RecoveryRef[]>{const refs:RecoveryRef[]=[];for(const name of this.names(await this.fs.list())){
         const state=await this.read(name);for(const intent of Object.values(state.pending))for(const ref of [intent.bytes,intent.copyBytes])if(ref)refs.push(ref);
     }return refs;}
     save(update:(state:DriveState)=>void):Promise<void>{const work=this.chain.then(()=>this.publish(update));this.chain=work.then(()=>{},()=>{});return work;}
     private async publish(update:(state:DriveState)=>void):Promise<void>{if(!this.loaded)throw Error('Drive state not loaded');
         if(this.names(await this.fs.list()).length>=4)await this.cleanup();
-        const next=structuredClone(this.state);next.sequence++;update(next);validate(next);
+        const next=dictionaries(structuredClone(this.state));next.sequence++;update(next);validate(next);
         const payload=JSON.stringify(next),json=JSON.stringify({payload,sha256:await sha256Hex(new TextEncoder().encode(payload).buffer)}),name=this.filename(next.sequence);
         if(await this.fs.exists(name))throw Error('Drive state concurrent writer detected');
         const temp=name+'.tmp';await this.fs.write(temp,json);if(await this.fs.read(temp)!==json)throw Error('Drive checkpoint write failed');

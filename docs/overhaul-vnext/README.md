@@ -1,6 +1,6 @@
 # Overhaul vNext: полная спецификация per-job синхронизации
 
-Дата: 2026-10-14, Europe/Moscow. Статус: проект реализации; описанные новые контракты **ещё не реализованы**. Проверяемая база — `integration/google-drive-bidirectional`, commit `aa1a561b197e8ce8e39599afeb6ea2493283ca51`, поверх `overhaul/2b1-recovered` (`d74128619b151af58f4ebdc22e8a61b270e81c8d`). Этот пакет заменяет высокоуровневый [per-source jobs plan](../per-source-jobs-plan.md) как спецификацию следующей переработки. Выполненный пилот описан отдельно в [статусе интеграции](../google-drive-integration.md).
+Дата: 2026-10-14, Europe/Moscow. Статус: target specification с частичной реализацией S0a; точный прогресс и остающиеся gates указаны в [implementation status](implementation-status.md). База анализа — `integration/google-drive-bidirectional`, commit `aa1a561b197e8ce8e39599afeb6ea2493283ca51`, поверх `overhaul/2b1-recovered` (`d74128619b151af58f4ebdc22e8a61b270e81c8d`). Этот пакет заменяет [per-source jobs plan](../per-source-jobs-plan.md) как спецификацию следующей переработки. Пилот описан в [руководстве интеграции](../google-drive-integration.md).
 
 ## 1. Назначение и границы
 

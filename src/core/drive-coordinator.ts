@@ -1,4 +1,4 @@
-import type { ConflictChoice, SyncStats, TransferObserver, VaultAdapter } from '../sources/types';
+import type { ConflictChoice, SyncStats, SyncFileResult, TransferObserver, VaultAdapter } from '../sources/types';
 import type { DriveFile, DriveItem } from '../sources/gdrive-client';
 import { GoogleDriveRoot } from '../sources/gdrive-root';
 import { DriveStateStore, type DriveIntent } from './drive-state';
@@ -29,12 +29,13 @@ const sibling=(path:string,id:string,label='local')=>{const slash=path.lastIndex
 export class DriveCoordinator {
     private readonly dirs=new DirLock();
     private inventory:DriveItem[]=[];
+    private readonly attention=new Set<string>();
     private readonly stats:SyncStats={totalFiles:0,downloaded:0,uploaded:0,deleted:0,skipped:0,failed:0,bytesTransferred:0,duration:0,conflicts:0,problems:[],outcome:'ok'};
     constructor(private readonly p:DriveExecutionPorts){}
     async run(inventory:DriveItem[]):Promise<SyncStats>{
         const started=Date.now();this.inventory=inventory;
         await this.p.state.load();await this.p.mutations.store.load();await this.p.mutations.recover(this.p.state.namespace,this.p.signal);
-        const localPaths=await this.p.localPaths(),all=new Set([...localPaths,...Object.keys(this.p.state.snapshot().baseline),...Object.keys(this.p.state.snapshot().pending),...Object.keys(this.p.state.snapshot().reviews??{})]);
+        const localPaths=await this.p.localPaths(),all=new Set([...localPaths,...this.p.state.paths()]);
         const remotes=new Map<string,{path:string;file:DriveFile}>();
         for(const item of inventory)for(const path of this.p.localForRemote(item.path)){
             if(remotes.has(path))throw new SyncFault('path-collision','Multiple remote files target one local path','source');
@@ -50,15 +51,15 @@ export class DriveCoordinator {
                 const queued=this.p.queue.all().find(q=>q.path===path);
                 if(this.p.auto&&queued&&(queued.poisoned||queued.nextRetryAt>Date.now())){this.stats.skipped++;continue;}
                 const stat=await this.p.vault.stat(path);if(stat&&stat.size>this.p.root.client.maxFileBytes)throw new SyncFault('file-too-large','Local file exceeds transfer limit');
-                const pending=this.p.state.snapshot().pending[path];
+                const pending=this.p.state.pending(path);
                 if(pending&&!this.p.restoreOnly){
                     const current=await observeLocal(this.p.vault,path),candidate=remotes.get(path)?.file;
-                    const newLocal=!sameVersion(current,pending.local)&&!(current.kind==='file'&&current.sha256===candidate?.sha256Checksum);
+                    const newLocal=!sameVersion(current,pending.local)&&!(current.kind==='file'&&current.sha256===candidate?.sha256Checksum?.toLowerCase());
                     const newDeletionTarget=(pending.kind==='trash-remote'||pending.kind==='delete-edit-remote')&&candidate&&candidate.version!==pending.remoteVersion;
                     if((newLocal||newDeletionTarget)&&!(pending.kind==='upload'&&!pending.remoteId))await this.checkpoint(s=>{delete s.pending[path];});
                     else{await this.execute(pending);this.p.queue.delete(path);continue;}
                 }
-                const local=await observeLocal(this.p.vault,path),base=this.p.state.snapshot().baseline[path];
+                const local=await observeLocal(this.p.vault,path),base=this.p.state.baseline(path);
                 const candidate=remotes.get(path);let remote=candidate?.file,remoteBytes:ArrayBuffer|undefined;
                 let observation:DriveObservation;
                 if(remote){
@@ -72,9 +73,9 @@ export class DriveCoordinator {
                     catch(error){this.guard();if((error as {status?:number}).status===404||(error as {code?:string}).code==='root-boundary')observation={kind:'unavailable'};else throw error;}
                 }else observation={kind:'absent'};
                 let decision=planDrive(local.kind==='file'?local.sha256:undefined,observation,base,behavior);
-                const review=this.p.state.snapshot().reviews?.[path];
+                const review=this.p.state.review(path);
                 if(review){if(observation.kind==='file'&&observation.hash===review.hash&&local.kind==='file'&&local.sha256===review.hash)await this.checkpoint(s=>{delete s.reviews![path];});
-                    else {this.stats.deferredConflicts=(this.stats.deferredConflicts??0)+1;(this.stats.results??=[]).push({path,status:'pending',reason:'Existing Drive object retained; review its published conflict copy',conflictPath:review.copyPath});}}
+                    else this.deferConflict({path,status:'pending',reason:'Existing Drive object retained; review its published conflict copy',conflictPath:review.copyPath});}
                 if(this.p.restoreOnly){if(local.kind==='missing'&&observation.kind==='file')decision='download';else{this.stats.skipped++;continue;}}
                 if(decision==='pending'){this.stats.deferredDeletions=(this.stats.deferredDeletions??0)+1;this.stats.skipped++;continue;}
                 if(decision==='protected'){this.stats.skipped++;continue;}
@@ -86,8 +87,8 @@ export class DriveCoordinator {
                 }
                 if(decision==='conflict'){
                     this.stats.conflicts++;
-                    if(behavior.conflict.action==='ask'){asks.push(path);this.stats.deferredConflicts=(this.stats.deferredConflicts??0)+1;(this.stats.results??=[]).push({path,status:'pending',reason:'decision-required'});continue;}
-                    if(behavior.conflict.action==='keep-local')decision='upload';
+                    if(behavior.conflict.action==='ask'){asks.push(path);this.deferConflict({path,status:'pending',reason:'decision-required'});continue;}
+                    if(behavior.conflict.action==='keep-local')throw new SyncFault('unsupported-choice','Applying local content over an existing Drive ID is not supported; original retained');
                 }
                 if(decision==='delete-edit-local'||decision==='delete-edit-remote')this.stats.conflicts++;
                 const reviewRequired=decision==='upload'&&!!remote&&!remote.trashed;
@@ -108,25 +109,31 @@ export class DriveCoordinator {
                 await this.persist(intent);await this.execute(intent);this.p.queue.delete(path);
             }catch(error){if(this.p.signal.aborted){this.stats.outcome='cancelled';break;}
                 const issue=syncIssue(error,'apply');if(issue.code==='io')issue.scope='session';this.stats.problems!.push(issue);this.stats.failed++;this.stats.problem=issue.message;this.stats.outcome='error';
-                const pending=this.p.state.snapshot().pending[path],base=this.p.state.snapshot().baseline[path];
+                const pending=this.p.state.pending(path),base=this.p.state.baseline(path);
                 this.p.queue.add({path,hash:pending?.bytes?.sha256??base?.remoteHash??'drive',size:pending?.bytes?.size??0},issue.message,Date.now(),issue.retryable?'transient':'blocked',Math.max(0,(issue.retryAt??0)-Date.now()),issue);
                 if(issue.scope==='session'||issue.code==='auth-required'||issue.code==='root-unavailable')break;
             }
         }
         // Background never waits on a dialog; manual questions occur only after all independent files.
-        try{if(!this.p.auto&&this.p.ask&&this.p.allowQuestions!==false)for(const path of asks){
-            this.guard();const candidate=remotes.get(path)!;const local=await observeLocal(this.p.vault,path);
-            const choice=await this.p.ask(path,local.kind==='file'?local.size:0,Number(candidate.file.size));this.guard();
+        if(!this.p.auto&&this.p.ask&&this.p.allowQuestions!==false)for(const path of asks){try{
+            this.guard();const candidate=remotes.get(path)!,questionFile=await this.p.root.owned(candidate.file.id,this.p.signal,false,candidate.path),local=await observeLocal(this.p.vault,path);
+            const choice=await this.p.ask(path,local.kind==='file'?local.size:0,Number(questionFile.size));this.guard();
             if(choice==='defer')continue;
-            // Rerun with a fixed choice and fresh inventories/preconditions, through the same durable executor.
+            if(choice!=='keep-both'&&choice!=='remote-wins')throw new SyncFault('unsupported-choice','This conflict choice requires unsupported existing-ID content updates');
+            const current=await observeLocal(this.p.vault,path),fresh=await this.p.root.owned(questionFile.id,this.p.signal,false,candidate.path);
+            if(!sameVersion(current,local)||fresh.version!==questionFile.version){this.deferConflict({path,status:'pending',reason:'decision-stale'});continue;}
+            // Consent applies only to the versions actually shown, with targeted fresh metadata.
             const child=new DriveCoordinator({...this.p,localPaths:async()=>[path],localForRemote:r=>r===candidate.path?[path]:[],
-                remoteForLocal:p=>p===path?this.p.remoteForLocal(p):undefined,behavior:p=>({...this.p.behavior(p),conflict:{action:choice==='local-wins'?'keep-local':'keep-remote',keepOther:true}}),ask:undefined});
-            const result=await child.run(this.inventory);this.stats.downloaded+=result.downloaded;this.stats.uploaded!+=result.uploaded??0;
+                remoteForLocal:p=>p===path?this.p.remoteForLocal(p):undefined,behavior:p=>({...this.p.behavior(p),conflict:{action:'keep-remote',keepOther:true}}),ask:undefined});
+            const result=await child.run([{...candidate,file:fresh}]);this.stats.downloaded+=result.downloaded;this.stats.uploaded!+=result.uploaded??0;
             this.stats.failed+=result.failed;this.stats.deleted+=result.deleted;this.stats.deletedDrive=(this.stats.deletedDrive??0)+(result.deletedDrive??0);
-            this.stats.bytesTransferred+=result.bytesTransferred;this.stats.deferredConflicts!--;
-            this.stats.results=this.stats.results?.filter(row=>row.path!==path||row.reason!=='decision-required');this.stats.results?.push(...result.results??[]);
+            this.stats.bytesTransferred+=result.bytesTransferred;const settled=result.outcome==='ok'&&!result.failed&&!result.deferredConflicts;
+            if(settled)this.attention.delete(path);this.stats.deferredConflicts=this.attention.size;
+            if(settled)this.stats.results=this.stats.results?.filter(row=>row.path!==path||row.reason!=='decision-required');
+            for(const row of result.results??[])if(row.status==='pending')this.deferConflict(row);else this.stats.results?.push(row);
             if(result.outcome==='error'){this.stats.outcome='error';this.stats.problems!.push(...result.problems??[]);}
-        }}catch(error){if(this.p.signal.aborted)this.stats.outcome='cancelled';else{const issue=syncIssue(error,'confirm');this.stats.problems!.push(issue);this.stats.problem=issue.message;this.stats.failed++;this.stats.outcome='error';}}
+            if(result.outcome==='cancelled'){this.stats.outcome='cancelled';break;}
+        }catch(error){if(this.p.signal.aborted){this.stats.outcome='cancelled';break;}else{const issue=syncIssue(error,'confirm');this.stats.problems!.push(issue);this.stats.problem=issue.message;this.stats.failed++;this.stats.outcome='error';if(issue.scope==='session'||issue.code==='auth-required')break;}}}
         this.stats.pendingAfter=this.p.queue.size();this.stats.duration=Date.now()-started;return this.stats;
     }
     resolveQuestions(paths:readonly string[]):Promise<SyncStats>{
@@ -134,12 +141,17 @@ export class DriveCoordinator {
             localForRemote:path=>this.p.localForRemote(path).filter(local=>paths.includes(local)),remoteForLocal:path=>paths.includes(path)?this.p.remoteForLocal(path):undefined}).run(this.inventory);
     }
     private guard():void{this.p.signal.throwIfAborted();this.p.guard();}
+    private deferConflict(row:SyncFileResult):void{this.attention.add(row.path);this.stats.deferredConflicts=this.attention.size;
+        this.stats.results=this.stats.results?.filter(old=>old.path!==row.path||old.status!=='pending');(this.stats.results??=[]).push(row);}
     private async checkpoint(update:Parameters<DriveStateStore['save']>[0]):Promise<void>{this.guard();try{await this.p.state.save(update);}catch{throw new SyncFault('checkpoint','Drive checkpoint could not be saved; session stopped','session');}this.guard();if(this.p.state.cleanupProblem)throw new SyncFault('checkpoint-cleanup',this.p.state.cleanupProblem,'session');}
     private persist(intent:DriveIntent):Promise<void>{return this.checkpoint(s=>s.pending[intent.path]=structuredClone(intent));}
-    private clear(path:string):Promise<void>{return this.checkpoint(s=>{delete s.pending[path];delete s.baseline[path];if(s.reviews)delete s.reviews[path];});}
+    private clear(path:string):Promise<void>{if(!this.p.state.pending(path)&&!this.p.state.baseline(path)&&!this.p.state.review(path))return Promise.resolve();return this.checkpoint(s=>{delete s.pending[path];delete s.baseline[path];if(s.reviews)delete s.reviews[path];});}
     private async baseline(path:string,remotePath:string,local:LocalVersion,remote:DriveFile,review?:DriveIntent):Promise<void>{
         this.guard();if(local.kind!=='file'||remote.trashed)throw Error('Cannot adopt an absent version');
         const baseline:DriveBaseline={localHash:local.sha256,remoteHash:local.sha256,remoteId:remote.id,remoteVersion:remote.version,remotePath};
+        const previous=this.p.state.baseline(path);
+        if(!review&&!this.p.state.pending(path)&&previous&&previous.localHash===baseline.localHash&&previous.remoteHash===baseline.remoteHash
+            &&previous.remoteId===baseline.remoteId&&previous.remoteVersion===baseline.remoteVersion&&previous.remotePath===baseline.remotePath)return;
         await this.checkpoint(s=>{s.baseline[path]=baseline;if(review)(s.reviews??={})[path]={copyPath:review.copyPath!,copyId:review.copyId!,hash:review.copyBytes!.sha256};delete s.pending[path];});
     }
     private async write(path:string,before:LocalVersion,bytes:ArrayBuffer,id:string):Promise<void>{
@@ -190,7 +202,7 @@ export class DriveCoordinator {
             if(!sameVersion(actual,after))await this.write(intent.path,intent.local,bytes,intent.id+'-primary');
             await this.baseline(intent.path,intent.remotePath,after,remote,intent.reviewRequired?intent:undefined);this.stats.downloaded++;
             if(intent.reviewRequired){
-                this.stats.deferredConflicts=(this.stats.deferredConflicts??0)+1;(this.stats.results??=[]).push({path:intent.path,status:'pending',reason:'Existing Drive object retained; review its published conflict copy',conflictPath:intent.copyPath});}
+                this.deferConflict({path:intent.path,status:'pending',reason:'Existing Drive object retained; review its published conflict copy',conflictPath:intent.copyPath});}
             return;
         }
         if(intent.kind==='delete-edit-local'||intent.kind==='delete-edit-remote')await this.copy(intent);
@@ -204,8 +216,8 @@ export class DriveCoordinator {
             // Restoring a kept, tracked object preserves its ID and never overwrites its content.
             let old=await this.p.root.owned(intent.remoteId,this.p.signal,true,intent.remotePath);
             if(old.trashed){this.guard();old=await this.p.root.client.metadata(old.id,{trashed:false},this.p.signal);}
-            const bytes=await this.p.mutations.recovery.read(intent.bytes!),base=this.p.state.snapshot().baseline[intent.path];
-            if(old.sha256Checksum===intent.bytes!.sha256){await this.baseline(intent.path,intent.remotePath,await versionOf(bytes),old);return;}
+            const bytes=await this.p.mutations.recovery.read(intent.bytes!),base=this.p.state.baseline(intent.path);
+            if(old.sha256Checksum?.toLowerCase()===intent.bytes!.sha256){await this.baseline(intent.path,intent.remotePath,await versionOf(bytes),old);return;}
             if(base&&intent.bytes!.sha256===base.localHash){const remoteBytes=await this.p.root.client.download(old,this.p.signal);
                 await this.write(intent.path,intent.local,remoteBytes,intent.id+'-restore');await this.baseline(intent.path,intent.remotePath,await versionOf(remoteBytes),old);this.stats.downloaded++;return;}
             intent.kind='conflict';intent.remoteVersion=old.version;intent.reviewRequired=true;

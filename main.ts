@@ -1832,7 +1832,7 @@ export default class GitSyncPlugin extends Plugin {
                                 if(!this.assertNetworkAllowed())throw Error(i18n.getLocale()==='ru'?'Доступ к источнику заблокирован':'Source access blocked');
                                 if(!isSourceConfigured(connection.kind,{repoUrl:'',accessToken:'',vaultUrl:'',...connection.values}))throw Error('Source is not configured');
                                 const source=EngineRegistry.create(connection.kind,structuredClone(connection.values),this.engineCtx(connection.kind));
-                                try{return await source.getManifest(signal);}finally{await source.dispose?.();}
+                                try{return source.getBrowseSnapshot?await source.getBrowseSnapshot(signal):await source.getManifest(signal);}finally{await source.dispose?.();}
                         },
                         check:(connection,signal)=>this.checkSourceConnection(connection,signal),
                         checkDownload:(connection,signal)=>this.checkSourceConnection(connection,signal,true),
@@ -1887,7 +1887,7 @@ export default class GitSyncPlugin extends Plugin {
                                 observe:event=>this.makeSyncUI().setStatus('syncing',{stage:event.stage,lastActivityAt:Date.now(),progressText:member.name,bytesTransferred:event.bytes,totalBytes:event.totalBytes}),
                         });
                         this.makeSyncUI().setStatus('syncing',{stage:'apply',progressText:member.name,lastActivityAt:Date.now()});
-                        const result=await driver.run(member.inventory.items.filter(item=>item.file.mimeType!=='application/vnd.google-apps.folder'));
+                        const result=await driver.run(member.inventory.items.filter(item=>!item.file.mimeType.startsWith('application/vnd.google-apps.')));
                         const questionPaths=result.results?.filter(row=>row.reason==='decision-required').map(row=>row.path)??[];if(questionPaths.length)questions.push({driver,paths:questionPaths});
                         for(const field of ['totalFiles','downloaded','uploaded','deleted','deletedDrive','skipped','failed','bytesTransferred','conflicts','deferredConflicts','deferredDeletions'] as const)aggregate[field]=(aggregate[field]??0)+(result[field]??0);
                         aggregate.problems=[...aggregate.problems??[],...result.problems??[]];aggregate.results=[...aggregate.results??[],...result.results??[]];aggregate.followUp ||= result.followUp;

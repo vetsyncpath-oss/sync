@@ -5,9 +5,9 @@ import { resolveFileRule, PLUGIN_CODE_FILES } from '../core/file-rules';
 import { computeLocalPath, type SyncPolicy, type FolderPolicy } from '../core/policy';
 import { pathState, scopeMode, setScope, setParticipation, type ScopeMode } from '../core/workspace-state';
 import type { PathPolicy } from '../core/path-policy';
-import type { RemoteEntry } from '../sources/types';
 import { sourceCandidates } from '../core/source-bindings';
-import { buildLocalTree, buildRemoteTree, sortChildren, type TreeNode } from './tree-walk';
+import { buildLocalTree, buildRemoteTree, buildBrowseTree, treeNodeKey, sortChildren, type TreeNode } from './tree-walk';
+import type { SourceBrowseResult, RemoteBrowseNode } from '../sources/remote-browse';
 import { SourceInventories } from './source-inventories';
 import { SourceConnectionModal } from './source-connection-modal';
 import { trackModal } from './modal-registry';
@@ -23,7 +23,7 @@ export interface WorkspaceDeps {
     policy: SyncPolicy; profiles: SyncProfile[]; connections: SourceConnection[];
     pathPolicy: PathPolicy; pluginDir: string; isRunning(): boolean;
     local(): Promise<{ files: string[]; folders: string[] }>;
-    fetch(connection: SourceConnection, signal: AbortSignal): Promise<RemoteEntry[]>;
+    fetch(connection: SourceConnection, signal: AbortSignal): Promise<SourceBrowseResult>;
     checkDownload?(connection:SourceConnection,signal:AbortSignal):Promise<void>;
     check?(connection: SourceConnection, signal: AbortSignal): Promise<void>;
     run?(sourceIds?: string[]): Promise<void>;
@@ -37,16 +37,18 @@ interface FormValues {
     participation: FolderPolicy['include']; mapping: string; mappingKind: 'rename' | 'move';
 }
 interface AssignmentForm {
+    remoteKey?: string;
     scope: ProfileAssignment['scope']; path: string; view: string; originalNames?: string[];
     value: FormValues; initial: string; paths: Map<string, string>;
     record?:string;
 }
-interface ViewContext { selected: { scope: ProfileAssignment['scope']; path: string }; expanded: Set<string>; search: string; page: number; focus: string; editingNames?:string[]; }
+interface ViewContext { selected: { scope: ProfileAssignment['scope']; path: string; key?: string }; expanded: Set<string>; search: string; page: number; focus: string; editingNames?:string[]; }
 const selector = (names?: string[]) => JSON.stringify([...(names ?? [])].map(n => n.normalize('NFC').toLowerCase()).sort());
 // An impossible persisted selector identifies a new rule without consuming the existing all-files rule.
 const NEW_SELECTOR=[''];
 const namesOf = (value: string) => value.split(',').map(n => n.trim()).filter(Boolean);
 const formKey = (view: string, scope: string, path: string, names?: string[]) => JSON.stringify([view, scope, path, selector(names)]);
+const formIndex = (form:AssignmentForm) => formKey(form.view,form.scope,form.view==='vault'?form.path:form.remoteKey??form.path,form.originalNames);
 
 export class SyncWorkspaceModal extends DraftModal {
     private policy: SyncPolicy;
@@ -197,7 +199,7 @@ export class SyncWorkspaceModal extends DraftModal {
     }
     private async loadSource(c: SourceConnection): Promise<void> {
         const pending = this.inventories.load(c.id, signal => this.deps.fetch(structuredClone(c), signal)); this.renderSources(); this.renderTree();
-        await pending; if (!this.closed) { this.renderSources(); this.renderTree(); }
+        await pending; if (!this.closed) { this.renderSources(); this.renderTree(); this.renderInspector(); }
     }
     private async checkSource(c: SourceConnection,sample=false): Promise<void> {
         if (!this.deps.check || this.checks.get(c.id)?.loading) return;
@@ -237,46 +239,50 @@ export class SyncWorkspaceModal extends DraftModal {
         if (remote) {
             if (state.status === 'loading') this.treeBox.append(element('p', tr('Загрузка содержимого…', 'Loading contents…')));
             if (state.error) this.treeBox.append(element('p', state.error + (state.loadedAt ? tr(' · показан устаревший снимок', ' · showing a stale snapshot') : ''), 'sync-workspace-error'));
+            if(state.browse?.diagnostics.length){const details=element('details');details.append(element('summary',tr('Диагностика источника: ','Source diagnostics: ')+state.browse.diagnostics.length));
+                for(const diagnostic of state.browse.diagnostics.slice(0,100))details.append(element('p',diagnostic.message));this.treeBox.append(details);}
         }
-        const root = remote ? buildRemoteTree(state.entries) : buildLocalTree(new Set([...this.localFiles, ...projected.keys()]), this.localFolders);
+        const root = remote ? state.browse?buildBrowseTree(state.browse):buildRemoteTree(state.entries) : buildLocalTree(new Set([...this.localFiles, ...projected.keys()]), this.localFolders);
         sortChildren(root); const flat: { node: TreeNode; depth: number }[] = [];
         const visit = (node: TreeNode, depth: number) => {
             if (!this.context.search || node.path.toLowerCase().includes(this.context.search.toLowerCase())) flat.push({ node, depth });
-            if (this.context.search || this.context.expanded.has(node.path)) for (const child of node.children) visit(child, depth + 1);
+            if (this.context.search || this.context.expanded.has(treeNodeKey(node))) for (const child of node.children) visit(child, depth + 1);
         }; visit(root, 0);
         const size = 150; this.context.page = Math.min(this.context.page, Math.max(0, Math.ceil(flat.length / size) - 1));
-        const focusIndex = flat.findIndex(({ node }) => node.path === this.context.focus);
         const page = flat.slice(this.context.page * size, (this.context.page + 1) * size);
-        if (!page.some(({ node }) => node.path === this.context.focus)) this.context.focus = page[0]?.node.path ?? '';
+        if (!page.some(({ node }) => treeNodeKey(node) === this.context.focus)) this.context.focus = page[0]?treeNodeKey(page[0].node):'';
         const list = element('div', '', 'sync-tree'); list.setAttribute('role', 'tree'); list.setAttribute('aria-label', remote ? tr('Файлы источника', 'Source files') : 'Vault'); list.setAttribute('aria-multiselectable', String(!remote));
         const local = new Set(this.localFiles);
         for (const { node, depth } of page) {
+            const key=treeNodeKey(node);
             const row = element('div', '', 'sync-workspace-row'); row.setAttribute('role', 'treeitem'); row.setAttribute('aria-level', String(depth + 1));
-            row.setAttribute('data-path', node.path); row.setAttribute('aria-selected', String(this.context.selected.path === node.path));
-            row.tabIndex = node.path === this.context.focus ? 0 : -1; row.style.paddingLeft = depth * 14 + 'px';
-            row.addEventListener('focus', () => { this.context.focus = node.path; });
+            row.setAttribute('data-path', node.path);row.dataset.nodeKey=key; row.setAttribute('aria-selected', String((this.context.selected.key??this.context.selected.path) === key));
+            row.tabIndex = key === this.context.focus ? 0 : -1; row.style.paddingLeft = depth * 14 + 'px';
+            row.addEventListener('focus', () => { this.context.focus = key; });
             if (!remote && node.path) {
                 const check = element('input'); check.type = 'checkbox'; check.tabIndex = -1; check.checked = this.selection.has(node.path); check.setAttribute('aria-label', tr('Выделить для редактирования: ', 'Select for editing: ') + node.path);
                 check.addEventListener('click', event => event.stopPropagation()); check.addEventListener('change', () => { check.checked ? this.selection.set(node.path, node.kind) : this.selection.delete(node.path); this.renderSummary(); }); row.append(check);
             }
             if (node.kind === 'folder') {
-                row.setAttribute('aria-expanded', String(this.context.expanded.has(node.path)));
-                const arrow = button(row, this.context.expanded.has(node.path) ? '▾' : '▸', () => { this.context.expanded.has(node.path) ? this.context.expanded.delete(node.path) : this.context.expanded.add(node.path); this.context.focus = node.path; this.renderTree(); }, 'sync-tree-expander');
+                row.setAttribute('aria-expanded', String(this.context.expanded.has(key)));
+                const arrow = button(row, this.context.expanded.has(key) ? '▾' : '▸', () => { this.context.expanded.has(key) ? this.context.expanded.delete(key) : this.context.expanded.add(key); this.context.focus = key; this.renderTree(); }, 'sync-tree-expander');
                 arrow.tabIndex = -1; arrow.setAttribute('aria-label', tr('Раскрыть / свернуть ', 'Expand / collapse ') + (node.path || tr('корень', 'root'))); arrow.addEventListener('click', event => event.stopPropagation());
             } else row.append(element('span', '·', 'sync-tree-icon'));
-            const name = element('span', node.path ? node.name : remote ? tr('Корень источника', 'Source root') : tr('Весь vault / корень', 'Entire vault / root'), 'sync-tree-name');
+            const name = element('span', node.parent ? node.name||tr('(пустое имя)','(empty name)') : remote ? tr('Корень источника', 'Source root') : tr('Весь vault / корень', 'Entire vault / root'), 'sync-tree-name');
             row.append(name); row.addEventListener('click', () => this.selectNode(node));
+            if(node.browseNode){row.dataset.objectId=node.browseNode.objectId;const badge=element('small','ID '+(node.browseNode.objectId.length>16?node.browseNode.objectId.slice(0,8)+'…'+node.browseNode.objectId.slice(-4):node.browseNode.objectId),'sync-tree-meta');badge.title=node.browseNode.objectId;row.append(badge);
+                if(node.browseNode.blocked)row.append(element('small',node.browseNode.blocked,'sync-workspace-warning'));}
             row.addEventListener('keydown', event => {
                 if (event.target !== row) return;
-                const index = flat.findIndex(item => item.node.path === node.path);
-                const focus = (next: number) => { const item = flat[Math.max(0, Math.min(flat.length - 1, next))]; if (!item) return; this.context.focus = item.node.path; this.context.page = Math.floor(Math.max(0, next) / size); this.renderTree(); this.focusRow(); };
+                const index = flat.findIndex(item => treeNodeKey(item.node) === key);
+                const focus = (next: number) => { const item = flat[Math.max(0, Math.min(flat.length - 1, next))]; if (!item) return; this.context.focus = treeNodeKey(item.node); this.context.page = Math.floor(Math.max(0, next) / size); this.renderTree(); this.focusRow(); };
                 if (['ArrowUp', 'ArrowDown', 'Home', 'End', 'ArrowLeft', 'ArrowRight', 'Enter', ' '].includes(event.key)) event.preventDefault();
                 if (event.key === 'ArrowUp') focus(index - 1); else if (event.key === 'ArrowDown') focus(index + 1);
                 else if (event.key === 'Home') focus(0); else if (event.key === 'End') focus(flat.length - 1);
                 else if (event.key === 'Enter') this.selectNode(node);
                 else if (event.key === ' ' && !remote && node.path) { this.selection.has(node.path) ? this.selection.delete(node.path) : this.selection.set(node.path, node.kind); this.renderTree(); this.renderSummary(); }
-                else if (event.key === 'ArrowRight' && node.kind === 'folder') { if (this.context.expanded.has(node.path)) focus(index + 1); else { this.context.expanded.add(node.path); this.renderTree(); } }
-                else if (event.key === 'ArrowLeft') { if (node.kind === 'folder' && this.context.expanded.has(node.path)) { this.context.expanded.delete(node.path); this.renderTree(); } else if (node.parent) focus(flat.findIndex(item => item.node.path === node.parent!.path)); }
+                else if (event.key === 'ArrowRight' && node.kind === 'folder') { if (this.context.expanded.has(key)) focus(index + 1); else { this.context.expanded.add(key); this.renderTree(); } }
+                else if (event.key === 'ArrowLeft') { if (node.kind === 'folder' && this.context.expanded.has(key)) { this.context.expanded.delete(key); this.renderTree(); } else if (node.parent) focus(flat.findIndex(item => treeNodeKey(item.node) === treeNodeKey(node.parent!))); }
             });
             if (!remote && node.path) {
                 const witness = node.kind === 'folder' ? node.path + '/__file__' : node.path;
@@ -308,17 +314,19 @@ export class SyncWorkspaceModal extends DraftModal {
         }
         if (wasFocused) this.focusRow();
     }
-    private focusRow(): void { Array.from(this.treeBox.querySelectorAll<HTMLElement>('[role="treeitem"]')).find(row => row.dataset.path === this.context.focus)?.focus(); }
+    private focusRow(): void { Array.from(this.treeBox.querySelectorAll<HTMLElement>('[role="treeitem"]')).find(row => row.dataset.nodeKey === this.context.focus)?.focus(); }
     private selectNode(node: TreeNode): void {
         this.contentEl.dataset.pane = 'inspector';
         for(const tab of Array.from(this.contentEl.querySelectorAll<HTMLElement>('.sync-workspace-mobile-tabs button')))tab.setAttribute('aria-pressed',String(tab.dataset.pane==='inspector'));
-        this.context.selected = { scope: node.path ? node.kind === 'file' ? 'file' : 'folder' : 'vault', path: node.path }; this.context.focus = node.path; this.editingNames = undefined;
-        for (const row of Array.from(this.treeBox.querySelectorAll<HTMLElement>('[role="treeitem"]'))) { row.setAttribute('aria-selected', String(row.dataset.path === node.path)); row.tabIndex = row.dataset.path === node.path ? 0 : -1; }
+        const key=treeNodeKey(node);this.context.selected = { scope: node.parent ? node.kind === 'file' ? 'file' : 'folder' : 'vault', path: node.path, key }; this.context.focus = key; this.editingNames = undefined;
+        for (const row of Array.from(this.treeBox.querySelectorAll<HTMLElement>('[role="treeitem"]'))) { row.setAttribute('aria-selected', String(row.dataset.nodeKey === key)); row.tabIndex = row.dataset.nodeKey === key ? 0 : -1; }
         this.renderInspector();
     }
     private form(): AssignmentForm {
-        const selected = this.context.selected, key = formKey(this.view, selected.scope, selected.path, this.editingNames);
+        const selected = this.context.selected, key = formKey(this.view, selected.scope, this.view==='vault'?selected.path:selected.key??selected.path, this.editingNames);
         const cached = this.forms.get(key); if (cached) {
+            const node=this.remoteNode(cached);
+            if(node&&node.path!==cached.path&&JSON.stringify(cached.value)===cached.initial){this.forms.delete(key);this.context.selected.path=node.path;return this.form();}
             if(cached.view==='vault' && JSON.stringify(cached.value)===cached.initial && cached.record!==this.assignmentRecord(this.policy,cached)){
                 this.forms.delete(key);return this.form();
             }
@@ -333,7 +341,7 @@ export class SyncWorkspaceModal extends DraftModal {
         const structural = this.policy.folders.find(f => f.path === selected.path);
         const value: FormValues = { destination: selected.path, source: remote ? this.view : current?.source ?? '', remotePath: remote ? selected.path : current?.remotePath ?? '',
             profile: current?.profileId ?? '', names: current?.names?.join(', ') ?? this.editingNames?.join(', ') ?? '', participation: structural?.include ?? 'inherit', mapping: structural?.target?.localPath ?? '', mappingKind: structural?.target?.kind ?? 'move' };
-        const form:AssignmentForm = { scope: selected.scope, path: selected.path, view: this.view, originalNames: current?.names ?? this.editingNames, value, initial: JSON.stringify(value), paths: new Map<string, string>() };
+        const form:AssignmentForm = { scope: selected.scope, path: selected.path, remoteKey:remote&&this.inventories.state(this.view).browse?selected.key:undefined, view: this.view, originalNames: current?.names ?? this.editingNames, value, initial: JSON.stringify(value), paths: new Map<string, string>() };
         form.record=this.assignmentRecord(this.policy,form);
         this.forms.set(key, form); return form;
     }
@@ -345,6 +353,8 @@ export class SyncWorkspaceModal extends DraftModal {
         const changed = () => this.renderSummary();
         if(form.record!==this.assignmentRecord(this.policy,form)&&JSON.stringify(v)!==form.initial)box.append(element('p',tr('Назначение изменено в другой панели. Сбросьте поля или явно примените свой вариант.','This assignment changed in another panel. Reset these fields or explicitly apply your version.'),'sync-workspace-warning'));
         box.append(element('h3', selected.path || (remote ? tr('Корень источника', 'Source root') : tr('Весь vault', 'Entire vault'))));
+        if(remote){const node=this.remoteNode(form);if(node){box.append(element('p',`ID ${node.objectId} · parent ${node.parentId} · version ${node.version}`));
+            if(node.blocked)box.append(element('p',node.blocked+tr(' · Привязка по неоднозначному пути недоступна. Выберите другую папку источника или устраните неоднозначность.',' · Ambiguous path binding is unavailable. Select another source folder or resolve the ambiguity.'),'sync-workspace-warning'));}}
         box.append(element('p', remote ? tr('Свяжите путь источника с назначением в vault.', 'Bind this source path to a vault destination.') : tr('Источник, область и поведение настраиваются независимо.', 'Source, participation and behaviour are independent.'), 'sync-workspace-hint'));
         if(form.originalNames===NEW_SELECTOR)box.append(element('p',tr('Новое правило: задайте имена для дополнительного назначения. Без фильтра явное применение заменит правило для всех файлов этой области.','New rule: set file names for an additional assignment. Without a filter, explicitly applying it replaces the all-files assignment for this scope.'),'sync-workspace-hint'));
         if (!remote) {
@@ -374,7 +384,7 @@ export class SyncWorkspaceModal extends DraftModal {
             const inherited=resolveFileRule(selected.scope==='file'?selected.path:[selected.path,'__file__'].filter(Boolean).join('/'),compileProfiles(this.policy,this.profiles).fileRules).source??this.policy.defaultSource;
             const id = v.source || inherited, connection = this.connections.find(c => c.id === id);
             if (!connection) { new Notice(tr('Сначала выберите источник', 'Choose a source first')); return; }
-            const modal = new SourcePathModal(this.app, connection.name, selected.scope === 'file' ? 'file' : 'folder', this.inventories.state(id!).entries, this.inventories.state(id!).status,
+            const modal = new SourcePathModal(this.app, connection.name, selected.scope === 'file' ? 'file' : 'folder', this.inventories.state(id!).browse??this.inventories.state(id!).entries, this.inventories.state(id!).status,
                 signal => this.deps.fetch(structuredClone(connection), signal), value => { v.source = id!; v.remotePath = value; this.renderInspector(); changed(); });
             trackModal(modal); modal.open();
         });
@@ -399,13 +409,13 @@ export class SyncWorkspaceModal extends DraftModal {
         const actions = element('div', '', 'sync-inspector-actions');
         button(actions, remote ? tr('Разместить в vault', 'Place in vault') : tr('Применить к черновику', 'Apply to draft'), () => {
             try {
-                this.policy = this.applyForm(this.policy, form,true);this.forms.delete(formKey(form.view,form.scope,form.path,form.originalNames));
+                this.policy = this.applyForm(this.policy, form,true);this.forms.delete(formIndex(form));
                 form.initial = JSON.stringify(v); form.originalNames = namesOf(v.names).length ? namesOf(v.names) : undefined;form.record=this.assignmentRecord(this.policy,form);
-                this.editingNames=form.originalNames;this.forms.set(formKey(form.view,form.scope,form.path,form.originalNames),form);this.render();
+                this.editingNames=form.originalNames;this.forms.set(formIndex(form),form);this.render();
             }
             catch (error) { new Notice(String(error)); }
-        }, 'mod-cta'); box.append(actions);
-        if(JSON.stringify(v)!==form.initial||form.record!==this.assignmentRecord(this.policy,form))button(actions,tr('Сбросить поля','Reset fields'),()=>{this.forms.delete(formKey(this.view,selected.scope,selected.path,this.editingNames));this.renderInspector();this.renderSummary();});
+        }, 'mod-cta').disabled=Boolean(remote&&this.remoteNode(form)?.blocked); box.append(actions);
+        if(JSON.stringify(v)!==form.initial||form.record!==this.assignmentRecord(this.policy,form))button(actions,tr('Сбросить поля','Reset fields'),()=>{this.forms.delete(formIndex(form));this.renderInspector();this.renderSummary();});
         if (!remote) {
             if(selected.scope!=='file'&&selector(this.editingNames)!==selector(NEW_SELECTOR))button(box,tr('Добавить назначение','Add assignment'),()=>{this.editingNames=NEW_SELECTOR;this.renderInspector();});
             for (const assignment of this.policy.assignments?.filter(a => a.scope === selected.scope && a.path === selected.path) ?? []) {
@@ -419,12 +429,15 @@ export class SyncWorkspaceModal extends DraftModal {
         }
         if(focus)Array.from(box.querySelectorAll<HTMLElement>('[data-sync-field]')).find(control=>control.dataset.syncField===focus)?.focus();
     }
+    private remoteNode(form:AssignmentForm):RemoteBrowseNode|undefined{return this.inventories.state(form.view).browse?.nodes.find(node=>node.key===form.remoteKey);}
     private assignmentRecord(policy:SyncPolicy,form:AssignmentForm):string|undefined {
         const scope=form.scope==='vault'&&form.value.destination?'folder':form.scope;
         const assignment=policy.assignments?.find(a=>a.scope===scope&&a.path===form.value.destination&&selector(a.names)===selector(form.originalNames));
         return assignment?JSON.stringify([assignment.scope,assignment.path,selector(assignment.names),assignment.source,assignment.remotePath,assignment.profileId]):undefined;
     }
     private applyForm(policy: SyncPolicy, form: AssignmentForm, explicit=false): SyncPolicy {
+        const remoteNode=this.remoteNode(form);if(remoteNode?.blocked)throw Error(remoteNode.blocked);
+        if(form.remoteKey&&(!remoteNode||remoteNode.path!==form.path))throw Error(tr('Выбранный объект источника изменился. Откройте его заново.','Selected source object changed. Select it again.'));
         const v = form.value, destination = v.destination, scope = form.scope === 'vault' && destination ? 'folder' : form.scope;
         if (destination && !this.deps.pathPolicy.isPathSafe(destination)) throw Error(tr('Небезопасный путь vault', 'Unsafe vault path'));
         if(!explicit && form.record!==this.assignmentRecord(policy,form))throw Error(tr('Назначение изменилось в другой панели. Сбросьте поля или примените свой вариант явно.','Assignment changed in another panel. Reset these fields or explicitly apply your version.'));
@@ -475,10 +488,10 @@ export class SyncWorkspaceModal extends DraftModal {
             await this.deps.save(structuredClone(next), structuredClone(this.connections),structuredClone(this.profiles));
             this.policy = next; this.savedPolicy = structuredClone(next); this.savedConnections = structuredClone(this.connections);
             this.savedProfiles=structuredClone(this.profiles);
-            const active=this.forms.get(formKey(this.view,this.context.selected.scope,this.context.selected.path,this.editingNames));
+            const active=this.forms.get(formKey(this.view,this.context.selected.scope,this.view==='vault'?this.context.selected.path:this.context.selected.key??this.context.selected.path,this.editingNames));
             if(active)this.editingNames=namesOf(active.value.names).length?namesOf(active.value.names):undefined;
             const forms=[...this.forms.values()];this.forms.clear();
-            for(const form of forms){const oldNames=form.originalNames;form.originalNames=namesOf(form.value.names).length?namesOf(form.value.names):undefined;form.record=this.assignmentRecord(next,form);form.initial=JSON.stringify(form.value);this.forms.set(formKey(form.view,form.scope,form.path,form.originalNames),form);
+            for(const form of forms){const oldNames=form.originalNames;form.originalNames=namesOf(form.value.names).length?namesOf(form.value.names):undefined;form.record=this.assignmentRecord(next,form);form.initial=JSON.stringify(form.value);this.forms.set(formIndex(form),form);
                 const context=form.view===this.view?this.context:this.contexts.get(form.view);if(context?.selected.path===form.path&&context.selected.scope===form.scope&&selector(context.editingNames)===selector(oldNames))context.editingNames=form.originalNames;
             }
             this.initial = this.fingerprint(); this.render();

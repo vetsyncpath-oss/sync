@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { md5Hex } from '../src/core/md5';
 import { GoogleDriveClient, DRIVE_FOLDER } from '../src/sources/gdrive-client';
+import { GDriveOAuthSource } from '../src/sources/gdrive-oauth-source';
+import { validateBrowseSnapshot } from '../src/sources/remote-browse';
 import { authorizeGoogleDesktop } from '../src/adapters/google-desktop-oauth';
 import { NodeHttpTransport } from '../src/adapters/host-transport';
 import type { NetResponse, NetTransport } from '../src/sources/types';
@@ -14,7 +16,7 @@ test('Drive MD5 verification matches independent Node implementation including p
         assert.equal(md5Hex(data.buffer),createHash('md5').update(data).digest('hex'));
     }
 });
-test('inventory reads all pages and rejects incomplete or ambiguous trees',async()=>{
+test('raw inventory reads all pages; execution rejects ambiguous trees',async()=>{
     let pages=0;
     const transport:NetTransport={fetch:async(url)=>new URL(url).pathname.endsWith('/root-id')?
         response(200,{id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1'}):
@@ -23,8 +25,97 @@ test('inventory reads all pages and rejects incomplete or ambiguous trees',async
     assert.equal(result.items.length,2);assert.equal(pages,2);
     const duplicate:NetTransport={fetch:async(url)=>new URL(url).pathname.endsWith('/root-id')?
         response(200,{id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1'}):response(200,{files:[file('1','a.md'),file('2','A.md')]})};
-    await assert.rejects(()=>new GoogleDriveClient(duplicate).inventory('root-id',new AbortController().signal),/collision/);
+    const ambiguous=new GoogleDriveClient(duplicate),snapshot=await ambiguous.inventory('root-id',new AbortController().signal);
+    assert.equal(snapshot.items.length,2);assert.equal(snapshot.diagnostics[0].code,'target-alias');
+    await assert.rejects(()=>new GDriveOAuthSource(ambiguous,'root-id').getManifest(new AbortController().signal),/IDs 1, 2/);
     await assert.rejects(()=>new GoogleDriveClient({fetch:async()=>response(200,{incompleteSearch:true,files:[]})}).listChildren('root-id',new AbortController().signal),/incomplete/);
+});
+
+test('identical repeated IDs across pages are one object; differing versions remain unstable',async()=>{
+    for(const unstable of [false,true]){
+        let pages=0;const client=new GoogleDriveClient({fetch:async url=>new URL(url).pathname.endsWith('/root-id')?
+            response(200,{id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1'}):
+            response(200,{files:[{...file('only','a.md'),version:unstable&&pages?'2':'1'}],...(pages++===0?{nextPageToken:'next'}:{})})});
+        const source=new GDriveOAuthSource(client,'root-id'),snapshot=await source.getBrowseSnapshot(new AbortController().signal);
+        validateBrowseSnapshot(snapshot);assert.equal(snapshot.nodes.length,1);assert.equal(snapshot.completeness,unstable?'unstable':'complete');
+        assert.equal(snapshot.diagnostics[0].code,unstable?'inconsistent-object':'repeated-object');
+        if(unstable)await assert.rejects(()=>source.getManifest(new AbortController().signal),(e:any)=>e.code==='inventory-unstable');
+        else assert.equal((await source.getManifest(new AbortController().signal)).length,1);
+    }
+});
+
+test('duplicate folders retain different children and unsafe names remain browsable',async()=>{
+    const children:any={
+        'root-id':[{...file('one','Shared'),mimeType:DRIVE_FOLDER},{...file('two','Shared'),mimeType:DRIVE_FOLDER},file('unsafe','literal/slash.md')],
+        one:[{...file('a','a.md'),parents:['one']}],two:[{...file('b','b.md'),parents:['two']}],
+    };
+    const client=new GoogleDriveClient({fetch:async url=>{
+        const u=new URL(url);return u.pathname.endsWith('/root-id')?response(200,{id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1'}):
+            response(200,{files:children[u.searchParams.get('q')!.match(/'([^']+)' in parents/)![1]]});
+    }});
+    const source=new GDriveOAuthSource(client,'root-id'),snapshot=await source.getBrowseSnapshot(new AbortController().signal);
+    validateBrowseSnapshot(snapshot);assert.equal(snapshot.nodes.length,5);assert.notEqual(snapshot.nodes[0].key,snapshot.nodes[1].key);
+    assert(snapshot.nodes.find(n=>n.objectId==='unsafe')?.blocked);assert(snapshot.nodes.find(n=>n.objectId==='b')?.blocked);
+    assert.equal(snapshot.nodes.find(n=>n.objectId==='b')?.parentKey,snapshot.nodes.find(n=>n.objectId==='two')?.key);
+    await assert.rejects(()=>source.getManifest(new AbortController().signal),/IDs one, two/);
+});
+
+test('excluded Google-native duplicate does not collide with a supported execution file',async()=>{
+    const client=new GoogleDriveClient({fetch:async url=>new URL(url).pathname.endsWith('/root-id')?
+        response(200,{id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1'}):
+        response(200,{files:[file('binary','a.md'),{...file('doc','a.md'),mimeType:'application/vnd.google-apps.document'}]})});
+    const source=new GDriveOAuthSource(client,'root-id'),snapshot=await source.getBrowseSnapshot(new AbortController().signal);
+    assert.equal(snapshot.nodes.length,2);assert(snapshot.nodes.find(n=>n.objectId==='doc')?.unsupported);
+    assert.equal(snapshot.nodes.find(n=>n.objectId==='binary')?.blocked,undefined);
+    assert.equal((await source.getManifest(new AbortController().signal)).length,1);
+});
+
+test('a disposed Drive run cannot keep an indefinitely stale inventory',async()=>{
+    let version='1',lists=0;const client=new GoogleDriveClient({fetch:async url=>new URL(url).pathname.endsWith('/root-id')?
+        response(200,{id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1'}):
+        response(200,{files:[{...file('one','a.md'),version}],counter:++lists})});
+    const source=new GDriveOAuthSource(client,'root-id');await source.getManifest(new AbortController().signal);assert.equal(lists,1);
+    await source.dispose();version='2';await source.getManifest(new AbortController().signal);assert.equal(lists,2);assert.equal(source.inventorySnapshot!.items[0].file.version,'2');
+});
+
+test('Drive normalizes checksum case before exposing metadata',async()=>{
+    const hash='AB'.repeat(32),client=new GoogleDriveClient({fetch:async()=>response(200,{...file('id','a.md'),sha256Checksum:hash,md5Checksum:'CD'.repeat(16)})});
+    const metadata=await client.inspect('id',new AbortController().signal);assert.equal(metadata.sha256Checksum,hash.toLowerCase());assert.equal(metadata.md5Checksum,'cd'.repeat(16));
+});
+test('checksum normalization preserves legacy opaque MD5 pull tokens',async()=>{
+    const token='AB'.repeat(16),client=new GoogleDriveClient({fetch:async url=>new URL(url).pathname.endsWith('/root-id')?
+        response(200,{id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1'}):response(200,{files:[{...file('id','a.md'),md5Checksum:token}]})});
+    const source=new GDriveOAuthSource(client,'root-id'),entries=await source.getManifest(new AbortController().signal);
+    assert.equal(entries[0].hashAlg,'weak');assert.equal(entries[0].hash,'gdrive:'+token);
+    assert.equal(source.inventorySnapshot?.items[0].file.md5Checksum,token.toLowerCase());
+});
+
+test('literal separators remain browsable without becoming executable vault paths',async()=>{
+    const client=new GoogleDriveClient({fetch:async url=>new URL(url).pathname.endsWith('/root-id')?
+        response(200,{id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1'}):response(200,{files:[file('bad','literal/slash.md')]})});
+    const source=new GDriveOAuthSource(client,'root-id'),snapshot=await source.getBrowseSnapshot(new AbortController().signal);
+    validateBrowseSnapshot(snapshot);assert.equal(snapshot.nodes[0].name,'literal/slash.md');
+    await assert.rejects(()=>source.getManifest(new AbortController().signal),(e:any)=>e.code==='unsafe-name');
+});
+
+test('root cycles remain diagnostic browse data and block execution',async()=>{
+    const root={id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1',parents:[]};
+    const client=new GoogleDriveClient({fetch:async url=>response(200,new URL(url).pathname.endsWith('/root-id')?root:{files:[root]})});
+    const source=new GDriveOAuthSource(client,'root-id'),snapshot=await source.getBrowseSnapshot(new AbortController().signal);
+    validateBrowseSnapshot(snapshot);assert.equal(snapshot.nodes.length,0);assert.equal(snapshot.diagnostics[0].code,'cycle');
+    await assert.rejects(()=>source.getManifest(new AbortController().signal),(e:any)=>e.code==='inventory-unstable');
+});
+test('few distinct IDs cannot hide an excessive repeated-observation tree',async()=>{
+    const root={id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1'},one={...file('folder','Folder'),mimeType:DRIVE_FOLDER};
+    const client=new GoogleDriveClient({fetch:async url=>{const u=new URL(url);return response(200,u.pathname.endsWith('/root-id')?root:
+        {files:u.searchParams.get('q')!.includes("'root-id'")?[one]:Array.from({length:4},()=>({...file('same','a.md'),parents:['folder']}))});}},64*1024*1024,4);
+    await assert.rejects(()=>client.inventory('root-id',new AbortController().signal),(e:any)=>e.code==='inventory-incomplete'&&/observation/.test(e.message));
+});
+test('metadata reads and writes reject a different returned ID; My Drive alias resolves normally',async()=>{
+    const client=new GoogleDriveClient({fetch:async()=>response(200,file('different','a.md'))}),signal=new AbortController().signal;
+    for(const request of [()=>client.inspect('expected',signal),()=>client.metadata('expected',{trashed:true},signal),()=>client.mkdir('expected','Folder','parent',signal)])
+        await assert.rejects(request,(e:any)=>e.code==='response-format');
+    assert.equal((await client.inspect('root',signal)).id,'different');
 });
 test('resumable transfer follows a partial acknowledgement, not bytes sent',async()=>{
     const size=8*1024*1024+1,bytes=new ArrayBuffer(size),ranges:string[]=[],states:number[]=[];

@@ -2,6 +2,8 @@
 
 Нормативная часть [Overhaul vNext](README.md). Здесь перечислены необходимые будущие проверки; они **не заявляются пройденными** текущим пилотом. На базе пакета проходят 390 текущих тестов, typecheck и build по последней проверке `aa1a561`; это не доказательство готовности новых contracts.
 
+Обновление S0a: текущий subset и 415-test verification отмечены в [implementation status](implementation-status.md); полный список A01–A87 остаётся target acceptance, а не автоматически completed checklist.
+
 ## 1. Вертикальные этапы
 
 | Этап | Результат / зависимости | Exit gate |

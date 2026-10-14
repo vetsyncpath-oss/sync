@@ -15,7 +15,7 @@ async function host(){
     const f=fixture(),compiled=compileProfiles(policy,profiles),plugin=Object.create(Plugin.prototype) as any;
     const file={id:'remote',name:'a.md',mimeType:'text/plain',parents:['root'],version:'1',size:String(ab('REMOTE').byteLength),sha256Checksum:entry('a.md').hash};
     const root={id:'root',name:'root',mimeType:DRIVE_FOLDER,parents:[],version:'1'};let driveDownloads=0;
-    const client={maxFileBytes:1024*1024,inventory:async()=>({root,items:[{path:'a.md',file}],excluded:0}),inspect:async(id:string)=>id==='root'?root:file,
+    const client={maxFileBytes:1024*1024,inventory:async()=>({root,items:[{path:'a.md',file,parentId:'root'}],excluded:0,diagnostics:[],completeness:'complete' as const}),inspect:async(id:string)=>id==='root'?root:file,
         download:async()=>{driveDownloads++;return ab('REMOTE');}} as unknown as GoogleDriveClient;
     const drive=new GDriveOAuthSource(client,'root'),git={...f.source,getManifest:async()=>[entry('Git/b.md')]};
     const routed=new RoutedSource([{id:'drive',name:'Drive',source:drive},{id:'git',name:'Git',source:git}],compiled.fileRules!,p=>p,'drive');

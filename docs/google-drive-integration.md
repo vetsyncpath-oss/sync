@@ -1,10 +1,10 @@
 # Google Drive: пилотная интеграция
 
-Состояние на 2026-10-14, сборка `drive-oauth-wait-fix-2026-10-14`. База ветки — `overhaul/2b1-recovered`, commit `d74128619b151af58f4ebdc22e8a61b270e81c8d`.
+Состояние на 2026-10-14, сборка `overhaul-s0-id-browse-2026-10-14`. База ветки — `overhaul/2b1-recovered`, commit `d74128619b151af58f4ebdc22e8a61b270e81c8d`.
 
 Это проверяемая реализация первого этапа, предназначенная для испытаний на отдельном vault и отдельной папке Drive. OAuth, executor и интерфейс ещё не проверены в настоящем Obsidian с настоящим Google-аккаунтом. Установочного manifest в репозитории нет; этот checkout не является готовым релизом.
 
-Дополнительная критическая [сверка Drive-аудита и Per-Source Jobs](audits/drive-jobs-cross-review.md) выявила проблемы, не закрытые текущими regression tests. Созданная конфликтная копия находится в Drive и на создавшем её устройстве, но **другой vault не скачивает её автоматически** из-за общего `.conflict-*` фильтра. 404/review пока не имеют полного интерфейса закрытия. Drive no-op сохраняет полный checkpoint для каждого файла. Эти пункты включены в приоритеты [следующего этапа](per-source-jobs-plan.md).
+Критическая [сверка Drive-аудита и Per-Source Jobs](audits/drive-jobs-cross-review.md) остаётся исходным baseline аудита. Теперь реализован [S0a](overhaul-vnext/implementation-status.md): ID-aware browse, repeated-ID диагностика, own-key metadata, zero warm baseline writes и fresh conflict consent. Созданная копия пока **не скачивается другим vault автоматически** из-за `.conflict-*` фильтра; полного unknown/review inbox и per-job execution ещё нет. Текущие и исторические probes сохранены отдельно.
 
 ## Что реализовано
 
@@ -102,7 +102,7 @@ Grant разрешает доступ ко всему Drive, но executor ог�
 
 До исправления ожидания OAuth: **382/382 теста**, TypeScript и production build прошли. Дополнительные проверки исправления покрывают отсутствие callback, отмену с повторным входом, зависшее чтение ответа, timeout обновления токена и позднюю ротацию credentials. Это локальные/fake-API проверки, без live Google/Obsidian; доступность регионального Google-домена ими не подтверждается.
 
-Прогон исправления ожидания: **390/390 тестов**, TypeScript, стили и production build прошли; `git diff --check` без ошибок. Тег bundle — `drive-oauth-wait-fix-2026-10-14`.
+Текущий S0a: **415/415 тестов**, TypeScript, styles и production build прошли; `git diff --check` без ошибок. Тег bundle — `overhaul-s0-id-browse-2026-10-14`; [статус реализации и сравнение probes](overhaul-vnext/implementation-status.md). Предыдущая проверка OAuth wait fix проходила 390/390.
 
 - Возвращённые и выброшенные 401, конкурентный refresh, потерянный/отозванный grant, отменённый callback и поздний refresh без восстановления credentials.
 - Полная пагинация, `incompleteSearch`, alias/case/NFC collisions, корень вне доступа, одинаковый размер с разными байтами, проверка checksum и version.
