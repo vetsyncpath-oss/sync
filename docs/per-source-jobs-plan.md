@@ -1,5 +1,7 @@
 # Per-source jobs: исправленный план интеграции в overhaul
 
+Полная следующая спецификация: [Overhaul vNext](overhaul-vnext/README.md), включая runtime/provider contracts, ownership, tree/UI, миграцию и 87 приёмочных сценариев. Этот документ сохраняется как high-level rationale; новые нормативные решения находятся в пакете vNext.
+
 Дата: 2026-10-14, Europe/Moscow. Основание — критическая [сверка Drive-аудита и V6](audits/drive-jobs-cross-review.md), текущий runtime `028215b`, ранее принятые [profile streamline](profile-streamline-integration.md) и [Drive target](google-drive-bidirectional-spec.md). Это план следующей реализации, а не описание уже включённого JobManager.
 
 ## 1. Принятые решения
