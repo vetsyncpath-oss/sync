@@ -56,7 +56,7 @@ async function peer(remote:Remote,policy=fullPolicy()){
     const state=async()=>{const name=[...f.memory.files.keys()].filter(n=>/^drive-state-.*-\d{16}\.json$/.test(n)).sort().at(-1)!;
         const payload=JSON.parse(JSON.parse(f.memory.files.get(name)!).payload),store=new DriveStateStore(f.memory.fs,name.slice('drive-state-'.length,-'-0000000000000001.json'.length));
         await store.load();return {payload,store};};
-    return {f,plugin,drive,state,run:(paths?:string[],mode='auto')=>plugin.executeSync(mode,paths)};
+    return {f,plugin,drive,state,run:(paths?:string[],mode='auto',control?:any)=>plugin.executeSync(mode,paths,false,control)};
 }
 test('actual host dispatch delivers a proposal to another vault through an exact-name mount without changing the canonical ID',async()=>{
     const remote=new Remote();remote.folder('library','Library','root');remote.add('origin','a.md','base','library');remote.add('excluded','b.md','excluded','library');
@@ -98,7 +98,7 @@ test('artifact copy-before-trash reaches a second vault after the tracked origin
     const b=await peer(remote),received=await b.run();assert.equal(received.failed,0);const copy=[...b.f.files.keys()].find(p=>p.includes('.conflict-'))!;
     assert(copy);assert.equal(str(b.f.files.get(copy)!),'survivor');assert(!b.f.files.has('a.md'));assert.equal(remote.files.get('origin')!.file.trashed,true);
     a.f.files.set('a.md',ab('recreated'));const before=remote.uploads,recreated=await a.run();
-    assert.equal(remote.uploads,before);assert.equal(remote.files.get('origin')!.file.trashed,true);assert(recreated.results.some((r:any)=>r.reason==='tracked-lineage-without-baseline'));
+    assert.equal(remote.uploads,before);assert.equal(remote.files.get('origin')!.file.trashed,true);assert(recreated.results.some((r:any)=>r.reason==='drive-deleted-review'));
 });
 test('an artifact transfer error leaves independent canonical files working and retries through its origin named rule',async()=>{
     const remote=new Remote();remote.folder('library','Library','root');remote.add('origin','a.md','base','library');const copy=remote.artifact('origin','Library/a.md');remote.downloadErrorId='artifact';
@@ -169,7 +169,7 @@ test('unsafe ancestor names cannot impersonate the same joined path after a remo
     const b=await peer(remote);b.f.files.set('a/b/file.md',ab('edit'));
     const inventory=remote.client.inventory;remote.client.inventory=async(root,signal)=>{const snapshot=await inventory.call(remote.client,root,signal);
         remote.files.get('b')!.file.name='a/b';remote.files.get('b')!.file.parents=['root'];return snapshot;};
-    const result=await b.run();assert.equal(result.problems?.[0].code,'root-boundary');assert.equal(remote.uploads,0);
+    const result=await b.run();assert.equal(result.results.find((row:any)=>row.path==='a/b/file.md')?.reason,'drive-relocated');assert.equal((await b.state()).store.inbox('a/b/file.md')?.reason,'drive-relocated');assert.equal(remote.uploads,0);
     assert.equal(str(b.f.files.get('a/b/file.md')!),'edit');assert.equal(str(b.f.files.get('other.md')!),'ready');
 });
 
@@ -188,4 +188,21 @@ test('a surviving unsaved editor blocks remote trash of a missing local file wit
     a.f.vault.assertWritable=path=>a.plugin.assertEditorSaved(path);const result=await a.run();
     assert.equal(result.problems[0].code,'unsaved-editor');assert.equal(result.problems[0].scope,'file');assert(!remote.files.get('origin')!.file.trashed);
     assert.equal(str(a.f.files.get('other.md')!),'ready');assert.equal((await a.state()).store.pending('a.md')?.kind,'trash-remote');
+});
+
+test('actual host read-only probe skips pull files, peer artifact receipt and canonical download while preserving unknown identity',async()=>{
+    const remote=new Remote();remote.add('origin','a.md','base');const a=await peer(remote);a.f.files.set('a.md',ab('base'));await a.run();remote.files.delete('origin');await a.run();
+    remote.add('other','other.md','ready');const {store}=await a.state(),entry=store.inbox('a.md')!;assert(entry);
+    const result=await a.run(['a.md'],'retry',{namespace:store.namespace});assert.equal(result.failed,0);assert(!a.f.files.has('other.md'));assert.equal(str(a.f.files.get('a.md')!),'base');assert.equal((await a.state()).store.inbox('a.md')!.id,entry.id);
+});
+test('actual host action refuses inactive namespaces before transfer and restores only the approved known object',async()=>{
+    const remote=new Remote();remote.add('origin','a.md','base');const a=await peer(remote);a.f.files.set('a.md',ab('base'));a.plugin.effectiveProfilePolicy=()=>compileProfiles({...fullPolicy(),mirrorFolders:{'':{state:'on',level:'light'}}},structuredClone([...STANDARD_PROFILES]));await a.run();a.f.files.delete('a.md');await a.run();
+    const {store}=await a.state();remote.add('other','other.md','ready');await assert.rejects(()=>a.run(['a.md'],'retry',{namespace:'inactive'}),/inactive account/);assert(!a.f.files.has('other.md'));assert(remote.files.get('origin')!.file.trashed);
+    await a.run(['a.md'],'retry',{namespace:store.namespace});const entry=(await a.state()).store.inbox('a.md')!,result=await a.run(['a.md'],'retry',{namespace:store.namespace,resolution:{namespace:store.namespace,entry,action:'restore-known'}});
+    assert.equal(result.failed,0);assert.equal(str(a.f.files.get('a.md')!),'base');assert(!a.f.files.has('other.md'));assert.equal(remote.uploads,0);assert.equal(remote.files.get('origin')!.file.trashed,false);
+});
+test('actual restore action does not fetch peer artifacts or independent canonical files',async()=>{
+    const remote=new Remote();remote.add('origin','a.md','base');const a=await peer(remote);a.f.files.set('a.md',ab('base'));a.plugin.effectiveProfilePolicy=()=>compileProfiles({...fullPolicy(),mirrorFolders:{'':{state:'on',level:'light'}}},structuredClone([...STANDARD_PROFILES]));await a.run();a.f.files.delete('a.md');await a.run();
+    remote.add('other','other.md','ready');const copy=remote.artifact('origin','a.md'),{store}=await a.state();await a.run(['a.md'],'retry',{namespace:store.namespace});const entry=(await a.state()).store.inbox('a.md')!;
+    const result=await a.run(['a.md'],'retry',{namespace:store.namespace,resolution:{namespace:store.namespace,entry,action:'restore-known'}});assert.equal(result.failed,0);assert.equal(str(a.f.files.get('a.md')!),'base');assert(!a.f.files.has(copy));assert(!a.f.files.has('other.md'));assert.equal((await a.state()).store.artifacts().length,0);
 });

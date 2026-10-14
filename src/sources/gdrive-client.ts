@@ -11,7 +11,7 @@ import type { RemoteBrowseDiagnostic } from './remote-browse';
 export const DRIVE_FOLDER = 'application/vnd.google-apps.folder';
 const API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
-const FIELDS = 'id,name,mimeType,parents,size,modifiedTime,version,headRevisionId,sha256Checksum,md5Checksum,trashed,driveId,properties,capabilities(canEdit,canDownload,canTrash,canAddChildren)';
+const FIELDS = 'id,name,mimeType,parents,size,modifiedTime,version,headRevisionId,sha256Checksum,md5Checksum,trashed,driveId,properties,capabilities(canEdit,canDownload,canTrash,canUntrash,canAddChildren)';
 export interface DriveFile {
     id: string; name: string; mimeType: string; parents: string[]; size?: string; version: string;
     modifiedTime?: string; headRevisionId?: string; sha256Checksum?: string; md5Checksum?: string;
@@ -20,7 +20,7 @@ export interface DriveFile {
     trashed?: boolean; driveId?: string;
     /** Public custom properties: readable by peer vaults using another OAuth client. Untrusted input. */
     properties?:Record<string,string>;
-    capabilities?: { canEdit?: boolean; canDownload?: boolean; canTrash?: boolean; canAddChildren?: boolean };
+    capabilities?: { canEdit?: boolean; canDownload?: boolean; canTrash?: boolean; canUntrash?:boolean; canAddChildren?: boolean };
 }
 export interface DriveItem { path: string; file: DriveFile; parentId?: string }
 export interface DriveInventory { root: DriveFile; items: DriveItem[]; excluded: number; diagnostics: RemoteBrowseDiagnostic[]; completeness: 'complete' | 'unstable' }
@@ -42,13 +42,16 @@ function parseFile(value: any): DriveFile {
     if(value.properties!==undefined&&(!value.properties||typeof value.properties!=='object'||Array.isArray(value.properties)
         ||Object.keys(value.properties).length>100||Object.entries(value.properties).some(([k,v])=>typeof v!=='string'||new TextEncoder().encode(k+v).length>124)))
         throw new SyncFault('response-format','Invalid Drive custom properties','source');
+    if(value.capabilities!==undefined&&(!value.capabilities||typeof value.capabilities!=='object'||Array.isArray(value.capabilities)
+        ||['canEdit','canDownload','canTrash','canUntrash','canAddChildren'].some(key=>value.capabilities[key]!==undefined&&typeof value.capabilities[key]!=='boolean')))
+        throw new SyncFault('response-format','Invalid Drive capabilities','source');
     return { ...value, ...(value.sha256Checksum ? { sha256Checksum: value.sha256Checksum.toLowerCase() } : {}),
         ...(value.md5Checksum ? { md5Checksum: value.md5Checksum.toLowerCase(), md5ChecksumToken: value.md5Checksum } : {}),
         ...(value.properties?{properties:Object.assign(Object.create(null),value.properties)}:{}) };
 }
 const fingerprint=(file:DriveFile)=>JSON.stringify([file.id,file.name,file.mimeType,file.parents,file.size,file.version,file.modifiedTime,
     file.headRevisionId,file.sha256Checksum,file.md5Checksum,file.trashed,file.driveId,file.capabilities?.canEdit,file.capabilities?.canDownload,
-    file.capabilities?.canTrash,file.capabilities?.canAddChildren,Object.entries(file.properties??{}).sort(([a],[b])=>a.localeCompare(b))]);
+    file.capabilities?.canTrash,file.capabilities?.canUntrash,file.capabilities?.canAddChildren,Object.entries(file.properties??{}).sort(([a],[b])=>a.localeCompare(b))]);
 export class GoogleDriveClient {
     constructor(private readonly transport: NetTransport, readonly maxFileBytes = 64 * 1024 * 1024,
         readonly maxInventoryObservations = 200_000) {

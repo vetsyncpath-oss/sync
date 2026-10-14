@@ -6,6 +6,7 @@ import { trackModal } from './modal-registry';
 import { button, element, textInput, tr } from './dom';
 
 export interface RecoveryDeps {
+    driveInbox?():void;
     retention?():Promise<{before:number;ids:string[];objects?:{count:number;bytes:number}}>;
     prune?(preview:{before:number;ids:string[];objects?:{count:number;bytes:number}}):Promise<void>;
     load():Promise<{records:OperationRecord[];used:number;limit:number}>;
@@ -25,6 +26,7 @@ export class RecoveryModal extends Modal {
     onOpen():void {
         const box=this.contentEl;box.replaceChildren();box.append(element('h2',tr('Восстановление и незавершённые операции','Recovery and unfinished operations')));
         box.append(element('p',tr('Восстановление создаёт отдельную копию рядом с файлом. Текущие файлы и история сохраняются.','Restoring creates a separate copy beside the file. Current files and history are retained.')));
+        if(this.deps.driveInbox)button(box,tr('Drive: неизвестные состояния и удаления','Drive: unknown states and deletions'),()=>this.deps.driveInbox!());
         const search=textInput('',value=>{this.query=value;this.page=0;this.render();});search.type='search';search.placeholder=tr('Найти путь','Find path');search.setAttribute('aria-label',search.placeholder);box.append(search);
         this.list=element('div');box.append(this.list);button(box,tr('Обновить','Refresh'),()=>void this.load());if(this.deps.retention&&this.deps.prune)button(box,tr('Управление старой историей','Manage old history'),()=>void this.retention());button(box,tr('Закрыть','Close'),()=>this.close());void this.load();
     }

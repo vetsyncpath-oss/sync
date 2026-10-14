@@ -2,7 +2,7 @@ import { NodeHttpTransport, BufferedHostTransport } from './src/adapters/host-tr
 import { GoogleConnections } from './src/adapters/google-connections';
 import { pickGoogleFolder } from './src/ui/gdrive-folder-picker';
 import { DriveCoordinator } from './src/core/drive-coordinator';
-import { DriveStateStore, driveRecoveryReferences, driveNamespace } from './src/core/drive-state';
+import { DriveStateStore, driveRecoveryReferences, driveNamespace, driveLifecycleHistory, type DriveResolution } from './src/core/drive-state';
 import { GoogleDriveRoot } from './src/sources/gdrive-root';
 import { GDriveOAuthSource } from './src/sources/gdrive-oauth-source';
 import { effectiveBehavior } from './src/core/profile-policy';
@@ -14,6 +14,7 @@ import { SyncFault, diagnosticText, syncIssue } from './src/core/sync-issue';
 import type { SyncProgress } from './src/sources/types';
 import { sessionLabel } from './src/ui/session-label';
 import { connectionIssues, connectionValues } from './src/engines/connection-validation';
+import { DriveLifecycleModal } from './src/ui/drive-lifecycle-modal';
 import { RecoveryModal } from './src/ui/recovery-modal';
 import { observeLocal } from './src/core/local-version';
 import { ConflictAskModal } from './src/ui/conflict-modal';
@@ -821,6 +822,7 @@ export default class GitSyncPlugin extends Plugin {
                 // слетают один раз — сознательное решение пользователя
                 this.addCommand({ id: 'cloud-sync-now', name: i18n.t.cmdSyncFromGit, callback: () => this.syncNow() });
                 this.addCommand({id:'cloud-sync-workspace',name:i18n.getLocale()==='ru'?'Открыть рабочее окно синхронизации':'Open sync workspace',callback:()=>this.openVaultTreeModal()});
+                this.addCommand({id:'cloud-sync-drive-inbox',name:i18n.getLocale()==='ru'?'Drive: неизвестные состояния и удаления':'Drive: unknown states and deletions',callback:()=>this.openDriveInboxModal()});
                 this.addCommand({id:'cloud-sync-recovery',name:i18n.getLocale()==='ru'?'Восстановительные копии':'Recovery copies',callback:()=>this.openRecoveryModal()});
                 this.addCommand({ id: 'cloud-sync-retry-failed', name: i18n.t.cmdRetryFailed, callback: () => this.retryFailedFiles() });
                 this.addCommand({ id: 'cloud-sync-force-reset', name: i18n.t.cmdForceReset, callback: () => this.forceResync() });
@@ -1851,9 +1853,10 @@ export default class GitSyncPlugin extends Plugin {
                 });trackModal(modal);modal.open();
         }
 
-        private async executeSync(mode:'manual'|'auto'|'retry'|'force'|'scan'='manual',paths?:readonly string[],autoRetry=false):Promise<import('./src/sources/types').SyncStats|null> {
+        private async executeSync(mode:'manual'|'auto'|'retry'|'force'|'scan'='manual',paths?:readonly string[],autoRetry=false,driveControl?:{namespace:string;resolution?:DriveResolution}):Promise<import('./src/sources/types').SyncStats|null> {
                 const source=this.coordinator.getCurrentSource(),compiled=this.effectiveProfilePolicy(this.builtSourceId);
                 const rules=compiled.fileRules??[],hasDrive=rules.some(r=>r.direction==='bidirectional');this.combinedSession=hasDrive;
+                if(!hasDrive&&driveControl)throw new SyncFault('configuration-changed','This Drive binding is no longer active');
                 if(!hasDrive)return mode==='retry'?this.coordinator.retryFailed(autoRetry?'auto':'manual',paths):mode==='force'?this.coordinator.forceResync():this.coordinator.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan'});
                 validateProfileConnections(this.settings.vaultPolicy!,this.settings.profiles??[],this.settings.connections??[]);
                 if(!(source instanceof RoutedSource))throw new SyncFault('routing','Drive requires a routed source','session');
@@ -1865,20 +1868,22 @@ export default class GitSyncPlugin extends Plugin {
                         .map(member=>({...member,source:member.source as GDriveOAuthSource,inventory:(member.source as GDriveOAuthSource).inventorySnapshot!}));
                 const states=new Map<string,DriveStateStore>();
                 for(const member of members){const connection=this.settings.connections?.find(c=>c.id===member.id);const namespace=await driveNamespace(String(connection?.values.accountSub??''),member.inventory.root.id,member.id,compiled);
-                        const state=new DriveStateStore(this.fsAdapter,namespace);await state.load();await state.ensureWriterVersion();await this.mutations.recover(namespace,signal);states.set(member.id,state);}
-                const stats=mode==='retry'?await this.coordinator.retryFailed(autoRetry?'auto':'manual',paths,true):mode==='force'?await this.coordinator.forceResync(true):await this.coordinator.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan',deferQuestions:true});
+                        const state=new DriveStateStore(this.fsAdapter,namespace);await state.load();await state.ensureWriterVersion();if(!driveControl)await this.mutations.recover(namespace,signal);states.set(member.id,state);}
+                if(driveControl&&![...states.values()].some(state=>state.namespace===driveControl.namespace))throw new SyncFault('configuration-changed','This Drive history belongs to an inactive account, root or mapping; effects are blocked');
+                const stats=driveControl?null:mode==='retry'?await this.coordinator.retryFailed(autoRetry?'auto':'manual',paths,true):mode==='force'?await this.coordinator.forceResync(true):await this.coordinator.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan',deferQuestions:true});
                 if(signal.aborted||stats?.outcome==='cancelled'||stats?.problems?.some(issue=>issue.scope==='session'))return stats;
                 const aggregate:import('./src/sources/types').SyncStats=stats?structuredClone(stats):{totalFiles:0,downloaded:0,deleted:0,skipped:0,failed:0,bytesTransferred:0,duration:0,conflicts:0,outcome:'ok'};
                 const started=Date.now(),vault=this.makeVaultAdapter(),basePolicy=this.makePolicy(),defaultSource=compiled.defaultSource??'primary';
                 const questions:{driver:DriveCoordinator;paths:string[]}[]=[];
                 const map=(path:string)=>{const f=compiled.folders.filter(f=>f.target&&(!f.path||path===f.path||path.startsWith(f.path+'/'))).sort((a,b)=>b.path.length-a.path.length)[0];return f?computeLocalPath(path,f.path,f):path;};
                 for(const member of members){
+                        if(driveControl&&states.get(member.id)!.namespace!==driveControl.namespace)continue;
                         signal.throwIfAborted();const pathPolicy=basePolicy.forSources([member.id],compiled.defaultSource,rules,compiled.folders,['bidirectional']);
                         const localForRemote=(path:string)=>sourceCandidates(path,member.id,rules,defaultSource,map).flatMap(candidate=>applyPolicy([{path:candidate,hash:'route',hashAlg:'weak',size:0,resolvedDestination:resolveFileRule(candidate,rules).remotePath!==undefined}],compiled,pathPolicy,[]).transformedManifest.map(entry=>entry.path)).filter(local=>isPolicyPathIncluded(path,local,compiled));
                         const remoteForLocal=(path:string)=>{if(paths&&!paths.includes(path))return undefined;
                                 const remote=sourcePathForDestination(path,member.id,rules,defaultSource,compiled.folders);return remote&&localForRemote(remote).includes(path)?remote:undefined;};
                         const driver=new DriveCoordinator({vault,mutations:this.mutations,state:states.get(member.id)!,root:new GoogleDriveRoot(member.source.client,member.inventory.root.id,()=>{signal.throwIfAborted();if(this.preparedConfigRevision!==this.getConfigurationRevision())throw new SyncFault('configuration-changed','Settings changed during Drive synchronization','session');}),queue:this.queue,
-                                signal,auto:mode==='auto'||autoRetry,restoreOnly:mode==='scan',allowQuestions:false,
+                                signal,auto:mode==='auto'||autoRetry,restoreOnly:mode==='scan',allowQuestions:false,probeOnly:!!driveControl&&!driveControl.resolution,resolution:driveControl?.resolution,
                                 guard:()=>{signal.throwIfAborted();if(this.preparedConfigRevision!==this.getConfigurationRevision())throw new SyncFault('configuration-changed','Settings changed during Drive synchronization','session');},
                                 localPaths:async()=>{const scan=await scanVaultTree(vault,{signal,pruneFolder:p=>p==='.git'||p==='.trash'||basePolicy.isProtectedPath(p)});return scan.files.filter(p=>remoteForLocal(p)!==undefined);},
                                 localForRemote,remoteForLocal,behavior:path=>{const behavior=effectiveBehavior(resolveFileRule(path,rules));
@@ -2299,6 +2304,17 @@ export default class GitSyncPlugin extends Plugin {
                 }finally{await source.dispose?.();}
         }
 
+        openDriveInboxModal():void {
+                const control=async(namespace:string,path:string,resolution?:DriveResolution)=>{
+                        const stats=await this.runSession('retry',async()=>{await this.prepareSession();return this.executeSync('retry',[path],false,{namespace,resolution});});
+                        if(!stats||stats.failed||stats.outcome==='cancelled'||!stats.results?.some(row=>row.path===path&&(!resolution||row.reason==='drive-restored-known')))
+                                throw Error(stats?.problem??'Drive state changed or the binding is unavailable; refresh before continuing');
+                };
+                const modal=new DriveLifecycleModal(this.app,{load:()=>driveLifecycleHistory(this.fsAdapter),
+                        probe:(namespace,path)=>control(namespace,path),restore:resolution=>control(resolution.namespace,resolution.entry.path,resolution),
+                        isRunning:()=>this.sessionOwned||this.coordinator.isRunning()});trackModal(modal);modal.open();
+        }
+
         openRecoveryModal():void {
                 const vault=this.makeVaultAdapter();
                 const withOwnership=async<T>(fn:(guard:()=>void)=>Promise<T>):Promise<T>=>{
@@ -2308,6 +2324,7 @@ export default class GitSyncPlugin extends Plugin {
                         finally{this.sessionOwned=false;this.wakeAutoSync();}
                 };
                 const modal=new RecoveryModal(this.app,{
+                        driveInbox:()=>this.openDriveInboxModal(),
                         load:async()=>{await this.mutations.store.load();const usage=await this.mutations.recovery.usage();return {records:this.mutations.store.records(),used:usage.used,limit:usage.limit};},
                         retention:async()=>{await this.mutations.store.load();const before=Date.now()-30*24*60*60*1000,ids=this.mutations.store.prunable(before).map(record=>record.id),refs=[...this.mutations.store.records().filter(record=>!ids.includes(record.id)).flatMap(record=>record.recovery?[record.recovery]:[]),...await driveRecoveryReferences(this.fsAdapter,this.mutations.recovery)];return {before,ids,objects:await this.mutations.recovery.unreferencedUsage(refs,before)};},
                         prune:preview=>withOwnership(async guard=>{guard();await this.mutations.store.prune(preview.before,preview.ids);guard();const refs=[...this.mutations.store.records().flatMap(record=>record.recovery?[record.recovery]:[]),...await driveRecoveryReferences(this.fsAdapter,this.mutations.recovery)];await this.mutations.recovery.collectUnreferenced(refs,preview.before);}),

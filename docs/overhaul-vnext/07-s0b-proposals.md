@@ -2,6 +2,8 @@
 
 Дата: 2026-10-14, Europe/Moscow. Сборка: `overhaul-s0-proposals-2026-10-14`. Документ описывает runtime этого участка, а не полную готовность [target contracts](README.md).
 
+> Исторический контракт S0b (checkpoint 2). Текущий store/fence расширен [S0c amendment](08-s0c-lifecycle.md) до schema 3; остальной proposal/artifact protocol сохраняется.
+
 ## Состояние и upgrade
 
 Drive namespace и имя `drive-state-<namespace>-<sequence>.json` сохраняются. Envelope имеет SHA-256 verified payload; payload schema — **2**. Поля baseline/pending/reviews сохранены, добавлены proposals и artifacts. `reviews[path]` — совместимая последняя pointer, не источник истины для полной истории.
@@ -59,7 +61,7 @@ Create проходит через общий DurableMutations/host guard. Ес�
 
 Received artifact receipt хранит file ID, proposal/origin IDs, local/remote path, immutable hash и observed remote version. Local edit/missing, remote edit/trash/404, marker/lineage change сохраняют issue и не приводят к upload, replacement или trash. Explicit scan может восстановить missing artifact после тех же guards. Artifact не становится primary и не порождает recursive conflict copies.
 
-Unverified новый claim с недоступным/out-of-root origin показывается pending в run results/raw tree; его нельзя привязать к guessed local path. Полный durable unknown inbox с resolution actions — S0c. Transfer errors используют bounded retry queue с origin routing hint; hint сам не authorizes effect. Manual targeted retry повторно проверяет lineage. Файловая ошибка не останавливает независимый canonical download; fatal checkpoint/shared store/auth/root failure останавливает зависимые effects.
+Unverified новый claim с недоступным/out-of-root origin показывается pending в run results/raw tree; его нельзя привязать к guessed local path. Canonical unknown inbox реализован в S0c; unverified artifact claim inbox и полный набор resolution actions остаются последующим участком. Transfer errors используют bounded retry queue с origin routing hint; hint сам не authorizes effect. Manual targeted retry повторно проверяет lineage. Файловая ошибка не останавливает независимый canonical download; fatal checkpoint/shared store/auth/root failure останавливает зависимые effects.
 
 Prepared trash дополнительно проверяет текущую deletion policy: переход на `keep` блокирует replay без стирания pending/copies. Outgoing copy также проверяет current scope/exclusions; если обязательная копия исключена, primary не откатывается и publication blocked. Remote trash проверяет local editor guard и missing evidence ещё раз: surviving unsaved editor не является доказанным local deletion. Ошибка чтения saved editor state — typed file issue. Это не полный immutable operation-graph policy compiler S1/S3.
 

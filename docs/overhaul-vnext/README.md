@@ -1,6 +1,6 @@
 # Overhaul vNext: полная спецификация per-job синхронизации
 
-Дата: 2026-10-14, Europe/Moscow. Статус: target specification с частичной реализацией S0a/S0b; точный прогресс и остающиеся gates указаны в [implementation status](implementation-status.md). База анализа — `integration/google-drive-bidirectional`, commit `aa1a561b197e8ce8e39599afeb6ea2493283ca51`, поверх `overhaul/2b1-recovered` (`d74128619b151af58f4ebdc22e8a61b270e81c8d`). Этот пакет заменяет [per-source jobs plan](../per-source-jobs-plan.md) как спецификацию следующей переработки. Пилот описан в [руководстве интеграции](../google-drive-integration.md).
+Дата: 2026-10-14, Europe/Moscow. Статус: target specification с частичной реализацией S0a/S0b/S0c; точный прогресс и остающиеся gates указаны в [implementation status](implementation-status.md). База анализа — `integration/google-drive-bidirectional`, commit `aa1a561b197e8ce8e39599afeb6ea2493283ca51`, поверх `overhaul/2b1-recovered` (`d74128619b151af58f4ebdc22e8a61b270e81c8d`). Этот пакет заменяет [per-source jobs plan](../per-source-jobs-plan.md) как спецификацию следующей переработки. Пилот описан в [руководстве интеграции](../google-drive-integration.md).
 
 ## 1. Назначение и границы
 
@@ -35,6 +35,8 @@ flowchart TD
 | [04-storage-migration.md](04-storage-migration.md) | Durable effects, baseline, inbox, GC, journal, миграция и rollback |
 | [05-ui.md](05-ui.md) | Все UI поверхности, выбор узлов по ID, preview, inbox и действия пользователя |
 | [06-delivery-acceptance.md](06-delivery-acceptance.md) | Этапы, module mapping, воспроизведения, gates и критерии готовности |
+
+Implemented amendments: [S0b proposals](07-s0b-proposals.md), [S0c lifecycle / checkpoint 3](08-s0c-lifecycle.md). Они задают текущий runtime, а не включают остальные target contracts.
 
 «Обязан», «запрещено» и «только» задают обязательный контракт. «Рекомендуется» допускает эквивалентное решение с проверяемым обоснованием. TypeScript в документах — проект DTO/портов, не готовый код для копирования. Числовые лимиты, впервые заданные здесь, — предлагаемые defaults, а не подтверждённые возможности API или замеры скорости.
 

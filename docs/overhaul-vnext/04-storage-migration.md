@@ -28,7 +28,7 @@ LogicalFileId для Drive базируется на tracked ID и binding linea
 
 ### Целевой backend layout
 
-После S4 новый backend размещается в protected `pluginDir/sync-state-vnext/`; работа со старыми root filenames остаётся только у importer/legacy reader. Предлагаемая первая schema backend — 1, mutation protocol — 4 (совместимый importer OperationStore v3), transitional Drive checkpoint — 2 с reader для старого DriveState v1. Это отдельные versions, не одинаковый общий migration flag.
+После S4 новый backend размещается в protected `pluginDir/sync-state-vnext/`; работа со старыми root filenames остаётся только у importer/legacy reader. Предлагаемая первая schema backend — 1, mutation protocol — 4 (совместимый importer OperationStore v3), transitional Drive checkpoint — **3** после [S0c amendment](08-s0c-lifecycle.md), с reader/import для DriveState v1/v2. S0b вводил schema 2; v3 требуется до lifecycle effects, чтобы старый reader не проигнорировал tombstones. Это отдельные versions, не одинаковый общий migration flag.
 
 ```text
 sync-state-vnext/

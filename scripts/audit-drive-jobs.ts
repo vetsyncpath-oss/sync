@@ -97,6 +97,29 @@ for(const n of [1,20,100]){
     scheduler.start(schedule as any,0);tick();for(let i=0;i<8;i++)await Promise.resolve();
     record('V6 migration leaves inherit unresolved',{schedule,periodicDelay:Number.isNaN(delay)?'NaN':delay});scheduler.stop();
 }
+{
+    const f=new Fixture();f.local.set('note.md',bytes('base'));const id=await f.addRemote('note.md','base');await f.run();f.remote.delete(id);await f.run();const entry=f.state.inbox('note.md');
+    let writes=0;const write=f.fs.write;f.fs.write=async(path,data)=>{if(path.startsWith('drive-state-'))writes++;await write(path,data);};await f.run();const warmWrites=writes;f.local.delete('note.md');await f.run();
+    record('canonical 404 survives local deletion',{originId:f.state.inbox('note.md')?.originId,sameInboxId:entry?.id===f.state.inbox('note.md')?.id,reason:f.state.inbox('note.md')?.reason,baselineId:f.state.baseline('note.md')?.remoteId,warmWrites,creates:f.counter});
+}
+{
+    const f=new Fixture();f.local.set('note.md',bytes('base'));const id=await f.addRemote('note.md','base');await f.run();f.remote.delete(id);await f.addRemote('note.md','base','replacement');await f.run();
+    record('same bytes cannot silently rebind another ID',{baselineId:f.state.baseline('note.md')?.remoteId,reason:f.state.inbox('note.md')?.reason,candidateId:f.state.inbox('note.md')?.candidateId,creates:f.counter});
+}
+{
+    const f=new Fixture();f.local.set('note.md',bytes('base'));const id=await f.addRemote('note.md','base');await f.run();f.remote.get(id).file.name='renamed.md';await f.run();
+    record('tracked rename is not duplicate bootstrap',{reason:f.state.inbox('note.md')?.reason,originalLocal:f.text('note.md'),newLocalCreated:f.local.has('renamed.md'),creates:f.counter});
+}
+{
+    const f=new Fixture();f.local.set('note.md',bytes('base'));const id=await f.addRemote('note.md','base');await f.run();f.local.delete('note.md');await f.run();
+    await f.state.save(state=>{state.tombstones['note.md'].deletedAt=Date.now()-100*24*60*60*1000;});f.local.set('note.md',bytes('recreated'));await f.run();
+    record('tombstone survives retention and local recreation',{originalId:f.state.tombstone('note.md')?.baseline.remoteId,stillTrashed:f.remote.get(id).file.trashed,local:f.text('note.md'),reason:f.state.inbox('note.md')?.reason,creates:f.counter});
+}
+{
+    const f=new Fixture();f.local.set('note.md',bytes('base'));const id=await f.addRemote('note.md','base');await f.run();f.local.delete('note.md');await f.run();await f.run(false,{probeOnly:true});
+    const result=await f.run(false,{resolution:{namespace:'test',entry:f.state.inbox('note.md'),action:'restore-known'}});
+    record('explicit same-ID restore',{failed:result.failed,originalId:id,baselineId:f.state.baseline('note.md')?.remoteId,local:f.text('note.md'),stillTrashed:f.remote.get(id).file.trashed,creates:f.counter});
+}
 console.log(JSON.stringify(output,null,2));
 }
 void main().catch(error=>{console.error(error);process.exitCode=1;});

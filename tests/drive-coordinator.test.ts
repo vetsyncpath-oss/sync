@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DriveCoordinator } from '../src/core/drive-coordinator';
+import { DriveCoordinator, type DriveExecutionPorts } from '../src/core/drive-coordinator';
 import { DriveStateStore,driveNamespace } from '../src/core/drive-state';
 import { GoogleDriveRoot } from '../src/sources/gdrive-root';
 import { GoogleDriveClient,DRIVE_FOLDER,type DriveFile,type DriveItem } from '../src/sources/gdrive-client';
@@ -41,10 +41,10 @@ class Fixture {
         this.state=new DriveStateStore(this.fs,'test');this.mutations=new DurableMutations(new OperationStore(this.fs),new RecoveryStore(this.vault,'private/recovery'),this.vault);}
     async addRemote(name:string,content:string,id='r-'+name):Promise<string>{this.remote.set(id,{file:{id,name,mimeType:'text/plain',parents:['root'],version:'1',size:String(bytes(content).byteLength),sha256Checksum:await sha256Hex(bytes(content))},data:bytes(content)});return id;}
     inventory():DriveItem[]{return [...this.remote.values()].filter(v=>v.file.id!=='root'&&!v.file.trashed).map(v=>({path:v.file.name,file:structuredClone(v.file)}));}
-    async run(auto=false){return new DriveCoordinator({vault:this.vault,mutations:this.mutations,state:this.state,root:new GoogleDriveRoot(this.client,'root'),queue:this.queue,
+    async run(auto=false,extra:Partial<DriveExecutionPorts>={}){return new DriveCoordinator({vault:this.vault,mutations:this.mutations,state:this.state,root:new GoogleDriveRoot(this.client,'root'),queue:this.queue,
         localPaths:async()=>[...this.local.keys()].filter(p=>!p.startsWith('private/')&&!p.startsWith('.trash/')&&!p.includes('.conflict-')),
         localForRemote:p=>p.includes('.conflict-')?[]:[p],remoteForLocal:p=>p.includes('.conflict-')||p.startsWith('private/')||p.startsWith('.trash/')?undefined:p,
-        behavior:()=>effectiveBehavior({direction:'bidirectional',write:'changes',delete:this.deletions,conflict:'keep-both'}),guard:()=>{},signal:new AbortController().signal,auto}).run(this.inventory());}
+        behavior:()=>effectiveBehavior({direction:'bidirectional',write:'changes',delete:this.deletions,conflict:'keep-both'}),guard:()=>{},signal:new AbortController().signal,auto,...extra}).run(this.inventory());}
     deletions:'keep'|'tracked'='tracked';
     text(path:string){return this.local.has(path)?new TextDecoder().decode(this.local.get(path)):undefined;}
 }
@@ -211,7 +211,7 @@ test('canonical convergence closes only the matching proposal and preserves the 
     assert.equal(proposals.find(p=>p.hash!==remote.file.sha256Checksum)?.status,'published');assert.equal(result.results?.find(r=>r.path==='a.md')?.proposalIds?.length,1);
 });
 
-test('a legacy reserved pending copy is fenced to v2 before any resumed local or remote effect',async()=>{
+test('a legacy reserved pending copy is fenced to the current schema before any resumed local or remote effect',async()=>{
     const f=new Fixture();f.local.set('a.md',bytes('mine'));await f.addRemote('a.md','theirs');f.unknownUpload=true;await f.run();
     const state:any=f.state.snapshot(),copyId=state.pending['a.md'].copyId;state.version=1;delete state.proposals;delete state.artifacts;delete state.pending['a.md'].proposalId;state.sequence=1;
     for(const name of [...f.metadata.keys()])if(name.startsWith('drive-state-'))f.metadata.delete(name);
@@ -219,7 +219,7 @@ test('a legacy reserved pending copy is fenced to v2 before any resumed local or
     const reloaded=new DriveStateStore(f.fs,'test');Object.defineProperty(f,'state',{value:reloaded});
     const create=f.vault.createBinary!;let effects=0;f.vault.createBinary=async(path,data)=>{effects++;
         const latest=[...f.metadata.keys()].filter(n=>/^drive-state-test-\d{16}\.json$/.test(n)).sort().at(-1)!;
-        assert.equal(JSON.parse(JSON.parse(f.metadata.get(latest)!).payload).version,2);await create(path,data);};
+        assert.equal(JSON.parse(JSON.parse(f.metadata.get(latest)!).payload).version,3);await create(path,data);};
     const result=await f.run();assert.equal(result.failed,0);assert(effects>0);assert.equal(f.text('a.md'),'theirs');
     assert.equal(f.state.proposals('a.md')[0].copyId,copyId);assert.equal(f.state.proposals('a.md')[0].portable,false);assert(f.metadata.has('drive-state-test-v1-backup.json'));
 });
@@ -273,4 +273,123 @@ test('conflict questions use fresh metadata and reject unsupported choices per f
     const result=await asking(f,async path=>{asks++;return path==='a.md'?'local-wins':'keep-both';}).run(inventory);
     assert.equal(asks,2);assert.equal(result.failed,1);assert.equal(result.problems?.[0].code,'unsupported-choice');assert.equal(f.text('a.md'),'mine');assert.equal(f.text('b.md'),'latest');
     assert.equal(result.deferredConflicts,1);
+});
+
+async function deleted(){const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();f.local.delete('a.md');assert.equal((await f.run()).failed,0);return {f,id};}
+async function restorePreview(f:Fixture){await f.run(false,{probeOnly:true});const entry=f.state.inbox('a.md')!;assert(entry);return {namespace:'test',entry,action:'restore-known' as const};}
+test('canonical 404 persists a stable inbox across local deletion and reload, with zero warm checkpoint writes',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();f.remote.delete(id);
+    await f.run();const original=f.state.inbox('a.md')!;assert.equal(original.reason,'drive-unavailable');assert.equal(original.originId,id);
+    let writes=0;const write=f.fs.write;f.fs.write=async(p,s)=>{writes++;await write(p,s);};await f.run(true);assert.equal(writes,0);
+    f.local.delete('a.md');await f.run();const reload=new DriveStateStore(f.fs,'test');await reload.load();
+    assert.equal(reload.inbox('a.md')!.id,original.id);assert.equal(reload.inbox('a.md')!.revision,2);assert.equal(reload.baseline('a.md')!.remoteId,id);assert.equal(f.counter,0);
+});
+test('same-name replacement with identical bytes cannot silently adopt another remote ID',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));const original=await f.addRemote('a.md','base');await f.run();f.remote.delete(original);await f.addRemote('a.md','base','replacement');await f.addRemote('other.md','ready');
+    const result=await f.run();assert.equal(result.failed,0);assert.equal(f.state.baseline('a.md')!.remoteId,original);assert.equal(f.state.inbox('a.md')!.candidateId,'replacement');
+    assert.equal(f.state.inbox('a.md')!.reason,'drive-identity-changed');assert.equal(f.text('other.md'),'ready');assert.equal(f.counter,0);
+});
+test('renaming a tracked ID preserves its binding and does not bootstrap-download a duplicate at the new path',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();f.remote.get(id)!.file.name='renamed.md';
+    const result=await f.run();assert.equal(result.failed,0);assert.equal(f.state.inbox('a.md')!.reason,'drive-relocated');assert.equal(f.text('a.md'),'base');assert.equal(f.text('renamed.md'),undefined);assert.equal(f.counter,0);
+});
+test('tracked objects moved outside the selected root or changed to native objects remain durable blockers',async()=>{
+    for(const native of [false,true]){const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();
+        if(native)f.remote.get(id)!.file.mimeType='application/vnd.google-apps.document';else f.remote.get(id)!.file.parents=[];
+        const result=await f.run();assert.equal(result.failed,0);assert.equal(f.state.inbox('a.md')!.reason,native?'drive-unsupported':'drive-relocated');assert.equal(f.text('a.md'),'base');assert.equal(f.counter,0);}
+});
+test('restored access to the original ID clears unknown evidence only after a fresh read-only probe, without acknowledging new content',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();const original=f.remote.get(id)!;f.remote.delete(id);await f.run();f.remote.set(id,original);
+    f.remote.get(id)!.data=bytes('new');f.remote.get(id)!.file.sha256Checksum=await sha256Hex(bytes('new'));f.remote.get(id)!.file.version='2';
+    const result=await f.run(false,{probeOnly:true});assert.equal(result.results?.[0].reason,'drive-probe-ok');assert.equal(f.state.inbox('a.md'),undefined);assert.equal(f.text('a.md'),'base');assert.equal(f.state.baseline('a.md')!.remoteVersion,'1');
+});
+test('read-only probes never recover pending mutation effects or transfer independent files',async()=>{
+    const f=new Fixture();await f.addRemote('a.md','base');f.mutations.recover=async()=>{throw Error('read-only probe attempted recovery');};
+    const result=await f.run(false,{probeOnly:true});assert.equal(result.failed,0);assert.equal(f.text('a.md'),undefined);assert.equal(f.counter,0);assert.equal(f.state.baseline('a.md'),undefined);
+});
+test('settled deletion retains its canonical ID and payload; local recreation and original untrash require explicit decisions',async()=>{
+    const {f,id}=await deleted(),t=f.state.tombstone('a.md')!;assert.equal(t.baseline.remoteId,id);assert.equal(t.evidence,'explicit-trash');assert.equal(f.state.baseline('a.md'),undefined);
+    await f.state.save(s=>s.tombstones['a.md'].deletedAt=Date.now()-100*24*60*60*1000);await f.run();assert(f.state.tombstone('a.md'));
+    f.local.set('a.md',bytes('recreated'));await f.run();assert.equal(f.remote.get(id)!.file.trashed,true);assert.equal(f.state.inbox('a.md')!.reason,'drive-deleted-review');assert.equal(f.text('a.md'),'recreated');assert.equal(f.counter,0);
+    f.local.delete('a.md');f.remote.get(id)!.file.trashed=false;await f.run();assert.equal(f.text('a.md'),undefined);assert.equal(f.state.inbox('a.md')!.reason,'drive-deleted-review');assert.equal(f.counter,0);
+});
+test('both missing with explicit trash settles a tombstone, while subsequent 404 retains that lineage',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();f.local.delete('a.md');f.remote.get(id)!.file.trashed=true;await f.run();assert(f.state.tombstone('a.md'));
+    f.remote.delete(id);await f.run();assert.equal(f.state.inbox('a.md')!.reason,'drive-unavailable');assert.equal(f.state.tombstone('a.md')!.baseline.remoteId,id);
+});
+test('explicit restore keeps the original Drive ID and leaves a completed tombstone receipt',async()=>{
+    const {f,id}=await deleted(),resolution=await restorePreview(f),before=f.counter;
+    const result=await f.run(false,{resolution});assert.equal(result.failed,0);assert.equal(f.text('a.md'),'base');assert.equal(f.remote.get(id)!.file.trashed,false);assert.equal(f.counter,before);
+    assert.equal(f.state.baseline('a.md')!.remoteId,id);assert.equal(f.state.inbox('a.md'),undefined);assert(f.state.tombstone('a.md')!.restoredAt);assert.equal(f.state.pending('a.md'),undefined);
+});
+test('restore of a recreated local file preserves its preimage before taking the approved remote content',async()=>{
+    const {f}=await deleted();f.local.set('a.md',bytes('new local'));const resolution=await restorePreview(f),result=await f.run(false,{resolution});
+    assert.equal(result.failed,0);assert.equal(f.text('a.md'),'base');const records=f.mutations.store.records('test'),hash=await sha256Hex(bytes('new local'));
+    const saved=records.find(r=>r.recovery?.sha256===hash)?.recovery;assert(saved);assert.equal(new TextDecoder().decode(await f.mutations.recovery.read(saved)),'new local');
+});
+
+test('stale local, remote, inbox revision or namespace restore decisions have no untrash or write effects',async()=>{
+    for(const change of ['local','remote','revision','namespace']){const {f,id}=await deleted(),resolution=await restorePreview(f);
+        if(change==='local')f.local.set('a.md',bytes('new'));if(change==='remote')f.remote.get(id)!.file.version='9';
+        if(change==='revision')await f.state.save(s=>s.inbox['a.md'].revision++);if(change==='namespace')resolution.namespace='other';
+        const result=await f.run(false,{resolution});assert.equal(result.failed,1);assert.equal(result.problems?.[0].code,'decision-stale');assert.equal(f.remote.get(id)!.file.trashed,true);assert.equal(f.text('a.md'),change==='local'?'new':undefined);assert.equal(f.state.pending('a.md'),undefined);}
+});
+test('an untrash response lost after application resumes the same intent and never creates another remote object',async()=>{
+    const {f,id}=await deleted(),resolution=await restorePreview(f),metadata=f.client.metadata;let untrashes=0;
+    f.client.metadata=async(...args)=>{const file=await metadata(...args);if((args[1] as any).trashed===false){untrashes++;throw new SyncFault('network','Lost untrash response','file',true);}return file;};
+    const first=await f.run(false,{resolution});assert.equal(first.failed,1);assert.equal(f.remote.get(id)!.file.trashed,false);const pending=f.state.pending('a.md')!;assert.equal(pending.step,'untrash-started');
+    const retry=await f.run();assert.equal(retry.failed,0);assert.equal(f.text('a.md'),'base');assert.equal(f.counter,0);assert.equal(untrashes,1);assert.equal(f.state.baseline('a.md')!.remoteId,id);
+});
+test('changed local bytes after an interrupted untrash are retained along with the unresolved restore intent',async()=>{
+    const {f}=await deleted(),resolution=await restorePreview(f),metadata=f.client.metadata;
+    f.client.metadata=async(...args)=>{await metadata(...args);throw new SyncFault('network','Lost untrash response','file',true);};await f.run(false,{resolution});
+    f.local.set('a.md',bytes('new edit'));const result=await f.run();assert.equal(result.failed,1);assert.equal(result.problems?.[0].code,'decision-stale');assert.equal(f.text('a.md'),'new edit');assert.equal(f.state.pending('a.md')!.kind,'restore-known');
+});
+test('a remote trash acknowledgement without the actual postcondition cannot erase tracking',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();f.local.delete('a.md');
+    f.client.metadata=async()=>structuredClone(f.remote.get(id)!.file);const result=await f.run();assert.equal(result.failed,1);assert.equal(result.problems?.[0].code,'recovery-unknown');assert(f.state.pending('a.md'));assert(f.state.baseline('a.md'));assert.equal(f.state.tombstone('a.md'),undefined);
+});
+test('a withdrawn remote deletion cannot trash the local file while a prepared intent is replayed',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();f.remote.get(id)!.file.trashed=true;
+    const save=f.state.save.bind(f.state);f.state.save=async(update)=>{await save(update);if(f.state.pending('a.md')?.kind==='trash-local')f.remote.get(id)!.file.trashed=false;};
+    const result=await f.run();assert.equal(result.failed,1);assert.equal(f.text('a.md'),'base');assert(!f.local.has('.trash/a.md'));assert(f.state.pending('a.md'));assert.equal(f.state.tombstone('a.md'),undefined);
+});
+test('crashes between trash and tombstone acknowledgement recover lineage without a bootstrap upload',async()=>{
+    for(const side of ['local','remote']){const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();
+        if(side==='local')f.remote.get(id)!.file.trashed=true;else f.local.delete('a.md');
+        const write=f.fs.write;f.fs.write=async(path,raw)=>{if(path.startsWith('drive-state-')&&JSON.parse(JSON.parse(raw).payload).tombstones?.['a.md'])throw Error('crash before tombstone ack');await write(path,raw);};
+        const first=await f.run();assert.equal(first.failed,1);assert.equal(f.text('a.md'),undefined);assert.equal(f.remote.get(id)!.file.trashed,true);assert(f.state.pending('a.md'));
+        f.fs.write=write;const reload=new DriveStateStore(f.fs,'test');await reload.load();Object.defineProperty(f,'state',{value:reload});
+        const retried=await f.run();assert.equal(retried.failed,0);assert.equal(f.state.tombstone('a.md')!.baseline.remoteId,id);assert.equal(f.state.pending('a.md'),undefined);assert.equal(f.counter,0);
+        if(side==='local'){const ref=f.state.tombstone('a.md')!.payload!;assert.equal(new TextDecoder().decode(await f.mutations.recovery.read(ref)),'base');}}
+});
+test('restore without a strong approved digest or with a dirty surviving editor is blocked before untrash',async()=>{
+    for(const weak of [true,false]){const {f,id}=await deleted();if(weak)delete f.remote.get(id)!.file.sha256Checksum;const resolution=await restorePreview(f);
+        if(!weak)f.vault.assertWritable=async()=>{throw new SyncFault('unsaved-editor','Editor has unsaved bytes');};
+        const result=await f.run(false,{resolution});assert.equal(result.failed,1);assert.equal(f.remote.get(id)!.file.trashed,true);assert.equal(f.text('a.md'),undefined);assert.equal(f.counter,0);}
+});
+test('an initial unavailable identity persists without a baseline and cannot turn into a fresh-name upload after disappearing',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('local'));const id=await f.addRemote('a.md','remote');f.remote.get(id)!.file.parents=[];await f.run();const entry=f.state.inbox('a.md')!;assert.equal(entry.originId,id);assert.equal(f.state.baseline('a.md'),undefined);
+    f.remote.delete(id);await f.run();assert.equal(f.counter,0);assert.equal(f.text('a.md'),'local');assert.equal(f.state.inbox('a.md')!.id,entry.id);assert.equal(f.state.inbox('a.md')!.reason,'drive-unavailable');
+});
+test('a remote edit between the deletion plan and its last pre-PATCH inspection cannot be trashed',async()=>{
+    const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();f.local.delete('a.md');const inspect=f.client.inspect;let inspections=0;
+    f.client.inspect=async(...args)=>{if(args[0]===id&&++inspections===3){f.remote.get(id)!.file.version='9';f.remote.get(id)!.data=bytes('edited');f.remote.get(id)!.file.sha256Checksum=await sha256Hex(bytes('edited'));}return inspect(...args);};
+    const result=await f.run();assert.equal(result.failed,1);assert.equal(result.problems?.[0].code,'source-changed');assert(!f.remote.get(id)!.file.trashed);assert(f.state.pending('a.md'));assert.equal(f.state.tombstone('a.md'),undefined);
+});
+test('explicit restore checks fresh untrash/download capabilities before changing the remote object',async()=>{
+    for(const capability of ['canUntrash','canDownload'] as const){const {f,id}=await deleted();f.remote.get(id)!.file.capabilities={[capability]:false};const resolution=await restorePreview(f),result=await f.run(false,{resolution});
+        assert.equal(result.failed,1);assert.equal(result.problems?.[0].code,'access-denied');assert.equal(f.remote.get(id)!.file.trashed,true);assert.equal(f.text('a.md'),undefined);assert.equal(f.state.pending('a.md'),undefined);}
+});
+test('object-specific 403 persists access evidence, while quota and shared authentication retain their distinct error paths',async()=>{
+    for(const kind of ['access','quota','auth']){const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();await f.addRemote('other.md','ready');const inspect=f.client.inspect;
+        f.client.inspect=async(...args)=>{if(args[0]===id){if(kind==='auth')throw new SyncFault('auth-required','Refresh grant required','source');throw Object.assign(new SyncFault(kind==='access'?'access-denied':'rate-limit','HTTP 403','file',kind==='quota'),{status:403});}return inspect(...args);};
+        const result=await f.run();assert.equal(result.failed,kind==='access'?0:1);assert.equal(f.text('a.md'),'base');assert.equal(f.text('other.md'),kind==='auth'?undefined:'ready');
+        if(kind==='access'){assert.equal(f.state.inbox('a.md')!.httpStatus,403);assert.equal(f.state.inbox('a.md')!.reason,'drive-unavailable');}else assert.equal(f.state.inbox('a.md'),undefined);}
+});
+test('404 or relocation during replay keeps the original pending copy IDs and payload in a durable canonical inbox',async()=>{
+    for(const missing of [true,false]){const f=new Fixture();f.local.set('a.md',bytes('edit'));const id=await f.addRemote('a.md','base');f.unknownUpload=true;await f.run();const prepared=f.state.pending('a.md')!;
+        if(missing)f.remote.delete(id);else f.remote.get(id)!.file.name='renamed.md';await f.addRemote('other.md','ready');const result=await f.run();
+        assert.equal(result.failed,0);assert.equal(f.state.inbox('a.md')!.reason,missing?'drive-unavailable':'drive-relocated');assert.equal(f.state.pending('a.md')!.id,prepared.id);assert.equal(f.state.pending('a.md')!.copyId,prepared.copyId);assert.equal(f.queue.size(),0,'durable unknown must not keep an overdue transient retry');
+        assert.equal(f.text('a.md'),'edit');assert.equal(f.text('other.md'),'ready');assert.equal(f.counter,1);assert.equal(f.text('renamed.md'),undefined);assert.equal(new TextDecoder().decode(await f.mutations.recovery.read(prepared.copyBytes!)),'edit');}
 });

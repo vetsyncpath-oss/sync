@@ -15,6 +15,15 @@ export function reasonLabel(reason: string): string {
         'source-paused':tr('Источник остановлен после повторяющихся ошибок; файл ещё не загружался','Source paused after repeated failures; file has not been downloaded'),
         'file-too-large': tr('Превышен допустимый размер', 'File size limit exceeded'), 'io-error': tr('Операция не выполнена; проверьте подробности ошибки', 'Operation failed; check the error details'),
         'drive-proposal-received':tr('Получена копия предложения; исходный файл сохраняет свой ID','Proposal copy received; original file retains its ID'),
+        'drive-unavailable':tr('Прежний Drive ID недоступен; это не подтверждение удаления','Tracked Drive ID is unavailable; deletion is not confirmed'),
+        'drive-relocated':tr('Прежний Drive ID перемещён или переименован; прежняя связь сохранена','Tracked Drive ID moved or was renamed; original binding retained'),
+        'drive-identity-changed':tr('По прежнему пути найден другой Drive ID; нужна проверка связи','A different Drive ID occupies the original path; binding review required'),
+        'drive-unsupported':tr('Тип или назначение прежнего Drive объекта изменилось; запись заблокирована','Tracked Drive object type or role changed; writes blocked'),
+        'drive-unlisted':tr('Прежний Drive ID существует, но не вошёл в дерево; запись заблокирована','Tracked Drive ID exists but was not listed; writes blocked'),
+        'drive-deleted-review':tr('Есть история удаления; восстановление прежнего ID требует решения','Deletion history retained; restoring the original ID requires a decision'),
+        'drive-restored-known':tr('Восстановлен прежний Drive ID и проверенное содержимое','Original Drive ID and verified content restored'),
+        'drive-recovery-pending':tr('Есть незавершённый эффект; проверка доступа не исполняет и не закрывает его','An effect is unfinished; access checks neither replay nor close it'),
+        'drive-probe-ok':tr('Доступ и прежняя связь проверены; файлы не изменены','Access and original binding checked; files unchanged'),
         'drive-proposals-review':tr('Исходный Drive ID сохранён; предложения требуют проверки','Original Drive ID retained; proposals need review'),
         'artifact-local-edited':tr('Полученная копия изменена локально; нужна проверка','Received copy was edited locally; review required'),
         'artifact-remote-edited':tr('Содержимое удалённой копии изменено; текущие байты сохранены','Remote copy content changed; current bytes retained'),
@@ -46,7 +55,7 @@ export function operationTable(rows: readonly SyncPlanRow[] | readonly SyncFileR
             const label = 'action' in row ? actionLabel(row.action) : statusLabel(row.status);
             const copyPaths='conflictPaths' in row&&Array.isArray(row.conflictPaths)?row.conflictPaths.slice(0,50):'conflictPath' in row&&row.conflictPath?[row.conflictPath]:[];
             const proposalCount='proposalCount' in row&&typeof row.proposalCount==='number'?` · ${row.proposalCount}`:'';
-            for (const text of [label, row.source ?? '—', 'remotePath' in row ? row.remotePath ?? '—' : '—', row.path, reasonLabel(row.reason)+proposalCount+('issue' in row&&row.issue?' · '+row.issue.stage+': '+row.issue.message+(row.issue.status?' · HTTP '+row.issue.status:'')+(row.issue.attempt?' · '+tr('попытка ','attempt ')+row.issue.attempt:'')+(row.issue.retryAt&&row.issue.retryAt<Number.MAX_SAFE_INTEGER?' · '+tr('повтор после ','retry after ')+new Date(row.issue.retryAt).toLocaleString():''):'')+(copyPaths.length?' · '+copyPaths.join(' · '):'')]) line.append(element('td', text));
+            for (const text of [label, row.source ?? '—', 'remotePath' in row ? row.remotePath ?? '—' : '—', row.path, reasonLabel(row.reason)+proposalCount+('issue' in row&&row.issue?' · '+row.issue.stage+': '+row.issue.message+(row.issue.status?' · HTTP '+row.issue.status:'')+(row.issue.attempt?' · '+tr('попытка ','attempt ')+row.issue.attempt:'')+(row.issue.retryAt&&row.issue.retryAt<Number.MAX_SAFE_INTEGER?' · '+tr('повтор после ','retry after ')+new Date(row.issue.retryAt).toLocaleString():''):'')+(copyPaths.length?' · '+copyPaths.join(' · '):'')+('httpStatus' in row&&row.httpStatus?' · HTTP '+row.httpStatus:'')+('originId' in row&&row.originId?' · Drive ID: '+row.originId:'')+('candidateId' in row&&row.candidateId?' · '+tr('другой ID: ','other ID: ')+row.candidateId:'')]) line.append(element('td', text));
             data.append(line);
         }
         table.append(data); body.append(table);

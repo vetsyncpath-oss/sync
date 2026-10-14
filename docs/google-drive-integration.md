@@ -1,10 +1,10 @@
 # Google Drive: пилотная интеграция
 
-Состояние на 2026-10-14, сборка `overhaul-s0-proposals-2026-10-14`. Текущая база ветки — `overhaul/2b1-recovered`, commit `3e03d69357e0273194aa43357ee0b41b90af221a`.
+Состояние на 2026-10-14, сборка `overhaul-s0-lifecycle-2026-10-14`. Текущая база ветки — `overhaul/2b1-recovered`, commit `3e03d69357e0273194aa43357ee0b41b90af221a`.
 
 Это проверяемая реализация первого этапа, предназначенная для испытаний на отдельном vault и отдельной папке Drive. OAuth, executor и интерфейс ещё не проверены в настоящем Obsidian с настоящим Google-аккаунтом. Установочного manifest в репозитории нет; этот checkout не является готовым релизом.
 
-Критическая [сверка Drive-аудита и Per-Source Jobs](audits/drive-jobs-cross-review.md) остаётся историческим baseline. Реализованы [S0a/S0b](overhaul-vnext/implementation-status.md): ID-aware browse, own-key metadata, zero warm writes, fresh consent, несколько proposals и content dedup. Новая Drive-копия с проверенной portable lineage **получается другим vault** в bidirectional области исходного файла, включая named mapping. Legacy copies автоматически не импортируются. Полного unknown/review inbox и per-job execution ещё нет; точный [S0b runtime contract](overhaul-vnext/07-s0b-proposals.md) отделён от target specification.
+Критическая [сверка Drive-аудита и Per-Source Jobs](audits/drive-jobs-cross-review.md) остаётся историческим baseline. Реализованы [S0a/S0b/S0c](overhaul-vnext/implementation-status.md): ID-aware browse, own-key metadata, zero warm writes, fresh consent, несколько proposals и content dedup. Новая Drive-копия с проверенной portable lineage **получается другим vault** в bidirectional области исходного файла, включая named mapping. Legacy copies автоматически не импортируются. Canonical unknown/deletion inbox, read-only probe и same-ID restore реализованы; полного proposal/artifact inbox и per-job execution ещё нет; точный [S0b runtime contract](overhaul-vnext/07-s0b-proposals.md) и [S0c lifecycle](overhaul-vnext/08-s0c-lifecycle.md) отделён от target specification.
 
 ## Что реализовано
 
@@ -104,7 +104,7 @@ Grant разрешает доступ ко всему Drive, но executor ог�
 
 До исправления ожидания OAuth: **382/382 теста**, TypeScript и production build прошли. Дополнительные проверки исправления покрывают отсутствие callback, отмену с повторным входом, зависшее чтение ответа, timeout обновления токена и позднюю ротацию credentials. Это локальные/fake-API проверки, без live Google/Obsidian; доступность регионального Google-домена ими не подтверждается.
 
-Текущий S0a/S0b: **453/453 теста**, TypeScript, styles и production build прошли; `git diff --check` без ошибок. Тег bundle — `overhaul-s0-proposals-2026-10-14`; [статус реализации и сравнение probes](overhaul-vnext/implementation-status.md). S0a проходил 415/415; S0b добавляет 38 regression cases. Два vaults проверены через реальный host dispatch с fake API/FS; live Google/Obsidian verification ещё не выполнена.
+Текущий S0a/S0b/S0c: **490/490 тестов**, TypeScript, styles и production build прошли; `git diff --check` без ошибок. Тег bundle — `overhaul-s0-lifecycle-2026-10-14`; [статус реализации и сравнение probes](overhaul-vnext/implementation-status.md). S0a проходил 415/415; S0b добавил 38 regression cases, S0c — ещё 37. Два vaults проверены через реальный host dispatch с fake API/FS; live Google/Obsidian verification ещё не выполнена.
 
 - Возвращённые и выброшенные 401, конкурентный refresh, потерянный/отозванный grant, отменённый callback и поздний refresh без восстановления credentials.
 - Полная пагинация, `incompleteSearch`, alias/case/NFC collisions, корень вне доступа, одинаковый размер с разными байтами, проверка checksum и version.
@@ -130,3 +130,5 @@ Grant разрешает доступ ко всему Drive, но executor ог�
 ## Заимствование
 
 Из Sync Engine адаптированы небольшие URL/query helpers в `gdrive-client.ts`. PKCE, account isolation, profile compiler, state и executor реализованы в этом плагине; donor SDK/UI/module loader не добавлены. Commit и полный MIT notice записаны в [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) и [licenses/sync-engine-MIT.txt](../licenses/sync-engine-MIT.txt). Сборка включает полный MIT notice в `main.js`, в том числе production.
+
+Для просмотра недоступных canonical IDs и истории удалений откройте команду **Drive: неизвестные состояния и удаления** или соответствующую кнопку в Recovery. «Проверить доступ и состояние» не изменяет файлы; после fresh probe tombstone можно отдельно подтвердить восстановление прежнего Drive ID. Для restore нужны strong SHA-256 и download/untrash permission; rebind/publish-new/полный per-job inbox пока gated.

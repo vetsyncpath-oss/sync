@@ -201,3 +201,9 @@ test('cancelling browser sign-in releases the listener so a fresh attempt has a 
     }
     assert.notEqual(states[0],states[1]);
 });
+test('Drive restore capabilities are requested as booleans and inconsistent repeat permissions invalidate a snapshot',async()=>{
+    for(const capabilities of [[],null,{canUntrash:'true'},{canDownload:0}]){const client=new GoogleDriveClient({fetch:async()=>response(200,{...file('one','a.md'),capabilities})});await assert.rejects(()=>client.inspect('one',new AbortController().signal),(e:any)=>e.code==='response-format');}
+    let pages=0;const client=new GoogleDriveClient({fetch:async url=>{assert(new URL(url).searchParams.get('fields')?.includes('canUntrash'));if(new URL(url).pathname.endsWith('/root-id'))return response(200,{id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1'});
+        return response(200,{files:[{...file('one','a.md'),capabilities:{canUntrash:pages>0}}],...(pages++===0?{nextPageToken:'next'}:{})});}});
+    assert.equal((await client.inventory('root-id',new AbortController().signal)).completeness,'unstable');
+});

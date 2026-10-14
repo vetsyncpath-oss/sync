@@ -66,6 +66,7 @@ test('mixed manual pipeline applies independent files from both engines before p
     h.f.files.set('a.md',ab('LOCAL DRIVE'));h.f.files.set('Git/b.md',ab('LOCAL GIT'));
     const drive=h.plugin.coordinator.getCurrentSource().executionMembers().find((m:any)=>m.id==='drive').source,inventory=drive.client.inventory;
     drive.client.inventory=async()=>{const original=await inventory();return {...original,items:[...original.items,{path:'other.md',file:{...original.items[0].file,id:'other',name:'other.md'}}]};};
+    const inspect=drive.client.inspect;drive.client.inspect=async(id:string,signal:AbortSignal)=>id==='other'?{...(await inventory()).items[0].file,id:'other',name:'other.md'}:inspect(id,signal);
     h.git.getManifest=async()=>[entry('Git/b.md'),entry('Git/c.md')];let questions=0;
     const assertReady=()=>{questions++;assert.equal(str(h.f.files.get('Git/c.md')!),'REMOTE');assert.equal(str(h.f.files.get('other.md')!),'REMOTE');};
     h.f.resolverDeps.ui={askConflict:async()=>{assertReady();return 'defer';}};

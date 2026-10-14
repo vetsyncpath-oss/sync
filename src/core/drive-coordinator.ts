@@ -1,8 +1,9 @@
 import type { ConflictChoice, SyncStats, SyncFileResult, TransferObserver, VaultAdapter } from '../sources/types';
 import type { DriveFile, DriveItem } from '../sources/gdrive-client';
 import { GoogleDriveRoot } from '../sources/gdrive-root';
-import { DriveStateStore, type DriveIntent, type DriveProposal } from './drive-state';
+import { DriveStateStore, type DriveIntent, type DriveProposal, type DriveInboxEntry, type DriveInboxReason, type DriveResolution } from './drive-state';
 import { artifactProperties, driveConflictSibling as sibling, isDriveArtifactCandidate, proposalKey, readArtifactLineage, sameArtifactLineage, type ProposalKind } from './drive-artifact';
+import { observeDrive, inspectDriveIdentity } from './drive-observation';
 import { receiveDriveArtifacts } from './drive-artifact-receiver';
 import { planDrive, type DriveBaseline, type DriveObservation } from './drive-planner';
 import type { EffectiveBehavior } from './profile-policy';
@@ -20,6 +21,8 @@ export interface DriveExecutionPorts {
     behavior(path:string):EffectiveBehavior;
     guard():void; signal:AbortSignal; auto:boolean; observe?:TransferObserver;
     restoreOnly?:boolean;
+    probeOnly?:boolean;
+    resolution?:DriveResolution;
     allowQuestions?:boolean;
     /** Evaluates actual artifact protections/exclusions and inherited origin ownership. Default is deny. */
     allowArtifact?(originPath:string,artifactPath:string,remotePath:string):boolean;
@@ -38,13 +41,17 @@ export class DriveCoordinator {
         try{await this.p.state.ensureWriterVersion();if(this.p.state.cleanupProblem)throw new SyncFault('checkpoint-cleanup',this.p.state.cleanupProblem,'session');}
         catch(error){if(this.p.signal.aborted)this.stats.outcome='cancelled';else{const issue=syncIssue(error instanceof SyncFault?error:new SyncFault('checkpoint',`Drive writer version could not be persisted; session stopped: ${diagnosticText(error)}`,'session'),'checkpoint');
             this.stats.failed++;this.stats.problems!.push(issue);this.stats.problem=issue.message;this.stats.outcome='error';}this.stats.duration=Date.now()-started;return this.stats;}
-        this.guard();await this.p.mutations.store.load();await this.p.mutations.recover(this.p.state.namespace,this.p.signal);
-        const artifacts=await receiveDriveArtifacts(this.p,inventory,{write:(path,before,bytes,id)=>this.write(path,before,bytes,id),
+        this.guard();if(!this.p.probeOnly){await this.p.mutations.store.load();await this.p.mutations.recover(this.p.state.namespace,this.p.signal);}
+        const artifacts=this.p.probeOnly||this.p.resolution?'ok':await receiveDriveArtifacts(this.p,inventory,{write:(path,before,bytes,id)=>this.write(path,before,bytes,id),
             checkpoint:update=>this.checkpoint(update),attention:row=>this.deferConflict(row),stats:this.stats});
         if(artifacts==='stop'){this.stats.pendingAfter=this.p.queue.size();this.stats.duration=Date.now()-started;return this.stats;}
         const localPaths=await this.p.localPaths(),all=new Set([...localPaths,...this.p.state.paths()]);
         const remotes=new Map<string,{path:string;file:DriveFile}>();
+        const tracked=new Map<string,Set<string>>();for(const path of this.p.state.paths()){const id=this.p.state.baseline(path)?.remoteId??this.p.state.tombstone(path)?.baseline.remoteId??this.p.state.pending(path)?.remoteId??this.p.state.inbox(path)?.originId;
+            if(id){const owners=tracked.get(id)??new Set<string>();owners.add(path);tracked.set(id,owners);}}
         for(const item of inventory.filter(item=>!isDriveArtifactCandidate(item.file)))for(const path of this.p.localForRemote(item.path)){
+            // Do not download a renamed tracked ID to a second path before an ownership transfer.
+            if(tracked.has(item.file.id)&&!tracked.get(item.file.id)!.has(path))continue;
             if(remotes.has(path))throw new SyncFault('path-collision','Multiple remote files target one local path','source');
             remotes.set(path,item);all.add(path);
         }
@@ -53,33 +60,39 @@ export class DriveCoordinator {
         const asks:string[]=[];
         for(const path of all){
             try {
-                this.guard();const remotePath=this.p.remoteForLocal(path),behavior=this.p.behavior(path);
+                this.guard();if(this.p.resolution&&path!==this.p.resolution.entry.path){this.stats.skipped++;continue;}const remotePath=this.p.remoteForLocal(path),behavior=this.p.behavior(path);
                 if(/\.conflict-/i.test(path.split('/').pop()!)){this.stats.skipped++;continue;}
                 if(!remotePath||behavior.direction!=='bidirectional'||behavior.protected){this.stats.skipped++;continue;}
                 const queued=this.p.queue.all().find(q=>q.path===path);
                 if(this.p.auto&&queued&&(queued.poisoned||queued.nextRetryAt>Date.now())){this.stats.skipped++;continue;}
                 const stat=await this.p.vault.stat(path);if(stat&&stat.size>this.p.root.client.maxFileBytes)throw new SyncFault('file-too-large','Local file exceeds transfer limit');
                 const pending=this.p.state.pending(path);
-                if(pending&&!this.p.restoreOnly){
+                if(pending&&!this.p.restoreOnly&&!this.p.probeOnly&&!this.p.resolution){
                     const current=await observeLocal(this.p.vault,path),candidate=remotes.get(path)?.file;
-                    const newLocal=!sameVersion(current,pending.local)&&!(current.kind==='file'&&current.sha256===candidate?.sha256Checksum?.toLowerCase());
+                    if(pending.remoteId){const identity=await inspectDriveIdentity(this.p.root,this.p.signal,remotePath,candidate,{remoteId:pending.remoteId});
+                        if(identity.reason){await this.unknown(path,remotePath,pending.remoteId,identity.reason,current,identity.remote,candidate?.id,identity.httpStatus);continue;}}
+                    const completedLocalTrash=['trash-local','delete-edit-local'].includes(pending.kind)&&current.kind==='missing';
+                    const newLocal=!completedLocalTrash&&!sameVersion(current,pending.local)&&!(current.kind==='file'&&current.sha256===candidate?.sha256Checksum?.toLowerCase());
                     const newDeletionTarget=(pending.kind==='trash-remote'||pending.kind==='delete-edit-remote')&&candidate&&candidate.version!==pending.remoteVersion;
-                    if((newLocal||newDeletionTarget)&&!(pending.kind==='upload'&&!pending.remoteId))await this.checkpoint(s=>{delete s.pending[path];});
+                    if((newLocal||newDeletionTarget)&&pending.kind!=='restore-known'&&!(pending.kind==='upload'&&!pending.remoteId))await this.checkpoint(s=>{delete s.pending[path];});
                     else{await this.execute(pending);this.p.queue.delete(path);continue;}
                 }
-                const local=await observeLocal(this.p.vault,path),base=this.p.state.baseline(path);
-                const candidate=remotes.get(path);let remote=candidate?.file,remoteBytes:ArrayBuffer|undefined;
-                let observation:DriveObservation;
-                if(remote){
-                    if(remote.trashed)observation={kind:'trashed'};
-                    else {let hash=remote.sha256Checksum?.toLowerCase();
-                        if(!hash&&base?.remoteId===remote.id&&base.remoteVersion===remote.version)hash=base.remoteHash;
-                        if(!hash){remoteBytes=await this.p.root.client.download(remote,this.p.signal);hash=await sha256Hex(remoteBytes);}
-                        observation={kind:'file',hash,id:remote.id,version:remote.version};}
-                }else if(base){
-                    try{remote=await this.p.root.owned(base.remoteId,this.p.signal,true);observation=remote.trashed?{kind:'trashed'}:{kind:'unavailable'};}
-                    catch(error){this.guard();if((error as {status?:number}).status===404||(error as {code?:string}).code==='root-boundary')observation={kind:'unavailable'};else throw error;}
-                }else observation={kind:'absent'};
+                const local=await observeLocal(this.p.vault,path),base=this.p.state.baseline(path),tombstone=this.p.state.tombstone(path);
+                const previousInbox=this.p.state.inbox(path);
+                const candidate=remotes.get(path),identity=base??(tombstone?.restoredAt===undefined?tombstone?.baseline:undefined)
+                    ??(pending?.remoteId?{remoteId:pending.remoteId,remoteVersion:pending.remoteVersion,remoteHash:pending.remoteHash}:undefined)
+                    ??(previousInbox?{remoteId:previousInbox.originId,remoteVersion:previousInbox.remoteVersion,remoteHash:previousInbox.remoteHash}:undefined);
+                const observed=await observeDrive(this.p.root,this.p.signal,remotePath,candidate?.file,identity);
+                const remote=observed.remote,remoteBytes=observed.bytes,observation=observed.observation;
+                if(observed.reason){await this.unknown(path,remotePath,identity?.remoteId??candidate!.file.id,observed.reason,local,remote,candidate?.file.id,observed.httpStatus);continue;}
+                if(tombstone&&tombstone.restoredAt===undefined){
+                    if(this.p.resolution?.entry.path===path){await this.restoreKnown(this.p.resolution,local,remote,remotePath);this.p.queue.delete(path);continue;}
+                    if(local.kind==='missing'&&observation.kind==='trashed'&&!this.p.probeOnly&&!this.p.state.inbox(path)){this.stats.skipped++;continue;}
+                    await this.unknown(path,remotePath,tombstone.baseline.remoteId,'drive-deleted-review',local,remote,candidate?.file.id);continue;
+                }
+                if(this.p.probeOnly&&pending){this.stats.deferredDeletions=(this.stats.deferredDeletions??0)+1;(this.stats.results??=[]).push({path,remotePath,status:'pending',reason:'drive-recovery-pending',originId:pending.remoteId});continue;}
+                if(this.p.probeOnly){if(this.p.state.inbox(path))await this.checkpoint(s=>{delete s.inbox[path];});this.stats.skipped++;(this.stats.results??=[]).push({path,remotePath,status:'unchanged',reason:'drive-probe-ok',originId:identity?.remoteId??remote?.id});continue;}
+                if(this.p.resolution?.entry.path===path)throw new SyncFault('decision-stale','Drive deletion history changed; refresh before restoring');
                 let decision=planDrive(local.kind==='file'?local.sha256:undefined,observation,base,behavior);
                 if(!base&&observation.kind==='absent'&&this.p.state.proposals(path).some(p=>p.originId!=='legacy-unknown'&&p.remotePath===remotePath)){
                     // Proposal history proves an earlier identity. Losing its baseline is not a fresh-name create authorization.
@@ -89,7 +102,7 @@ export class DriveCoordinator {
                 if(this.p.restoreOnly){if(local.kind==='missing'&&observation.kind==='file')decision='download';else{this.stats.skipped++;continue;}}
                 if(decision==='pending'){this.stats.deferredDeletions=(this.stats.deferredDeletions??0)+1;this.stats.skipped++;continue;}
                 if(decision==='protected'){this.stats.skipped++;continue;}
-                if(decision==='gone'){await this.clear(path);this.p.queue.delete(path);continue;}
+                if(decision==='gone'){if(base&&remote?.trashed)await this.settleDeletion(path,remote,base);else await this.clear(path);this.p.queue.delete(path);continue;}
                 if(decision==='adopt'){await this.baseline(path,remotePath,local,remote!);this.p.queue.delete(path);continue;}
                 if(decision==='download'){
                     const bytes=remoteBytes??await this.p.root.client.download(remote!,this.p.signal);
@@ -186,14 +199,73 @@ export class DriveCoordinator {
         if(open.length)this.deferConflict({path,status:'pending',reason:'drive-proposals-review',proposalCount:open.length,
             conflictPath:open.at(-1)!.copyPath,proposalIds:open.slice(0,50).map(p=>p.id),conflictPaths:open.slice(0,50).map(p=>p.copyPath)});
     }
+    private async unknown(path:string,remotePath:string,originId:string,reason:DriveInboxReason,local:LocalVersion,remote?:DriveFile,candidateId?:string,httpStatus?:number):Promise<void>{
+        const previous=this.p.state.inbox(path),evidence={path,remotePath,originId,reason,local,
+            remoteVersion:remote?.version,remoteHash:remote?.sha256Checksum?.toLowerCase(),remoteTrashed:remote?.trashed??(remote?false:undefined),
+            canRestore:remote?remote.capabilities?.canDownload!==false&&(!remote.trashed||remote.capabilities?.canUntrash!==false):undefined,
+            candidateId:candidateId!==originId?candidateId:undefined,httpStatus,proposalIds:this.p.state.proposalIds(path)};
+        const comparable=(entry:DriveInboxEntry)=>{const {id,revision,createdAt,updatedAt,...rest}=entry;return rest;};
+        let entry=previous;
+        if(!previous||JSON.stringify(comparable(previous))!==JSON.stringify(evidence)){
+            const now=Date.now();entry={...evidence,id:previous?.id??crypto.randomUUID(),revision:(previous?.revision??0)+1,createdAt:previous?.createdAt??now,updatedAt:now};
+            await this.checkpoint(s=>{s.inbox[path]=entry!;});
+        }
+        // Unknown is now durable attention, not an overdue transport retry. Keep its pending intent and payload.
+        this.p.queue.delete(path);
+        this.stats.deferredDeletions=(this.stats.deferredDeletions??0)+1;this.stats.skipped++;
+        (this.stats.results??=[]).push({path,remotePath,status:'pending',reason,inboxId:entry!.id,originId,candidateId:entry!.candidateId,httpStatus:entry!.httpStatus});
+    }
+    /** Only explicit trash plus observed local missing can settle a tracked deletion. */
+    private async settleDeletion(path:string,remote:DriveFile,base?:DriveBaseline,intent?:DriveIntent):Promise<void>{
+        if(!base||!remote.trashed||remote.id!==base.remoteId)throw new SyncFault('recovery-unknown','Deletion lineage cannot be verified; intent retained');
+        const fresh=await this.p.root.owned(remote.id,this.p.signal,true,base.remotePath);
+        if(!fresh.trashed||fresh.version!==remote.version)throw new SyncFault('recovery-unknown','Deletion postcondition changed before acknowledgement; lineage retained');
+        await this.p.vault.assertWritable?.(path);await assertLocal(this.p.vault,path,MISSING);
+        await this.checkpoint(s=>{s.tombstones[path]={id:intent?.id??crypto.randomUUID(),path,baseline:base,remoteVersion:remote.version,
+            deletedAt:Date.now(),evidence:'explicit-trash',localMissing:true,payload:intent?.bytes??intent?.copyBytes};
+            delete s.baseline[path];delete s.pending[path];delete s.inbox[path];if(s.reviews)delete s.reviews[path];});
+    }
+    private async restoreKnown(resolution:DriveResolution,local:LocalVersion,remote:DriveFile|undefined,remotePath:string):Promise<void>{
+        const entry=resolution.entry,current=this.p.state.inbox(entry.path);
+        if(resolution.namespace!==this.p.state.namespace||resolution.action!=='restore-known'||!current||JSON.stringify(current)!==JSON.stringify(entry)
+            ||entry.reason!=='drive-deleted-review'||!sameVersion(local,entry.local)||!remote||remote.id!==entry.originId||remote.version!==entry.remoteVersion
+            ||(remote.trashed??false)!==entry.remoteTrashed||!entry.remoteHash||remote.sha256Checksum?.toLowerCase()!==entry.remoteHash||remotePath!==entry.remotePath)
+            throw new SyncFault('decision-stale','Drive restore preview is stale or lacks verified content; refresh before restoring');
+        if(entry.canRestore===false)throw new SyncFault('access-denied','Drive object cannot be downloaded or untrashed; original retained');
+        if(this.p.state.pending(entry.path))throw new SyncFault('recovery-unknown','An unresolved effect must be accounted before restoring');
+        await this.p.vault.assertWritable?.(entry.path);await assertLocal(this.p.vault,entry.path,local);this.guard();
+        const intent:DriveIntent={id:crypto.randomUUID(),kind:'restore-known',path:entry.path,remotePath,local,remoteId:remote.id,remoteVersion:remote.version,remoteHash:entry.remoteHash};
+        await this.persist(intent);await this.execute(intent);
+    }
+    private async executeRestore(intent:DriveIntent):Promise<void>{
+        await this.p.vault.assertWritable?.(intent.path);
+        const actual=await observeLocal(this.p.vault,intent.path);
+        if(!sameVersion(actual,intent.local)&&!(actual.kind==='file'&&actual.sha256===intent.remoteHash))throw new SyncFault('decision-stale','Local restore target changed; intent retained');
+        let file=await this.p.root.owned(intent.remoteId!,this.p.signal,true,intent.remotePath);
+        if(file.mimeType.startsWith('application/vnd.google-apps.')||isDriveArtifactCandidate(file)||file.sha256Checksum?.toLowerCase()!==intent.remoteHash
+            ||!intent.step&&file.version!==intent.remoteVersion)throw new SyncFault('decision-stale','Drive restore object changed; intent retained');
+        if(file.capabilities?.canDownload===false||file.trashed&&file.capabilities?.canUntrash===false)throw new SyncFault('access-denied','Drive restore permission is missing; intent retained');
+        if(file.trashed){
+            intent.step='untrash-started';await this.persist(intent);this.guard();
+            await this.p.root.client.metadata(file.id,{trashed:false},this.p.signal);
+            file=await this.p.root.owned(file.id,this.p.signal,false,intent.remotePath);
+        }
+        const bytes=await this.p.root.client.download(file,this.p.signal),after=await versionOf(bytes);
+        if(after.kind!=='file'||after.sha256!==intent.remoteHash)throw new SyncFault('integrity','Restored Drive content changed; local bytes retained');
+        const fresh=await this.p.root.owned(file.id,this.p.signal,false,intent.remotePath);
+        if(fresh.version!==file.version)throw new SyncFault('decision-stale','Drive object changed during restore; intent retained');
+        if(!sameVersion(await observeLocal(this.p.vault,intent.path),after))await this.write(intent.path,intent.local,bytes,intent.id+'-restore');
+        await this.baseline(intent.path,intent.remotePath,after,fresh);this.stats.downloaded++;this.stats.bytesTransferred+=bytes.byteLength;
+        (this.stats.results??=[]).push({path:intent.path,remotePath:intent.remotePath,status:'applied',reason:'drive-restored-known',originId:fresh.id});
+    }
     private clear(path:string):Promise<void>{if(!this.p.state.pending(path)&&!this.p.state.baseline(path)&&!this.p.state.review(path))return Promise.resolve();return this.checkpoint(s=>{delete s.pending[path];delete s.baseline[path];if(s.reviews)delete s.reviews[path];});}
     private async baseline(path:string,remotePath:string,local:LocalVersion,remote:DriveFile,review?:DriveIntent):Promise<void>{
         this.guard();if(local.kind!=='file'||remote.trashed)throw Error('Cannot adopt an absent version');
         const baseline:DriveBaseline={localHash:local.sha256,remoteHash:local.sha256,remoteId:remote.id,remoteVersion:remote.version,remotePath};
         const previous=this.p.state.baseline(path);
-        if(!review&&!this.p.state.pending(path)&&previous&&previous.localHash===baseline.localHash&&previous.remoteHash===baseline.remoteHash
+        if(!review&&!this.p.state.pending(path)&&!this.p.state.inbox(path)&&previous&&previous.localHash===baseline.localHash&&previous.remoteHash===baseline.remoteHash
             &&previous.remoteId===baseline.remoteId&&previous.remoteVersion===baseline.remoteVersion&&previous.remotePath===baseline.remotePath)return;
-        await this.checkpoint(s=>{s.baseline[path]=baseline;if(review)(s.reviews??=Object.create(null))[path]={copyPath:review.copyPath!,copyId:review.copyId!,hash:review.copyBytes!.sha256};delete s.pending[path];});
+        await this.checkpoint(s=>{s.baseline[path]=baseline;if(review)(s.reviews??=Object.create(null))[path]={copyPath:review.copyPath!,copyId:review.copyId!,hash:review.copyBytes!.sha256};delete s.pending[path];delete s.inbox[path];if(s.tombstones[path]&&s.tombstones[path].restoredAt===undefined)s.tombstones[path].restoredAt=Math.max(Date.now(),s.tombstones[path].deletedAt);});
     }
     private async write(path:string,before:LocalVersion,bytes:ArrayBuffer,id:string):Promise<void>{
         this.guard();await this.dirs.ensure(this.p.vault,path);this.guard();
@@ -207,8 +279,8 @@ export class DriveCoordinator {
         if(actual.kind==='missing')return;
         await this.p.mutations.delete(this.p.state.namespace,{id:intent.id+'-delete',planId:intent.id,path:intent.path,before:intent.local,guard:()=>this.guard()},true);this.stats.deleted++;
     }
-    private async trashRemote(id:string):Promise<void>{this.guard();const file=await this.p.root.owned(id,this.p.signal,true);
-        if(file.trashed)return;if(file.capabilities?.canTrash===false)throw new SyncFault('access-denied','Drive trash permission is missing');
+    private async trashRemote(id:string,version:string):Promise<void>{this.guard();const file=await this.p.root.owned(id,this.p.signal,true);
+        if(file.trashed)return;if(file.version!==version)throw new SyncFault('source-changed','Drive deletion target changed before trash; original retained','file',true);if(file.capabilities?.canTrash===false)throw new SyncFault('access-denied','Drive trash permission is missing');
         this.guard();await this.p.root.client.metadata(id,{trashed:true},this.p.signal);this.stats.deleted++;this.stats.deletedDrive=(this.stats.deletedDrive??0)+1;}
     private async verifyPublication(file:DriveFile,bytes:ArrayBuffer,expectedHash:string,copy:boolean):Promise<void>{
         await this.p.root.client.verify(file,bytes);
@@ -274,13 +346,21 @@ export class DriveCoordinator {
             return;
         }
         if(intent.kind==='delete-edit-local'||intent.kind==='delete-edit-remote')await this.copy(intent);
-        if(intent.kind==='trash-local'||intent.kind==='delete-edit-local'){await this.trashLocal(intent);await this.clear(intent.path);return;}
+        if(intent.kind==='trash-local'||intent.kind==='delete-edit-local'){
+            const remote=await this.p.root.owned(intent.remoteId!,this.p.signal,true,intent.remotePath);
+            if(!remote.trashed)throw new SyncFault('source-changed','Drive deletion was withdrawn; local file retained','file',true);
+            if(remote.version!==intent.remoteVersion)throw new SyncFault('source-changed','Trashed Drive object changed; local file retained','file',true);
+            await this.trashLocal(intent);await this.settleDeletion(intent.path,remote,this.p.state.baseline(intent.path),intent);return;
+        }
         if(intent.kind==='trash-remote'||intent.kind==='delete-edit-remote'){
             await this.p.vault.assertWritable?.(intent.path);await assertLocal(this.p.vault,intent.path,MISSING);const file=await this.p.root.owned(intent.remoteId!,this.p.signal,true,intent.remotePath);
             if(!file.trashed&&file.version!==intent.remoteVersion)throw new SyncFault('source-changed','Drive deletion target changed; original retained','file',true);
             await this.p.vault.assertWritable?.(intent.path);await assertLocal(this.p.vault,intent.path,MISSING);
-            await this.trashRemote(file.id);await this.clear(intent.path);return;
+            await this.trashRemote(file.id,file.version);const deleted=await this.p.root.owned(file.id,this.p.signal,true,intent.remotePath);
+            if(!deleted.trashed)throw new SyncFault('recovery-unknown','Drive trash postcondition is not confirmed; deletion intent retained');
+            await this.settleDeletion(intent.path,deleted,this.p.state.baseline(intent.path),intent);return;
         }
+        if(intent.kind==='restore-known'){await this.executeRestore(intent);return;}
         if(intent.remoteId){
             // Restoring a kept, tracked object preserves its ID and never overwrites its content.
             let old=await this.p.root.owned(intent.remoteId,this.p.signal,true,intent.remotePath);

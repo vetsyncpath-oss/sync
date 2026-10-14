@@ -404,7 +404,7 @@ export interface SyncPlanRow {
         path: string; remotePath?: string; source?: string;
         reason: 'missing' | 'source-changed' | 'match-source' | 'baseline-check' | 'mapping' | 'absent' | 'preserve' | 'create-only' | 'background' | 'unverified' | 'file-too-large';
 }
-export interface SyncFileResult { path: string; remotePath?:string; source?: string; status: 'applied' | 'unchanged' | 'skipped' | 'pending' | 'error'; reason: string; issue?: SyncIssue; conflictPath?: string; proposalIds?:string[]; conflictPaths?:string[]; proposalCount?:number }
+export interface SyncFileResult { path: string; remotePath?:string; source?: string; status: 'applied' | 'unchanged' | 'skipped' | 'pending' | 'error'; reason: string; issue?: SyncIssue; conflictPath?: string; proposalIds?:string[]; conflictPaths?:string[]; proposalCount?:number; inboxId?:string;originId?:string;candidateId?:string;httpStatus?:number }
 
 /** Прогресс для статус-бара. */
 export interface SyncProgress {
