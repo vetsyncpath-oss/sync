@@ -2,18 +2,25 @@ import { NodeHttpTransport, BufferedHostTransport } from './src/adapters/host-tr
 import { GoogleConnections } from './src/adapters/google-connections';
 import { pickGoogleFolder } from './src/ui/gdrive-folder-picker';
 import { DriveCoordinator } from './src/core/drive-coordinator';
-import { DriveStateStore, driveRecoveryReferences, driveNamespace } from './src/core/drive-state';
+import { DriveStateStore, driveRecoveryReferences, driveNamespace, driveLifecycleHistory, discoverDriveStates, type DriveResolution } from './src/core/drive-state';
+import { localDirectoryBlocks } from './src/core/local-job-authority';
+import { JobPolicy } from './src/core/job-policy';
+import { JobBatch, awaitJobObservation, emptyStats, mergeJobStats, sharedJobFailure, type JobRunResult, type JobProjection } from './src/core/job-runtime';
+import { verifyDriveRootAuthority } from './src/core/drive-job-authority';
+import { validateManifest } from './src/core/source-validation';
 import { GoogleDriveRoot } from './src/sources/gdrive-root';
 import { GDriveOAuthSource } from './src/sources/gdrive-oauth-source';
 import { effectiveBehavior } from './src/core/profile-policy';
 import { sourceCandidates, sourcePathForDestination } from './src/core/source-bindings';
-import { applyPolicy } from './src/core/policy';
+import { applyPolicy, isPolicyPathIncluded } from './src/core/policy';
 import { isCovered } from './src/core/mirror';
 import { AcknowledgedSave } from './src/core/acknowledged-save';
 import { SyncFault, diagnosticText, syncIssue } from './src/core/sync-issue';
 import type { SyncProgress } from './src/sources/types';
 import { sessionLabel } from './src/ui/session-label';
 import { connectionIssues, connectionValues } from './src/engines/connection-validation';
+import { jobCards } from './src/ui/job-cards';
+import { DriveLifecycleModal } from './src/ui/drive-lifecycle-modal';
 import { RecoveryModal } from './src/ui/recovery-modal';
 import { observeLocal } from './src/core/local-version';
 import { ConflictAskModal } from './src/ui/conflict-modal';
@@ -55,7 +62,7 @@ import { Coordinator } from './src/core/coordinator';
 import { OperationStore } from './src/core/operation-store';
 import { RecoveryStore } from './src/core/recovery-store';
 import { DurableMutations } from './src/core/durable-mutations';
-import { Scheduler, type SchedulerInterval, type SchedulerSnapshot } from './src/core/scheduler';
+import { Scheduler, resolveSchedule, type AutoTickContext, type AutoTrigger, type SchedulerInterval, type SchedulerSnapshot } from './src/core/scheduler';
 import { FetchTransport } from './src/adapters/fetch-transport';
 import { BufferArchiveReader } from './src/core/archive';
 import { ConflictResolver, buildStampedPath, formatConflictTimestamp } from './src/core/conflict';
@@ -688,6 +695,11 @@ export default class GitSyncPlugin extends Plugin {
         private preparedConfigRevision = 0;
         private proposedLastSync?:number;
         private combinedSession=false;
+        private activeJobRunner?:Coordinator;
+        private jobRuns:JobRunResult[]=[];
+        private jobSubscribers=new Set<()=>void>();
+        private autoJobBlocks=new Map<string,string>();
+        private autoReady=false;private unloading=false;
         // [W4-T01] планировщик авто-синхронизации: создается в onload (после buildEngine),
         // интервал из settings.autoSyncInterval; снимается в onunload.
         private scheduler?: Scheduler;
@@ -821,6 +833,7 @@ export default class GitSyncPlugin extends Plugin {
                 // слетают один раз — сознательное решение пользователя
                 this.addCommand({ id: 'cloud-sync-now', name: i18n.t.cmdSyncFromGit, callback: () => this.syncNow() });
                 this.addCommand({id:'cloud-sync-workspace',name:i18n.getLocale()==='ru'?'Открыть рабочее окно синхронизации':'Open sync workspace',callback:()=>this.openVaultTreeModal()});
+                this.addCommand({id:'cloud-sync-drive-inbox',name:i18n.getLocale()==='ru'?'Drive: неизвестные состояния и удаления':'Drive: unknown states and deletions',callback:()=>this.openDriveInboxModal()});
                 this.addCommand({id:'cloud-sync-recovery',name:i18n.getLocale()==='ru'?'Восстановительные копии':'Recovery copies',callback:()=>this.openRecoveryModal()});
                 this.addCommand({ id: 'cloud-sync-retry-failed', name: i18n.t.cmdRetryFailed, callback: () => this.retryFailedFiles() });
                 this.addCommand({ id: 'cloud-sync-force-reset', name: i18n.t.cmdForceReset, callback: () => this.forceResync() });
@@ -846,7 +859,7 @@ export default class GitSyncPlugin extends Plugin {
 
                 // [W4-T01] планировщик авто-синхронизации: интервал из настроек
                 // (дефолт 'off' → ничего не планируется до явного выбора).
-                this.startAutoSync();
+                this.app.workspace.onLayoutReady(()=>{if(this.unloading)return;this.autoReady=true;this.startAutoSync();this.notifyVaultSync();});
 
                 // [W5-T02] window.vaultSync — read-only pub/sub для сторонних
                 // плагинов и будущего менеджер-плагина (Е7=3, Д15). Singleton
@@ -878,6 +891,7 @@ export default class GitSyncPlugin extends Plugin {
         }
 
         onunload() {
+                this.unloading=true;this.activeJobRunner?.cancel();this.jobSubscribers?.clear();
                 removePluginCss();
                 this.sessionController?.abort();
                 // [overhaul S3/M-18] живые модалки закрываются ДО dispose'ов —
@@ -985,7 +999,7 @@ export default class GitSyncPlugin extends Plugin {
                         totalBytes: sb.totalBytes ?? 0,
                         lastSyncTime: this.settings.lastSyncTime || null,
                         // [W4-T04] снимок планировщика для popover-индикатора.
-                        scheduler: this.schedulerSnapshot(),
+                        scheduler: this.schedulerSnapshot(),jobs:this.automaticJobSnapshots(),
                 };
         }
 
@@ -1445,7 +1459,7 @@ export default class GitSyncPlugin extends Plugin {
                                 if(policy.defaultSource&&!rules.some(rule=>rule.scope==='vault'&&!rule.names&&rule.source))required.add(policy.defaultSource);
                                 const running=this.sessionOwned?this.coordinator?.getCurrentSource().sources:undefined;
                                 const ids=running?.length?running.map(source=>source.id):[...required];
-                                return ids.length>0&&ids.every(id=>{const connection=this.settings.connections?.find(c=>c.id===id);if(!connection)return false;
+                                return ids.length>0&&ids.some(id=>{const connection=this.settings.connections?.find(c=>c.id===id);if(!connection)return false;
                                         return connectionIssues(connection).length===0;
                                 });
                         }catch{return false;}
@@ -1613,8 +1627,7 @@ export default class GitSyncPlugin extends Plugin {
                 if(defaultSource==='primary')descriptors.unshift({id:'primary',name:'Default source',kind,values:this.engineValues(kind)});
                 const configured=(c:SourceConnection)=>connectionIssues(c).length===0;
                 if(selectedIds?.some(id=>!descriptors.some(c=>c.id===id)))throw Error(i18n.getLocale()==='ru'?'Выбранному источнику не назначены области. Настройте их в дереве.':'Selected source has no assigned scope. Assign it in the tree.');
-                for(const id of needed)if((!selectedIds||selectedIds.includes(id))&&!descriptors.some(c=>c.id===id&&configured(c)))throw Error(i18n.getLocale()==='ru'?`Назначенный источник «${all.find(c=>c.id===id)?.name??id}» не настроен. Откройте «Подключения» и укажите его адрес.`:`Assigned source “${all.find(c=>c.id===id)?.name??id}” is not configured. Open Connections and configure its endpoint.`);
-                if(usesDefault&&defaultSource!=='unassigned'&&(!selectedIds||selectedIds.includes(defaultSource))&&!descriptors.some(c=>c.id===defaultSource&&configured(c)))throw Error(i18n.getLocale()==='ru'?`Источник для хранилища «${all.find(c=>c.id===defaultSource)?.name??defaultSource}» не настроен. В «Подключения → Источник для хранилища» выберите настроенный источник или «Только назначения в дереве».`:'Default source is not configured. Open Connections → Vault source and select a configured connection or Assignments only.');
+                for(const id of needed)if(!descriptors.some(c=>c.id===id))throw Error('Missing assigned source; ownership configuration needs repair');
                 const active=descriptors.sort((a,b)=>Number(b.id===defaultSource)-Number(a.id===defaultSource));
                 if(!active.length)throw Error(i18n.getLocale()==='ru'?'Не выбран источник синхронизации. Откройте «Подключения → Источник для хранилища» и выберите подключение либо назначьте его папке в дереве.':'No sync source selected. Open Connections → Vault source and select a connection, or assign one to a folder in the tree.');
                 const identity = active.map(c=>({id:c.id,kind:c.kind,values:Object.fromEntries(
@@ -1627,7 +1640,8 @@ export default class GitSyncPlugin extends Plugin {
                 };
                 const members=active.map(c=>({id:c.id,name:c.name,source:selectedIds&&!selectedIds.includes(c.id)?
                         {kind:c.kind,getManifest:async()=>{throw Error('Source outside this run');},fetch:async()=>{throw Error('Source outside this run');}}:
-                        EngineRegistry.create(c.kind,structuredClone(c.values),this.engineCtx(c.kind))}));
+                        (()=>{try{if(!configured(c))throw new SyncFault('source-unavailable',`Source ${c.name} is not configured`,'source');return EngineRegistry.create(c.kind,structuredClone(c.values),this.engineCtx(c.kind));}
+                            catch(error){return {kind:c.kind,getManifest:async()=>{throw error;},fetch:async()=>{throw error;}};}})()}));
                 return {source:new RoutedSource(members,structuredClone(rules),mapped,defaultSource,selectedIds),namespace};
         }
 
@@ -1832,12 +1846,12 @@ export default class GitSyncPlugin extends Plugin {
                                 if(!this.assertNetworkAllowed())throw Error(i18n.getLocale()==='ru'?'Доступ к источнику заблокирован':'Source access blocked');
                                 if(!isSourceConfigured(connection.kind,{repoUrl:'',accessToken:'',vaultUrl:'',...connection.values}))throw Error('Source is not configured');
                                 const source=EngineRegistry.create(connection.kind,structuredClone(connection.values),this.engineCtx(connection.kind));
-                                try{return await source.getManifest(signal);}finally{await source.dispose?.();}
+                                try{return source.getBrowseSnapshot?await source.getBrowseSnapshot(signal):await source.getManifest(signal);}finally{await source.dispose?.();}
                         },
                         check:(connection,signal)=>this.checkSourceConnection(connection,signal),
                         checkDownload:(connection,signal)=>this.checkSourceConnection(connection,signal,true),
                         run:ids=>this.syncNow(ids),
-                        recovery:()=>this.openRecoveryModal(),
+                        recovery:()=>this.openRecoveryModal(),jobs:()=>this.automaticJobSnapshots(),subscribeJobs:listener=>this.subscribeJobs(listener),
                         dispose:()=>{abort.abort();google.releaseDraft?.();},
                         save:async(policy,connections,profiles=this.settings.profiles??[])=>{
                                 if(revision!==this.getConfigurationRevision()||this.sessionOwned||this.coordinator?.isRunning())throw Error('Settings changed or sync started; reopen the tree');
@@ -1851,9 +1865,116 @@ export default class GitSyncPlugin extends Plugin {
                 });trackModal(modal);modal.open();
         }
 
-        private async executeSync(mode:'manual'|'auto'|'retry'|'force'|'scan'='manual',paths?:readonly string[],autoRetry=false):Promise<import('./src/sources/types').SyncStats|null> {
+        private async executeSync(mode:'manual'|'auto'|'retry'|'force'|'scan'='manual',paths?:readonly string[],autoRetry=false,driveControl?:{namespace:string;resolution?:DriveResolution},automaticTrigger?:AutoTrigger):Promise<import('./src/sources/types').SyncStats|null> {
+                const source=this.coordinator.getCurrentSource();
+                if(driveControl||!(source instanceof RoutedSource))return this.executeLegacySync(mode,paths,autoRetry,driveControl);
+                const started=Date.now(),signal=this.sessionController!.signal,guard=()=>{signal.throwIfAborted();if(this.preparedConfigRevision!==this.getConfigurationRevision())throw new SyncFault('configuration-changed','Settings changed during synchronization','session');};
+                guard();const compiled=this.effectiveProfilePolicy(this.builtSourceId),rules=compiled.fileRules??[],defaultSource=compiled.defaultSource??(this.settings.vaultPolicy?'unassigned':'primary'),basePolicy=this.makePolicy(),vault=this.makeVaultAdapter();
+                validateProfileConnections(this.settings.vaultPolicy??compiled,this.settings.profiles??[],this.settings.connections??[]);
+                try{await this.mutations.store.load();}catch(error){throw new SyncFault('operation-journal',`Shared mutation state is unreadable: ${diagnosticText(error)}`,'session');}
+                let stores:DriveStateStore[];try{stores=await discoverDriveStates(this.fsAdapter);}catch(error){throw new SyncFault('authority-corrupt',`Retained Drive ownership cannot be read: ${diagnosticText(error)}`,'session');}
+                const authority=new JobPolicy(compiled,defaultSource,JobPolicy.history(stores)),stateByNamespace=new Map(stores.map(store=>[store.namespace,store]));
+                const members=source.executionMembers(),byId=new Map(members.map(member=>[member.id,member])),aggregate=emptyStats();this.combinedSession=true;
+                const pullQuestions:{id:string;runner:Coordinator;paths:string[]}[]=[],driveQuestions:{id:string;driver:DriveCoordinator;paths:string[]}[]=[];
+                const observedSignals=new Map(members.filter(member=>authority.bidirectionalOwners.has(member.id)).map(member=>{let complete!:()=>void;const promise=new Promise<void>(resolve=>complete=resolve);return [member.id,{promise,complete}] as const;}));
+                const observedRoots=new Map<string,import('./src/sources/gdrive-client').DriveFile>();
+                const batch=new JobBatch(signal,guard,states=>{this.publishJobs(states);this.popoverView?.update(this.snapshotPopoverState());},{observed:job=>observedSignals.get(job.id)?.complete()});
+                const map=(path:string)=>{const folder=compiled.folders.filter(folder=>folder.target&&(!folder.path||path===folder.path||path.startsWith(folder.path+'/'))).sort((a,b)=>b.path.length-a.path.length)[0];return folder?computeLocalPath(path,folder.path,folder):path;};
+                type Observation={view:RoutedSource;state?:DriveStateStore;remoteBlock?:import('./src/sources/types').SyncIssue;localBlocks?:import('./src/core/path-policy').PathBlock[]};
+                const results=await batch.run<Observation>(members.map(member=>({id:member.id,name:member.name,kind:member.source.kind})),async(job,observeSignal)=>{
+                        const member=byId.get(job.id)!;
+                        try{const entries=await member.source.getManifest(observeSignal,event=>this.makeSyncUI().setStatus('syncing',{stage:event.stage,progressText:job.name,lastActivityAt:Date.now()}));observeSignal.throwIfAborted();guard();validateManifest(entries);
+                                const observation:Observation={view:source.executionView(job.id,entries)};
+                                if(member.source instanceof GDriveOAuthSource){const snapshot=member.source.inventorySnapshot;if(!snapshot)throw new SyncFault('response-format','Drive run snapshot is missing','source');observedRoots.set(job.id,structuredClone(snapshot.root));
+                                        const connection=this.settings.connections?.find(connection=>connection.id===job.id),namespace=await driveNamespace(String(connection?.values.accountSub??''),snapshot.root.id,job.id,compiled);
+                                        observation.state=stateByNamespace.get(namespace)??new DriveStateStore(this.fsAdapter,namespace);await observation.state.load();}
+                                const projected=await observation.view.getManifest(observeSignal);
+                                const initial=basePolicy.withBlockedTargets(authority.blocksFor(job.id,observation.state?.namespace)).forSources([job.id],compiled.defaultSource,rules,compiled.folders);
+                                const participating=projected.filter(entry=>{const local=entry.resolvedDestination?entry.path:map(entry.path);return initial.isPathSafe(local)&&initial.isPathAllowed(local)&&isPolicyPathIncluded(entry.sourcePath??entry.path,local,compiled);});
+                                const targets=participating.map(entry=>entry.resolvedDestination?entry.path:map(entry.path)),directories=targets.map(local=>{return local.split('/').slice(0,-1).join('/');});
+                                observation.localBlocks=await localDirectoryBlocks(vault,directories,observeSignal,targets);
+                                const cached=new Map<string,string[]>();for(const path of Object.keys(this.cache.entries())){const key=path.normalize('NFC').toLowerCase(),paths=cached.get(key)??[];paths.push(path);cached.set(key,paths);}for(const target of targets)if(cached.get(target.normalize('NFC').toLowerCase())?.some(path=>path!==target))observation.localBlocks.push({path:target,reason:'cached-path-alias'});
+                                return observation;
+                        }finally{observedSignals.get(job.id)?.complete();}
+                },async(job,observation)=>{
+                        guard();const member=byId.get(job.id)!,stats=emptyStats(),blockedRows=new Map<string,import('./src/sources/types').SyncFileResult>();
+                        // Probe owned effects before admitting directory creation. Unsettled targets remain reserved.
+                        const namespaces=new Set([this.cache.namespace,...observation.state?[observation.state.namespace]:[]]);
+                        for(const record of this.mutations.store.records().filter(record=>['committing','blocked'].includes(record.status)&&namespaces.has(record.namespace))){
+                                const origin=record.effect?.kind==='set'?record.effect.remote.path:record.path;if(authority.owner(origin)!==job.id)continue;
+                                try{const recovered=await this.mutations.recover(record.namespace,signal,candidate=>candidate.id===record.id);
+                                        for(const settled of recovered){const effect=settled.effect;if(effect?.kind==='set'&&this.queue.all().some(file=>file.path===effect.remote.path&&file.hash===effect.remote.hash))this.queue.delete(effect.remote.path);}}
+                                catch(error){signal.throwIfAborted();const issue=syncIssue(error,'recovery');if(sharedJobFailure(issue))throw error;blockedRows.set(origin,{path:origin,source:job.name,status:'pending',reason:'recovery-review',issue});}
+                        }
+                        const pendingBlocks=this.mutations.store.records().filter(record=>['committing','blocked'].includes(record.status)).flatMap(record=>[record.path,...record.from?[record.from]:[]].map(path=>({path,descendants:true,ancestors:true,reason:'recovery-overlap'})));
+                        const policy=basePolicy.withBlockedTargets([...pendingBlocks,...authority.blocksFor(job.id,observation.state?.namespace),...observation.localBlocks??[]]),pathPolicy=policy.forSources([job.id],compiled.defaultSource,rules,compiled.folders);
+                        const eligible=(path:string)=>{const reason=pathPolicy.blockReason(path);if(reason){blockedRows.set(path,{path,source:job.name,status:'pending',reason});return false;}return pathPolicy.isPathSafe(path)&&pathPolicy.isPathAllowed(path);};
+                        observation.view.setExecutionFilter(eligible);observation.view.setExecutionDirections(['pull']);
+                        if(observation.state&&(authority.bidirectionalOwners.has(job.id)||stateByNamespace.has(observation.state.namespace)))try{await observation.state.ensureWriterVersion();}catch(error){throw new SyncFault('checkpoint',`Drive writer fence failed: ${diagnosticText(error)}`,'session',false,'job');}
+                        const pullPolicy=policy.forSources([job.id],compiled.defaultSource,rules,compiled.folders,['pull']),runner=this.coordinator.executionContext(observation.view,pullPolicy);
+                        const cancel=()=>runner.cancel();signal.addEventListener('abort',cancel,{once:true});this.activeJobRunner=runner;
+                        try{const pull=mode==='retry'?await runner.retryFailed(autoRetry?'auto':'manual',paths,true):mode==='force'?await runner.forceResync(true):await runner.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan',deferQuestions:true,finishing:automaticTrigger==='finishing'});
+                                if(pull){mergeJobStats(stats,pull);const asks=pull.results?.filter(row=>row.reason==='decision-required').map(row=>row.path)??[];if(asks.length)pullQuestions.push({id:job.id,runner,paths:asks});}
+                        }finally{signal.removeEventListener('abort',cancel);this.activeJobRunner=undefined;}
+                        if(signal.aborted||stats.problems?.some(sharedJobFailure))return stats;
+                        if(member.source instanceof GDriveOAuthSource&&authority.bidirectionalOwners.has(job.id)){
+                                if(observation.remoteBlock||authority.writerBlocked(job.id)){
+                                        const issue=observation.remoteBlock??{code:'binding-inverse',message:'Bidirectional mapping is ambiguous; Drive writes are blocked',scope:'source' as const,stage:'preparing' as const,retryable:false};
+                                        stats.failed++;stats.outcome='error';stats.problem=issue.message;stats.problems!.push(issue);
+                                }else{
+                                        const snapshot=member.source.inventorySnapshot!,drivePolicy=policy.forSources([job.id],compiled.defaultSource,rules,compiled.folders,['bidirectional']);
+                                        const localForRemote=(path:string)=>sourceCandidates(path,job.id,rules,defaultSource,map).map(candidate=>resolveFileRule(candidate,rules).remotePath!==undefined?candidate:map(candidate))
+                                                .filter(local=>eligible(local)&&drivePolicy.isPathAllowed(local)&&isPolicyPathIncluded(path,local,compiled));
+                                        const remoteForLocal=(path:string)=>{if(paths&&!paths.includes(path)||!eligible(path))return undefined;const remote=sourcePathForDestination(path,job.id,rules,defaultSource,compiled.folders);return remote&&localForRemote(remote).includes(path)?remote:undefined;};
+                                        const driver=new DriveCoordinator({vault,mutations:this.mutations,state:observation.state!,root:new GoogleDriveRoot(member.source.client,snapshot.root.id,guard),queue:this.queue,signal,auto:mode==='auto'||autoRetry,restoreOnly:mode==='scan',allowQuestions:false,skipQueued:automaticTrigger==='finishing',guard,
+                                                localPaths:async()=>{const scan=await scanVaultTree(vault,{signal,pruneFolder:path=>path==='.git'||path==='.trash'||basePolicy.isProtectedPath(path)});return scan.files.filter(path=>remoteForLocal(path)!==undefined);},
+                                                localForRemote,remoteForLocal,behavior:path=>{const behavior=effectiveBehavior(resolveFileRule(path,rules));return isCovered({level:'fetch',folders:compiled.mirrorFolders??{}},path)?behavior:{...behavior,deletions:'keep'};},
+                                                allowArtifact:(origin,path,remote)=>{const originRemote=sourcePathForDestination(origin,job.id,rules,defaultSource,compiled.folders);return (!paths||paths.includes(origin)||paths.includes(path))&&!!originRemote&&localForRemote(originRemote).includes(origin)
+                                                        &&isPolicyPathIncluded(originRemote,origin,compiled)&&drivePolicy.isArtifactPathAllowed(origin,path)&&isPolicyPathIncluded(remote,path,compiled);},
+                                                ask:(path,localSize,remoteSize)=>this.serializeAsk(()=>{const modal=new ConflictAskModal(this.app,{path,localSize,remoteSize},true);trackModal(modal);return modal.wait(signal);},signal),
+                                                observe:event=>this.makeSyncUI().setStatus('syncing',{stage:event.stage,lastActivityAt:Date.now(),progressText:job.name,bytesTransferred:event.bytes,totalBytes:event.totalBytes}),
+                                        });
+                                        let drive:import('./src/sources/types').SyncStats;try{drive=await driver.run(snapshot.items.filter(item=>!item.file.mimeType.startsWith('application/vnd.google-apps.')));}catch(error){const issue=syncIssue(error,'recovery');drive={...emptyStats(),outcome:signal.aborted?'cancelled':'error',failed:signal.aborted?0:1,problems:signal.aborted?[]:[issue],problem:issue.message};}
+                                        drive.problems=drive.problems?.map(issue=>['checkpoint','checkpoint-cleanup'].includes(issue.code)?{...issue,domain:'job'}:issue);mergeJobStats(stats,drive);
+                                        const asks=drive.results?.filter(row=>row.reason==='decision-required').map(row=>row.path)??[];if(asks.length)driveQuestions.push({id:job.id,driver,paths:asks});
+                                }
+                        }
+                        stats.results!.push(...blockedRows.values());stats.deferredDeletions=(stats.deferredDeletions??0)+blockedRows.size;
+                        stats.pendingAfter=this.queue.all().filter(file=>authority.owner(file.originPath??file.path)===job.id).length;return stats;
+                },async(job,observation,admitSignal)=>{
+                        if(!authority.bidirectionalOwners.has(job.id)||!(byId.get(job.id)!.source instanceof GDriveOAuthSource))return;
+                        await awaitJobObservation(Promise.all([...observedSignals.values()].map(entry=>entry.promise)),admitSignal);guard();
+                        const current=byId.get(job.id)!.source as GDriveOAuthSource;
+                        const claims=[...authority.bidirectionalOwners].map(id=>{const source=byId.get(id)?.source,connection=this.settings.connections?.find(connection=>connection.id===id);
+                                return {connectionId:id,folderId:String(connection?.values.folderId??''),...(source instanceof GDriveOAuthSource?{observed:observedRoots.get(id),client:source.client}:{})};});
+                        try{await verifyDriveRootAuthority(job.id,new GoogleDriveRoot(current.client,current.inventorySnapshot!.root.id,guard),claims,admitSignal);}
+                        catch(error){admitSignal.throwIfAborted();observation.remoteBlock=syncIssue(error,'preparing');}
+                });
+                const statsById=new Map(results.map(result=>[result.job.id,result.stats]));
+                try{
+                        const answer=async(id:string,paths:string[],run:()=>Promise<import('./src/sources/types').SyncStats|null>)=>{
+                                if(signal.aborted||results.some(result=>result.stats.problems?.some(sharedJobFailure)))return;guard();const old=statsById.get(id)!,fresh=await run();if(!fresh)return;
+                                for(const field of ['downloaded','uploaded','updated','deleted','deletedDrive','bytesTransferred','failed'] as const)old[field]=(old[field]??0)+(fresh[field]??0);
+                                old.results=old.results?.filter(row=>row.reason!=='decision-required'||!paths.includes(row.path));old.results!.push(...fresh.results??[]);
+                                old.problems!.push(...fresh.problems??[]);old.deferredConflicts=Math.max(0,(old.deferredConflicts??0)-paths.length)+(fresh.deferredConflicts??0);if(fresh.outcome!=='ok')old.outcome=fresh.outcome;
+                        };
+                        if(mode!=='auto'&&!autoRetry){for(const question of pullQuestions){const cancel=()=>question.runner.cancel();signal.addEventListener('abort',cancel,{once:true});this.activeJobRunner=question.runner;
+                                try{await answer(question.id,question.paths,()=>question.runner.sync({trigger:'manual',forcedPaths:new Set(question.paths),onlyForcedPaths:true}));}finally{signal.removeEventListener('abort',cancel);this.activeJobRunner=undefined;}}
+                                for(const question of driveQuestions)await answer(question.id,question.paths,()=>question.driver.resolveQuestions(question.paths));}
+                        for(const result of results){result.stats.problems=result.stats.problems?.map(issue=>({...issue,jobId:'job:'+result.job.id,connectionId:result.job.id}));mergeJobStats(aggregate,result.stats);}
+                        aggregate.pendingAfter=this.queue.all().filter(file=>members.some(member=>member.id===authority.owner(file.originPath??file.path))).length;aggregate.jobResults=batch.snapshot();
+                        for(const job of aggregate.jobResults){const stats=statsById.get(job.connectionId)!;job.downloaded=stats.downloaded;job.uploaded=stats.uploaded??0;job.deleted=stats.deleted;job.failed=stats.failed;job.attention=(stats.deferredConflicts??0)+(stats.deferredDeletions??0);job.issues=stats.problems??[];job.pending=this.queue.all().filter(file=>authority.owner(file.originPath??file.path)===job.connectionId).length;
+                                if(job.outcome!=='blocked')job.outcome=stats.outcome==='cancelled'?'cancelled':stats.failed?(stats.downloaded||(stats.uploaded??0)||stats.deleted?'partial':'failed'):job.attention||job.pending?'needs-attention':'success';}
+                        this.publishJobs(aggregate.jobResults);aggregate.duration=Date.now()-started;
+                        if(signal.aborted)aggregate.outcome='cancelled';else if(aggregate.problems?.length||aggregate.deferredDeletions)aggregate.outcome='error';
+                        await this.persistEngineState('session-end');this.statusBar.setState(aggregate.failed?'error':aggregate.deferredConflicts||aggregate.deferredDeletions?'conflicts':'idle');return aggregate;
+                }finally{this.activeJobRunner=undefined;try{await source.dispose();}catch(error){console.warn('[VaultSync] Job provider cleanup deferred:',diagnosticText(error));}}
+        }
+
+        private async executeLegacySync(mode:'manual'|'auto'|'retry'|'force'|'scan'='manual',paths?:readonly string[],autoRetry=false,driveControl?:{namespace:string;resolution?:DriveResolution}):Promise<import('./src/sources/types').SyncStats|null> {
                 const source=this.coordinator.getCurrentSource(),compiled=this.effectiveProfilePolicy(this.builtSourceId);
                 const rules=compiled.fileRules??[],hasDrive=rules.some(r=>r.direction==='bidirectional');this.combinedSession=hasDrive;
+                if(!hasDrive&&driveControl)throw new SyncFault('configuration-changed','This Drive binding is no longer active');
                 if(!hasDrive)return mode==='retry'?this.coordinator.retryFailed(autoRetry?'auto':'manual',paths):mode==='force'?this.coordinator.forceResync():this.coordinator.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan'});
                 validateProfileConnections(this.settings.vaultPolicy!,this.settings.profiles??[],this.settings.connections??[]);
                 if(!(source instanceof RoutedSource))throw new SyncFault('routing','Drive requires a routed source','session');
@@ -1865,29 +1986,36 @@ export default class GitSyncPlugin extends Plugin {
                         .map(member=>({...member,source:member.source as GDriveOAuthSource,inventory:(member.source as GDriveOAuthSource).inventorySnapshot!}));
                 const states=new Map<string,DriveStateStore>();
                 for(const member of members){const connection=this.settings.connections?.find(c=>c.id===member.id);const namespace=await driveNamespace(String(connection?.values.accountSub??''),member.inventory.root.id,member.id,compiled);
-                        const state=new DriveStateStore(this.fsAdapter,namespace);await state.load();await this.mutations.recover(namespace,signal);states.set(member.id,state);}
-                const stats=mode==='retry'?await this.coordinator.retryFailed(autoRetry?'auto':'manual',paths,true):mode==='force'?await this.coordinator.forceResync(true):await this.coordinator.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan',deferQuestions:true});
+                        const state=new DriveStateStore(this.fsAdapter,namespace);await state.load();await state.ensureWriterVersion();if(!driveControl)await this.mutations.recover(namespace,signal);states.set(member.id,state);}
+                if(driveControl&&![...states.values()].some(state=>state.namespace===driveControl.namespace))throw new SyncFault('configuration-changed','This Drive history belongs to an inactive account, root or mapping; effects are blocked');
+                const stats=driveControl?null:mode==='retry'?await this.coordinator.retryFailed(autoRetry?'auto':'manual',paths,true):mode==='force'?await this.coordinator.forceResync(true):await this.coordinator.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan',deferQuestions:true});
                 if(signal.aborted||stats?.outcome==='cancelled'||stats?.problems?.some(issue=>issue.scope==='session'))return stats;
                 const aggregate:import('./src/sources/types').SyncStats=stats?structuredClone(stats):{totalFiles:0,downloaded:0,deleted:0,skipped:0,failed:0,bytesTransferred:0,duration:0,conflicts:0,outcome:'ok'};
                 const started=Date.now(),vault=this.makeVaultAdapter(),basePolicy=this.makePolicy(),defaultSource=compiled.defaultSource??'primary';
                 const questions:{driver:DriveCoordinator;paths:string[]}[]=[];
                 const map=(path:string)=>{const f=compiled.folders.filter(f=>f.target&&(!f.path||path===f.path||path.startsWith(f.path+'/'))).sort((a,b)=>b.path.length-a.path.length)[0];return f?computeLocalPath(path,f.path,f):path;};
                 for(const member of members){
+                        if(driveControl&&states.get(member.id)!.namespace!==driveControl.namespace)continue;
                         signal.throwIfAborted();const pathPolicy=basePolicy.forSources([member.id],compiled.defaultSource,rules,compiled.folders,['bidirectional']);
-                        const localForRemote=(path:string)=>sourceCandidates(path,member.id,rules,defaultSource,map).flatMap(candidate=>applyPolicy([{path:candidate,hash:'route',hashAlg:'weak',size:0,resolvedDestination:resolveFileRule(candidate,rules).remotePath!==undefined}],compiled,pathPolicy,[]).transformedManifest.map(entry=>entry.path));
+                        const localForRemote=(path:string)=>sourceCandidates(path,member.id,rules,defaultSource,map).flatMap(candidate=>applyPolicy([{path:candidate,hash:'route',hashAlg:'weak',size:0,resolvedDestination:resolveFileRule(candidate,rules).remotePath!==undefined}],compiled,pathPolicy,[]).transformedManifest.map(entry=>entry.path)).filter(local=>isPolicyPathIncluded(path,local,compiled));
                         const remoteForLocal=(path:string)=>{if(paths&&!paths.includes(path))return undefined;
                                 const remote=sourcePathForDestination(path,member.id,rules,defaultSource,compiled.folders);return remote&&localForRemote(remote).includes(path)?remote:undefined;};
                         const driver=new DriveCoordinator({vault,mutations:this.mutations,state:states.get(member.id)!,root:new GoogleDriveRoot(member.source.client,member.inventory.root.id,()=>{signal.throwIfAborted();if(this.preparedConfigRevision!==this.getConfigurationRevision())throw new SyncFault('configuration-changed','Settings changed during Drive synchronization','session');}),queue:this.queue,
-                                signal,auto:mode==='auto'||autoRetry,restoreOnly:mode==='scan',allowQuestions:false,
+                                signal,auto:mode==='auto'||autoRetry,restoreOnly:mode==='scan',allowQuestions:false,probeOnly:!!driveControl&&!driveControl.resolution,resolution:driveControl?.resolution,
                                 guard:()=>{signal.throwIfAborted();if(this.preparedConfigRevision!==this.getConfigurationRevision())throw new SyncFault('configuration-changed','Settings changed during Drive synchronization','session');},
                                 localPaths:async()=>{const scan=await scanVaultTree(vault,{signal,pruneFolder:p=>p==='.git'||p==='.trash'||basePolicy.isProtectedPath(p)});return scan.files.filter(p=>remoteForLocal(p)!==undefined);},
                                 localForRemote,remoteForLocal,behavior:path=>{const behavior=effectiveBehavior(resolveFileRule(path,rules));
                                         return isCovered({level:'fetch',folders:compiled.mirrorFolders??{}},path)?behavior:{...behavior,deletions:'keep'};},
+                                allowArtifact:(origin,path,remote)=>{
+                                        const originRemote=sourcePathForDestination(origin,member.id,rules,defaultSource,compiled.folders);
+                                        return (!paths||paths.includes(origin)||paths.includes(path))&&!!originRemote&&localForRemote(originRemote).includes(origin)
+                                                &&isPolicyPathIncluded(originRemote,origin,compiled)&&pathPolicy.isArtifactPathAllowed(origin,path)&&isPolicyPathIncluded(remote,path,compiled);
+                                },
                                 ask:(path,localSize,remoteSize)=>this.serializeAsk(()=>{const modal=new ConflictAskModal(this.app,{path,localSize,remoteSize},true);trackModal(modal);return modal.wait(signal);},signal),
                                 observe:event=>this.makeSyncUI().setStatus('syncing',{stage:event.stage,lastActivityAt:Date.now(),progressText:member.name,bytesTransferred:event.bytes,totalBytes:event.totalBytes}),
                         });
                         this.makeSyncUI().setStatus('syncing',{stage:'apply',progressText:member.name,lastActivityAt:Date.now()});
-                        const result=await driver.run(member.inventory.items.filter(item=>item.file.mimeType!=='application/vnd.google-apps.folder'));
+                        const result=await driver.run(member.inventory.items.filter(item=>!item.file.mimeType.startsWith('application/vnd.google-apps.')));
                         const questionPaths=result.results?.filter(row=>row.reason==='decision-required').map(row=>row.path)??[];if(questionPaths.length)questions.push({driver,paths:questionPaths});
                         for(const field of ['totalFiles','downloaded','uploaded','deleted','deletedDrive','skipped','failed','bytesTransferred','conflicts','deferredConflicts','deferredDeletions'] as const)aggregate[field]=(aggregate[field]??0)+(result[field]??0);
                         aggregate.problems=[...aggregate.problems??[],...result.problems??[]];aggregate.results=[...aggregate.results??[],...result.results??[]];aggregate.followUp ||= result.followUp;
@@ -1912,7 +2040,7 @@ export default class GitSyncPlugin extends Plugin {
                 }
                 aggregate.duration+=Date.now()-started;
                 const runIds=source.executionMembers().map(member=>member.id),runPolicy=basePolicy.forSources(runIds,compiled.defaultSource,rules,compiled.folders);
-                aggregate.pendingAfter=this.queue.all().filter(file=>runPolicy.isPathAllowed(file.path)&&!effectiveBehavior(resolveFileRule(file.path,rules)).protected).length;
+                aggregate.pendingAfter=this.queue.all().filter(file=>(file.originPath?runPolicy.isArtifactPathAllowed(file.originPath,file.path):runPolicy.isPathAllowed(file.path))&&!effectiveBehavior(resolveFileRule(file.originPath??file.path,rules)).protected).length;
                 if(signal.aborted)aggregate.outcome='cancelled';
                 else if(!aggregate.failed&&!aggregate.pendingAfter&&!aggregate.notAttempted&&!aggregate.problems?.length)aggregate.outcome=aggregate.deferredDeletions?'error':'ok';
                 await this.persistEngineState('session-end');this.statusBar.setState(aggregate.outcome==='error'?'error':aggregate.deferredConflicts||aggregate.deferredDeletions?'conflicts':'idle');
@@ -1936,7 +2064,7 @@ export default class GitSyncPlugin extends Plugin {
         // ============================================================
 
         /** Старт планировщика: читает autoSyncInterval из настроек и запускает.
-         *  Идемпотентен — повторный вызов пересоздаёт экземпляр (старый снимается). */
+         *  Идемпотентен — сохраняет экземпляры и потреблённый startup cycle. */
         private wakeAutoSync():void {for(const scheduler of this.autoSchedulers?.values()??[])scheduler.wake();}
         private automaticSourceIds():string[]{
                 const policy=this.effectiveProfilePolicy(this.builtSourceId),rules=policy.fileRules??[];
@@ -1945,22 +2073,35 @@ export default class GitSyncPlugin extends Plugin {
                 ids.delete('unassigned');return [...ids];
         }
         startAutoSync(): void {
-                if(!this.queue)return;this.autoSchedulers??=new Map();
-                const ids=this.automaticSourceIds(),connections=this.settings.connections??[];
-                const inherit=ids.filter(id=>{const value=connections.find(c=>c.id===id)?.auto;return value===undefined||value==='inherit';});
-                const jobs=[{key:'inherit',ids:inherit,interval:this.settings.autoSyncInterval??'off'},...ids.flatMap(id=>{
-                        const auto=connections.find(c=>c.id===id)?.auto;return auto&&auto!=='inherit'?[{key:id,ids:[id],interval:auto}]:[];
-                })];
-                for(const scheduler of this.autoSchedulers.values())scheduler.stop();
-                for(const job of jobs){
-                        let scheduler=this.autoSchedulers.get(job.key);
+                if(!this.queue||this.unloading||this.app?.workspace&&!this.autoReady)return;
+                this.autoSchedulers??=new Map();this.autoJobBlocks??=new Map();
+                const ids=this.automaticSourceIds(),selected=new Set(ids);
+                for(const [id,scheduler] of this.autoSchedulers)if(!selected.has(id))scheduler.stop();
+                for(const id of ids){
+                        const connection=this.settings.connections?.find(connection=>connection.id===id),interval=resolveSchedule(connection?.auto,this.settings.autoSyncInterval??'off');
+                        let scheduler=this.autoSchedulers.get(id);const reenable=!!scheduler&&scheduler.getInterval()==='off'&&interval!=='off';
                         if(!scheduler){scheduler=new Scheduler({queue:this.queue,onAutoRetry:()=>{},
-                                canRun:()=>!this.autoBlockedReason&&!this.sessionOwned&&!this.coordinator?.isRunning()&&navigator.onLine&&isSyncAllowed(this.governance)&&vamAllowsWork(this),
-                                onAutoTick:()=>this.runAutoSession(job.key==='inherit'?this.automaticSourceIds().filter(id=>{const auto=this.settings.connections?.find(c=>c.id===id)?.auto;return auto===undefined||auto==='inherit';}):[job.key],scheduler?.snapshot().lastAutoTickAt===null),
-                                onStateChange:()=>this.popoverView?.update(this.snapshotPopoverState())});this.autoSchedulers.set(job.key,scheduler);}
-                        if(job.ids.length){scheduler.start(job.interval as SchedulerInterval);if(this.autoPaused)scheduler.pause();}
-                        if(job.key==='inherit')this.scheduler=scheduler;
+                                canRun:()=>!this.unloading&&!this.autoBlockedReason&&!this.autoJobBlocks?.has(id)&&!this.sessionOwned&&!this.coordinator?.isRunning()&&navigator.onLine&&isSyncAllowed(this.governance)&&vamAllowsWork(this),
+                                onAutoTick:context=>this.runAutoSession([id],context?.initialCheck??scheduler!.snapshot().lastAutoTickAt===null,context),
+                                onStateChange:()=>{this.emitJobProjection();this.popoverView?.update(this.snapshotPopoverState());}});this.autoSchedulers.set(id,scheduler);}
+                        scheduler.start(interval,undefined,reenable);if(this.autoPaused)scheduler.pause();
                 }
+                this.scheduler=[...this.autoSchedulers.values()].find(scheduler=>scheduler.getInterval()!=='off');
+        }
+
+        private publishJobs(states:JobRunResult[]):void{const known=new Set([...(this.settings.connections??[]).map(connection=>connection.id),...states.map(state=>state.connectionId),'primary']);
+                const merged=new Map((this.jobRuns??[]).filter(state=>known.has(state.connectionId)).map(state=>[state.connectionId,state]));for(const state of states)merged.set(state.connectionId,structuredClone(state));this.jobRuns=[...merged.values()];this.emitJobProjection();}
+        private emitJobProjection():void{this.notifyVaultSync();for(const listener of this.jobSubscribers??[]){try{listener();}catch{console.warn('[VaultSync] job view listener failed');}}}
+        subscribeJobs(listener:()=>void):()=>void{this.jobSubscribers??=new Set();this.jobSubscribers.add(listener);return()=>this.jobSubscribers.delete(listener);}
+
+        automaticJobSnapshots():JobProjection[]{
+                return this.automaticSourceIds().map(id=>{
+                        const connection=this.settings.connections?.find(connection=>connection.id===id),configuredAuto=connection?.auto??'inherit',scheduler=this.autoSchedulers?.get(id);
+                        const interval=resolveSchedule(configuredAuto,this.settings.autoSyncInterval??'off'),fallback=new Scheduler({queue:this.queue,onAutoRetry:()=>{},onAutoTick:()=>{}}).snapshot();
+                        const schedule=scheduler?.snapshot()??{...fallback,interval};
+                        return {jobId:'job:'+id,connectionId:id,name:connection?.name??id,kind:connection?.kind??this.builtKind??'git',configuredAuto,
+                                schedule:{...schedule,blockedReason:this.autoBlockedReason??this.autoJobBlocks?.get(id)??schedule.blockedReason},run:this.jobRuns?.find(run=>run.connectionId===id)&&structuredClone(this.jobRuns.find(run=>run.connectionId===id)!)};
+                });
         }
 
         /** Переконфигурация интервала (вызывается из SettingsTab.onChange). */
@@ -1980,7 +2121,7 @@ export default class GitSyncPlugin extends Plugin {
         /** Снимок состояния для popover. null — scheduler не инициализирован
          *  или интервал 'off' (popover не рендерит scheduler-секцию). */
         schedulerSnapshot(): SchedulerSnapshot | null {
-                const states=[...this.autoSchedulers.values()].map(s=>s.snapshot()).filter(s=>s.interval!=='off');
+                const states=this.automaticJobSnapshots().map(job=>job.schedule).filter(schedule=>schedule.interval!=='off');
                 if(!states.length)return null;
                 const state=states.sort((a,b)=>(a.nextTickAt??Infinity)-(b.nextTickAt??Infinity))[0];
                 return {...state,blockedReason:this.autoBlockedReason,paused:states.every(s=>s.paused),pending:states.some(s=>s.pending),running:states.some(s=>s.running)};
@@ -1988,18 +2129,24 @@ export default class GitSyncPlugin extends Plugin {
 
         /** Background pull keeps its existing deletion guards. The explicitly
          *  bidirectional Drive profile propagates confirmed tracked deletions through trash. */
-        private async runAutoSession(sourceIds?:readonly string[],initialCheck=false): Promise<import('./src/core/scheduler').AutoTickResult> {
+        private async runAutoSession(sourceIds?:readonly string[],initialCheck=false,context?:AutoTickContext): Promise<import('./src/core/scheduler').AutoTickResult> {
                 if(!sourceIds?.length)return {accepted:true};
                 const stats=await this.runSession('auto', async () => {
                         await this.prepareSession(sourceIds);
-                        return await this.executeSync('auto');
+                        return await this.executeSync('auto',undefined,false,undefined,context?.trigger);
                 },sourceIds);
-                if(stats?.outcome==='cancelled')return {accepted:true};
-                const compiled=this.effectiveProfilePolicy(this.builtSourceId),due=this.queue.all().filter(file=>!file.poisoned&&sourceIds.includes(resolveFileRule(file.path,compiled.fileRules).source??compiled.defaultSource??''));
+                if(stats?.outcome==='cancelled')return {accepted:true,cancelled:true,outcome:'cancelled'};
+                const compiled=this.effectiveProfilePolicy(this.builtSourceId),due=this.queue.all().filter(file=>!file.poisoned&&sourceIds.includes(resolveFileRule(file.originPath??file.path,compiled.fileRules).source??compiled.defaultSource??''));
                 const retryAt=due.length?Math.min(...due.map(file=>file.nextRetryAt)):undefined;
                 const retryableFailure=stats?.problems?.some(issue=>issue.retryable&&(issue.scope==='source'||issue.scope==='session'));
                 const transferred=Boolean(stats&&(stats.downloaded||stats.uploaded||stats.updated||stats.deleted));
-                return {accepted:stats!==null,retryAt:retryAt??((retryableFailure||!stats&&!this.autoBlockedReason)?Date.now()+60_000:undefined),followUp:stats?.followUp||stats?.outcome==='ok'&&(initialCheck||transferred),retryableFailure};
+                const job=stats?.jobResults?.find(job=>sourceIds.includes(job.connectionId)),fatal=stats?.problems?.some(sharedJobFailure);
+                const block=job?.issues.find(issue=>!issue.retryable&&['auth-required','root-unavailable','source-unavailable','checkpoint','checkpoint-cleanup'].includes(issue.code));
+                if(block){this.autoJobBlocks??=new Map();this.autoJobBlocks.set(job!.connectionId,block.message);}
+                const retryHint=job?.issues.filter(issue=>issue.retryable).reduce<number|undefined>((at,issue)=>Math.min(at??Infinity,issue.retryAt??Date.now()+60_000),undefined);
+                return {accepted:stats!==null,retryAt:block||fatal?undefined:retryAt??retryHint??((retryableFailure||!stats&&!this.autoBlockedReason)?Date.now()+60_000:undefined),
+                        followUp:!fatal&&!block&&Boolean(stats&&(stats.followUp||transferred||initialCheck&&!stats.failed)),retryableFailure,
+                        outcome:job?.outcome??stats?.outcome,blockedReason:block?.message};
         }
 
         async retryFailedFiles(trigger:'manual'|'auto'='manual',paths?:readonly string[]): Promise<void> {
@@ -2055,14 +2202,14 @@ export default class GitSyncPlugin extends Plugin {
          *  здесь — только старт/длительность/триггер/движок и top-3 ошибок. */
         private async runSession(trigger: 'manual' | 'auto' | 'retry' | 'scan' | 'force', fn: () => Promise<import('./src/sources/types').SyncStats | null>, sourceIds?: readonly string[]): Promise<import('./src/sources/types').SyncStats | null> {
                 if (this.sessionOwned || this.coordinator?.isRunning()) { new Notice(i18n.t.noticeSyncInProgress); return null; }
-                if(trigger!=='auto')this.autoBlockedReason=undefined;
+                if(trigger!=='auto'){this.autoBlockedReason=undefined;this.autoJobBlocks?.clear();}
                 this.proposedLastSync=undefined;this.sessionOwned = true; this.currentTrigger = trigger; this.lastBlockReason = undefined;
                 this.sessionController = new AbortController();
                 this.requestedSources = sourceIds?.map(id => this.settings.connections?.find(c => c.id === id)?.name ?? id);
                 const startedAt = Date.now();
                 this.statusBar?.setState('syncing', { phase: -1, pendingCount: 0, bytesTransferred: 0, totalBytes: 0, progressText: i18n.getLocale() === 'ru' ? 'Подготовка запуска…' : 'Preparing run…' });
                 if (trigger !== 'auto' && this.app && this.statusBar && this.queue && this.journal) this.openStatusPopover();
-                try {const stats=await this.runOwnedSession(trigger, fn);if(stats?.problems?.some(issue=>(issue.scope==='session'||issue.code==='auth-required')&&!issue.retryable))this.autoBlockedReason=stats.problem;return stats;}
+                try {const stats=await this.runOwnedSession(trigger, fn);if(stats?.problems?.some(issue=>!issue.retryable&&(stats.jobResults?sharedJobFailure(issue):issue.scope==='session'||issue.code==='auth-required')))this.autoBlockedReason=stats.problem;return stats;}
                 catch (error) {
                         if(!this.sessionController.signal.aborted){this.lastBlockReason=diagnosticText(error);this.statusBar?.setState('error');new Notice(i18n.t.noticeSyncFailed(this.lastBlockReason),10000);}
                         else this.statusBar?.setState('idle');
@@ -2228,6 +2375,7 @@ export default class GitSyncPlugin extends Plugin {
                         engineKind: this.builtKind ?? null,
                         lastSyncAt: this.settings.lastSyncTime ?? 0,
                         pendingCount: this.queue?.size() ?? 0,
+                        jobs:{version:1,items:this.automaticJobSnapshots()},
                         // [VAM] состояние гварда в публичном снимке (аддитивное
                         // поле — обратно совместимо для сторонних потребителей
                         // window.vaultSync). Гварда нет (до onload/после выгрузки) →
@@ -2253,14 +2401,14 @@ export default class GitSyncPlugin extends Plugin {
                 if(!this.journal || (!stats&&!this.lastBlockReason&&!this.sessionController?.signal.aborted))return;
                 const activeIds=this.coordinator?.getCurrentSource().sources?.map(source=>source.id);
                 const compiled=stats&&activeIds?this.effectiveProfilePolicy(this.builtSourceId):undefined;
-                const failures=stats&&stats.failed>0?this.queue.all().filter(file=>!activeIds||activeIds.includes(resolveFileRule(file.path,compiled?.fileRules).source??compiled?.defaultSource??'')):[];
+                const failures=stats&&stats.failed>0?this.queue.all().filter(file=>!activeIds||activeIds.includes(resolveFileRule(file.originPath??file.path,compiled?.fileRules).source??compiled?.defaultSource??'')):[];
                 const entry:JournalEntry={
                         startedAt,durationMs:stats?.duration??Date.now()-startedAt,
                         engine:this.builtKind,mirrorLevel:this.currentMirrorLevel(),trigger,
                         outcome:stats?.outcome??(this.sessionController?.signal.aborted?'cancelled':'error'),sources:stats?this.coordinator?.getCurrentSource().sources?.map(source=>source.name):this.requestedSources,
                         profilesMode:Boolean(this.settings.profiles?.length),blockedReason:stats?.problem??(stats?undefined:this.lastBlockReason),attemptOnly:!stats,
                         downloaded:stats?.downloaded??0,uploaded:stats?.uploaded??0,deletedDrive:stats?.deletedDrive??0,updated:stats?.updated??0,received:stats?.received??0,
-                        trace:stats?.trace,traceDropped:stats?.traceDropped,sessionId:stats?.sessionId,build:BUILD_TAG,platform:Platform.isDesktopApp?'desktop':'mobile',pendingBefore:stats?.pendingBefore,pendingAfter:stats?.pendingAfter,retryScheduled:stats?.retryScheduled,blocked:stats?.blocked,networkBytes:stats?.networkBytes,problems:stats?.problems,notAttempted:stats?.notAttempted,
+                        jobResults:stats?.jobResults,trace:stats?.trace,traceDropped:stats?.traceDropped,sessionId:stats?.sessionId,build:BUILD_TAG,platform:Platform.isDesktopApp?'desktop':'mobile',pendingBefore:stats?.pendingBefore,pendingAfter:stats?.pendingAfter,retryScheduled:stats?.retryScheduled,blocked:stats?.blocked,networkBytes:stats?.networkBytes,problems:stats?.problems,notAttempted:stats?.notAttempted,
                         deletedLight:stats?.deleteLight??0,deletedFull:stats?.deleteFull??0,overwritten:stats?.overwritten??0,
                         conflicts:stats?.conflicts??0,skipped:stats?.skipped??0,errors:stats?.failed??0,
                         deferredDeletions:stats?.deferredDeletions??0,blockedDeletions:stats?.blockedDeletions??0,deferredConflicts:stats?.deferredConflicts??0,
@@ -2272,7 +2420,7 @@ export default class GitSyncPlugin extends Plugin {
 
         private cancelSync(): void {
                 this.sessionController?.abort();
-                this.coordinator?.cancel();
+                this.coordinator?.cancel();this.activeJobRunner?.cancel();
                 this.sessionProgress={...this.sessionProgress,stage:'cancelling'};this.popoverView?.update(this.snapshotPopoverState());
                 new Notice(i18n.t.noticeCancelling);
         }
@@ -2294,6 +2442,17 @@ export default class GitSyncPlugin extends Plugin {
                 }finally{await source.dispose?.();}
         }
 
+        openDriveInboxModal():void {
+                const control=async(namespace:string,path:string,resolution?:DriveResolution)=>{
+                        const stats=await this.runSession('retry',async()=>{await this.prepareSession();return this.executeSync('retry',[path],false,{namespace,resolution});});
+                        if(!stats||stats.failed||stats.outcome==='cancelled'||!stats.results?.some(row=>row.path===path&&(!resolution||row.reason==='drive-restored-known')))
+                                throw Error(stats?.problem??'Drive state changed or the binding is unavailable; refresh before continuing');
+                };
+                const modal=new DriveLifecycleModal(this.app,{load:()=>driveLifecycleHistory(this.fsAdapter),
+                        probe:(namespace,path)=>control(namespace,path),restore:resolution=>control(resolution.namespace,resolution.entry.path,resolution),
+                        isRunning:()=>this.sessionOwned||this.coordinator.isRunning()});trackModal(modal);modal.open();
+        }
+
         openRecoveryModal():void {
                 const vault=this.makeVaultAdapter();
                 const withOwnership=async<T>(fn:(guard:()=>void)=>Promise<T>):Promise<T>=>{
@@ -2303,9 +2462,10 @@ export default class GitSyncPlugin extends Plugin {
                         finally{this.sessionOwned=false;this.wakeAutoSync();}
                 };
                 const modal=new RecoveryModal(this.app,{
+                        driveInbox:()=>this.openDriveInboxModal(),
                         load:async()=>{await this.mutations.store.load();const usage=await this.mutations.recovery.usage();return {records:this.mutations.store.records(),used:usage.used,limit:usage.limit};},
-                        retention:async()=>{await this.mutations.store.load();const before=Date.now()-30*24*60*60*1000,ids=this.mutations.store.prunable(before).map(record=>record.id),refs=this.mutations.store.records().filter(record=>!ids.includes(record.id)).flatMap(record=>record.recovery?[record.recovery]:[]);return {before,ids,objects:await this.mutations.recovery.unreferencedUsage(refs,before)};},
-                        prune:preview=>withOwnership(async guard=>{guard();await this.mutations.store.prune(preview.before,preview.ids);guard();const refs=[...this.mutations.store.records().flatMap(record=>record.recovery?[record.recovery]:[]),...await driveRecoveryReferences(this.fsAdapter)];await this.mutations.recovery.collectUnreferenced(refs,preview.before);}),
+                        retention:async()=>{await this.mutations.store.load();const before=Date.now()-30*24*60*60*1000,ids=this.mutations.store.prunable(before).map(record=>record.id),refs=[...this.mutations.store.records().filter(record=>!ids.includes(record.id)).flatMap(record=>record.recovery?[record.recovery]:[]),...await driveRecoveryReferences(this.fsAdapter,this.mutations.recovery)];return {before,ids,objects:await this.mutations.recovery.unreferencedUsage(refs,before)};},
+                        prune:preview=>withOwnership(async guard=>{guard();await this.mutations.store.prune(preview.before,preview.ids);guard();const refs=[...this.mutations.store.records().flatMap(record=>record.recovery?[record.recovery]:[]),...await driveRecoveryReferences(this.fsAdapter,this.mutations.recovery)];await this.mutations.recovery.collectUnreferenced(refs,preview.before);}),
                         verify:async id=>{await this.mutations.store.load();const record=this.mutations.store.records().find(r=>r.id===id);if(!record?.recovery)throw Error('Copy unavailable');await this.mutations.recovery.verify(record.recovery);},
                         export:async id=>{
                                 await this.mutations.store.load();const record=this.mutations.store.records().find(r=>r.id===id);if(!record?.recovery)throw Error('Copy unavailable');
@@ -2603,8 +2763,11 @@ export default class GitSyncPlugin extends Plugin {
         private async assertEditorSaved(path:string):Promise<void> {
                 const leaves=this.app.workspace?.getLeavesOfType('markdown')??[];
                 for(const leaf of leaves){const view=leaf.view as unknown as {file?:{path:string};editor?:{getValue():string};data?:string};
-                        if(view.file?.path.normalize('NFC').toLowerCase()===normalizePath(path).normalize('NFC').toLowerCase()&&view.editor&&view.editor.getValue()!==await this.app.vault.adapter.read(normalizePath(path)))
-                                throw new SyncFault('unsaved-editor',`Save or close the editor before syncing: ${path}`);
+                        if(view.file?.path.normalize('NFC').toLowerCase()!==normalizePath(path).normalize('NFC').toLowerCase()||!view.editor)continue;
+                        if(!(await this.app.vault.adapter.exists(normalizePath(path))))throw new SyncFault('unsaved-editor',`Close or restore the missing file's editor before syncing: ${path}`);
+                        let saved:string;try{saved=await this.app.vault.adapter.read(normalizePath(path));}
+                        catch{throw new SyncFault('local-read',`The saved editor version cannot be read; original retained: ${path}`);}
+                        if(view.editor.getValue()!==saved)throw new SyncFault('unsaved-editor',`Save or close the editor before syncing: ${path}`);
                 }
         }
         private async exportSyncDiagnostics():Promise<void>{
@@ -2957,18 +3120,7 @@ class GitSyncSettingTab extends PluginSettingTab {
                 containerEl.createEl('h4', { text: t.diag.autoSection });
                 {
                         const autoDiv = containerEl.createDiv({ cls: 'setting-item-description' });
-                        const interval = this.plugin.settings.autoSyncInterval ?? 'off';
-                        const intervalText = interval === 'off' ? t.autoOff
-                                : interval === 'startup-only' ? t.autoStartupOnly
-                                : interval === '15m' ? t.auto15m
-                                : interval === '30m' ? t.auto30m
-                                : interval === '1h' ? t.auto1h
-                                : t.auto2h;
-                        const paused = this.plugin.schedulerSnapshot()?.paused ?? false;
-                        autoDiv.createEl('span', {
-                                cls: paused ? 'mod-warning' : 'mod-muted',
-                                text: `${intervalText}${paused ? ` · ${t.autoPausedState}` : ''}`,
-                        });
+                        autoDiv.append(jobCards(this.plugin.automaticJobSnapshots()));
                 }
 
                 // --- [W5-T01] Governance (fail-closed manager auth) ---

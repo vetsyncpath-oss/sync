@@ -10,7 +10,9 @@
 //      COM1..COM9, LPT1..LPT9) — раньше 'notes/CON' проходил валидацию, а
 //      запись на Windows молча падала с невнятной ошибкой файловой системы;
 //   2) isPathAllowed первым делом отклоняет конфликт-копии (*.conflict-*):
-//      они не синхронизируются ни в одну сторону (§9.4). Как orphan они не
+//      canonical/pull pipeline исключает их (§9.4). S0b принимает verified
+//      Drive artifacts отдельным receiver через isArtifactPathAllowed;
+//      marker не обходит hard guards. Как orphan они не
 //      удаляются автоматически: diff работает по кэшу, конфликт-копий в нём
 //      нет (забота вызывающего — не класть их в кэш);
 //   3) obsidian'овский normalizePath заменён локальной normalize (ядро core/
@@ -29,6 +31,7 @@ import { destinationIsRouted } from './source-bindings';
 import type { FolderPolicy } from './policy';
 /** Опции политики путей (в main.ts — поля settings). */
 export interface PathPolicyOptions {
+        blockedTargets?:readonly PathBlock[];
         syncMode: 'config-only' | 'full-vault';
         allowedFolders: string;    // многострочник
         ignoredFolders: string;    // многострочник
@@ -38,6 +41,7 @@ export interface PathPolicyOptions {
         protectedPaths?: readonly string[];
         executionSources?: { ids: string[]; defaultSource?: string; rules: FileRule[]; folders?:FolderPolicy[]; directions?:('pull'|'bidirectional')[] };
 }
+export interface PathBlock {path:string;descendants?:boolean;ancestors?:boolean;reason:string}
 
 /** Расширения, не синхронизируемые никогда (порт из main.ts). */
 const BLOCKED_EXTENSIONS: readonly string[] = [
@@ -72,21 +76,30 @@ function hasWindowsReservedName(path: string): boolean {
         });
 }
 
+interface BlockIndex {exact:Map<string,string>;descendants:Map<string,string>}
 export class PathPolicy {
         /** Алиасы модульных констант (контракт требует static; значения — порт из main.ts). */
         static readonly BLOCKED_EXTENSIONS: readonly string[] = BLOCKED_EXTENSIONS;
         static readonly SCRIPT_EXTENSIONS: readonly string[] = SCRIPT_EXTENSIONS;
 
         private readonly opts: PathPolicyOptions;
+        private readonly blockIndex:BlockIndex;
 
-        constructor(opts: PathPolicyOptions) {
+        constructor(opts: PathPolicyOptions,reuseIndex?:BlockIndex) {
                 // Защитная копия: политика фиксирует снимок настроек на момент
                 // создания (в main.ts isPathAllowed читал живой this.settings).
-                this.opts = { ...opts, protectedPaths: [...(opts.protectedPaths ?? [])], executionSources: opts.executionSources && structuredClone(opts.executionSources) };
+                this.opts = { ...opts, blockedTargets:reuseIndex?opts.blockedTargets:structuredClone(opts.blockedTargets??[]),protectedPaths: [...(opts.protectedPaths ?? [])], executionSources: opts.executionSources && structuredClone(opts.executionSources) };
+            this.blockIndex=reuseIndex??{exact:new Map(),descendants:new Map()};
+            if(!reuseIndex)for(const block of this.opts.blockedTargets??[]){const root=block.path.normalize('NFC').toLowerCase();this.blockIndex.exact.set(root,block.reason);if(block.descendants)this.blockIndex.descendants.set(root,block.reason);
+                if(block.ancestors){const parts=root.split('/');for(let i=1;i<parts.length;i++)this.blockIndex.exact.set(parts.slice(0,i).join('/'),block.reason);}}
         }
-        snapshot(): PathPolicy { return new PathPolicy(this.opts); }
+        snapshot(): PathPolicy { return new PathPolicy(this.opts,this.blockIndex); }
+        withBlockedTargets(blocks:readonly PathBlock[]):PathPolicy{return new PathPolicy({...this.opts,blockedTargets:[...this.opts.blockedTargets??[],...blocks]});}
+        blockReason(path:string):string|undefined{const key=path.normalize('NFC').toLowerCase(),exact=this.blockIndex.exact.get(key);if(exact)return exact;const parts=key.split('/');
+                for(let i=1;i<=parts.length;i++){const reason=this.blockIndex.descendants.get(parts.slice(0,i).join('/'));if(reason)return reason;}return undefined;}
+
         forSources(ids: readonly string[], defaultSource: string | undefined, rules: readonly FileRule[],folders:readonly FolderPolicy[]=[],directions?:('pull'|'bidirectional')[]): PathPolicy {
-                return new PathPolicy({ ...this.opts, executionSources: { ids: [...ids], defaultSource, rules: structuredClone([...rules]),folders:structuredClone([...folders]),directions } });
+                return new PathPolicy({ ...this.opts, executionSources: { ids: [...ids], defaultSource, rules: structuredClone([...rules]),folders:structuredClone([...folders]),directions } },this.blockIndex);
         }
 
         /**
@@ -115,6 +128,7 @@ export class PathPolicy {
          * отдельная ответственность вызывающего до записи на диск).
          */
         isPathAllowed(rawPath: string): boolean {
+                if(this.blockReason(rawPath))return false;
                 if (!this.isInventoryPathAllowed(rawPath)) return false;
                 const run = this.opts.executionSources;
                 if (run) {
@@ -127,20 +141,27 @@ export class PathPolicy {
         }
 
         /** Raw inventory paths are routed before the final destination's run ownership is checked. */
-        isInventoryPathAllowed(rawPath: string): boolean {
+        isInventoryPathAllowed(rawPath: string): boolean { return this.inventoryAllowed(rawPath,false); }
+
+        /** Only a separately verified Drive lineage may inherit the origin's named rule. Hard guards apply to both paths. */
+        isArtifactPathAllowed(originPath:string,artifactPath:string):boolean {
+                return !this.blockReason(artifactPath)&&this.isPathSafe(originPath)&&this.isPathSafe(artifactPath)&&this.isPathAllowed(originPath)
+                        &&this.inventoryAllowed(artifactPath,true);
+        }
+        private inventoryAllowed(rawPath:string,artifact:boolean):boolean {
                 const path = this.normalize(rawPath);
                 if (this.isProtectedPath(path)) return false;
                 if(path.normalize('NFC').toLowerCase()==='.trash'||path.normalize('NFC').toLowerCase().startsWith('.trash/'))return false;
                 // [3-8б] Конфликт-копии не синхронизируются ни в одну сторону —
                 // проверка ПЕРВОЙ, до любых флагов и режимов (дизайн §9.4).
-                if (this.isConflictCopy(path)) return false;
+                if (!artifact && this.isConflictCopy(path)) return false;
                 const filename = path.split('/').pop() || '';
                 const ext = filename.includes('.') ? filename.slice(filename.lastIndexOf('.')).toLowerCase() : '';
                 if (BLOCKED_EXTENSIONS.includes(ext)) return false;
                 if (this.opts.syncMode === 'config-only') {
                         if (!path.startsWith('.obsidian/')) return false;
                 } else {
-                        if (path.startsWith('.git/')) return false;
+                        if (path.normalize('NFC').toLowerCase()==='.git'||path.normalize('NFC').toLowerCase().startsWith('.git/')) return false;
                         if (this.opts.ignoredFolders) {
                                 const ignored = this.opts.ignoredFolders.split('\n').map(p => p.trim()).filter(p => p);
                                 if (this.folderMatch(path, ignored)) return false;

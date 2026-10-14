@@ -50,3 +50,18 @@ test('refresh cannot rotate credentials or cache access for a different account'
         {fetch:async url=>response(200,url.includes('/userinfo')?{sub:'WRONG'}:{access_token:'NEW',expires_in:3600,refresh_token:'ROTATED'})},Date.now,'EXPECTED');
     await assert.rejects(()=>manager.getToken(),/identity changed/);assert.equal(writes,0);
 });
+test('refresh timeout releases the shared request and ignores a late credential rotation',async()=>{
+    let release!:(value:any)=>void,calls=0,writes=0,discarded=0;
+    const manager=new GoogleTokenManager({clientId:'test'},'ref',{getSecret:()=> 'REFRESH',setSecret:()=>writes++},
+        {fetch:async()=>{calls++;if(calls===1)return new Promise(resolve=>release=resolve);return response(200,{access_token:'FRESH',expires_in:3600});}},Date.now,undefined,25);
+    await assert.rejects(()=>manager.getToken(),error=>{const issue=syncIssue(error,'preparing');return issue.code==='network'&&issue.retryable;});
+    assert.equal(await manager.getToken(),'FRESH');
+    release({...response(200,{access_token:'LATE',refresh_token:'LATE_ROTATION',expires_in:3600}),discard:()=>discarded++});
+    for(let i=0;i<8;i++)await Promise.resolve();
+    assert.equal(writes,0);assert.equal(discarded,1);assert.equal(await manager.getToken(),'FRESH');assert.equal(calls,2);
+});
+test('Google body cancellation completes even when the underlying response ignores abort',async()=>{
+    const controller=new AbortController();let reading!:()=>void;const started=new Promise<void>(resolve=>reading=resolve);
+    const result=googleJson({fetch:async()=>({...response(200,{}),text:async()=>{reading();return new Promise<string>(()=>{});}})},'https://oauth2.googleapis.com/token',{signal:controller.signal});
+    await started;controller.abort();await assert.rejects(result,{name:'AbortError'});
+});

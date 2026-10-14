@@ -1,0 +1,273 @@
+[
+  {
+    "probe": "single binary file",
+    "result": {
+      "ok": true,
+      "count": 1,
+      "excluded": 0,
+      "completeness": "complete",
+      "diagnostics": [],
+      "execution": {
+        "ok": true,
+        "count": 1
+      }
+    }
+  },
+  {
+    "probe": "single file inside a plugin folder",
+    "result": {
+      "ok": true,
+      "files": [
+        ".obsidian/plugins/example/main.js"
+      ],
+      "diagnostics": []
+    }
+  },
+  {
+    "probe": "single plugin file repeated across API pages",
+    "result": {
+      "ok": true,
+      "files": [
+        ".obsidian/plugins/example/main.js"
+      ],
+      "diagnostics": [
+        "repeated-object"
+      ]
+    }
+  },
+  {
+    "probe": "one file ID repeated across listing pages",
+    "result": {
+      "ok": true,
+      "count": 1,
+      "excluded": 0,
+      "completeness": "complete",
+      "diagnostics": [
+        "repeated-object"
+      ],
+      "execution": {
+        "ok": true,
+        "count": 1
+      }
+    }
+  },
+  {
+    "probe": "two distinct IDs with one name",
+    "result": {
+      "ok": true,
+      "count": 2,
+      "excluded": 0,
+      "completeness": "complete",
+      "diagnostics": [
+        "duplicate-name"
+      ],
+      "execution": {
+        "ok": false,
+        "code": "path-collision",
+        "message": "Drive path collision: note.md (IDs one, two; parents root, root)"
+      }
+    }
+  },
+  {
+    "probe": "binary plus excluded Google native object with one name",
+    "result": {
+      "ok": true,
+      "count": 2,
+      "excluded": 1,
+      "completeness": "complete",
+      "diagnostics": [
+        "duplicate-name"
+      ],
+      "execution": {
+        "ok": true,
+        "count": 1
+      }
+    }
+  },
+  {
+    "probe": "case alias",
+    "result": {
+      "ok": true,
+      "count": 2,
+      "excluded": 0,
+      "completeness": "complete",
+      "diagnostics": [
+        "target-alias"
+      ],
+      "execution": {
+        "ok": false,
+        "code": "path-collision",
+        "message": "Drive path collision: note.md (IDs one, two; parents root, root)"
+      }
+    }
+  },
+  {
+    "probe": "NFC alias",
+    "result": {
+      "ok": true,
+      "count": 2,
+      "excluded": 0,
+      "completeness": "complete",
+      "diagnostics": [
+        "target-alias"
+      ],
+      "execution": {
+        "ok": false,
+        "code": "path-collision",
+        "message": "Drive path collision: é.md (IDs one, two; parents root, root)"
+      }
+    }
+  },
+  {
+    "probe": "missing local plus inaccessible/404 remote",
+    "result": "pending"
+  },
+  {
+    "probe": "actual host policy: note.md",
+    "result": [
+      "note.md"
+    ]
+  },
+  {
+    "probe": "actual host policy: note.conflict-drive-local-123.md",
+    "result": []
+  },
+  {
+    "probe": "warm no-op 1",
+    "result": {
+      "writes": 0,
+      "metadataBytes": 0,
+      "downloaded": 0,
+      "uploaded": 0,
+      "failed": 0
+    }
+  },
+  {
+    "probe": "warm no-op 20",
+    "result": {
+      "writes": 0,
+      "metadataBytes": 0,
+      "downloaded": 0,
+      "uploaded": 0,
+      "failed": 0
+    }
+  },
+  {
+    "probe": "warm no-op 100",
+    "result": {
+      "writes": 0,
+      "metadataBytes": 0,
+      "downloaded": 0,
+      "uploaded": 0,
+      "failed": 0
+    }
+  },
+  {
+    "probe": "review counters and repeated identical proposal",
+    "result": [
+      {
+        "edit": "first",
+        "deferred": 1,
+        "reviewCount": 1,
+        "proposalCount": 1,
+        "copyCount": 1
+      },
+      {
+        "edit": "second",
+        "deferred": 1,
+        "reviewCount": 1,
+        "proposalCount": 2,
+        "copyCount": 2
+      },
+      {
+        "edit": "first",
+        "deferred": 1,
+        "reviewCount": 1,
+        "proposalCount": 2,
+        "copyCount": 2
+      }
+    ]
+  },
+  {
+    "probe": "separate operation stores lose unresolved cross-job path protection",
+    "result": {
+      "oldStatus": "committing",
+      "newLocal": "B"
+    }
+  },
+  {
+    "probe": "rename-only manifest migration",
+    "result": {
+      "originalEntries": 1,
+      "migratedEntries": 0
+    }
+  },
+  {
+    "probe": "unrelated legacy folder mapping resets Drive identity",
+    "result": true
+  },
+  {
+    "probe": "extensionless filename shadows a plain-object prototype key",
+    "result": {
+      "failed": 0,
+      "otherDownloaded": true
+    }
+  },
+  {
+    "probe": "V6 migration leaves inherit unresolved",
+    "result": {
+      "schedule": "inherit",
+      "periodicDelay": "NaN"
+    }
+  },
+  {
+    "probe": "canonical 404 survives local deletion",
+    "result": {
+      "originId": "r-note.md",
+      "sameInboxId": true,
+      "reason": "drive-unavailable",
+      "baselineId": "r-note.md",
+      "warmWrites": 0,
+      "creates": 0
+    }
+  },
+  {
+    "probe": "same bytes cannot silently rebind another ID",
+    "result": {
+      "baselineId": "r-note.md",
+      "reason": "drive-identity-changed",
+      "candidateId": "replacement",
+      "creates": 0
+    }
+  },
+  {
+    "probe": "tracked rename is not duplicate bootstrap",
+    "result": {
+      "reason": "drive-relocated",
+      "originalLocal": "base",
+      "newLocalCreated": false,
+      "creates": 0
+    }
+  },
+  {
+    "probe": "tombstone survives retention and local recreation",
+    "result": {
+      "originalId": "r-note.md",
+      "stillTrashed": true,
+      "local": "recreated",
+      "reason": "drive-deleted-review",
+      "creates": 0
+    }
+  },
+  {
+    "probe": "explicit same-ID restore",
+    "result": {
+      "failed": 0,
+      "originalId": "r-note.md",
+      "baselineId": "r-note.md",
+      "local": "base",
+      "stillTrashed": false,
+      "creates": 0
+    }
+  }
+]

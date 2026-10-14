@@ -23,6 +23,7 @@
 
 import type { JournalEntry, JournalOutcome, JournalTrigger } from '../core/journal';
 import { i18n } from '../i18n';
+import { jobHistory } from './job-cards';
 import { operationTable } from './operation-table';
 import { tr } from './dom';
 import { sessionLabel } from './session-label';
@@ -149,6 +150,7 @@ export class JournalModalView {
 		row.append(main);
                 if(e.attemptOnly)row.append(el('p',{text:tr('Запуск не состоялся','Run did not start')}));
                 if(e.blockedReason)row.append(el('p',{text:e.blockedReason}));
+                if(e.jobResults?.length)row.append(jobHistory(e.jobResults,e.jobResultsTotal));
                 if(e.results?.length){const details=el('details');details.append(el('summary',{text:tr('Результаты по файлам','File results')}),operationTable(e.results));if((e.resultsTotal??0)>e.results.length)details.append(el('p',{text:tr('Показаны первые ','Showing first ')+e.results.length+' / '+e.resultsTotal}));row.append(details);}
 
 		const stats = this.statsLine(e);

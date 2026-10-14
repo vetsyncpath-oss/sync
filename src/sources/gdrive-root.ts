@@ -1,6 +1,7 @@
 import { GoogleDriveClient, DRIVE_FOLDER, type DriveFile } from './gdrive-client';
 import { SyncFault } from '../core/sync-issue';
 import type { DriveIntent } from '../core/drive-state';
+import { ownEntry } from '../core/drive-state';
 const key=(s:string)=>s.normalize('NFC').toLowerCase();
 /** Every mutable locator is checked against the selected root, never against account-wide search. */
 export class GoogleDriveRoot {
@@ -11,6 +12,8 @@ export class GoogleDriveRoot {
         let current=file;const seen=new Set<string>(),names:string[]=[];
         for(let depth=0;current.id!==this.rootId;depth++){
             if(depth>100||seen.has(current.id)||current.parents.length!==1)throw new SyncFault('root-boundary','Drive locator is outside the selected folder','source');
+            if(!current.name||/[\\/\x00-\x1f]/.test(current.name)||current.name==='.'||current.name==='..')
+                throw new SyncFault('root-boundary','Drive locator has unsafe path segments; identity cannot be projected','source');
             names.push(current.name);seen.add(current.id);current=await this.client.inspect(current.parents[0],signal);
             if(current.trashed)throw new SyncFault('root-unavailable','A Drive ancestor is in trash','source');
         }
@@ -19,6 +22,7 @@ export class GoogleDriveRoot {
         return file;
     }
     async parent(path:string,intent:DriveIntent,persist:()=>Promise<void>,signal:AbortSignal):Promise<string>{
+        if(intent.directories)intent.directories=Object.assign(Object.create(null),intent.directories);
         this.path(path);let parent=this.rootId,current='';
         for(const name of path.split('/').slice(0,-1)){
             current=current?current+'/'+name:name;
@@ -27,7 +31,7 @@ export class GoogleDriveRoot {
             if(matching.length>1||matching[0]&&matching[0].mimeType!==DRIVE_FOLDER)throw new SyncFault('path-collision','Drive parent folder collision');
             if(matching.length){parent=matching[0].id;continue;}
             if(folder.capabilities?.canAddChildren===false)throw new SyncFault('access-denied','Cannot create files in selected Drive folder');
-            let id=intent.directories?.[current];if(!id){id=await this.client.reserveId(signal);(intent.directories??={})[current]=id;await persist();}
+            let id=ownEntry(intent.directories,current);if(!id){id=await this.client.reserveId(signal);(intent.directories??=Object.create(null))[current]=id;await persist();}
             try{const existing=await this.client.inspect(id,signal);
                 if(existing.mimeType!==DRIVE_FOLDER||existing.name!==name||!existing.parents.includes(parent)||existing.trashed)throw new SyncFault('recovery-invalid','Reserved folder identity changed','session');
             }catch(error){if((error as {status?:number}).status!==404)throw error;this.guard();signal.throwIfAborted();await this.client.mkdir(id,name,parent,signal);}

@@ -1,5 +1,5 @@
 import type { SyncPolicy } from './policy';
-import { validateFileRules, type FileRule, type WriteMode, type DeleteMode, type RuleConflict } from './file-rules';
+import { validateFileRules, symbolicRulePaths, type FileRule, type WriteMode, type DeleteMode, type RuleConflict } from './file-rules';
 import type { MirrorLevel } from './mirror';
 import type { SyncSource } from '../sources/types';
 import { effectiveBehavior, type SyncDirection } from './profile-policy';
@@ -27,8 +27,8 @@ export const STANDARD_PROFILES: readonly SyncProfile[] = [
 ];
 export function validateProfileConnections(policy:SyncPolicy,profiles:readonly SyncProfile[],connections:readonly SourceConnection[]):void {
     const compiled=compileProfiles(policy,profiles),rules=compiled.fileRules??[];
-    for(const rule of rules)for(const name of rule.names??['__file__']){
-        const path=rule.scope==='file'?rule.path:[rule.path,name].filter(Boolean).join('/'),resolved=resolveFileRule(path,rules);
+    for(const path of symbolicRulePaths(rules)){
+        const resolved=resolveFileRule(path,rules);
         const behavior=effectiveBehavior(resolved);if(behavior.direction!=='bidirectional'||behavior.protected)continue;
         const connection=connections.find(c=>c.id===(resolved.source??compiled.defaultSource));
         if(!connection||connection.kind!=='gdrive'||connection.values.authMode!=='oauth-desktop')throw Error('Bidirectional profiles require an OAuth Google Drive connection');
@@ -64,9 +64,7 @@ export function compileProfiles(policy: SyncPolicy, profiles: readonly SyncProfi
     const fileRules:FileRule[]=[{scope:'vault',path:'',write:'update',delete:'keep'},...assignedRules];
     validateFileRules(fileRules);
     // Validate source overlaps even when a matching file is currently absent.
-    for (const rule of fileRules) for (const name of rule.names ?? ['__file__']) {
-        resolveFileRule(rule.scope==='file'?rule.path:[rule.path,name].filter(Boolean).join('/'),fileRules);
-    }
+    for (const path of symbolicRulePaths(fileRules)) resolveFileRule(path,fileRules);
     return {...structuredClone(policy),fileRules};
 }
 /** One-time conversion, including per-folder legacy levels and already-created file rules. */

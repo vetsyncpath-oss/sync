@@ -256,6 +256,16 @@ function resolveInclude(path: string, indexed: IndexedRule[], byKey: 'remoteKey'
         return 'include';
 }
 
+/** Additional scope checks for an artifact already projected from an included origin. No ownership/name bypass here. */
+export function isPolicyPathIncluded(remotePath:string,localPath:string,policy:SyncPolicy):boolean {
+        const indexed=(policy.folders??[]).map(rule=>({rule,remoteKey:normalizePolicyPath(rule.path),
+                localKey:rule.target?computeLocalPath(normalizePolicyPath(rule.path),normalizePolicyPath(rule.path),rule):normalizePolicyPath(rule.path)}))
+                .sort((a,b)=>b.remoteKey.length-a.remoteKey.length);
+        return resolveInclude(remotePath,indexed,'remoteKey')!=='exclude'
+                &&resolveInclude(localPath,[...indexed].sort((a,b)=>b.localKey.length-a.localKey.length),'localKey')!=='exclude'
+                &&!matchesFileExclusion(remotePath,policy.fileExclusions)&&!matchesFileExclusion(localPath,policy.fileExclusions);
+}
+
 /**
  * Локальный путь записи под правилом с target (дизайн §5.2 computeLocalPath):
  *  - 'rename' — последний сегмент rule.path заменяется на новое имя

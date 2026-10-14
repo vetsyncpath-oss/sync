@@ -150,7 +150,7 @@ test('an unconfigured required default cannot be silently omitted from a deletio
  const h=preparationHost(),plugin=h.port as any;await plugin.ensureProfileSettings();const settings=h.settings as any;
  settings.connections[0].values.repoUrl='';settings.connections.push({id:'docs',name:'Docs',kind:'git',values:{repoUrl:'https://github.com/test/docs',branch:'main'}});
  settings.vaultPolicy.assignments.push({scope:'folder',path:'Docs',source:'docs',remotePath:'notes'});
- await assert.rejects(plugin.routingContext(),/Default source is not configured/);
+ const blocked=await plugin.routingContext();assert(blocked.source.executionMembers().some((member:any)=>member.id===settings.vaultPolicy.defaultSource));await assert.rejects(()=>blocked.source.getManifest(new AbortController().signal),/not configured/);
  settings.vaultPolicy.defaultSource=undefined;const context=await plugin.routingContext();assert.deepEqual(context.source.members.map((m:any)=>m.id),['docs']);
 });
 

@@ -15,9 +15,13 @@
 
 import type { RemoteEntry } from '../sources/types';
 import { normalizePolicyPath } from '../core/policy';
+import type { RemoteBrowseNode, RemoteBrowseSnapshot } from '../sources/remote-browse';
 
 /** Узел дерева: папка или файл; корень — синтетический узел с path=''. */
 export interface TreeNode {
+        /** Opaque browse key; legacy/local trees retain path keys. */
+        key?: string;
+        browseNode?: RemoteBrowseNode;
         kind: 'folder' | 'file';
         /** Нормализованный POSIX-путь; '' у корня. */
         path: string;
@@ -121,6 +125,18 @@ export function buildRemoteTree(remote: RemoteEntry[]): TreeNode {
         }
         return root;
 }
+
+/** Preserve duplicate names, empty folders and unsafe names using parent IDs. */
+export function buildBrowseTree(snapshot: RemoteBrowseSnapshot): TreeNode {
+        const root=makeRoot('remote');root.key='';root.name=snapshot.rootName;
+        const byKey=new Map<string,TreeNode>([['',root]]);
+        for(const node of snapshot.nodes)byKey.set(node.key,{key:node.key,kind:node.kind,path:node.path,name:node.name,
+                parent:null,children:[],origin:'remote',remoteEntry:node.entry,browseNode:node});
+        for(const node of snapshot.nodes){const item=byKey.get(node.key)!,parent=byKey.get(node.parentKey);
+                if(!parent)throw Error('Browse parent is missing');item.parent=parent;parent.children.push(item);}
+        return root;
+}
+export const treeNodeKey = (node: TreeNode): string => node.key ?? node.path;
 
 /** Клон поддерева с перевязкой parent (вход не мутируется). */
 function cloneSubtree(src: TreeNode, parent: TreeNode | null): TreeNode {

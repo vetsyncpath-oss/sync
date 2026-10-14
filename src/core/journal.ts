@@ -43,6 +43,8 @@ export type JournalOutcome = 'ok' | 'cancelled' | 'error';
 
 /** Одна завершённая сессия синхронизации (сериализуется в JSON как есть). */
 export interface JournalEntry {
+        jobResults?:import('./job-runtime').JobRunResult[];
+        jobResultsTotal?:number;
         uploaded?:number;deletedDrive?:number;
         trace?:import('../sources/types').SyncStats['trace'];traceDropped?:number;
         sessionId?:string;build?:string;platform?:string;
@@ -117,6 +119,16 @@ const LEVELS: ReadonlySet<string> = new Set(['fetch', 'light', 'full']);
  * иначе запись отбрасывается; счётчики при пропусках добираются нулями.
  * Гарантия модалке: JournalEntry из load() всегда безопасна к рендеру.
  */
+function coerceJob(value:any):import('./job-runtime').JobRunResult|undefined{
+        if(!value||typeof value!=='object'||!['jobId','connectionId','name','runId'].every(key=>typeof value[key]==='string'&&value[key].length>0)
+            ||!['git','gdrive','webdav','zip-url','yandex'].includes(value.kind)||!['observing','queued','running','idle'].includes(value.activity)
+            ||value.outcome!==undefined&&!['success','partial','needs-attention','failed','cancelled','blocked'].includes(value.outcome)
+            ||!['downloaded','uploaded','deleted','failed','pending','attention','startedAt'].every(key=>Number.isSafeInteger(value[key])&&value[key]>=0))return;
+        return {jobId:value.jobId,connectionId:value.connectionId,name:value.name,kind:value.kind,runId:value.runId,activity:value.activity,outcome:value.outcome,
+            downloaded:value.downloaded,uploaded:value.uploaded,deleted:value.deleted,failed:value.failed,pending:value.pending,attention:value.attention,startedAt:value.startedAt,
+            completedAt:Number.isSafeInteger(value.completedAt)&&value.completedAt>=value.startedAt?value.completedAt:undefined,
+            issues:Array.isArray(value.issues)?value.issues.filter((issue:any)=>issue&&typeof issue.message==='string'&&typeof issue.code==='string').slice(0,20):[]};
+}
 function coerceEntry(raw: unknown): JournalEntry | null {
         if (typeof raw !== 'object' || raw === null) return null;
         const r = raw as Record<string, unknown>;
@@ -143,6 +155,8 @@ function coerceEntry(raw: unknown): JournalEntry | null {
                 problems:Array.isArray(r.problems)?r.problems.filter((v):v is SyncIssue=>!!v&&typeof v==='object'&&typeof v.message==='string'&&typeof v.code==='string').slice(0,20):undefined,
                 sources:Array.isArray(r.sources)?r.sources.filter((value):value is string=>typeof value==='string').slice(0,100):undefined,
                 profilesMode:r.profilesMode===true,
+                jobResults:Array.isArray(r.jobResults)?r.jobResults.map(coerceJob).filter((job):job is import('./job-runtime').JobRunResult=>!!job).slice(0,100):undefined,
+                jobResultsTotal:num(r.jobResultsTotal)||(Array.isArray(r.jobResults)?r.jobResults.length:0),
                 uploaded:num(r.uploaded),deletedDrive:num(r.deletedDrive),received:num(r.received),deferredConflicts:num(r.deferredConflicts),
                 blockedReason:typeof r.blockedReason==='string'?r.blockedReason:undefined,attemptOnly:r.attemptOnly===true,
                 results:Array.isArray(r.results)?r.results.filter((value):value is SyncFileResult=>!!value&&typeof value==='object'&&typeof value.path==='string'&&typeof value.reason==='string'&&(value.source===undefined||typeof value.source==='string')&&(value.remotePath===undefined||typeof value.remotePath==='string')&&['applied','unchanged','skipped','pending','error'].includes(value.status)).slice(0,500):undefined,
@@ -222,7 +236,8 @@ export class FileJournal implements JournalStore {
                         const prev=await this.load();
                         if(this.readFailed)throw Error('Journal is unreadable; refusing to replace diagnostic history');
                         if(this.corruptRaw!==undefined){if(!this.io.quarantine)throw Error('Journal is corrupt; diagnostic backup is required');await this.io.quarantine(this.corruptRaw);}
-                        const next=[entry,...prev].slice(0,JOURNAL_LIMIT);
+                        const normalized={...entry,jobResults:entry.jobResults?.map(coerceJob).filter((job):job is import('./job-runtime').JobRunResult=>!!job).slice(0,100),jobResultsTotal:entry.jobResultsTotal??entry.jobResults?.length};
+                        const next=[normalized,...prev].slice(0,JOURNAL_LIMIT);
                         while(next.length>1&&JSON.stringify(next).length>8*1024*1024)next.pop();
                         await this.io.write(JSON.stringify(next));
                 });this.chain=work.catch(()=>{});return work;

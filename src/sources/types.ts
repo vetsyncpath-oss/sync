@@ -52,6 +52,8 @@ export interface RemoteEntry {
  * (дизайн §3.2). [W6-T03] добавлен 'gdrive'; [W6-T05] добавлен 'webdav'.
  */
 export interface SyncSource {
+        /** Optional ID-aware, read-only inventory for UI; never an execution manifest. */
+        getBrowseSnapshot?(signal: AbortSignal): Promise<import('./remote-browse').RemoteBrowseSnapshot>;
         readonly sources?: readonly { id: string; name: string; kind: string }[];
         readonly maxConcurrentDownloads?: number;
         readonly kind: 'git' | 'yandex' | 'zip-url' | 'gdrive' | 'webdav';
@@ -150,6 +152,7 @@ export interface TransferEvent {
 }
 export type TransferObserver = (event: TransferEvent) => void;
 export interface SyncIssue {
+        jobId?:string;connectionId?:string;domain?:'job'|'shared';
         code: string; message: string; stage: PipelineStage;
         retryable: boolean; scope: 'file' | 'source' | 'session';
         status?: number; attempt?: number; retryAt?: number; host?: string;
@@ -292,6 +295,8 @@ export type WriteOutcome =
 // --- Очередь неудачных загрузок (перенос FailedFile из main.ts) ---
 
 export interface FailedFile {
+        /** Retry routing hint; a fresh artifact lineage still has to authorize every effect. */
+        originPath?: string;
         failureKind?:'transient'|'blocked';
         issue?: SyncIssue;
         path: string;
@@ -317,6 +322,7 @@ export interface FailedFile {
 
 /** Статистика одной сессии синхронизации (перенос из main.ts). */
 export interface SyncStats {
+        jobResults?:import('../core/job-runtime').JobRunResult[];
         uploaded?: number;
         /** Confirmed trash operations on Google Drive, separate from local deletions. */
         deletedDrive?: number;
@@ -400,7 +406,7 @@ export interface SyncPlanRow {
         path: string; remotePath?: string; source?: string;
         reason: 'missing' | 'source-changed' | 'match-source' | 'baseline-check' | 'mapping' | 'absent' | 'preserve' | 'create-only' | 'background' | 'unverified' | 'file-too-large';
 }
-export interface SyncFileResult { path: string; remotePath?:string; source?: string; status: 'applied' | 'unchanged' | 'skipped' | 'pending' | 'error'; reason: string; issue?: SyncIssue; conflictPath?: string }
+export interface SyncFileResult { path: string; remotePath?:string; source?: string; status: 'applied' | 'unchanged' | 'skipped' | 'pending' | 'error'; reason: string; issue?: SyncIssue; conflictPath?: string; proposalIds?:string[]; conflictPaths?:string[]; proposalCount?:number; inboxId?:string;originId?:string;candidateId?:string;httpStatus?:number }
 
 /** Прогресс для статус-бара. */
 export interface SyncProgress {

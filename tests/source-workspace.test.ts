@@ -9,6 +9,12 @@ import { RoutedSource } from '../src/sources/routed-source';
 import { resolveFileRule } from '../src/core/file-rules';
 import { fixture, entry, ab, str, deferred, pathPolicy } from './helpers';
 import { i18n } from '../src/i18n';
+import { GDriveOAuthSource } from '../src/sources/gdrive-oauth-source';
+import { GoogleDriveClient, DRIVE_FOLDER, type DriveFile } from '../src/sources/gdrive-client';
+import { SourcePathModal } from '../src/ui/source-path-modal';
+import { validateBrowseSnapshot } from '../src/sources/remote-browse';
+import { artifactProperties, driveConflictSibling } from '../src/core/drive-artifact';
+import { operationTable } from '../src/ui/operation-table';
 const signal=()=>new AbortController().signal;
 const connections:SourceConnection[]=[{id:'git',name:'Plugin repository',kind:'git',values:{repoUrl:'https://github.com/test/plugins',branch:'main'}},{id:'disk',name:'Documents disk',kind:'yandex',values:{vaultUrl:'https://disk.example/docs'}}];
 const profiles=[...STANDARD_PROFILES];
@@ -113,4 +119,67 @@ test('bulk profile editing preserves direct source bindings',async()=>{
  const modal=w.modal as any;modal.selection.set('Documents','folder');modal.selection.set('extra.md','file');click(w.modal.contentEl,'Profile for selection');
  const editor=document.body.lastElementChild as HTMLElement;changeSelect(editor.querySelector('select')!,'standard:preserve');click(editor,'Apply to draft');
  const folder=modal.policy.assignments.find((a:any)=>a.path==='Documents');assert.equal(folder.source,'disk');assert.equal(folder.remotePath,'notes');assert.equal(folder.profileId,'standard:preserve');assert.equal(modal.policy.assignments.find((a:any)=>a.path==='extra.md').profileId,'standard:preserve');assert.equal(w.saved(),undefined);
+});
+
+const driveFile=(id:string,name:string,parent='root',folder=false):DriveFile=>({id,name,parents:[parent],version:'1',size:'1',mimeType:folder?DRIVE_FOLDER:'text/markdown'});
+async function driveBrowse(children:Map<string,DriveFile[]>){
+ const client=new GoogleDriveClient({fetch:async url=>{const u=new URL(url),value=u.pathname.endsWith('/root')?
+  {id:'root',name:'Root',parents:[],version:'1',mimeType:DRIVE_FOLDER}:{files:children.get(u.searchParams.get('q')!.match(/'([^']+)' in parents/)![1])??[]};
+  return {status:200,headers:{},text:async()=>JSON.stringify(value),arrayBuffer:async()=>new ArrayBuffer(0)};}});
+ return new GDriveOAuthSource(client,'root').getBrowseSnapshot(signal());
+}
+function driveWorkspace(snapshot:Awaited<ReturnType<typeof driveBrowse>>){return workspace({connections:[{id:'drive',name:'Drive',kind:'gdrive',values:{}}],policy:{...policy(),defaultSource:'drive'},fetch:async()=>snapshot});}
+const objectRow=(box:HTMLElement,id:string)=>Array.from(box.querySelectorAll<HTMLElement>('[role=treeitem]')).find(row=>row.dataset.objectId===id)!;
+
+test('one plugin-path file opens in the actual workspace browse tree',async()=>{
+ dom();const snapshot=await driveBrowse(new Map([
+  ['root',[driveFile('config','.obsidian','root',true)]],['config',[driveFile('plugins','plugins','config',true)]],
+  ['plugins',[driveFile('plugin','example','plugins',true)]],['plugin',[driveFile('main','main.js','plugin')]],
+ ]));
+ const w=driveWorkspace(snapshot);await tick();click(w.modal.contentEl,'Drive · default');await tick();
+ for(const id of ['config','plugins','plugin'])objectRow(w.modal.contentEl,id).querySelector<HTMLButtonElement>('button')!.click();
+ assert.equal(objectRow(w.modal.contentEl,'main').dataset.path,'.obsidian/plugins/example/main.js');assert(!w.modal.contentEl.textContent?.includes('Drive path collision'));
+});
+test('same-name folder selection and expansion use IDs without merging children',async()=>{
+ dom();const snapshot=await driveBrowse(new Map([
+  ['root',[driveFile('one','Shared','root',true),driveFile('two','Shared','root',true)]],
+  ['one',[driveFile('a','a.md','one')]],['two',[driveFile('b','b.md','two')]],
+ ]));const w=driveWorkspace(snapshot);await tick();click(w.modal.contentEl,'Drive · default');await tick();
+ objectRow(w.modal.contentEl,'two').querySelector<HTMLButtonElement>('button')!.click();
+ assert(objectRow(w.modal.contentEl,'b'));assert.equal(objectRow(w.modal.contentEl,'a'),undefined);
+ objectRow(w.modal.contentEl,'two').click();
+ assert.equal(objectRow(w.modal.contentEl,'two').getAttribute('aria-selected'),'true');assert.equal(objectRow(w.modal.contentEl,'one').getAttribute('aria-selected'),'false');
+ const inspector=w.modal.contentEl.querySelector('.sync-workspace-inspector')!;assert(inspector.textContent?.includes('ID two'));
+ assert(inspector.querySelector<HTMLButtonElement>('.mod-cta')!.disabled);assert.equal((w.modal as any).policy.assignments.length,0);
+});
+test('source path picker shows both duplicate objects but cannot choose an arbitrary path match',async()=>{
+ dom();const snapshot=await driveBrowse(new Map([['root',[driveFile('one','same.md'),driveFile('two','same.md')]]]));let selected:string|undefined;
+ const modal=new SourcePathModal(new App(),'Drive','file',snapshot,'ready',async()=>snapshot,path=>selected=path);modal.onOpen();
+ const rows=Array.from(modal.contentEl.querySelectorAll<HTMLElement>('[role=option]'));assert.equal(rows.length,2);assert.notEqual(rows[0].dataset.objectId,rows[1].dataset.objectId);
+ rows[1].click();assert.equal(selected,undefined);assert.equal(rows[1].getAttribute('aria-disabled'),'true');modal.close();
+});
+test('raw browse refresh retains stale identities, while legacy invalid manifests remain rejected',async()=>{
+ const snapshot=await driveBrowse(new Map([['root',[driveFile('one','same.md'),driveFile('two','same.md')]]]));const inventories=new SourceInventories();
+ await inventories.load('drive',async()=>snapshot);assert.equal(inventories.state('drive').browse?.nodes.length,2);
+ await inventories.load('drive',async()=>{throw Error('Offline');});assert.equal(inventories.state('drive').status,'error');assert.equal(inventories.state('drive').browse?.nodes[1].objectId,'two');
+ await inventories.load('legacy',async()=>[entry('same.md'),entry('same.md')]);assert.equal(inventories.state('legacy').status,'error');
+});
+test('malformed/cyclic browse graphs cannot bypass UI admission',async()=>{
+ const snapshot=await driveBrowse(new Map([['root',[driveFile('one','a.md')]]]));snapshot.nodes[0].parentKey=snapshot.nodes[0].key;
+ assert.throws(()=>validateBrowseSnapshot(snapshot),/parent graph/);const inventories=new SourceInventories();await inventories.load('drive',async()=>snapshot);assert.equal(inventories.state('drive').status,'error');
+});
+
+test('Drive tree distinguishes proposal claims from legacy copies and exposes origin IDs without enabling a canonical binding',async()=>{
+ dom();const proposalId='aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',name=driveConflictSibling('a.md',proposalId);
+ const snapshot=await driveBrowse(new Map([['root',[driveFile('origin','a.md'),{...driveFile('copy',name),properties:artifactProperties({proposalId,originId:'origin',hash:entry('a').hash,baseVersion:'1',baseHash:entry('b').hash,kind:'gated-upload'})},driveFile('legacy','a.conflict-old.md')]]]));
+ const w=driveWorkspace(snapshot);await tick();click(w.modal.contentEl,'Drive · default');await tick();
+ const row=objectRow(w.modal.contentEl,'copy');assert(row.textContent?.includes('Proposal'));assert(objectRow(w.modal.contentEl,'legacy').textContent?.includes('Legacy conflict copy'));
+ row.click();const inspector=w.modal.contentEl.querySelector('.sync-workspace-inspector')!;assert(inspector.textContent?.includes('origin ID origin'));assert(inspector.textContent?.includes(proposalId));
+ assert(inspector.querySelector<HTMLButtonElement>('.mod-cta')!.disabled);
+ const inventories=new SourceInventories();await inventories.load('drive',async()=>snapshot);assert.deepEqual(inventories.state('drive').entries.map(e=>e.path),['a.md']);
+});
+
+test('file results display all retained proposal copy paths and do not turn artifact-local-edited into an upload action',()=>{
+ dom();const table=operationTable([{path:'a.md',status:'pending',reason:'artifact-local-edited',proposalIds:['one','two'],conflictPaths:['a.conflict-first.md','a.conflict-second.md']}]);
+ assert(table.textContent?.includes('Received copy was edited locally'));assert(table.textContent?.includes('a.conflict-first.md'));assert(table.textContent?.includes('a.conflict-second.md'));
 });

@@ -1,8 +1,12 @@
 # Google Drive bidirectional integration — target specification
 
+The full next overhaul contracts are specified in [Overhaul vNext](overhaul-vnext/README.md): per-job execution, ID-aware browse tree, proposals, shared authority, storage migration and UI. That package takes precedence for the next architecture; the implementation status below still describes the current pilot.
+
 Implementation status (2026-10-14): the desktop OAuth and cautious bidirectional pilot are now implemented and covered by automated tests. See [google-drive-integration.md](google-drive-integration.md) for the exact implemented subset, limitations and required live validation. This document describes the complete target, including pending work; it is not a claim that every requirement below has shipped.
 
 User decision after the original design: preserve existing Drive IDs; until live concurrency tests, publish proposed updates to existing objects as reviewed conflict copies rather than updating/replacing their canonical content.
+
+Architecture review 2026-10-14: [Drive/V6 cross-review](audits/drive-jobs-cross-review.md) confirms current gaps in artifact visibility, unresolved absence/review UX and no-op state writes. [Per-source jobs plan](per-source-jobs-plan.md) adds independent RunContext while retaining global mutation authority, pair generations and safe migration; it does not relax the existing-ID update gate.
 
 
 Date: 2026-10-14, Europe/Moscow.

@@ -48,6 +48,13 @@ export class RecoveryStore {
                 if(data.byteLength!==ref.size || await sha256Hex(data)!==ref.sha256)throw Error('Recovery content changed');
                 return data;
         }
+        /** A legacy review may retain only a hash. Protect an existing object without claiming it is recoverable. */
+        async existingReference(sha256:string):Promise<RecoveryRef|undefined>{
+                if(!/^[a-f0-9]{64}$/.test(sha256))throw Error('Invalid legacy recovery hash');
+                const path=`${this.root}/${sha256}.bin`;if(!(await this.vault.exists(path)))return undefined;
+                const stat=await this.vault.stat(path);if(!stat||stat.type==='folder'||!Number.isSafeInteger(stat.size)||stat.size<0)throw Error('Legacy recovery object size unavailable');
+                return {path,sha256,size:stat.size};
+        }
         async unreferencedUsage(references:readonly RecoveryRef[],before:number):Promise<{count:number;bytes:number}>{
                 if(!this.vault.list)throw Error('Recovery storage listing unavailable');const keep=new Set(references.map(ref=>ref.path));let count=0,bytes=0;
                 if(await this.vault.exists(this.root))for(const path of (await this.vault.list(this.root)).files){if(keep.has(path)||!new RegExp('^[a-f0-9]{64}\\.bin$').test(path.slice(this.root.length+1)))continue;const stat=await this.vault.stat(path);if(stat&&stat.mtime<before){count++;bytes+=stat.size;}}

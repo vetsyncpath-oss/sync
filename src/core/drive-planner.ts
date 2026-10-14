@@ -8,6 +8,7 @@ export function planDrive(localHash:string|undefined,remote:DriveObservation,bas
     if(remote.kind==='unavailable')return 'pending';
     if(remote.kind==='absent'&&baseline)return 'pending';
     const remoteHash=remote.kind==='file'?remote.hash:undefined;
+    if(baseline&&remote.kind==='file'&&remote.id!==baseline.remoteId)return 'pending';
     if(localHash!==undefined&&remoteHash!==undefined&&localHash===remoteHash)return 'adopt';
     if(!baseline){
         if(localHash===undefined)return remoteHash===undefined?'gone':'download';

@@ -7,19 +7,22 @@ import { sourceCandidates } from '../core/source-bindings';
 import { sha256Hex } from '../core/hasher';
 import type { FolderPolicy } from '../core/policy';
 export interface RoutedMember { id: string; name: string; source: SyncSource }
-/** All selected inventories succeed before any writes. Source instances belong to this session only. */
+/** Strict combined view for legacy controls/browse; executionView freezes one independent job inventory. */
 export class RoutedSource implements SyncSource {
     readonly sources: readonly {id:string;name:string;kind:string}[];
     readonly kind: SyncSource['kind'];
     executionMembers():readonly RoutedMember[]{return this.members.filter(m=>!this.selectedIds||this.selectedIds.includes(m.id));}
+    bindingMembers():readonly RoutedMember[]{return this.members;}
     readonly maxConcurrentDownloads:number;
     readonly deletionSafety: 'immutable' | 'unverified';
     private readonly gates=new Map<string,ResourceGate>();
     private readonly locators = new Map<string,{member:RoutedMember;entry:RemoteEntry;exposedPath:string}>();
     private executionDirections?:readonly ('pull'|'bidirectional')[];
+    private executionFilter?:(destination:string)=>boolean;
+    setExecutionFilter(filter:(destination:string)=>boolean):void{this.executionFilter=filter;}
     setExecutionDirections(directions:readonly ('pull'|'bidirectional')[]):void{this.executionDirections=[...directions];}
     constructor(private readonly members: RoutedMember[], private readonly rules: readonly FileRule[],
-        private readonly localPath: (path:string)=>string = p=>p, private readonly defaultSource='primary', private readonly selectedIds?: readonly string[]) {
+        private readonly localPath: (path:string)=>string = p=>p, private readonly defaultSource='primary', private readonly selectedIds?: readonly string[],private readonly ownsSessions=true) {
         if (!members.length || new Set(members.map(m=>m.id)).size!==members.length) throw new Error('Invalid source connections');
         for(const rule of rules)if(rule.source&&!members.some(m=>m.id===rule.source))throw Error('Missing assigned source');
         const active=members.filter(m=>!selectedIds || selectedIds.includes(m.id));
@@ -29,6 +32,18 @@ export class RoutedSource implements SyncSource {
         this.maxConcurrentDownloads=active.reduce((sum,m)=>sum+(m.source.maxConcurrentDownloads??4),0);
         for(const m of active)this.gates.set(m.id,new ResourceGate(m.source.maxConcurrentDownloads??4));
         this.deletionSafety=active.every(m=>m.source.deletionSafety==='immutable')?'immutable':'unverified';
+    }
+    /** Each job owns its locators; the batch owns provider lifetime. No source/cache/queue swapping. */
+    executionView(id:string,entries:readonly RemoteEntry[]):RoutedSource{
+        if(!this.executionMembers().some(member=>member.id===id))throw Error('Source outside this run');
+        const snapshot=entries.map(entry=>Object.freeze({...entry}));
+        const members=this.members.map(member=>member.id!==id?member:{...member,source:{
+            kind:member.source.kind,deletionSafety:member.source.deletionSafety,maxConcurrentDownloads:member.source.maxConcurrentDownloads,
+            maxFileSizeBytes:member.source.maxFileSizeBytes,fileSizeLimit:entry=>member.source.fileSizeLimit?.(entry),
+            getManifest:async signal=>{signal.throwIfAborted();return snapshot.map(entry=>({...entry}));},
+            fetch:(entry,signal,observe)=>member.source.fetch(entry,signal,observe),
+        } as SyncSource});
+        return new RoutedSource(members,this.rules,this.localPath,this.defaultSource,[id],false);
     }
     private async inventories(signal:AbortSignal,observe?:TransferObserver) {
         this.locators.clear();const result: {member:RoutedMember;entries:RemoteEntry[]}[]=[];
@@ -44,10 +59,11 @@ export class RoutedSource implements SyncSource {
         const inventories=await this.inventories(signal,observe);const output:RemoteEntry[]=[];
         for (const {member,entries} of inventories) for (const entry of entries) {
             for(const path of sourceCandidates(entry.path,member.id,this.rules,this.defaultSource,this.localPath)) {
+                const destination=resolveFileRule(path,this.rules).remotePath!==undefined?path:this.localPath(path);
+                if(this.executionFilter&&!this.executionFilter(destination))continue;
                 const canonical=path.normalize('NFC').toLowerCase();
                 if (this.locators.has(canonical)) throw new Error(`Source path collision: ${path}`);
                 this.locators.set(canonical,{member,entry:{...entry},exposedPath:path});
-                const destination=resolveFileRule(path,this.rules).remotePath!==undefined?path:this.localPath(path);
                 if(this.executionDirections&&!this.executionDirections.includes(resolveFileRule(destination,this.rules).direction??'pull'))continue;
                 output.push({...entry,path,sourcePath:entry.path,provider:member.name,connectionId:member.id,resolvedDestination:resolveFileRule(path,this.rules).remotePath!==undefined});
             }
@@ -72,9 +88,9 @@ export class RoutedSource implements SyncSource {
         try{return await found.member.source.fetch({...found.entry},signal,observe);}finally{release();}
     }
     fileSizeLimit(entry:RemoteEntry):number|undefined{const source=this.members.find(m=>m.id===entry.connectionId)?.source;return source?.fileSizeLimit?.(entry)??source?.maxFileSizeBytes;}
-    async forceDispose():Promise<void>{await Promise.allSettled(this.members.map(m=>m.source.forceDispose?.()));this.locators.clear();}
+    async forceDispose():Promise<void>{if(this.ownsSessions)await Promise.allSettled(this.members.map(m=>m.source.forceDispose?.()));this.locators.clear();}
     async dispose():Promise<void> {
-        this.locators.clear();const results=await Promise.allSettled(this.members.map(m=>m.source.dispose?.()));
+        this.locators.clear();if(!this.ownsSessions)return;const results=await Promise.allSettled(this.members.map(m=>m.source.dispose?.()));
         const error=results.find(r=>r.status==='rejected');if(error?.status==='rejected')throw error.reason;
     }
 }
