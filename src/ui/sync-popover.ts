@@ -432,12 +432,13 @@ export class SyncPopoverView {
                         return wrap;
                 }
                 if(sched.blockedReason){wrap.append(el('span',{text:tr('Автозапуски остановлены: ','Automatic runs stopped: ')+sched.blockedReason+tr(' Исправьте причину и выполните ручной запуск.',' Fix the cause and run manually.')}));return wrap;}
+                if(sched.running){wrap.append(el('span',{text:tr('Автосинхронизация выполняется.','Automatic synchronization is running.')}));return wrap;}
                 if(sched.pending){wrap.append(el('span',{text:tr('Автозапуск ожидает сеть, доступ или завершение текущей сессии.','Automatic run awaits network, access or the active session.')}));return wrap;}
                 if (sched.minutesUntilNext === null) {
                         // interval='startup-only' после первого тика — nextTickAt=null.
                         // Но startup-only сам по себе не должен здесь оказаться (одноразовый),
                         // это страховочная ветка.
-                        wrap.append(el('span', { cls: 'pop-scheduler-state', text: t.autoOffState }));
+                        wrap.append(el('span', { cls: 'pop-scheduler-state', text:sched.interval==='startup-only'?tr('При запуске: автозапуск завершён; периодических запусков нет.','At startup: automatic run finished; no periodic runs.'):t.autoOffState }));
                         return wrap;
                 }
                 wrap.append(el('span', {
@@ -507,6 +508,7 @@ export class SyncPopoverView {
                 const t = i18n.t.jrnl;
                 const parts: string[] = [];
                 if (e.downloaded > 0) parts.push(t.statDownloaded(e.downloaded));
+                if(e.uploaded)parts.push(tr('Отправлено в Drive: ','Uploaded to Drive: ')+e.uploaded);
                 if (e.updated > 0) parts.push(t.statUpdated(e.updated));
                 if (e.deletedLight > 0) parts.push(t.statDeletedLight(e.deletedLight));
                 if (e.deletedFull > 0) parts.push(t.statDeletedFull(e.deletedFull));

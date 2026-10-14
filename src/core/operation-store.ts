@@ -118,6 +118,8 @@ export class OperationStore {
         private marker?: Marker;
         private count = 0;
         private readonly minimumCheckpointEvents: number;
+        private cleanupError?:string;
+        get cleanupProblem():string|undefined{return this.cleanupError;}
         constructor(private readonly fs: FileSystem, private maxRecords = 10000, options: OperationStoreOptions = {}) {
                 this.minimumCheckpointEvents = options.minimumCheckpointEvents ?? 256;
                 if (!Number.isSafeInteger(maxRecords) || maxRecords < 1 || !Number.isSafeInteger(this.minimumCheckpointEvents)
@@ -339,6 +341,16 @@ export class OperationStore {
                 }
         }
         private async compactLocked(): Promise<void> {
+                this.cleanupError=undefined;
+                const retained=(await this.fs.list()).filter(name=>CHECKPOINT.test(name)).sort();
+                if(retained.length>=8){
+                        if(retained.some(name=>sequenceOf(CHECKPOINT,name)>this.checkpointSequence))throw new SyncFault('checkpoint-cleanup','Unexpected future journal generation; history retained','session');
+                        // Cleanup precedes another publication once a bounded grace period is exhausted.
+                        // Verify both surviving anchors before removing redundant checkpoints.
+                        await this.readCheckpoint(retained.at(-1)!);await this.readCheckpoint(retained.at(-2)!);
+                        try{for(const old of retained.slice(0,-2)){await this.readCheckpoint(old);await this.fs.remove(old);}}
+                        catch{throw new SyncFault('checkpoint-cleanup','Cannot clean old journal checkpoints; stop before accumulating another generation','session');}
+                }
                 if (this.checkpointSequence !== this.state.sequence) {
                         validateState(this.state);
                         await this.publish(filename('checkpoint', this.state.sequence), { version: 3, kind: 'checkpoint', tip: this.tip, state: this.state });
@@ -353,7 +365,7 @@ export class OperationStore {
                         // A filename from another writer or unexpected future generation
                         // cannot authorize deletion of this instance's verified history.
                         if (checkpoints.some(name => sequenceOf(CHECKPOINT, name) > this.checkpointSequence)
-                                || names.some(name => EVENT.test(name) && sequenceOf(EVENT, name) > this.state.sequence)) return;
+                                || names.some(name => EVENT.test(name) && sequenceOf(EVENT, name) > this.state.sequence)) throw Error('Journal cleanup blocked by an unexpected future generation');
                         const previous = checkpoints.at(-2);
                         if (previous) {
                                 const current=await this.readCheckpoint(filename('checkpoint', this.checkpointSequence));
@@ -366,6 +378,7 @@ export class OperationStore {
                                         || (CHECKPOINT.test(name) && sequenceOf(CHECKPOINT, name) < boundary)) await this.fs.remove(name);
                         }
                 } catch(error) {
+                        this.cleanupError='Old operation checkpoints could not be cleaned; metadata retained';
                         // Metadata already committed stays authoritative; retry cleanup next session.
                         console.warn('[VaultSync] Journal cleanup deferred; retained metadata will be checked again:',error);
                 }

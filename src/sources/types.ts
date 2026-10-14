@@ -317,6 +317,10 @@ export interface FailedFile {
 
 /** Статистика одной сессии синхронизации (перенос из main.ts). */
 export interface SyncStats {
+        uploaded?: number;
+        /** Confirmed trash operations on Google Drive, separate from local deletions. */
+        deletedDrive?: number;
+        followUp?: boolean;
         trace?:Array<TransferEvent & {at:number;path?:string;source?:string}>;traceDropped?:number;
         sessionId?: string;
         problems?: SyncIssue[];

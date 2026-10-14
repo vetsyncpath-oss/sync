@@ -175,6 +175,7 @@ export class JournalModalView {
 		const t = this.deps.labels;
 		const parts: string[] = [];
 		if (e.downloaded > 0) parts.push(t.statDownloaded(e.downloaded));
+                if(e.uploaded)parts.push(tr('Отправлено в Drive: ','Uploaded to Drive: ')+e.uploaded);
 		if (e.updated > 0) parts.push(t.statUpdated(e.updated));
 		if (e.deletedLight > 0) parts.push(t.statDeletedLight(e.deletedLight));
 		if (e.deletedFull > 0) parts.push(t.statDeletedFull(e.deletedFull));

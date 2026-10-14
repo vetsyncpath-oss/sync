@@ -52,7 +52,12 @@ export class NodeHttpTransport implements NetTransport {
             });
             request.on('error',error=>fail(error));options.signal?.addEventListener('abort',onAbort,{once:true});arm('headers');
             if(options.signal?.aborted){onAbort();return;}
-            if(options.body!==undefined){if(typeof options.body!=='string'){fail(new Error('Unsupported HTTP request body'));return;}request.write(options.body);}
+            if(options.body!==undefined){
+                if(typeof options.body==='string')request.write(options.body);
+                else if(options.body instanceof ArrayBuffer)request.write(Buffer.from(options.body));
+                else if(ArrayBuffer.isView(options.body))request.write(Buffer.from(options.body.buffer,options.body.byteOffset,options.body.byteLength));
+                else {fail(new Error('Unsupported HTTP request body'));return;}
+            }
             request.end();
         });
     }

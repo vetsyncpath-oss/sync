@@ -143,3 +143,9 @@ test('a cache projection after restart cannot import another namespace', async (
   const cache = new ManifestCache(f.memory.fs, 'test'); const reopened = restart(f); await reopened.store.load();
   reopened.mutations.projectCache('test', cache); assert.deepEqual(cache.entries(), {});
 });
+test('an unresolved operation in another namespace protects the same physical target',async()=>{
+ const f=fixture();f.files.set('a.md',ab('OLD'));const recovery=await f.recovery.save(ab('OLD'));await f.store.begin({recovery,id:'foreign',planId:'foreign',namespace:'other-root',kind:'write',path:'a.md',
+    before:{kind:'file',sha256:sha('OLD'),size:3},after:{kind:'file',sha256:sha('REMOTE'),size:6},status:'committing',createdAt:1});
+ await assert.rejects(()=>f.mutations.write('new-root',{id:'new',planId:'new',path:'a.md',before:{kind:'file',sha256:sha('OLD'),size:3},guard:()=>{}},ab('NEW')),/unresolved operation/);
+ assert.equal(str(f.files.get('a.md')!),'OLD');assert.equal(f.store.records().length,1);
+});

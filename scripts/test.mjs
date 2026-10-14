@@ -17,6 +17,7 @@ try {
     format: 'cjs',
     target: 'node18',
     alias: { obsidian: resolve('tests/obsidian-stub.ts') },
+    external: ['electron'],
     logLevel: 'warning',
   });
   const child = spawn(process.execPath, [

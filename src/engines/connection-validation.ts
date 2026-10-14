@@ -8,5 +8,7 @@ export function connectionValues(connection:SourceConnection):Record<string,unkn
     return values;
 }
 export function connectionIssues(connection:SourceConnection) {
+    if(connection.kind==='gdrive'&&connection.values.authMode==='oauth-desktop')return ['folderId','clientId','accountSub','secretRef'].flatMap(field=>
+        typeof connection.values[field]==='string'&&String(connection.values[field]).trim()?[]:[{field,code:'required' as const}]);
     return validateSettings(EngineRegistry.get(connection.kind).settingsSchema,connectionValues(connection));
 }

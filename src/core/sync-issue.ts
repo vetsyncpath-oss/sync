@@ -19,12 +19,13 @@ export function syncIssue(error: unknown, stage: PipelineStage,seen=new Set<unkn
     if(!(error instanceof NetError)&&!(error instanceof SyncFault)&&cause instanceof Error&&!seen.has(cause)){
         seen.add(error);return {...syncIssue(cause,stage,seen),message};
     }
-    if (error instanceof SyncFault) return { code:error.code, message, stage, scope:error.scope, retryable:error.retryable };
+    if (error instanceof SyncFault) return { code:error.code, message, stage, scope:error.scope, retryable:error.retryable,
+        status:(error as SyncFault&{status?:number}).status,retryAt:(error as SyncFault&{retryAt?:number}).retryAt };
     if (error instanceof NetError) return {
         code: error.code ?? (error.status === 429 ? 'rate-limit' : error.status === 401 || error.status === 403 ? 'access-denied' : error.status === 404 ? 'remote-missing' : 'network'),
         message, stage, status:error.status, attempt:error.attempt, host:error.host,
         retryAt:error.retryAfterMs === undefined ? undefined : Date.now() + error.retryAfterMs,
         scope:'file', retryable:!error.aborted && !['file-too-large','redirect-policy','response-format'].includes(error.code??'') && (error.code === 'integrity' || error.status === undefined || error.status === 429 || error.status === 408 || error.status >= 500),
     };
-    return { code:/changed|stale/i.test(message)?'local-changed':/exist|directory/i.test(message)?'path-collision':'io', message, stage, retryable:false, scope:'file' };
+    return { code:/changed|stale/i.test(message)?'local-changed':/exist|directory/i.test(message)?'path-collision':'io', message, stage, retryable:/changed|stale/i.test(message), scope:'file' };
 }

@@ -43,7 +43,7 @@ export const DEFAULT_START_DELAY_MS = 30_000;
  */
 export interface SchedulerDeps {
         /** Запустить авто-сессию (headless-режим см. W4-T02). */
-        onAutoTick(): void | boolean | Promise<void | boolean>;
+        onAutoTick(): void | boolean | AutoTickResult | Promise<void | boolean | AutoTickResult>;
         canRun?():boolean;
         onStateChange?():void;
         /** Legacy callback retained for compatibility; ticks use onAutoTick only. */
@@ -61,6 +61,7 @@ export interface SchedulerDeps {
         /** clearInterval override (тесты — fake). Дефолт — глобальный. */
         clearInterval?(timer: unknown): void;
 }
+export interface AutoTickResult { accepted:boolean; retryAt?:number; followUp?:boolean;retryableFailure?:boolean }
 
 /** Состояние Scheduler для снапшота/отчётности (popover «следующая через N мин»). */
 export interface SchedulerSnapshot {
@@ -94,6 +95,11 @@ export class Scheduler {
     private paused = false;
     private startupConsumed=false;
     private pending=false;
+    private retryTimer:unknown=null;
+    private retryAt:number|null=null;
+    private followUps=0;
+    private rejectedRuns=0;
+    private generation=0;
     /** Активный таймер: либо setTimeout (до 1-го тика), либо setInterval
      *  (после 1-го тика в периодическом режиме). Для startup-only — setTimeout. */
     private timer: unknown = null;
@@ -130,6 +136,7 @@ export class Scheduler {
      * startDelayMs < 0 не передаёт первый задержанный тик — это мгновенный старт.
      */
     start(interval: SchedulerInterval, startDelayMs: number = DEFAULT_START_DELAY_MS): void {
+        this.generation++;
         this.stopTimer();
         this.interval = interval;
         this.paused = false;
@@ -202,6 +209,7 @@ export class Scheduler {
 
     /** Полная остановка (interval → off, таймер снят). */
     stop(): void {
+        this.generation++;
         this.stopTimer();
         this.interval = 'off';this.pending=false;
         this.paused = false;
@@ -223,14 +231,15 @@ export class Scheduler {
     snapshot(): SchedulerSnapshot {
         const now = this.now();
         let minutesUntilNext: number | null = null;
-        if (this.nextTickAt !== null) {
-            const deltaMs = Math.max(0, this.nextTickAt - now);
+        const nextTickAt=this.retryAt===null?this.nextTickAt:this.nextTickAt===null?this.retryAt:Math.min(this.retryAt,this.nextTickAt);
+        if (nextTickAt !== null) {
+            const deltaMs = Math.max(0, nextTickAt - now);
             minutesUntilNext = Math.floor(deltaMs / 60_000);
         }
         return {
             interval: this.interval,
             paused: this.paused,pending:this.pending,running:this.ticking,
-            nextTickAt: this.nextTickAt,
+            nextTickAt,
             minutesUntilNext,
             lastAutoTickAt: this.lastAutoTickAt,
             lastRetryAt: this.lastRetryAt,
@@ -240,6 +249,7 @@ export class Scheduler {
     // ── внутреннее ─
 
     private stopTimer(): void {
+        if(this.retryTimer!==null){this._clearTimeout(this.retryTimer);this.retryTimer=null;}this.retryAt=null;
         if (this.timer !== null) {
             if (this.timerIsInterval) {
                 this._clearInterval(this.timer);
@@ -258,13 +268,23 @@ export class Scheduler {
         this.pending=true;
         if(this.interval==='startup-only'&&this.startupConsumed){this.pending=false;return;}
         if(this.ticking||this.paused||this.interval==='off'||!(this.deps.canRun?.()??true)){this.deps.onStateChange?.();return;}
-        this.ticking=true;this.pending=false;this.deps.onStateChange?.();
+        this.ticking=true;this.pending=false;const generation=this.generation;this.deps.onStateChange?.();
         try {
-            const accepted=await this.deps.onAutoTick();
-            if(accepted===false){this.pending=true;return;}
-            this.lastAutoTickAt=this.now();if(this.interval==='startup-only')this.startupConsumed=true;
+            const outcome=await this.deps.onAutoTick(),result=typeof outcome==='object'?outcome:{accepted:outcome!==false};
+            if(generation!==this.generation)return;
+            if(!result.accepted){this.pending=true;if(result.retryAt!==undefined&&++this.rejectedRuns<=5)this.scheduleRetry(result.retryAt);return;}
+            if(result.retryableFailure)this.rejectedRuns++;else this.rejectedRuns=0;this.lastAutoTickAt=this.now();
+            const followUp=result.followUp&&this.followUps++<3;
+            if((result.retryAt!==undefined&&this.rejectedRuns<=5)||followUp)this.scheduleRetry(result.retryAt??this.now()+1000);
+            else {if(this.interval==='startup-only')this.startupConsumed=true;this.followUps=0;}
             // Retry work belongs to the accepted plan; a due queue item alone is not evidence of a retry.
-        } catch(error) { console.error('[VaultSync] automatic sync failed:',error); }
-        finally {this.ticking=false;this.deps.onStateChange?.();}
+        } catch(error) {if(generation!==this.generation)return; console.error('[VaultSync] automatic sync failed:',error);this.pending=true;if(++this.rejectedRuns<=5)this.scheduleRetry(this.now()+60_000); }
+        finally {this.ticking=false;this.deps.onStateChange?.();if(generation!==this.generation)this.wake();}
+    }
+    private scheduleRetry(at:number):void {
+        if(this.paused||this.interval==='off')return;
+        if(this.retryTimer!==null)this._clearTimeout(this.retryTimer);
+        this.retryAt=Math.max(this.now()+1000,at);
+        this.retryTimer=this._setTimeout(()=>{this.retryTimer=null;this.retryAt=null;void this.runTick();},this.retryAt-this.now());
     }
 }

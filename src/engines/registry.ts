@@ -48,6 +48,8 @@ import { GitSource } from '../sources/git-source';
 import { YandexSource } from '../sources/yandex-source';
 import { ZipUrlSource } from '../sources/zip-url-source';
 import { GDriveSource } from '../sources/gdrive-source';
+import { GDriveOAuthSource } from '../sources/gdrive-oauth-source';
+import { GoogleDriveClient } from '../sources/gdrive-client';
 import { WebDavSource } from '../sources/webdav-source';
 import type { GitSourceMessages } from '../sources/git-source';
 import type { YandexSourceMessages } from '../sources/yandex-source';
@@ -73,6 +75,8 @@ import type { WebDavSourceMessages } from '../sources/webdav-source';
  * NodeZipRangeTransport.
  */
 export interface EngineCtx {
+        googleTransport?: (values: Record<string,unknown>) => NetTransport;
+        maxPayloadBytes?: number;
         /** HTTP-транспорт для движков с сетевыми запросами (git/yandex). */
         transport?: NetTransport;
         /** Скачиватель архива для zip-url и file-ветки yandex. */
@@ -499,6 +503,10 @@ EngineRegistry.register({
                 },
         ],
         create: (values, ctx) => {
+                if(values.authMode==='oauth-desktop'){
+                    if(!ctx?.googleTransport)throw Error('Desktop Google OAuth is unavailable');
+                    return new GDriveOAuthSource(new GoogleDriveClient(ctx.googleTransport(values),ctx.maxPayloadBytes),String(values.folderId??''));
+                }
                 return new GDriveSource({
                         config: () => ({
                                 apiKey: String(values.apiKey ?? ''),
@@ -511,6 +519,7 @@ EngineRegistry.register({
                 });
         },
         makeSourceId: (values) => {
+                if(values.authMode==='oauth-desktop')return `gdrive_oauth_${djb2(`${String(values.accountSub??'')}|${String(values.folderId??'')}`)}`;
                 // Публичный идентификатор: apiKey НЕ входит (инвариант 3 — ротация
                 // ключа не должна менять sourceId → у пользователя не должен быть
                 // re-download). folderId входит (разные папки = разные кэши).

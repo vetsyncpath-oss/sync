@@ -11,10 +11,13 @@ export interface RoutedMember { id: string; name: string; source: SyncSource }
 export class RoutedSource implements SyncSource {
     readonly sources: readonly {id:string;name:string;kind:string}[];
     readonly kind: SyncSource['kind'];
+    executionMembers():readonly RoutedMember[]{return this.members.filter(m=>!this.selectedIds||this.selectedIds.includes(m.id));}
     readonly maxConcurrentDownloads:number;
     readonly deletionSafety: 'immutable' | 'unverified';
     private readonly gates=new Map<string,ResourceGate>();
     private readonly locators = new Map<string,{member:RoutedMember;entry:RemoteEntry;exposedPath:string}>();
+    private executionDirections?:readonly ('pull'|'bidirectional')[];
+    setExecutionDirections(directions:readonly ('pull'|'bidirectional')[]):void{this.executionDirections=[...directions];}
     constructor(private readonly members: RoutedMember[], private readonly rules: readonly FileRule[],
         private readonly localPath: (path:string)=>string = p=>p, private readonly defaultSource='primary', private readonly selectedIds?: readonly string[]) {
         if (!members.length || new Set(members.map(m=>m.id)).size!==members.length) throw new Error('Invalid source connections');
@@ -44,6 +47,8 @@ export class RoutedSource implements SyncSource {
                 const canonical=path.normalize('NFC').toLowerCase();
                 if (this.locators.has(canonical)) throw new Error(`Source path collision: ${path}`);
                 this.locators.set(canonical,{member,entry:{...entry},exposedPath:path});
+                const destination=resolveFileRule(path,this.rules).remotePath!==undefined?path:this.localPath(path);
+                if(this.executionDirections&&!this.executionDirections.includes(resolveFileRule(destination,this.rules).direction??'pull'))continue;
                 output.push({...entry,path,sourcePath:entry.path,provider:member.name,connectionId:member.id,resolvedDestination:resolveFileRule(path,this.rules).remotePath!==undefined});
             }
         }

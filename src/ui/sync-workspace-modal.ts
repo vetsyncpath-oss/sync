@@ -16,8 +16,10 @@ import { DraftModal } from './draft-modal';
 import { button, element, field, selectInput, setSelectValue, textInput, tr } from './dom';
 import { ExclusionsModal } from './exclusions-modal';
 import { SourcePathModal } from './source-path-modal';
+import type { GoogleConnectionActions } from './gdrive-folder-picker';
 
 export interface WorkspaceDeps {
+    google?: GoogleConnectionActions;
     policy: SyncPolicy; profiles: SyncProfile[]; connections: SourceConnection[];
     pathPolicy: PathPolicy; pluginDir: string; isRunning(): boolean;
     local(): Promise<{ files: string[]; folders: string[] }>;
@@ -87,7 +89,7 @@ export class SyncWorkspaceModal extends DraftModal {
         const box = this.contentEl; box.replaceChildren(); box.classList.add('sync-workspace');
         box.dataset.pane = 'tree';
         const heading = element('div', '', 'sync-workspace-heading');
-        heading.append(element('h2', tr('Синхронизация vault', 'Vault synchronization')), element('small', tr('Источник → этот vault. Локальные правки не отправляются.', 'Source → this vault. Local edits are not uploaded.'))); box.append(heading);
+        heading.append(element('h2', tr('Синхронизация vault', 'Vault synchronization')), element('small', tr('Источник → vault. Для OAuth Drive можно назначить двусторонний профиль.', 'Source → vault. OAuth Drive also supports a bidirectional profile.'))); box.append(heading);
         const toolbar = element('div', '', 'sync-workspace-toolbar');
         button(toolbar, 'Vault', () => this.switchView('vault'));
         button(toolbar, tr('Добавить источник', 'Add source'), () => this.editSource());
@@ -121,7 +123,7 @@ export class SyncWorkspaceModal extends DraftModal {
         this.bulkButton = button(footer, tr('Профиль выделенным', 'Profile for selection'), () => this.bulkProfiles());
         button(footer, tr('Сбросить черновик', 'Reset draft'), () => { this.policy = structuredClone(this.savedPolicy); this.connections = structuredClone(this.savedConnections); this.profiles=structuredClone(this.savedProfiles); this.forms.clear(); this.render(); }, 'sync-workspace-reset');
         this.saveButton = button(footer, tr('Сохранить настройки', 'Save settings'), () => void this.save(), 'mod-cta');
-        if (this.deps.run) this.runButton = button(footer, tr('Предпросмотр запуска', 'Preview run'), () => void this.preview());
+        if (this.deps.run) this.runButton = button(footer, tr('Запустить синхронизацию', 'Run synchronization'), () => void this.preview());
         button(footer, tr('Закрыть', 'Close'), () => this.close()); box.append(footer);
         this.render(); void this.loadLocal();
         const connection = this.connections.find(c => c.id === this.policy.defaultSource); if (connection) void this.loadSource(connection);
@@ -209,7 +211,7 @@ export class SyncWorkspaceModal extends DraftModal {
             const index = this.connections.findIndex(c => c.id === draft.id);
             if (index < 0) this.connections.push(draft); else this.connections[index] = draft;
             this.inventories.invalidate(draft.id); this.checks.delete(draft.id); this.render();
-        }); trackModal(modal); modal.open();
+        },this.deps.google); trackModal(modal); modal.open();
     }
     private mapped(path: string): string {
         const rule = this.policy.folders.filter(r => r.target && (!r.path || path === r.path || path.startsWith(r.path + '/'))).sort((a, b) => b.path.length - a.path.length)[0];
@@ -487,7 +489,7 @@ export class SyncWorkspaceModal extends DraftModal {
         references.assignments=[...(references.assignments??[]), ...[...this.forms.values()].filter(f=>f.value.profile||f.value.source).map((f,index)=>({scope:'file' as const,path:'__draft_reference_'+index,profileId:f.value.profile||undefined,source:f.value.source||undefined}))];
         const modal=new ProfileLibraryModal(this.app,this.profiles,this.connections,async(profiles,connections,defaultSource)=>{
             compileProfiles(references,profiles); this.profiles=profiles;this.connections=connections;this.policy.defaultSource=defaultSource;this.render();
-        },false,this.policy.defaultSource,references,true);trackModal(modal);modal.open();
+        },false,this.policy.defaultSource,references,true,this.deps.google);trackModal(modal);modal.open();
     }
     private async preview(ids?: string[]): Promise<void> {
         if (!this.deps.run || this.deps.isRunning()) return;

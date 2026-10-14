@@ -36,7 +36,7 @@ export interface PathPolicyOptions {
         allowSnippets: boolean;
         /** Local runtime/state directories excluded independently of user presets. */
         protectedPaths?: readonly string[];
-        executionSources?: { ids: string[]; defaultSource?: string; rules: FileRule[]; folders?:FolderPolicy[] };
+        executionSources?: { ids: string[]; defaultSource?: string; rules: FileRule[]; folders?:FolderPolicy[]; directions?:('pull'|'bidirectional')[] };
 }
 
 /** Расширения, не синхронизируемые никогда (порт из main.ts). */
@@ -85,8 +85,8 @@ export class PathPolicy {
                 this.opts = { ...opts, protectedPaths: [...(opts.protectedPaths ?? [])], executionSources: opts.executionSources && structuredClone(opts.executionSources) };
         }
         snapshot(): PathPolicy { return new PathPolicy(this.opts); }
-        forSources(ids: readonly string[], defaultSource: string | undefined, rules: readonly FileRule[],folders:readonly FolderPolicy[]=[]): PathPolicy {
-                return new PathPolicy({ ...this.opts, executionSources: { ids: [...ids], defaultSource, rules: structuredClone([...rules]),folders:structuredClone([...folders]) } });
+        forSources(ids: readonly string[], defaultSource: string | undefined, rules: readonly FileRule[],folders:readonly FolderPolicy[]=[],directions?:('pull'|'bidirectional')[]): PathPolicy {
+                return new PathPolicy({ ...this.opts, executionSources: { ids: [...ids], defaultSource, rules: structuredClone([...rules]),folders:structuredClone([...folders]),directions } });
         }
 
         /**
@@ -119,6 +119,7 @@ export class PathPolicy {
                 const run = this.opts.executionSources;
                 if (run) {
                         const owner = resolveFileRule(this.normalize(rawPath), run.rules).source ?? run.defaultSource;
+                        if(run.directions&&!run.directions.includes(resolveFileRule(this.normalize(rawPath),run.rules).direction??'pull'))return false;
                         if (!owner || !run.ids.includes(owner)) return false;
                         if(!destinationIsRouted(this.normalize(rawPath),run.rules,run.defaultSource,run.folders))return false;
                 }
@@ -129,6 +130,7 @@ export class PathPolicy {
         isInventoryPathAllowed(rawPath: string): boolean {
                 const path = this.normalize(rawPath);
                 if (this.isProtectedPath(path)) return false;
+                if(path.normalize('NFC').toLowerCase()==='.trash'||path.normalize('NFC').toLowerCase().startsWith('.trash/'))return false;
                 // [3-8б] Конфликт-копии не синхронизируются ни в одну сторону —
                 // проверка ПЕРВОЙ, до любых флагов и режимов (дизайн §9.4).
                 if (this.isConflictCopy(path)) return false;
