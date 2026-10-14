@@ -25,11 +25,19 @@
 
 import { i18n } from '../i18n';
 import { formatBytes } from '../utils/format';
+import type { SyncPlanRow } from '../sources/types';
+import { operationTable } from './operation-table';
+import { tr } from './dom';
 
 export type ConfirmFlow = 'sync' | 'force' | 'retry' | 'scan';
 
 /** Данные для рендера — main.ts собирает их из ConfirmSyncInfo/scan. */
 export interface ConfirmSections {
+        operations?: readonly SyncPlanRow[];
+        sources?: readonly string[];
+        movedCount?: number;
+        deferredDeletions?: number;
+        blockedDeletions?: number;
         /** Скачиваний всего (NEW + MODIFIED + MISSING_LOCAL). */
         toDownload?: number;
         /** Из них обновлений (MODIFIED). */
@@ -44,13 +52,13 @@ export interface ConfirmSections {
         deleteFull?: number;
         /** Перезаписей локальных версий при конфликте на уровне full. */
         overwrite?: number;
-        /** Локально-только файлов под удаление (orphans). */
+        /** Previously synced files absent remotely that will be retained locally. */
         orphans?: number;
         /** Суммарный объём скачивания, байт. */
         downloadBytes?: number;
         /** Пути — уже отсортированы caller'ом; рендерим топ-10. */
         paths?: string[];
-        /** !useTrash → удаления безвозвратны (noRecovery-предупреждение). */
+        /** Whether system trash is disabled; verified recovery is independent. */
         noRecovery?: boolean;
 }
 
@@ -97,7 +105,6 @@ function hasDeletes(s: ConfirmSections): boolean {
         return (
                 (s.deleteLight ?? 0) > 0 ||
                 (s.deleteFull ?? 0) > 0 ||
-                (s.orphans ?? 0) > 0 ||
                 (s.overwrite ?? 0) > 0
         );
 }
@@ -129,10 +136,15 @@ export class ConfirmModalView {
                 contentEl.append(el('h2', { cls: 'cfm-title', text: t[TITLE_KEY[flow]] }));
 
                 // BUG-10: имя движка — НЕ хардкод 'GitHub'. Под заголовком, cls 'cfm-engine'.
-                contentEl.append(el('div', { cls: 'cfm-engine', text: `${ENGINE_LABEL()}: ${engine}` }));
+                contentEl.append(el('div', { cls: 'cfm-engine', text: sections.sources?.length ? tr('Участвуют: ', 'Sources: ') + sections.sources.join(', ') : `${ENGINE_LABEL()}: ${engine}` }));
 
                 // Секции: только ненулевые (zero → не показываем).
                 const sectionsEl = el('div', { cls: 'cfm-sections' });
+                if (sections.movedCount) sectionsEl.append(el('div', {cls:'cfm-sec',text:tr('Перемещений: ', 'Moves: ')+sections.movedCount}));
+                if (sections.deferredDeletions && !sections.blockedDeletions) sectionsEl.append(el('div', {cls:'cfm-sec',text:tr('Отложенных удалений: ', 'Deferred deletions: ')+sections.deferredDeletions}));
+                if ((sections.blockedDeletions ?? 0) > 0) {
+                        sectionsEl.append(el('div', { cls: 'cfm-sec', text: t.sectionBlocked(sections.blockedDeletions!) }));
+                }
                 if ((sections.toDownload ?? 0) > 0) {
                         sectionsEl.append(el('div', { cls: 'cfm-sec cfm-sec-download', text: t.sectionDownload(sections.toDownload!) }));
                         if ((sections.downloadBytes ?? 0) > 0) {
@@ -161,6 +173,7 @@ export class ConfirmModalView {
                         sectionsEl.append(el('div', { cls: 'cfm-sec cfm-sec-orphan', text: t.sectionOrphan(sections.orphans!) }));
                 }
                 contentEl.append(sectionsEl);
+                if (sections.operations?.length) contentEl.append(operationTable(sections.operations));
 
                 // Пути: топ-10 (caller уже отсортировал); если >10 — pathsMore(N-10).
                 if ((sections.paths?.length ?? 0) > 0) {

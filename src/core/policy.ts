@@ -1,3 +1,5 @@
+import type { ProfileAssignment } from './profiles';
+import { validateFileRules, resolveFileRule, deletionLevel, type FileRule } from './file-rules';
 // src/core/policy.ts — политика структуры vault (Phase 1 модуля
 // Vault Structure Sync Policy; дизайн download/design-vault-structure-policy.md
 // §2 (модель данных) + §5.2/§5.7 (applyPolicy) + §6 (валидация путей)).
@@ -38,7 +40,7 @@ import { matchesFileExclusion } from './file-glob';
 // core/mirror.ts. Цикл policy↔mirror безопасен: оба модуля используют
 // экспорты друг друга ТОЛЬКО в момент вызова функций (не на этапе
 // инициализации модулей) — живые binding'и ES-модулей это позволяют.
-import { planMirrorDeletions } from './mirror';
+import { planMirrorDeletions, levelOf } from './mirror';
 import type { MirrorFolders, MirrorLevel, MirrorModel, MirrorPlan } from './mirror';
 
 // ────────────────────────────────────────────────────────────────────────
@@ -69,6 +71,11 @@ export interface FolderPolicy {
 export interface SyncPolicy {
         /** Версия схемы; менять только с миграцией (дизайн §2.4). */
         version: 1;
+        /** Independent rules on final vault paths; absent = legacy modes. */
+        fileRules?: FileRule[];
+        assignments?: ProfileAssignment[];
+        /** Vault-wide default connection; assignments override it. */
+        defaultSource?: string;
         /**
          * [W1-T05 / BUG-5] Легаси-тумблер зеркала 2.3.3. Как источник правды
          * об удалениях УМЕР (двойная система BUG-5): поле остаётся в типе
@@ -94,6 +101,8 @@ export interface SyncPolicy {
          *  (или full при пустых folders). НЕ влияет на applyPolicy — только
          *  UI-семантика (шапка модалки, селектор настроек, миграция). */
         preset?: 'full' | 'obsidian' | 'custom';
+        /** Remember selective scope independently of the currently materialized folders. */
+        scopeSelection?: { mode: 'full' | 'obsidian' | 'custom'; customFolders: FolderPolicy[] };
         /**
          * [overhaul v4 / Этап 2] Per-file/per-glob исключения.
          *
@@ -247,6 +256,16 @@ function resolveInclude(path: string, indexed: IndexedRule[], byKey: 'remoteKey'
         return 'include';
 }
 
+/** Additional scope checks for an artifact already projected from an included origin. No ownership/name bypass here. */
+export function isPolicyPathIncluded(remotePath:string,localPath:string,policy:SyncPolicy):boolean {
+        const indexed=(policy.folders??[]).map(rule=>({rule,remoteKey:normalizePolicyPath(rule.path),
+                localKey:rule.target?computeLocalPath(normalizePolicyPath(rule.path),normalizePolicyPath(rule.path),rule):normalizePolicyPath(rule.path)}))
+                .sort((a,b)=>b.remoteKey.length-a.remoteKey.length);
+        return resolveInclude(remotePath,indexed,'remoteKey')!=='exclude'
+                &&resolveInclude(localPath,[...indexed].sort((a,b)=>b.localKey.length-a.localKey.length),'localKey')!=='exclude'
+                &&!matchesFileExclusion(remotePath,policy.fileExclusions)&&!matchesFileExclusion(localPath,policy.fileExclusions);
+}
+
 /**
  * Локальный путь записи под правилом с target (дизайн §5.2 computeLocalPath):
  *  - 'rename' — последний сегмент rule.path заменяется на новое имя
@@ -256,7 +275,7 @@ function resolveInclude(path: string, indexed: IndexedRule[], byKey: 'remoteKey'
  *    ('notes/drafts/a.md' под правилом 'notes/drafts' move 'Archive/Drafts'
  *     → 'Archive/Drafts/a.md').
  */
-function computeLocalPath(remotePath: string, rulePath: string, rule: FolderPolicy): string {
+export function computeLocalPath(remotePath: string, rulePath: string, rule: FolderPolicy): string {
         if (!rule.target) return remotePath;
         const targetPath = normalizePolicyPath(rule.target.localPath);
         // Правило корня (rulePath === ''): remotePath.slice(0) не даёт ведущего
@@ -317,14 +336,7 @@ export interface ApplyPolicyOptions {
                 folders?: Iterable<string>;
                 blocked?: Iterable<string>;
         };
-        /**
-         * [P1/BUG-13] Кэш-записи path → "alg:hash" для хэш-матчинга смены
-         * rename-цели: после первой rename-сессии кэш-ключи — ЛОКАЛЬНЫЕ пути,
-         * и смена цели ('a'→'b', потом 'a'→'c') не находится прямым
-         * пересечением (шаг 3). Хэш-матч переносит файл со СТАРОГО
-         * локального пути на новый без перекачки. Не подан — только
-         * прямой матч (поведение до P1).
-         */
+        /** @deprecated Content hashes cannot prove rename provenance; ignored. */
         cacheHashes?: ReadonlyMap<string, string>;
 }
 
@@ -355,6 +367,7 @@ export function applyPolicy(
         const indexed = indexRules(folders, pathPolicy);
 
         // Защита от мутации входа: копия manifest-записей с новым path.
+        validateFileRules(policy.fileRules);
         const emittedLocalPaths = new Set<string>();
         // Старые remote-пути, участвующие в переименовании (для шага 4).
         const renamedOldPaths = new Set<string>();
@@ -384,7 +397,7 @@ export function applyPolicy(
 
                 // (c) Локальный путь: самое длинное совпавшее правило С target.
                 let localPath = remotePath;
-                for (const ir of indexed) {
+                for (const ir of entry.resolvedDestination ? [] : indexed) {
                         if (!ruleMatches(remotePath, ir.remoteKey)) continue;
                         if (ir.rule.target) {
                                 localPath = computeLocalPath(remotePath, ir.remoteKey, ir.rule);
@@ -393,17 +406,21 @@ export function applyPolicy(
                 }
 
                 // (d) Валидация локального пути (zip-slip + бизнес-правила).
+                if (matchesFileExclusion(localPath, policy.fileExclusions)) {
+                        result.excludedCount++;
+                        continue;
+                }
                 if (!pathPolicy.isPathSafe(localPath) || !pathPolicy.isPathAllowed(localPath)) {
                         result.unsafeCount++;
                         continue;
                 }
 
                 // Коллизия: другой entry уже эммитит этот локальный путь.
-                if (emittedLocalPaths.has(localPath)) {
-                        result.unsafeCount++;
-                        continue;
+                const localKey = localPath.normalize('NFC').toLowerCase();
+                if (emittedLocalPaths.has(localKey)) {
+                        throw new Error(`Local mapping collision: ${localPath}`);
                 }
-                emittedLocalPaths.add(localPath);
+                emittedLocalPaths.add(localKey);
 
                 // (e) Преобразованная запись (независимая копия).
                 result.transformedManifest.push({ ...entry, path: localPath });
@@ -418,46 +435,15 @@ export function applyPolicy(
         // ── Шаг 3: toMove = ключи кэша ∩ переименования ──
         // Прямой матч (канон): кэш ещё помнит СТАРЫЙ remote-путь — первая
         // сессия с rename. После неё кэш-ключи — ЛОКАЛЬНЫЕ пути.
-        const directMovedRemote = new Set<string>();
         for (const cacheKey of cacheKeys) {
                 const newLocal = result.renameMap.get(cacheKey);
-                if (newLocal !== undefined) {
+                if (newLocal !== undefined && resolveFileRule(cacheKey, policy.fileRules).write === undefined
+                        && resolveFileRule(newLocal, policy.fileRules).write === undefined) {
                         result.toMove.push({ from: cacheKey, to: newLocal });
-                        directMovedRemote.add(cacheKey);
                 }
         }
-        // [P1/BUG-13] Смена rename-цели ('a'→'b', потом 'a'→'c'): кэш-ключ —
-        // СТАРЫЙ локальный путь ('b/x.md'), прямой матч пуст → 'c/x.md'
-        // перекачивался бы заново, а 'b/x.md' оставался мусором до ручной
-        // чистки. Хэш-матч: файл под старым локальным путём с хэшем remote-
-        // записи → перенос на новый локальный путь (байты идентичны —
-        // переносим, не качаем). Ложный позитив невозможен по смыслу:
-        // совпадающий хэш = то же содержимое, что и использует diff.
-        const staleMoveFrom = new Set<string>();
-        if (opts?.cacheHashes !== undefined && result.renameMap.size > 0) {
-                // remote-путь → хэш (сырой манифест; ключи renameMap — remote-пути).
-                const remoteHashes = new Map<string, string>();
-                for (const e of manifest) {
-                        remoteHashes.set(normalizePolicyPath(e.path), `${e.hashAlg}:${e.hash}`);
-                }
-                const newLocalPaths = new Set(result.renameMap.values());
-                const movedFrom = new Set(result.toMove.map((mv) => mv.from));
-                for (const [remotePath, newLocal] of result.renameMap) {
-                        if (directMovedRemote.has(remotePath)) continue; // прямой матч уже нашёл
-                        const wantHash = remoteHashes.get(remotePath);
-                        if (wantHash === undefined) continue;
-                        for (const [cachePath, cacheHash] of opts.cacheHashes) {
-                                if (cacheHash !== wantHash) continue;
-                                // Не новый локальный путь, не уже двигаемый, не remote-ключ.
-                                if (cachePath === remotePath) continue;
-                                if (newLocalPaths.has(cachePath) || movedFrom.has(cachePath)) continue;
-                                result.toMove.push({ from: cachePath, to: newLocal });
-                                movedFrom.add(cachePath);
-                                staleMoveFrom.add(cachePath);
-                                break; // один файл — один перенос (хэш-дубликаты не таскаем)
-                        }
-                }
-        }
+        // Content equality does not establish which remote object owns a local path.
+        // Preserve the previous path until a provenance-aware mapping ledger exists.
 
         // ── Шаг 4 [W1-T05 / BUG-5]: зеркальные удаления — единая модель
         // mirror.ts (план по матрице §2.2). Легаси-тумблер policy.mirror
@@ -479,9 +465,6 @@ export function applyPolicy(
         const mirrorCacheKeys: string[] = [];
         for (const cacheKey of cacheKeys) {
                 if (renamedOldPaths.has(cacheKey)) continue;
-                // [P1/BUG-13] хэш-матченные старые локальные пути тоже уводятся
-                // toMove — их судьба решена переносом, не зеркалом.
-                if (staleMoveFrom.has(cacheKey)) continue;
                 if (resolveInclude(cacheKey, indexed, 'localKey') === 'exclude') continue;
                 mirrorCacheKeys.push(cacheKey);
         }
@@ -519,11 +502,12 @@ export function applyPolicy(
                 // (.git/*, отключённые плагины, блок-расширения), не наши —
                 // не удаляются и страхуют свои родительские папки от
                 // extra-удаления (см. MirrorPlanInput.isPathEligible).
-                isPathEligible: (p) => pathPolicy.isPathAllowed(p),
+                isPathEligible: (p) => pathPolicy.isPathSafe(p) && pathPolicy.isPathAllowed(p),
                 // [overhaul v4 / Этап 2] Per-file/per-glob исключения
                 // передаются в mirror.ts — там защищают orphan/local-only
                 // от удаления, считаются в skippedExcluded.
                 fileExclusions: policy.fileExclusions,
+                levelForPath: p => deletionLevel(p, policy.fileRules, levelOf(mirrorModel, p)),
         });
 
         // [W1-T05] производное поле для совместимости (см. PolicyResult):

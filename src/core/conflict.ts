@@ -1,3 +1,5 @@
+import { cancellable } from './cancellable';
+import type { WriteMode, RuleConflict } from './file-rules';
 // src/core/conflict.ts — разрешитель конфликтов «локаль vs облако»
 // (фаза 3-5, дизайн §9.1 — матрица решений, реализована дословно).
 //
@@ -14,11 +16,8 @@
 // в конфликт-копию, облачную — в основной файл; кэш получает хэш
 // реально записанной облачной версии (который вернула запись манифеста).
 //
-// АУДИТ Б-21 (в пределах этого модуля): стратегия 'ask' делает ровно
-// один последовательный await deps.ui.askConflict на конфликт. Никаких
-// параллельных модалок из батчей Promise.allSettled быть не может по
-// построению; внешняя очередь вызовов — зона ответственности
-// Coordinator'а.
+// 'ask' awaits the injected UI; the host owns question serialization.
+// Cancellation is checked again after the answer, before any write.
 //
 // [W1-T06] Уровни зеркала (матрица §2.2 спеки, решения Е1-а + A3):
 // safeWrite принимает опциональный уровень зеркала файла.
@@ -26,13 +25,9 @@
 //    версия источника кладётся РЯДОМ как .conflict-копия (зеркально
 //    наоборот относительно fetch-keep-both, который спасает локаль
 //    копией и пишет remote на место).
-//  - 'full' (правка Е1-а «Полное зеркало»): источник НА МЕСТО, локаль —
-//    В КОРЗИНУ («откат всегда возможен» — принцип №3 спеки); без
-//    trash-адаптера — fallback-конфликт-копия вместо молчаливой потери.
-//    [overhaul S5] отказ КОРЗИНЫ приравнен к отсутствию trash-адаптера:
-//    локаль спасается конфликт-копией, загрузка НЕ падает (ветка
-//    mirror === 'full' в resolveConflict — фикс вечного ретрая
-//    «Destination file already exists!»).
+//  - 'full': preserve the latest saved local bytes in a recovery copy,
+//    then replace only if the original still matches. 'remote-wins'
+//    has the same recovery requirement. No trash-before-write gap.
 // Конфликт-ветка матрицы §2.2 имеет ПРИОРИТЕТ над стратегией настроек
 // (spec §2.4): в light/full стратегия (в т.ч. ask) игнорируется.
 // undefined/'fetch' — прежняя семантика §9.1 по стратегии ДОСЛОВНО.
@@ -62,7 +57,7 @@ import { extractConflictTimestamp } from './file-glob';
  * слабой идентичности (weak/etag), где локальный хэш невычислим. Сначала
  * длины (быстрый отказ), затем DataView-сравнение 4-байтовыми словами.
  */
-function bytesEqual(a: ArrayBuffer, b: ArrayBuffer): boolean {
+export function bytesEqual(a: ArrayBuffer, b: ArrayBuffer): boolean {
         if (a === b) return true;
         if (a.byteLength !== b.byteLength) return false;
         const wa = new DataView(a);
@@ -101,6 +96,12 @@ export interface ConflictResolverDeps {
          * Меняется через setLightStrategy без пересоздания резолвера.
          */
         lightStrategy?: LightConflictStrategy;
+}
+
+export interface WriteTransaction {
+        /** Durable write of the primary path or an incoming conflict copy. */
+        write(path: string, data: ArrayBuffer, expected: ArrayBuffer | null, incoming?: boolean): Promise<void>;
+        appliedLocalSha256?: string;
 }
 
 /** Максимум кандидатов имени штампованной копии (без суффикса + -2…-100). */
@@ -241,6 +242,7 @@ export class ConflictResolver {
         }
 
         /** Сменить стратегию (без пересоздания резолвера). */
+        getStrategy():ConflictStrategy{return this.strategy;}
         setStrategy(strategy: ConflictStrategy): void {
                 this.strategy = strategy;
         }
@@ -252,14 +254,16 @@ export class ConflictResolver {
         setLightStrategy(strategy: LightConflictStrategy): void {
                 this.lightStrategy = strategy;
         }
+        snapshot(): ConflictResolver {
+                return new ConflictResolver(this.strategy, { ...this.deps, lightStrategy: this.lightStrategy });
+        }
 
         /**
          * Безопасная запись удалённой версии файла с учётом локальных правок.
          *
          * Матрица §9.1 (дословно):
          * 1. локального файла нет            → записать remote (NEW);
-         * 2. localHash === remoteHash        → записать remote поверх
-         *    (идентичный контент; самовосстановление кэша, кейс 5);
+         * 2. local bytes === remote bytes    → update the baseline without writing;
          * 3. cacheHash отсутствует           → КОНФЛИКТ (фикс Б-01:
          *    нетронутость локали не доказана);
          * 4. localHash !== cacheHash         → КОНФЛИКТ (фикс Б-02-контекст:
@@ -282,52 +286,64 @@ export class ConflictResolver {
                 remoteData: ArrayBuffer,
                 cacheHash: string | undefined,
                 mirror?: MirrorLevel,
+                signal?: AbortSignal,
+                transaction?: WriteTransaction,
+                writeMode?: WriteMode,
+                ruleConflict?: RuleConflict,
+                allowAsk = true,
         ): Promise<WriteOutcome> {
+                signal?.throwIfAborted();
                 const { vault } = this.deps;
-
-                // Кейс 1: локального файла нет — обычный NEW, конфликтов не бывает.
+                if (writeMode === 'preserve') return { kind: 'skipped', updateCache: false };
                 if (!(await vault.exists(entry.path))) {
-                        await vault.writeBinary(entry.path, remoteData);
-                        return { kind: 'written', updateCache: true };
+                        await this.writeIfUnchanged(entry.path, remoteData, null, signal, transaction);
+                        return { kind: 'written', updateCache: true, primaryChanged: true };
                 }
-
-                // Ленивое вычисление localHash — только когда файл существует.
+                if (writeMode === 'create') return { kind: 'skipped', updateCache: false };
                 const local = await vault.readBinary(entry.path);
                 const localHash = await this.computeLocalHash(entry.hashAlg, local);
-
-                // Кейс 5 (и «2» с точки зрения контента): локаль идентична remote —
-                // пишем поверх (no-op по содержимому) и чиним кэш.
-                // [P2/M9] Для слабой идентичности (weak/etag) локальный хэш
-                // НЕВЫЧИСЛИМ (null) — идентичность проверяем прямым сравнением
-                // байтов local vs remoteData: это убирает конфликты/копии на
-                // ETag-churn и повторные добавления идентичного содержимого.
-                const identical = localHash !== null
-                        ? localHash === entry.hash
-                        : bytesEqual(local, remoteData);
-                if (identical) {
-                        await vault.writeBinary(entry.path, remoteData);
-                        return { kind: 'written', updateCache: true };
+                signal?.throwIfAborted();
+                // Equal bytes need no write, avoiding a race with a subsequent edit.
+                if (bytesEqual(local, remoteData)) {
+                        if (transaction) await this.writeIfUnchanged(entry.path, remoteData, local, signal, transaction);
+                        return { kind: 'written', updateCache: true, primaryChanged: false };
                 }
-
-                // Определение КОНФЛИКТА: локаль отличается от remote И не является
-                // нетронутой с прошлой синхронизации.
-                // - cacheHash === undefined → КОНФЛИКТ (фикс Б-01);
-                // - localHash !== cacheHash → КОНФЛИКТ (локаль меняли);
-                // - иначе — штатное обновление (remote изменился, локаль чистая).
-                // [P2/M9] weak/etag: localHash === null — «нетронутость» НЕДОКАЗУЕМА
-                // → fail-closed через resolveConflict. Стратегия/mirror решают:
-                // remote-wins перезапишет ТИХО (kind='written', без конфликт-шума),
-                // local-wins сохранит локаль, keep-both/ask — копия/модалка,
-                // light/full — корзина/копия. Ни фантомных конфликтов на
-                // идентичное содержимое (ветка identical выше), ни новых
-                // путей молчаливой потери локальных правок.
-                const conflict = cacheHash === undefined || localHash === null || localHash !== cacheHash;
+                const conflict = transaction?.appliedLocalSha256 !== undefined
+                        ? await this.deps.sha256(local) !== transaction.appliedLocalSha256
+                        : cacheHash === undefined || localHash === null || localHash !== cacheHash;
                 if (!conflict) {
-                        await vault.writeBinary(entry.path, remoteData);
-                        return { kind: 'written', updateCache: true };
+                        await this.writeIfUnchanged(entry.path, remoteData, local, signal, transaction);
+                        return { kind: 'written', updateCache: true, primaryChanged: true };
                 }
+                if (writeMode === 'update') return { kind: 'skipped', updateCache: false };
+                if (writeMode === 'changes' && ruleConflict === 'ask' && !allowAsk) return {kind:'skipped',updateCache:false,requiresDecision:true};
+                if (writeMode === 'changes' && ruleConflict) {
+                        const resolver = this.snapshot();
+                        if (ruleConflict === 'incoming') {
+                                resolver.setLightStrategy('keep-local');
+                                return resolver.resolveConflict(entry, remoteData, local, 'light', signal, transaction);
+                        }
+                        resolver.setStrategy(ruleConflict);
+                        return resolver.resolveConflict(entry, remoteData, local, 'fetch', signal, transaction);
+                }
+                return this.resolveConflict(entry, remoteData, local, writeMode === 'remote' ? 'full' : mirror, signal, transaction);
+        }
 
-                return this.resolveConflict(entry, remoteData, local, mirror);
+        private async writeIfUnchanged(path: string, data: ArrayBuffer, expected: ArrayBuffer | null, signal?: AbortSignal, transaction?: WriteTransaction): Promise<void> {
+                signal?.throwIfAborted();
+                if (transaction) { await transaction.write(path, data, expected); return; }
+                const exists = await this.deps.vault.exists(path);
+                if (expected === null ? exists : !exists || !bytesEqual(await this.deps.vault.readBinary(path), expected)) {
+                        throw new Error(`Local file changed before replacement: ${path}`);
+                }
+                signal?.throwIfAborted();
+                if (expected && this.deps.vault.compareAndWrite) {
+                        const replaced = await this.deps.vault.compareAndWrite(path, data, expected, signal);
+                        if (replaced === false) throw new Error(`Local file changed before replacement: ${path}`);
+                        if (replaced === true) return;
+                }
+                signal?.throwIfAborted();
+                await this.deps.vault.writeBinary(path, data);
         }
 
         /**
@@ -364,148 +380,36 @@ export class ConflictResolver {
                 remoteData: ArrayBuffer,
                 local: ArrayBuffer,
                 mirror?: MirrorLevel,
+                signal?: AbortSignal,
+                transaction?: WriteTransaction,
         ): Promise<WriteOutcome> {
-                // [W1-T06 / A3 + overhaul v4/Этап 3] «Лёгкое зеркало» — две опции:
-                //
-                // 'keep-local' (default, текущее поведение): локальная версия
-                //   ОСТАЁТСЯ на месте (entry.path не трогаем), версия источника
-                //   скачивается и кладётся РЯДОМ как .conflict-копия. Это НЕ
-                //   fetch-keep-both (тот спасает ЛОКАЛЬ в копию и пишет remote
-                //   на место) — light зеркально наоборот. Стратегия (в т.ч.
-                //   ask) игнорируется: уровень выше стратегии.
-                //
-                //   updateCache=true — осознанно: кэш получит хэш remote,
-                //   diff перестанет видеть расхождение, конфликт не зациклится
-                //   на каждом sync. Цена: рассинхрон «кэш = remote, диск = local»
-                //   — локаль живёт на месте до ручного разбора, версия источника —
-                //   рядом в копии.
-                //
-                // 'keep-both' [overhaul v4/Этап 3]: симметрично с fetch-keep-both —
-                //   локаль в .conflict-копию, remote на место. Удобно, когда
-                //   пользователь хочет, чтобы remote-версия была «основной», а
-                //   локальные правки — в копии для архива. Кэш обновляется remote
-                //   hash, так как на месте entry.path лежит remote.
-                //
-                //   Выбор между ними — пользовательский (dropdown в SettingsTab,
-                //   только при mirror='light'). full mirror не зависит (всегда
-                //   trash + remote на место).
-                if (mirror === 'light') {
-                        const now = this.deps.now?.() ?? Date.now();
-                        const conflictPath = await this.buildConflictPath(entry.path, now);
-
-                        if (this.lightStrategy === 'keep-both') {
-                                // Сначала спасаем локаль в копию, ПОТОМ пишем remote
-                                // в основной файл: при обрыве между записями локальные
-                                // правки не теряются (симметрия с fetch-keep-both).
-                                await this.deps.vault.writeBinary(conflictPath, local);
-                                await this.deps.vault.writeBinary(entry.path, remoteData);
-                                return { kind: 'conflict', updateCache: true, conflictPath, mirror: 'light' };
-                        }
-
-                        // 'keep-local' (default): remote в копию, локаль не трогаем.
-                        await this.deps.vault.writeBinary(conflictPath, remoteData);
-                        return { kind: 'conflict', updateCache: true, conflictPath, mirror: 'light' };
+                let choice: ConflictStrategy | import('../sources/types').ConflictChoice = this.strategy;
+                if (mirror !== 'light' && mirror !== 'full' && choice === 'ask') {
+                        choice = this.deps.ui ? await cancellable(this.deps.ui.askConflict({
+                                path: entry.path, localSize: local.byteLength, remoteSize: remoteData.byteLength,
+                        },signal),signal) : 'keep-both';
                 }
-
-                // [W1-T06 / Е1-а] «Полное зеркало»: источник НА МЕСТО;
-                // локальная версия — В КОРЗИНУ (НЕ .conflict-копия — именно
-                // корзина: «откат всегда возможен» — принцип №3 спеки).
-                // Стратегия (в т.ч. ask) игнорируется, как и в light.
-                // [overhaul S5 / EEXIST] отказ корзины НЕ равен отказу
-                // загрузки: рантайм Obsidian бросает «Destination file
-                // already exists!», когда в месте назначения корзины уже
-                // лежит файл с тем же именем (типично после повторных
-                // синхронизаций). Раньше такой throw пробрасывался наружу:
-                // файл падал в очередь неудач, ретраи бились об ту же
-                // ошибку бесконечно, сессия не сходилась. Теперь отказ
-                // корзины обрабатывается РОВНО как отсутствие trash-порта
-                // (ветка ниже): локаль спасается конфликт-копией, remote
-                // ложится на место, кэш обновляется — сходимость
-                // гарантирована, откат возможен (принцип №3 сохранён).
-                if (mirror === 'full') {
-                        let trashedLocal = false;
-                        if (this.deps.vault.trash) {
-                                try {
-                                        // Сначала корзина, ПОТОМ remote на место: при обрыве
-                                        // между шагами локаль уже в корзине — откат возможен.
-                                        await this.deps.vault.trash(entry.path);
-                                        trashedLocal = true;
-                                } catch (e) {
-                                        // Адаптер уже залогировал контекст (timed-обёртка в
-                                        // main.ts; ядро не знает об этом — тут только
-                                        // семантика: корзина недоступна → копия вместо
-                                        // потери).
-                                        console.warn(
-                                                `[VaultSync] mirror-full: trash failed for "${entry.path}" ` +
-                                                        `(${e instanceof Error ? e.message : String(e)}) — local will be saved as conflict copy`,
-                                        );
-                                }
-                        }
-                        if (trashedLocal) {
-                                await this.deps.vault.writeBinary(entry.path, remoteData);
-                                // Копии нет → conflictPath отсутствует (опционален
-                                // с W1-T06): истинная судьба локали — trashedLocal.
-                                return {
-                                        kind: 'conflict',
-                                        updateCache: true,
-                                        mirror: 'full',
-                                        trashedLocal: true,
-                                };
-                        }
-                        // Fallback без trash-адаптера ИЛИ при отказе корзины: без
-                        // корзины мы НЕ уничтожаем локаль молча (принцип №3
-                        // «откат всегда возможен») — спасаем её конфликт-копией,
-                        // как в fetch-keep-both, а remote кладём на место.
-                        const now = this.deps.now?.() ?? Date.now();
-                        const conflictPath = await this.buildConflictPath(entry.path, now);
-                        await this.deps.vault.writeBinary(conflictPath, local);
-                        await this.deps.vault.writeBinary(entry.path, remoteData);
-                        return {
-                                kind: 'conflict',
-                                updateCache: true,
-                                mirror: 'full',
-                                trashedLocal: false,
-                                conflictPath,
-                        };
-                }
-
-                // fetch / mirror не подан: матрица §9.1 ДОСЛОВНО (регресс-гарантия
-                // W1-T06 — семантика 2.3.3 не меняется ни на йоту).
-                let choice: ConflictStrategy = this.strategy;
-                if (this.strategy === 'ask') {
-                        if (this.deps.ui) {
-                                // Б-21: одна последовательная модалка, просто await.
-                                const info: ConflictInfo = {
-                                        path: entry.path,
-                                        localSize: local.byteLength,
-                                        remoteSize: remoteData.byteLength,
-                                };
-                                choice = await this.deps.ui.askConflict(info);
-                        } else {
-                                // UI не подан (headless/тесты) — безопасный фолбэк: обе версии.
-                                choice = 'keep-both';
-                        }
-                }
-
-                if (choice === 'local-wins') {
-                        // Ничего не пишем; кэш НЕ обновляем — иначе потеряем
-                        // повторную попытку загрузки (§9.3).
+                signal?.throwIfAborted();
+                if (choice === 'defer') return { kind: 'skipped', updateCache: false, requiresDecision: true };
+                if ((mirror === undefined || mirror === 'fetch') && choice === 'local-wins') {
                         return { kind: 'skipped', updateCache: false };
                 }
-                if (choice === 'remote-wins') {
-                        await this.deps.vault.writeBinary(entry.path, remoteData);
-                        return { kind: 'written', updateCache: true };
-                }
-
-                // keep-both (дефолт; сюда же падает 'ask' без ui):
-                // ОБЕ версии обязаны выжить (фикс Б-02).
                 const now = this.deps.now?.() ?? Date.now();
                 const conflictPath = await this.buildConflictPath(entry.path, now);
-                // Сначала спасаем локаль в копию, ПОТОМ пишем remote в основной
-                // файл: при обрыве между записями локальные правки не теряются.
+                signal?.throwIfAborted();
+                if (choice === 'incoming' || (mirror === 'light' && this.lightStrategy === 'keep-local')) {
+                        if (transaction) await transaction.write(conflictPath, remoteData, null, true);
+                        else await this.deps.vault.writeBinary(conflictPath, remoteData);
+                        return { kind: 'conflict', updateCache: true, conflictPath, mirror: 'light', primaryChanged: false };
+                }
+                // Re-read AFTER any question/path allocation; preserve the latest saved version.
+                local = await this.deps.vault.readBinary(entry.path);
+                signal?.throwIfAborted();
                 await this.deps.vault.writeBinary(conflictPath, local);
-                await this.deps.vault.writeBinary(entry.path, remoteData);
-                return { kind: 'conflict', updateCache: true, conflictPath };
+                // A failed recovery write or a concurrent edit must leave the original intact.
+                await this.writeIfUnchanged(entry.path, remoteData, local, signal, transaction);
+                return { kind: 'conflict', updateCache: true, conflictPath, primaryChanged: true,
+                        ...(mirror === 'light' || mirror === 'full' ? { mirror } : {}) };
         }
 
         /**
@@ -514,37 +418,7 @@ export class ConflictResolver {
          * коллизий — через exists порта vault).
          */
         private async buildConflictPath(path: string, now: number): Promise<string> {
-                // [overhaul v4 / Этап 5 / F1] auto-cleanup: при достижении лимита
-                // кандидатов (100 конфликт-копий для одного базового имени),
-                // найти самую старую копию в каталоге и удалить её, освободив
-                // слот. Без этого sync hard-fails при >100 копий; с auto-cleanup —
-                // продолжает работать, сохраняя только последние 100 версий.
-                return buildStampedPath(
-                        path,
-                        'conflict',
-                        formatConflictTimestamp(now),
-                        (p) => this.deps.vault.exists(p),
-                        // listExisting: найти все .conflict-* файлы в каталоге,
-                        // которые начинаются с того же baseName. Использует
-                        // vault.list (опциональный в VaultAdapter) — если нет,
-                        // auto-cleanup недоступен, и sync упадёт после 100 копий
-                        // (прежнее поведение).
-                        async (dir, baseName) => {
-                                if (!this.deps.vault.list) return [];
-                                try {
-                                        const listed = await this.deps.vault.list(dir);
-                                        return listed.files
-                                                .filter((f) => f.includes('.conflict-') && f.startsWith(baseName))
-                                                .map((f) => (dir ? `${dir}/${f}` : f));
-                                } catch {
-                                        return [];
-                                }
-                        },
-                        // remove: удалить старую копию (через trash, если есть).
-                        async (p) => {
-                                if (this.deps.vault.trash) await this.deps.vault.trash(p);
-                                else await this.deps.vault.remove(p);
-                        },
-                );
+                // Never reclaim the sole recovery version just to make room for a new copy.
+                return buildStampedPath(path, 'conflict', formatConflictTimestamp(now), p => this.deps.vault.exists(p));
         }
 }

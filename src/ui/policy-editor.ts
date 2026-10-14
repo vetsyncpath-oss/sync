@@ -1,3 +1,5 @@
+import { compileProfiles, type ProfileAssignment, type SyncProfile } from '../core/profiles';
+import { matchesFileExclusion } from '../core/file-glob';
 // src/ui/policy-editor.ts — логика редактирования SyncPolicy в модалке
 // (Phase 3 модуля Vault Structure Sync Policy; дизайн §3.4/§3.5/§3.8/§3.9).
 //
@@ -20,7 +22,7 @@
 import type { CacheEntry, FileExclusion, RemoteEntry } from '../sources/types';
 import type { PathPolicy } from '../core/path-policy';
 import type { FolderPolicy, SyncPolicy } from '../core/policy';
-import { EMPTY_POLICY, normalizePolicyPath } from '../core/policy';
+import { EMPTY_POLICY, normalizePolicyPath, computeLocalPath } from '../core/policy';
 import type { FolderMirrorRule, MirrorLevel } from '../core/mirror';
 import {
         folderCounters,
@@ -85,7 +87,7 @@ export interface PolicyEditorInit {
 
 export class PolicyEditor {
         readonly root: TreeNode;
-        private readonly policy: SyncPolicy;
+        private policy: SyncPolicy;
         private readonly nodeByPath: Map<string, TreeNode>;
         private readonly snap: StatusSnapshot;
         /** [W2-T07] Явный глобальный уровень (из настроек); undefined → легаси-вывод. */
@@ -123,7 +125,7 @@ export class PolicyEditor {
                         mirrorFolders: this.policy.mirrorFolders,
                         // [W2-T07] sync-exclude защищает от зеркальных удалений
                         // (applyPolicy фильтрует до плана) — статусы это учитывают.
-                        excludedFromSync: (p) => this.effectiveInclude(p) === 'exclude',
+                        excludedFromSync: (p) => this.effectiveInclude(p) === 'exclude' || matchesFileExclusion(p, this.policy.fileExclusions),
                         pluginDir: normalizePolicyPath(init.pluginDir),
                 };
         }
@@ -204,6 +206,22 @@ export class PolicyEditor {
                 return clonePolicy(this.policy);
         }
 
+        localAssignmentPath(path: string): string {
+                const normalized=normalizePolicyPath(path);
+                const rule=this.policy.folders.filter(r=>r.target && (!r.path || normalized===r.path || normalized.startsWith(r.path+'/')))
+                        .sort((a,b)=>b.path.length-a.path.length)[0];
+                return rule ? computeLocalPath(normalized,rule.path,rule) : normalized;
+        }
+
+        assignmentCount(path?: string): number {
+                return this.policy.assignments?.filter(a => path === undefined || a.path === path).length ?? 0;
+        }
+
+        replacePolicy(policy: SyncPolicy): void { this.policy=clonePolicy(policy); this.invalidateCaches(); }
+        assignProfiles(assignments: ProfileAssignment[], profiles: SyncProfile[]): void {
+                this.replacePolicy(compileProfiles({...this.policy,assignments},profiles));
+        }
+
         /**
          * Валидация rename/move-целей (дизайн §6.1, слой persist-time):
          * каждая цель обязана проходить isPathSafe. Возвращает список
@@ -265,6 +283,7 @@ export class PolicyEditor {
 
         /** Живой снимок (уровень и mirrorFolders синхронизированы с политикой). */
         private snapshot(): StatusSnapshot {
+                this.snap.fileRules = this.policy.fileRules;
                 this.snap.mirrorLevel = this.mirrorLevel;
                 this.snap.mirrorFolders = this.policy.mirrorFolders;
                 return this.snap;
@@ -333,6 +352,7 @@ export class PolicyEditor {
         /** Зеркало способно удалять? (видимость фильтра «под угрозой зеркала»:
          *  глобальный light/full ИЛИ хотя бы один активный custom-override.) */
         canMirrorDelete(): boolean {
+                if (this.policy.fileRules?.some(r => r.write !== 'preserve' && r.delete && r.delete !== 'keep')) return true;
                 if (this.mirrorLevel !== 'fetch') return true;
                 return Object.values(this.policy.mirrorFolders ?? {}).some(
                         (r) => r.state === 'custom' && r.level !== undefined && r.level !== 'fetch',
@@ -444,7 +464,7 @@ export class PolicyEditor {
         setTarget(path: string, target: { kind: 'rename' | 'move'; localPath: string } | undefined): void {
                 const norm = normalizePolicyPath(path);
                 if (target === undefined) {
-                        this.policy.folders = this.policy.folders.filter((f) => f.path !== norm || !f.target);
+                        this.policy.folders = this.policy.folders.map(f=>{ if(f.path!==norm)return f; const {target,...rest}=f; return rest; });
                 this.invalidateCaches();
                         return;
                 }
@@ -561,6 +581,9 @@ function clonePolicy(p: SyncPolicy): SyncPolicy {
                         }
                         : {}),
                 ...(p.preset ? { preset: p.preset } : {}),
+                ...(p.fileExclusions ? { fileExclusions: structuredClone(p.fileExclusions) } : {}),
+                ...(p.fileRules ? { fileRules: structuredClone(p.fileRules) } : {}),
+                ...(p.assignments ? { assignments: structuredClone(p.assignments) } : {}),
         };
 }
 
@@ -586,7 +609,7 @@ function policyFingerprint(p: SyncPolicy): string {
         const mirror = Object.entries(p.mirrorFolders ?? {})
                 .map(([k, v]) => [k, v.state, v.level ?? null])
                 .sort();
-        return JSON.stringify([p.version, p.mirror === true, p.preset ?? null, folders, mirror]);
+        return JSON.stringify([p.version, p.mirror === true, p.preset ?? null, folders, mirror, p.fileExclusions ?? [], p.fileRules ?? [], p.assignments ?? []]);
 }
 
 /** Пустая политика для инициализации (реэкспорт для main.ts). */

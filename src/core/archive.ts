@@ -1,3 +1,4 @@
+import { Inflate } from 'pako';
 // src/core/archive.ts — чтение central directory zip-архива БЕЗ распаковки
 // (фаза 5, задачи 5-ab + 5-c; дизайн §7.2/§7.3 + Приложение A/B — таблица
 // форматов и смещений реализована дословно).
@@ -11,18 +12,14 @@
 // Модуль ядра: НЕ импортирует obsidian; из замороженных контрактов —
 // только type-only RandomAccessReader (sources/types, решение В5-1);
 // из соседних модулей ядра — decodeZipName (каскад кодировок §7.4).
-// Единственный node-builtin — zlib (inflateRawSync, решение В6-1):
-// external в esbuild.config.mjs; lazy require — на мобильном Obsidian
-// плагин загружается без краша (sync падает явно на require).
-
-// Lazy require: top-level import of 'zlib' crashes Obsidian mobile (Capacitor
-// has no Node builtins); with lazy require, the plugin loads cleanly everywhere,
-// and the require() inside inflateRaw() only throws when sync actually runs.
-// See audit-cloud-sync-2026-08.md §B.1 (mobile compatibility).
-declare function require(module: string): unknown;
-function inflateRaw(data: Uint8Array): Uint8Array {
-        const zlib = require('zlib') as typeof import('zlib');
-        return zlib.inflateRawSync(Buffer.from(data));
+// Portable incremental raw DEFLATE with fixed output allocation and bounded chunks.
+// Actual output is checked while inflating; cancellation is checked between chunks.
+async function inflateRaw(data:Uint8Array,limit:number,signal?:AbortSignal):Promise<Uint8Array>{
+        const inflater=new Inflate({raw:true,chunkSize:64*1024});const output=new Uint8Array(limit);let size=0;
+        inflater.onData=value=>{const chunk=value as Uint8Array;if(size+chunk.length>limit)throw new Error('DEFLATE actual output exceeds the declared size');output.set(chunk,size);size+=chunk.length;};
+        for(let offset=0;offset<data.length;offset+=64*1024){signal?.throwIfAborted();inflater.push(data.subarray(offset,offset+64*1024),offset+64*1024>=data.length);
+                if(inflater.err)throw new Error(inflater.msg);if(offset+64*1024<data.length)await new Promise(resolve=>setTimeout(resolve,0));}
+        if(size!==limit)throw Error('DEFLATE output size mismatch');return output;
 }
 import type { RandomAccessReader } from '../sources/types';
 import { decodeZipName } from './archive-names';
@@ -320,11 +317,12 @@ function crc32(data: Uint8Array): number {
  *  записи проверяется ДО inflate; фактический — существующей сверкой
  *  с uncompressedSize ниже. 2 GiB — выше разумного файла заметки и
  *  ниже порога гарантированного OOM. */
-const MAX_ENTRY_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_ENTRY_UNCOMPRESSED_BYTES = 64 * 1024 * 1024;
 
 export async function extractEntry(
         reader: RandomAccessReader,
         entry: ZipEntry,
+        signal?:AbortSignal,
 ): Promise<ArrayBuffer> {
         const size = reader.size();
 
@@ -374,6 +372,7 @@ export async function extractEntry(
                         `запись «${entry.name}»: данные выходят за пределы архива: dataOffset=${hex(dataOffset)}, compressedSize=${entry.compressedSize}, размер архива=${size}`,
                 );
         }
+        if(entry.compressedSize>MAX_ENTRY_UNCOMPRESSED_BYTES+1024*1024)throw new Error('Compressed entry exceeds the safe read buffer limit');
         const compressed = await reader.read(dataOffset, entry.compressedSize);
 
         // ── 5. Распаковка + сверка CRC32 с central directory. Бит 3 (data
@@ -385,8 +384,9 @@ export async function extractEntry(
                 // raw DEFLATE (ZIP method 8): Node zlib отдаёт свежий Buffer
                 // (subclass Uint8Array) — независимый от compressed буфер.
                 try {
-                        data = inflateRaw(compressed);
+                        data = await inflateRaw(compressed,entry.uncompressedSize,signal);
                 } catch (e) {
+                        if(signal?.aborted)throw signal.reason??new DOMException('Cancelled','AbortError');
                         throw new Error(
                                 `запись «${entry.name}»: не удалось распаковать DEFLATE-данные: ${e instanceof Error ? e.message : String(e)}`,
                         );

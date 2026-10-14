@@ -21,6 +21,7 @@
  * (cloud-sync-*), как у пользователя.
  */
 export interface VaultSyncState {
+        jobs?:{version:1;items:import('./job-runtime').JobProjection[]};
         /** Текущий статус синка (см. SyncState в main.ts). */
         syncState: 'idle' | 'syncing' | 'error' | 'offline' | 'conflicts' | 'unconfigured';
         /** Уровень зеркала текущего источника (fetch/light/full). */

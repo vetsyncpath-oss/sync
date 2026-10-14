@@ -1,3 +1,4 @@
+import type { TransferObserver } from './types';
 // ============================================================
 // --- SOURCES/YANDEX-SOURCE (фаза 6, задача 6-a) ---
 // Источник «Яндекс.Диск» в manifest-режиме (дизайн §5, §6.1):
@@ -20,7 +21,7 @@
 // ============================================================
 
 import type { ArchiveDownloader, NetTransport, RemoteEntry, SyncSource } from './types';
-import { NetLayer, NetError, type NetFetchOptions } from '../core/net';
+import { NetLayer, NetError, sleepInterruptible, type NetFetchOptions } from '../core/net';
 import { ZipUrlSource } from './zip-url-source';
 
 /** База публичного API Яндекс.Диска (дизайн §5.1). */
@@ -107,9 +108,13 @@ interface ListingItem {
 
 export class YandexSource implements SyncSource {
         readonly kind = 'yandex' as const;
+        readonly maxConcurrentDownloads = 2;
+        readonly deletionSafety = 'unverified' as const;
         /** [Phase 5.1] пер-файлового лимита нет: облачный диск (см. SyncSource). */
         readonly maxFileSizeBytes?: number;
 
+        private cooldownUntil=0;
+        private manifestObserve?: TransferObserver;
         private readonly publicKey: () => string;
         private readonly net: NetLayer;
         private readonly archiveDownloader?: ArchiveDownloader;
@@ -129,7 +134,10 @@ export class YandexSource implements SyncSource {
 
         constructor(opts: YandexSourceOptions) {
                 this.publicKey = opts.publicKey;
-                this.net = new NetLayer(opts.transport);
+                this.net = new NetLayer({fetch:async(url,request)=>{
+                        while(this.cooldownUntil>Date.now()){request.observe?.({stage:'waiting',retryAt:this.cooldownUntil});await sleepInterruptible(this.cooldownUntil-Date.now(),request?.signal);}
+                        return opts.transport.fetch(url,request);
+                }});
                 this.archiveDownloader = opts.archiveDownloader;
                 this.messages = { ...DEFAULT_MESSAGES, ...opts.messages };
                 this.onRateLimitWait = opts.onRateLimitWait;
@@ -144,7 +152,8 @@ export class YandexSource implements SyncSource {
          * пагинацией; sha256 → RemoteEntry (без скачивания архива).
          * Для файловой ссылки — file-ветка (делегат ZipUrlSource).
          */
-        async getManifest(signal: AbortSignal): Promise<RemoteEntry[]> {
+        async getManifest(signal: AbortSignal, observe?: TransferObserver): Promise<RemoteEntry[]> {
+                this.manifestObserve=observe;observe?.({stage:'manifest'});
                 // Повторный getManifest в file-ветке: старый делегат утилизируем,
                 // href файловой ссылки будет перевыпрошен заново (семантика п.3).
                 if (this.zipDelegate !== null) {
@@ -170,13 +179,15 @@ export class YandexSource implements SyncSource {
                 const entries: RemoteEntry[] = [];
                 const queue: FolderNode[] = [];
                 await this.consumeFolderPages(undefined, '', root, entries, queue, signal);
+                const visited=new Set<string>();
                 while (queue.length > 0) {
+                        if(entries.length>250_000||visited.size>10_000)throw new Error('Yandex inventory traversal limit exceeded');
                         const node = queue.shift();
                         if (node === undefined) break;
                         const firstPage = await this.fetchListing(node.apiPath, 0, signal);
                         await this.consumeFolderPages(node.apiPath, node.prefix, firstPage, entries, queue, signal);
                 }
-                return entries;
+                this.manifestObserve?.({stage:'manifest',items:entries.length});return entries;
         }
 
         /**
@@ -184,29 +195,31 @@ export class YandexSource implements SyncSource {
          * (§5.4) либо E2 → загрузка с проверкой expectedSize (Б-19).
          * 403/404 → инвалидация кэша + РОВНО один повтор (E2 → скачать).
          */
-        async fetch(entry: RemoteEntry, signal: AbortSignal): Promise<ArrayBuffer> {
+        async fetch(entry: RemoteEntry, signal: AbortSignal, observe?: TransferObserver): Promise<ArrayBuffer> {
                 // File-ветка: байты отдаёт делегат (zip-сессия режима B).
                 if (this.zipDelegate !== null) {
-                        return this.zipDelegate.fetch(entry, signal);
+                        return this.zipDelegate.fetch(entry, signal, observe);
                 }
                 const apiPath = this.apiPaths.get(entry.path);
                 if (apiPath === undefined) {
                         throw new Error(`entry not in manifest: ${entry.path}`);
                 }
                 try {
-                        return await this.fetchEntryOnce(entry, apiPath, signal);
+                        return await this.fetchEntryOnce(entry, apiPath, signal, observe);
                 } catch (err) {
                         // Протухший/отозванный href (403/404 на E2 или на скачивании):
                         // запись href-кэша даинвалидирована, повтор — один (семантика п.4).
                         if (err instanceof NetError && (err.status === 403 || err.status === 404)) {
                                 this.hrefCache.delete(entry.path);
-                                return await this.fetchEntryOnce(entry, apiPath, signal);
+                                return await this.fetchEntryOnce(entry, apiPath, signal, observe);
                         }
                         throw err;
                 }
         }
 
         /** Конец сессии: href-кэш очищен, делегат file-ветки утилизирован. */
+        fileSizeLimit():number|undefined{return this.zipDelegate?.maxFileSizeBytes;}
+        async forceDispose():Promise<void>{this.hrefCache.clear();await this.zipDelegate?.forceDispose();this.zipDelegate=null;}
         async dispose(): Promise<void> {
                 // §5.4: href живёт только в рамках сессии синхронизации.
                 this.hrefCache.clear();
@@ -235,7 +248,7 @@ export class YandexSource implements SyncSource {
                         throw err;
                 }
                 this.zipDelegate = new ZipUrlSource({ url: () => href, downloader: this.archiveDownloader });
-                return this.zipDelegate.getManifest(signal);
+                return this.zipDelegate.getManifest(signal,this.manifestObserve);
         }
 
         // ── папочная ветка: обход листингов ──
@@ -281,11 +294,12 @@ export class YandexSource implements SyncSource {
                                         queue.push({ apiPath: item.path, prefix: prefix + item.name + '/' });
                                 } else if (item.type === 'file') {
                                         this.appendFileEntry(item, prefix, entries);
+                                } else {
+                                        throw new Error(this.messages.structureChanged());
                                 }
-                                // Прочие значения type пропускаются: контракт (наличие
-                                // name+type) соблюдён, семантика значения — на совести API.
                         }
 
+                        this.manifestObserve?.({stage:'manifest',items:entries.length});
                         collected += embedded.items.length;
                         if (collected >= total) break;
                         offset += PAGE_SIZE;
@@ -307,7 +321,8 @@ export class YandexSource implements SyncSource {
                 // единообразие с zip-url/gdrive/webdav (спека §8: «zip-поведение
                 // во всех движках»). Старый skip `size > 0` давал фантомные
                 // diff'ы при миграции между движками.
-                const size = typeof item.size === 'number' && Number.isFinite(item.size) ? item.size : 0;
+                if(!Number.isSafeInteger(item.size)||Number(item.size)<0)throw new Error('Yandex inventory has no valid file size');
+                const size = item.size as number;
 
                 const relPath = prefix + item.name;
                 const sha256 = typeof item.sha256 === 'string' && item.sha256 !== '' ? item.sha256 : undefined;
@@ -346,10 +361,12 @@ export class YandexSource implements SyncSource {
                 entry: RemoteEntry,
                 apiPath: string,
                 signal: AbortSignal,
+                observe?: TransferObserver,
         ): Promise<ArrayBuffer> {
-                const href = await this.obtainHref(entry.path, apiPath, signal);
+                observe?.({stage:'download-link'});
+                const href = await this.obtainHref(entry.path, apiPath, signal, observe);
                 // §6.1 fetchOne: expectedSize обязателен (фикс Б-19).
-                return this.netFetch(href, { expectedSize: entry.size, signal, retries: DOWNLOAD_RETRIES });
+                return this.netFetch(href, { expectedSize: entry.size, signal, retries: DOWNLOAD_RETRIES, observe });
         }
 
         /** Свежий href из кэша; иначе E2 + запись в кэш с TTL (§5.4). */
@@ -357,12 +374,13 @@ export class YandexSource implements SyncSource {
                 vaultPath: string,
                 apiPath: string,
                 signal: AbortSignal,
+                observe?: TransferObserver,
         ): Promise<string> {
                 const cached = this.hrefCache.get(vaultPath);
                 if (cached !== undefined && this.now() < cached.expiresAt) {
                         return cached.href;
                 }
-                const href = await this.fetchDownloadHref(apiPath, signal);
+                const href = await this.fetchDownloadHref(apiPath, signal, observe);
                 this.hrefCache.set(vaultPath, { href, expiresAt: this.now() + this.hrefTtlMs });
                 return href;
         }
@@ -420,8 +438,8 @@ export class YandexSource implements SyncSource {
          * обрабатывается ретраем fetch (семантика п.4); href-контракт
          * (не-пустая строка) — риск №7.
          */
-        private async fetchDownloadHref(apiPath: string | undefined, signal: AbortSignal): Promise<string> {
-                const data: any = await this.fetchApiJson(this.downloadUrl(apiPath), signal);
+        private async fetchDownloadHref(apiPath: string | undefined, signal: AbortSignal, observe?: TransferObserver): Promise<string> {
+                const data: any = await this.fetchApiJson(this.downloadUrl(apiPath), signal, observe);
                 if (!data || typeof data.href !== 'string' || data.href === '') {
                         throw new Error(this.messages.structureChanged());
                 }
@@ -429,10 +447,10 @@ export class YandexSource implements SyncSource {
         }
 
         /** GET JSON: Accept: application/json (§5.1); не-JSON тело — риск №7. */
-        private async fetchApiJson(url: string, signal: AbortSignal): Promise<any> {
+        private async fetchApiJson(url: string, signal: AbortSignal, observe?: TransferObserver): Promise<any> {
                 const buffer = await this.netFetch(url, {
                         headers: { Accept: 'application/json' },
-                        signal,
+                        signal, maxBytes:16*1024*1024, observe:event=>(observe??this.manifestObserve)?.({...event,stage:event.stage==='waiting'?'waiting':observe?'download-link':'manifest',byteDelta:undefined,bytes:undefined,totalBytes:undefined}),
                 });
                 try {
                         return JSON.parse(new TextDecoder().decode(buffer));
@@ -449,11 +467,12 @@ export class YandexSource implements SyncSource {
                                 ...opts,
                                 // §5.2: ожидание дольше часа — сразу понятный отказ (п.6).
                                 maxRateLimitWaitMs: MAX_RATE_LIMIT_WAIT_MS,
-                                onRateLimitWait: (waitMs: number) => this.onRateLimitWait?.(waitMs),
+                                onRateLimitWait: (waitMs: number) => {this.cooldownUntil=Math.max(this.cooldownUntil,Date.now()+waitMs);this.onRateLimitWait?.(waitMs);},
                         });
                 } catch (err) {
+                        if(err instanceof NetError&&err.retryAfterMs)this.cooldownUntil=Math.max(this.cooldownUntil,Date.now()+err.retryAfterMs);
                         if (err instanceof NetError && err.rateLimitExceeded) {
-                                throw new Error(this.messages.rateLimitExceedsHour());
+                                throw new NetError(this.messages.rateLimitExceedsHour(),{status:err.status,attempt:err.attempt,rateLimitExceeded:true,retryAfterMs:err.retryAfterMs});
                         }
                         throw err;
                 }

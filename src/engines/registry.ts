@@ -48,7 +48,14 @@ import { GitSource } from '../sources/git-source';
 import { YandexSource } from '../sources/yandex-source';
 import { ZipUrlSource } from '../sources/zip-url-source';
 import { GDriveSource } from '../sources/gdrive-source';
+import { GDriveOAuthSource } from '../sources/gdrive-oauth-source';
+import { GoogleDriveClient } from '../sources/gdrive-client';
 import { WebDavSource } from '../sources/webdav-source';
+import type { GitSourceMessages } from '../sources/git-source';
+import type { YandexSourceMessages } from '../sources/yandex-source';
+import type { ZipUrlSourceMessages } from '../sources/zip-url-source';
+import type { GDriveSourceMessages } from '../sources/gdrive-source';
+import type { WebDavSourceMessages } from '../sources/webdav-source';
 
 // ────────────────────────────────────────────────────────────────────────
 // Контекст создания движка
@@ -68,6 +75,8 @@ import { WebDavSource } from '../sources/webdav-source';
  * NodeZipRangeTransport.
  */
 export interface EngineCtx {
+        googleTransport?: (values: Record<string,unknown>) => NetTransport;
+        maxPayloadBytes?: number;
         /** HTTP-транспорт для движков с сетевыми запросами (git/yandex). */
         transport?: NetTransport;
         /** Скачиватель архива для zip-url и file-ветки yandex. */
@@ -82,7 +91,7 @@ export interface EngineCtx {
          * Тип宽松: каждый движок ожидает свой GitSourceMessages/YandexSourceMessages/
          * ZipUrlSourceMessages; main.ts формирует их через i18n.t.* и type-cast'ит.
          */
-        messages?: Record<string, (...args: unknown[]) => string>;
+        messages?: Partial<GitSourceMessages & YandexSourceMessages & ZipUrlSourceMessages & GDriveSourceMessages & WebDavSourceMessages>;
         /**
          * [W3-T03] Прогресс скачивания архива (только zip-url). В main.ts
          * транслируется в statusBar.setState('syncing', { bytesTransferred, totalBytes }).
@@ -297,14 +306,8 @@ EngineRegistry.register({
                 },
                 {
                         key: 'branch',
-                        type: 'select',
+                        type: 'text',
                         labelKey: 'eng.git.branch',
-                        options: [
-                                { value: 'all', labelKey: 'eng.git.branches.all' },
-                                { value: 'default', labelKey: 'eng.git.branches.default' },
-                        ],
-                        // default — для инициализации пустых настроек / миграции.
-                        // Реальное значение (main/master/develop) — за пользователем.
                         default: 'default',
                 },
                 // [W6-T04] baseUrl — опциональный API-корень для GitHub Enterprise
@@ -334,7 +337,7 @@ EngineRegistry.register({
                         repo: () => ({
                                 repoUrl: String(values.repoUrl ?? ''),
                                 accessToken: String(values.accessToken ?? ''),
-                                branch: String(values.branch ?? 'main'),
+                                branch: String(values.branch ?? 'default'),
                                 baseUrl: typeof values.baseUrl === 'string' ? values.baseUrl : undefined,
                         }),
                         transport: ctx?.transport,
@@ -377,7 +380,7 @@ EngineRegistry.register({
         labelKey: 'eng.yandex.label',
         icon: '☁️',
         capabilities: {
-                auth: true,         // accessToken опциональный — публичные ссылки работают
+                auth: false,        // Public-link API only; OAuth is not implemented.
                 incremental: true,  // manifest-режим без полного скачивания (BFS листингов)
                 // testConnection: false — нет лёгкой проверки (требуется E1/E2 запрос).
                 testConnection: false,
@@ -388,14 +391,6 @@ EngineRegistry.register({
                         type: 'url',
                         labelKey: 'eng.yandex.vaultUrl',
                         required: true,
-                },
-                {
-                        key: 'accessToken',
-                        type: 'secret',
-                        labelKey: 'eng.yandex.token',
-                        // required: false — публичные ссылки работают без токена.
-                        // secret: true — маркер для sourceId-фабрики.
-                        secret: true,
                 },
         ],
         create: (values, ctx) => {
@@ -503,24 +498,20 @@ EngineRegistry.register({
                         type: 'text',
                         labelKey: 'eng.gdrive.folderId',
                         helpKey: 'eng.gdrive.folderIdHelp',
-                        // required: false — пустой = весь Drive пользователя (медленно на больших).
+                        required: true,
                         placeholderKey: 'eng.gdrive.folderIdPlaceholder',
-                },
-                {
-                        key: 'includeDocs',
-                        type: 'toggle',
-                        labelKey: 'eng.gdrive.includeDocs',
-                        helpKey: 'eng.gdrive.includeDocsHelp',
-                        // default: false — Google Docs/Sheets/Slides пропускаются по умолчанию.
-                        default: false,
                 },
         ],
         create: (values, ctx) => {
+                if(values.authMode==='oauth-desktop'){
+                    if(!ctx?.googleTransport)throw Error('Desktop Google OAuth is unavailable');
+                    return new GDriveOAuthSource(new GoogleDriveClient(ctx.googleTransport(values),ctx.maxPayloadBytes),String(values.folderId??''));
+                }
                 return new GDriveSource({
                         config: () => ({
                                 apiKey: String(values.apiKey ?? ''),
                                 folderId: typeof values.folderId === 'string' ? values.folderId : undefined,
-                                includeDocs: values.includeDocs === true,
+                                includeDocs: false, // Native Google documents require an unimplemented export adapter.
                         }),
                         transport: ctx?.transport,
                         onRateLimitWait: ctx?.onRateLimitWait,
@@ -528,6 +519,7 @@ EngineRegistry.register({
                 });
         },
         makeSourceId: (values) => {
+                if(values.authMode==='oauth-desktop')return `gdrive_oauth_${djb2(`${String(values.accountSub??'')}|${String(values.folderId??'')}`)}`;
                 // Публичный идентификатор: apiKey НЕ входит (инвариант 3 — ротация
                 // ключа не должна менять sourceId → у пользователя не должен быть
                 // re-download). folderId входит (разные папки = разные кэши).
@@ -560,7 +552,7 @@ EngineRegistry.register({
         // боевого smoke-теста против реальных WebDAV-серверов (пост-аудит §3).
         experimental: true,
         capabilities: {
-                auth: true,         // Basic auth required (user+pass)
+                auth: true,         // Optional Basic auth; anonymous servers are supported.
                 etag: true,         // ETag в PROPFIND-ответе (если сервер отдаёт)
                 mtime: true,        // getlastmodified в метаданных
                 incremental: true,  // PROPFIND + GET — без полного скачивания
@@ -580,7 +572,7 @@ EngineRegistry.register({
                         type: 'text',
                         labelKey: 'eng.webdav.username',
                         helpKey: 'eng.webdav.usernameHelp',
-                        required: true,
+                        required: false,
                 },
                 {
                         key: 'password',

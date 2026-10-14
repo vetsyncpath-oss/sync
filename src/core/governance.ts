@@ -238,23 +238,33 @@ export interface VaultSyncAuthLike {
 export async function awaitBeforeSession(
         authApi: unknown,
         timeoutMs: number,
+        signal?: AbortSignal,
 ): Promise<void> {
+        signal?.throwIfAborted();
         if (authApi === null || typeof authApi !== 'object') return;
         const beforeSession = (authApi as Partial<VaultSyncAuthLike>).beforeSession;
         if (typeof beforeSession !== 'function') return;
 
         let timer: ReturnType<typeof setTimeout> | undefined;
+        let onAbort: (() => void) | undefined;
         try {
                 await Promise.race([
-                        Promise.resolve(beforeSession.call(authApi)).catch(() => {
+                        Promise.resolve().then(()=>beforeSession.call(authApi)).catch(() => {
                                 // Ошибка pull-цикла менеджера — не наша проблема:
                                 // вердикт остаётся прежним (см. контракт выше).
                         }),
                         new Promise<void>((resolve) => {
                                 timer = setTimeout(resolve, timeoutMs);
                         }),
+                        new Promise<void>((_resolve, reject) => {
+                                onAbort = () => reject(signal?.reason ?? new DOMException('Cancelled', 'AbortError'));
+                                if (signal?.aborted) onAbort();
+                                else signal?.addEventListener('abort', onAbort, { once: true });
+                        }),
                 ]);
+                signal?.throwIfAborted();
         } finally {
                 if (timer !== undefined) clearTimeout(timer);
+                if (onAbort) signal?.removeEventListener('abort', onAbort);
         }
 }

@@ -1,3 +1,5 @@
+import { diagnosticText } from './sync-issue';
+import type { SyncIssue } from '../sources/types';
 // src/core/journal.ts — журнал сессий синхронизации [W2-T08].
 //
 // Канон: решения Д7=1 («единый журнал на обе поверхности: popover-модалка
@@ -26,6 +28,7 @@
 // недопустима, но и ронять sync из-за журнала нельзя).
 
 import type { MirrorLevel } from './mirror';
+import type { SyncFileResult } from '../sources/types';
 
 /** Триггер сессии: чем она была вызвана (команда/авто/повтор/скан/форс). */
 export type JournalTrigger = 'manual' | 'auto' | 'retry' | 'scan' | 'force';
@@ -40,6 +43,20 @@ export type JournalOutcome = 'ok' | 'cancelled' | 'error';
 
 /** Одна завершённая сессия синхронизации (сериализуется в JSON как есть). */
 export interface JournalEntry {
+        jobResults?:import('./job-runtime').JobRunResult[];
+        jobResultsTotal?:number;
+        uploaded?:number;deletedDrive?:number;
+        trace?:import('../sources/types').SyncStats['trace'];traceDropped?:number;
+        sessionId?:string;build?:string;platform?:string;
+        pendingBefore?:number;pendingAfter?:number;retryScheduled?:number;blocked?:number;notAttempted?:number;networkBytes?:number;problems?:SyncIssue[];
+        sources?: string[];
+        profilesMode?: boolean;
+        received?: number;
+        deferredConflicts?: number;
+        blockedReason?: string;
+        attemptOnly?: boolean;
+        results?: SyncFileResult[];
+        resultsTotal?: number;
         /** Начало сессии, epoch-ms (длительность отдельно — конец-начало). */
         startedAt: number;
         /** Длительность сессии, мс. */
@@ -62,6 +79,8 @@ export interface JournalEntry {
         conflicts: number;
         skipped: number;
         errors: number;
+        deferredDeletions?: number;
+        blockedDeletions?: number;
         /** Топ-3 частых ошибок сессии (см. topErrorsFrom); чистая сессия → []. */
         topErrors: Array<{ message: string; count: number }>;
 }
@@ -72,6 +91,7 @@ export interface JournalEntry {
  * read() → null означает «файла ещё нет» (первый запуск — норма, НЕ warn).
  */
 export interface JournalIo {
+        quarantine?(raw:string):Promise<void>;
         read(): Promise<string | null>;
         write(s: string): Promise<void>;
 }
@@ -86,7 +106,7 @@ export interface JournalStore {
 }
 
 /** Ёмкость кольца: сколько последних сессий храним (спека §7: 50). */
-export const JOURNAL_LIMIT = 50;
+export const JOURNAL_LIMIT = 200;
 
 /** Допустимые значения enum-полей при чтении (защита от битых файлов). */
 const TRIGGERS: ReadonlySet<string> = new Set(['manual', 'auto', 'retry', 'scan', 'force']);
@@ -99,6 +119,16 @@ const LEVELS: ReadonlySet<string> = new Set(['fetch', 'light', 'full']);
  * иначе запись отбрасывается; счётчики при пропусках добираются нулями.
  * Гарантия модалке: JournalEntry из load() всегда безопасна к рендеру.
  */
+function coerceJob(value:any):import('./job-runtime').JobRunResult|undefined{
+        if(!value||typeof value!=='object'||!['jobId','connectionId','name','runId'].every(key=>typeof value[key]==='string'&&value[key].length>0)
+            ||!['git','gdrive','webdav','zip-url','yandex'].includes(value.kind)||!['observing','queued','running','idle'].includes(value.activity)
+            ||value.outcome!==undefined&&!['success','partial','needs-attention','failed','cancelled','blocked'].includes(value.outcome)
+            ||!['downloaded','uploaded','deleted','failed','pending','attention','startedAt'].every(key=>Number.isSafeInteger(value[key])&&value[key]>=0))return;
+        return {jobId:value.jobId,connectionId:value.connectionId,name:value.name,kind:value.kind,runId:value.runId,activity:value.activity,outcome:value.outcome,
+            downloaded:value.downloaded,uploaded:value.uploaded,deleted:value.deleted,failed:value.failed,pending:value.pending,attention:value.attention,startedAt:value.startedAt,
+            completedAt:Number.isSafeInteger(value.completedAt)&&value.completedAt>=value.startedAt?value.completedAt:undefined,
+            issues:Array.isArray(value.issues)?value.issues.filter((issue:any)=>issue&&typeof issue.message==='string'&&typeof issue.code==='string').slice(0,20):[]};
+}
 function coerceEntry(raw: unknown): JournalEntry | null {
         if (typeof raw !== 'object' || raw === null) return null;
         const r = raw as Record<string, unknown>;
@@ -119,6 +149,18 @@ function coerceEntry(raw: unknown): JournalEntry | null {
                 }
         }
         return {
+                trace:Array.isArray(r.trace)?r.trace.filter(event=>!!event&&typeof event==='object'&&typeof event.stage==='string'&&Number.isFinite(event.at)).slice(-500):undefined,traceDropped:num(r.traceDropped),
+                sessionId:typeof r.sessionId==='string'?r.sessionId:undefined,build:typeof r.build==='string'?r.build:undefined,platform:typeof r.platform==='string'?r.platform:undefined,
+                pendingBefore:num(r.pendingBefore),pendingAfter:num(r.pendingAfter),retryScheduled:num(r.retryScheduled),blocked:num(r.blocked),notAttempted:num(r.notAttempted),networkBytes:num(r.networkBytes),
+                problems:Array.isArray(r.problems)?r.problems.filter((v):v is SyncIssue=>!!v&&typeof v==='object'&&typeof v.message==='string'&&typeof v.code==='string').slice(0,20):undefined,
+                sources:Array.isArray(r.sources)?r.sources.filter((value):value is string=>typeof value==='string').slice(0,100):undefined,
+                profilesMode:r.profilesMode===true,
+                jobResults:Array.isArray(r.jobResults)?r.jobResults.map(coerceJob).filter((job):job is import('./job-runtime').JobRunResult=>!!job).slice(0,100):undefined,
+                jobResultsTotal:num(r.jobResultsTotal)||(Array.isArray(r.jobResults)?r.jobResults.length:0),
+                uploaded:num(r.uploaded),deletedDrive:num(r.deletedDrive),received:num(r.received),deferredConflicts:num(r.deferredConflicts),
+                blockedReason:typeof r.blockedReason==='string'?r.blockedReason:undefined,attemptOnly:r.attemptOnly===true,
+                results:Array.isArray(r.results)?r.results.filter((value):value is SyncFileResult=>!!value&&typeof value==='object'&&typeof value.path==='string'&&typeof value.reason==='string'&&(value.source===undefined||typeof value.source==='string')&&(value.remotePath===undefined||typeof value.remotePath==='string')&&['applied','unchanged','skipped','pending','error'].includes(value.status)).slice(0,500):undefined,
+                resultsTotal:num(r.resultsTotal),
                 startedAt: r.startedAt as number,
                 durationMs: r.durationMs as number,
                 engine: r.engine,
@@ -133,6 +175,8 @@ function coerceEntry(raw: unknown): JournalEntry | null {
                 conflicts: num(r.conflicts),
                 skipped: num(r.skipped),
                 errors: num(r.errors),
+                deferredDeletions: num(r.deferredDeletions),
+                blockedDeletions: num(r.blockedDeletions),
                 topErrors,
         };
 }
@@ -149,17 +193,20 @@ function coerceEntry(raw: unknown): JournalEntry | null {
  */
 export class FileJournal implements JournalStore {
         private readonly io: JournalIo;
+        private corruptRaw?:string;
+        private readFailed=false;
+        private chain:Promise<void>=Promise.resolve();
 
         constructor(io: JournalIo) {
                 this.io = io;
         }
 
         async load(): Promise<JournalEntry[]> {
-                let raw: string | null;
+                let raw: string | null;this.readFailed=false;this.corruptRaw=undefined;
                 try {
                         raw = await this.io.read();
                 } catch (e: unknown) {
-                        console.warn('[VaultSync] journal: read failed, treating as empty', e);
+                        this.readFailed=true;console.warn('[VaultSync] journal: read failed; existing file retained', e);
                         return [];
                 }
                 // null = файла ещё нет (первый запуск) — норма, без warn.
@@ -168,16 +215,16 @@ export class FileJournal implements JournalStore {
                 try {
                         parsed = JSON.parse(raw);
                 } catch (e: unknown) {
-                        console.warn('[VaultSync] journal: broken JSON, treating as empty', e);
+                        this.corruptRaw=raw;console.warn('[VaultSync] journal: broken JSON; preserve before publication', e);
                         return [];
                 }
                 if (!Array.isArray(parsed)) {
-                        console.warn('[VaultSync] journal: unexpected format (not an array), treating as empty');
+                        this.corruptRaw=raw;console.warn('[VaultSync] journal: unexpected format; existing file retained');
                         return [];
                 }
                 const entries = parsed.map(coerceEntry).filter((e): e is JournalEntry => e !== null);
                 if (entries.length !== parsed.length) {
-                        console.warn(`[VaultSync] journal: dropped ${parsed.length - entries.length} invalid entries`);
+                        this.corruptRaw=raw;console.warn(`[VaultSync] journal: dropped ${parsed.length - entries.length} invalid entries`);
                 }
                 // Инвариант кольца держим и на чтении: файл мог быть написан
                 // вручную или старой версией с большей ёмкостью — лишнее снизу.
@@ -185,13 +232,15 @@ export class FileJournal implements JournalStore {
         }
 
         async append(entry: JournalEntry): Promise<void> {
-                // Битый файл → load() уже отработал warn'ом и вернул []: эта
-                // запись «лечит» файл, перезаписывая его начисто.
-                const prev = await this.load();
-                const next = [entry, ...prev].slice(0, JOURNAL_LIMIT);
-                // Ошибка записи ПРОБРАСЫВАЕТСЯ (см. контракт класса). Единственный
-                // бросок журнала — намеренно: main решает, как реагировать.
-                await this.io.write(JSON.stringify(next));
+                const work=this.chain.then(async()=>{
+                        const prev=await this.load();
+                        if(this.readFailed)throw Error('Journal is unreadable; refusing to replace diagnostic history');
+                        if(this.corruptRaw!==undefined){if(!this.io.quarantine)throw Error('Journal is corrupt; diagnostic backup is required');await this.io.quarantine(this.corruptRaw);}
+                        const normalized={...entry,jobResults:entry.jobResults?.map(coerceJob).filter((job):job is import('./job-runtime').JobRunResult=>!!job).slice(0,100),jobResultsTotal:entry.jobResultsTotal??entry.jobResults?.length};
+                        const next=[normalized,...prev].slice(0,JOURNAL_LIMIT);
+                        while(next.length>1&&JSON.stringify(next).length>8*1024*1024)next.pop();
+                        await this.io.write(JSON.stringify(next));
+                });this.chain=work.catch(()=>{});return work;
         }
 
         async clear(): Promise<void> {

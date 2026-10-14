@@ -1,7 +1,6 @@
 // ============================================================
 // --- SOURCES/TYPES: контракты ядра синхронизации (фаза 3-1) ---
-// ЗАМОРОЖЕНЫ до фазы 7: изменения — только через задачу-ревизию
-// между фазами (overhaul-plan.md §2.5, риск Р-3).
+// Optional observation ports preserve compatibility with existing sources and transports.
 // Ядро core/ НЕ импортирует obsidian/node — только эти интерфейсы
 // и собственные зависимости друг друга (решение В5-1).
 // ============================================================
@@ -27,6 +26,11 @@ export type HashAlg = 'sha256' | 'crc32' | 'git-sha1' | 'weak' | 'etag';
 
 /** Одна запись манифеста источника (файл в облаке / репозитории). */
 export interface RemoteEntry {
+        connectionId?: string;
+        /** Original provider path for preview/results; fetch uses the session locator. */
+        sourcePath?: string;
+        /** Human-readable provider origin for the tree. */
+        provider?: string;
         /** Относительный путь в vault, POSIX-разделители. */
         path: string;
         /** Хэш содержимого: hex, нижний регистр — для контентных alg
@@ -39,6 +43,8 @@ export interface RemoteEntry {
         size: number;
         /** mtime источника (epoch-ms), только для UI. Опционален. */
         modified?: number;
+        /** Internal routing result: path is already the final vault destination. */
+        resolvedDestination?: boolean;
 }
 
 /**
@@ -46,7 +52,13 @@ export interface RemoteEntry {
  * (дизайн §3.2). [W6-T03] добавлен 'gdrive'; [W6-T05] добавлен 'webdav'.
  */
 export interface SyncSource {
+        /** Optional ID-aware, read-only inventory for UI; never an execution manifest. */
+        getBrowseSnapshot?(signal: AbortSignal): Promise<import('./remote-browse').RemoteBrowseSnapshot>;
+        readonly sources?: readonly { id: string; name: string; kind: string }[];
+        readonly maxConcurrentDownloads?: number;
         readonly kind: 'git' | 'yandex' | 'zip-url' | 'gdrive' | 'webdav';
+        /** Only validated immutable inventories may currently authorize mirror deletion. */
+        readonly deletionSafety?: 'immutable' | 'unverified';
         /**
          * Движковый лимит размера ОДНОГО файла, байт; undefined — лимита нет.
          * Это свойство хранилища, а не настройка: GitHub жёстко ограничивает
@@ -55,10 +67,12 @@ export interface SyncSource {
          * с источником на каждой сессии (в т.ч. после setSource).
          */
         readonly maxFileSizeBytes?: number;
+        fileSizeLimit?(entry:RemoteEntry): number|undefined;
         /** Полный список файлов источника с их хэшами. */
-        getManifest(signal: AbortSignal): Promise<RemoteEntry[]>;
+        getManifest(signal: AbortSignal, observe?: TransferObserver): Promise<RemoteEntry[]>;
         /** Загрузка содержимого одного файла. */
-        fetch(entry: RemoteEntry, signal: AbortSignal): Promise<ArrayBuffer>;
+        fetch(entry: RemoteEntry, signal: AbortSignal, observe?: TransferObserver): Promise<ArrayBuffer>;
+        forceDispose?(): void | Promise<void>;
         /** [5-1] Освобождение сессионных ресурсов (tmp-архив ZIP-источника). Coordinator зовёт в finally. */
         dispose?(): Promise<void>;
 }
@@ -104,13 +118,18 @@ export interface DiffResult {
 
 /** Файловые операции над vault, изолирующие core/ от Obsidian API. */
 export interface VaultAdapter {
+        /** Create a new file without replacing an existing destination. */
+        createBinary?(path: string, data: ArrayBuffer): Promise<void>;
         exists(path: string): Promise<boolean>;
         readBinary(path: string): Promise<ArrayBuffer>;
         writeBinary(path: string, data: ArrayBuffer): Promise<void>;
+        /** Optional host atomic text replacement; undefined means unsupported binary/path. */
+        compareAndWrite?(path: string, data: ArrayBuffer, expected: ArrayBuffer, signal?: AbortSignal): Promise<boolean | undefined>;
         mkdir(path: string): Promise<void>;
         remove(path: string): Promise<void>;
         rename(from: string, to: string): Promise<void>;
-        stat(path: string): Promise<{ mtime: number; size: number } | null>;
+        assertWritable?(path: string): void | Promise<void>;
+        stat(path: string): Promise<{ mtime: number; size: number; type?: string } | null>;
         /** [4-1] Системная корзина; реализация опциональна (платформа/тесты). */
         trash?(path: string): Promise<void>;
         /** [4-1] Листинг каталога (чистка пустых папок); опционально. */
@@ -122,7 +141,27 @@ export interface NetTransport {
         fetch(url: string, options: NetRequest): Promise<NetResponse>;
 }
 
+export type PipelineStage = 'preparing' | 'recovery' | 'manifest' | 'observe-local' | 'confirm' | 'download-link' | 'download' | 'waiting' | 'verify' | 'prepare-directory' | 'apply' | 'checkpoint' | 'finalize' | 'cancelling';
+export interface TransferEvent {
+        source?:string;items?:number;
+        stage: PipelineStage;
+        attempt?: number; maxAttempts?: number;
+        bytes?: number; totalBytes?: number; byteDelta?: number;
+        retryAt?: number; status?: number; host?: string;
+        capability?: 'streaming' | 'buffered';
+}
+export type TransferObserver = (event: TransferEvent) => void;
+export interface SyncIssue {
+        jobId?:string;connectionId?:string;domain?:'job'|'shared';
+        code: string; message: string; stage: PipelineStage;
+        retryable: boolean; scope: 'file' | 'source' | 'session';
+        status?: number; attempt?: number; retryAt?: number; host?: string;
+}
+export interface FileActivity extends TransferEvent { path: string; source?: string; lastActivityAt: number }
+
 export interface NetRequest {
+        observe?: TransferObserver;
+        maxBytes?: number;
         method?: string;
         headers?: Record<string, string>;
         signal?: AbortSignal;
@@ -132,6 +171,7 @@ export interface NetRequest {
          * (по умолчанию — undefined = нет тела, как в 2.3.3).
          */
         body?: BodyInit;
+        redirect?: RequestRedirect;
 }
 
 export interface NetResponse {
@@ -152,6 +192,7 @@ export interface FileSystem {
         read(path: string): Promise<string | null>;
         write(path: string, content: string): Promise<void>;
         rename(from: string, to: string): Promise<void>;
+        assertWritable?(path: string): void | Promise<void>;
         exists(path: string): Promise<boolean>;
         remove(path: string): Promise<void>;
         /** Список имён файлов каталога (для GC старых кэшей). */
@@ -173,7 +214,7 @@ export type ConflictStrategy = 'remote-wins' | 'local-wins' | 'keep-both' | 'ask
  *    на уровне light.
  *
  * Не включает 'remote-overwrites' и 'ask' (упрощённое предложение A):
- * full mirror уже умеет перезаписывать через trash; ask добавляет
+ * full mirror перезаписывает после создания восстановительной копии; ask добавляет
  * модалки и сложность — отложено до будущих волн.
  */
 export type LightConflictStrategy = 'keep-local' | 'keep-both';
@@ -220,11 +261,11 @@ export interface ConflictInfo {
         remoteModified?: number;
 }
 
-export type ConflictChoice = 'remote-wins' | 'local-wins' | 'keep-both';
+export type ConflictChoice = 'remote-wins' | 'local-wins' | 'keep-both' | 'incoming' | 'defer';
 
 /** Последовательный вопрос пользователю (модалка; фикс Б-21). */
 export interface ConfirmUI {
-        askConflict(info: ConflictInfo): Promise<ConflictChoice>;
+        askConflict(info: ConflictInfo, signal?: AbortSignal): Promise<ConflictChoice>;
 }
 
 /**
@@ -236,29 +277,28 @@ export interface ConfirmUI {
  * только kind/updateCache — расширение обратно совместимо.
  */
 export type WriteOutcome =
-        | { kind: 'written'; updateCache: true }
-        | { kind: 'skipped'; updateCache: false }
+        | { kind: 'written'; updateCache: true; primaryChanged?: boolean }
+        | { kind: 'skipped'; updateCache: false; requiresDecision?: boolean }
         | {
                         kind: 'conflict';
                         updateCache: true;
-                        /**
-                         * Путь конфликт-КОПИИ, если она создана. [W1-T06] Стал
-                         * опциональным: full-зеркало с корзиной кладёт локаль в trash —
-                         * копии нет (правка Е1-а). Всегда есть у fetch-keep-both, light
-                         * и full-fallback.
-                         */
+                        /** Recovery/conflict copy path; optional for legacy callers. */
                         conflictPath?: string;
+                        primaryChanged?: boolean;
                         /** [W1-T06] Уровень зеркала, породивший конфликт (матрица §2.2);
                          *  отсутствует = fetch — конфликт по стратегии настроек (§9.1). */
                         mirror?: 'light' | 'full';
-                        /** [W1-T06] full: истинная судьба локали — true = корзина,
-                         *  false = fallback-конфликт-копия (trash-адаптер недоступен). */
+                        /** @deprecated Replacement now uses a recovery copy before writing. */
                         trashedLocal?: boolean;
                 };
 
 // --- Очередь неудачных загрузок (перенос FailedFile из main.ts) ---
 
 export interface FailedFile {
+        /** Retry routing hint; a fresh artifact lineage still has to authorize every effect. */
+        originPath?: string;
+        failureKind?:'transient'|'blocked';
+        issue?: SyncIssue;
         path: string;
         hash: string;
         size: number;
@@ -282,6 +322,19 @@ export interface FailedFile {
 
 /** Статистика одной сессии синхронизации (перенос из main.ts). */
 export interface SyncStats {
+        jobResults?:import('../core/job-runtime').JobRunResult[];
+        uploaded?: number;
+        /** Confirmed trash operations on Google Drive, separate from local deletions. */
+        deletedDrive?: number;
+        followUp?: boolean;
+        trace?:Array<TransferEvent & {at:number;path?:string;source?:string}>;traceDropped?:number;
+        sessionId?: string;
+        problems?: SyncIssue[];
+        pendingBefore?: number; pendingAfter?: number; retryScheduled?: number; blocked?: number;
+        networkBytes?: number; notAttempted?: number;
+        problem?: string;
+        results?: SyncFileResult[];
+        received?: number;
         totalFiles: number;
         downloaded: number;
         deleted: number;
@@ -290,8 +343,7 @@ export interface SyncStats {
         bytesTransferred: number;
         duration: number;
         conflicts: number;
-        /** [W1-T07] Из них конфликтов, разрешённых перезаписью на уровне
-         *  full (локальная версия — в корзину; Е1-а). Для журнала/статуса. */
+        /** Full-level conflict replacements; local bytes are saved in a recovery copy. */
         overwritten?: number;
         /** [W1-T07] Лишние папки, удалённые целиком (только full). */
         extraFoldersDeleted?: number;
@@ -307,16 +359,22 @@ export interface SyncStats {
          *  Coordinator — единственный честный свидетель (W1-T01: флаги
          *  отмены видны ему; main.ts после return их не достаёт). */
         outcome?: 'ok' | 'cancelled' | 'error';
-        /** [W4-T02] Auto+fetch/light удалил опасные операции (mirror deletions +
-         *  extra folders) для исполнения вручную. Журнал/popover показывают
-         *  «ожидают ручного подтверждения». 0 / undefined = ничего не отложено. */
+        /** All deferred file deletions, including unverified-inventory blocks. */
         deferredDeletions?: number;
+        deferredConflicts?: number;
+        blockedDeletions?: number;
 }
 
 /** Сводка изменений для модалки подтверждения (дизайн §16). */
 export interface ConfirmSyncInfo {
+        operations?: readonly SyncPlanRow[];
+        sources?: readonly string[];
+        deferredDeletions?: number;
+        /** Deletions suppressed because this source cannot prove a complete snapshot. */
+        blockedDeletions?: number;
         toDownload: number;
         toDelete: number;
+        /** Previously synced files absent remotely that will be retained locally. */
         orphans: number;
         /** Суммарный объём скачивания, байт (для тяжёлых мобильных кейсов). */
         downloadBytes: number;
@@ -343,8 +401,23 @@ export interface ConfirmSyncInfo {
 /** Фазы конвейера для статус-бара. */
 export type SyncPhase = 'syncing' | 'idle' | 'error' | 'offline' | 'unconfigured' | 'conflicts';
 
+export interface SyncPlanRow {
+        action: 'add' | 'restore' | 'update' | 'check' | 'move' | 'delete' | 'skip' | 'defer' | 'blocked';
+        path: string; remotePath?: string; source?: string;
+        reason: 'missing' | 'source-changed' | 'match-source' | 'baseline-check' | 'mapping' | 'absent' | 'preserve' | 'create-only' | 'background' | 'unverified' | 'file-too-large';
+}
+export interface SyncFileResult { path: string; remotePath?:string; source?: string; status: 'applied' | 'unchanged' | 'skipped' | 'pending' | 'error'; reason: string; issue?: SyncIssue; conflictPath?: string; proposalIds?:string[]; conflictPaths?:string[]; proposalCount?:number; inboxId?:string;originId?:string;candidateId?:string;httpStatus?:number }
+
 /** Прогресс для статус-бара. */
 export interface SyncProgress {
+        stage?: PipelineStage;
+        activities?: readonly FileActivity[];
+        currentFailed?: number;
+        issues?: readonly SyncFileResult[];
+        lastActivityAt?: number;
+        networkBytes?: number;
+        attention?: 'deletions' | 'conflicts';
+        fileIndex?:number;fileTotal?:number;currentPath?:string;
         progressText?: string;
         bytesTransferred?: number;
         totalBytes?: number;
@@ -358,7 +431,7 @@ export interface SyncProgress {
 
 /** UI-порты Coordinator'а: модалки, статус-бар, нотисы. Тексты — на стороне UI. */
 export interface SyncUI {
-        confirmSync(info: ConfirmSyncInfo): Promise<boolean>;
+        confirmSync(info: ConfirmSyncInfo, signal?: AbortSignal): Promise<boolean>;
         /** Подтверждение retry-сессии (N дозревших файлов); опционально. */
         confirmRetry?(count: number): Promise<boolean>;
         setStatus(phase: SyncPhase, progress?: SyncProgress): void;
@@ -386,6 +459,7 @@ export interface RandomAccessReader {
 
 /** Прогресс скачивания архива. */
 export interface ArchiveDownloadProgress {
+        capability?:'streaming'|'buffered';
         bytesTransferred: number;
         /** content-length отсутствует / chunked → null. */
         totalBytes: number | null;

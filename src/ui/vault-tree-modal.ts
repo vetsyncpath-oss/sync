@@ -1,3 +1,7 @@
+import { ProfileAssignmentModal } from './profile-assignment-modal';
+import type { SyncProfile, SourceConnection } from '../core/profiles';
+import { i18n } from '../i18n';
+import type { WriteMode } from '../core/file-rules';
 // src/ui/vault-tree-modal.ts — модалка структуры-политики vault
 // (Phase 4: вкладки «Источник»/«Текущий vault» с РАЗНОЙ легендой).
 //
@@ -203,8 +207,11 @@ export interface LocalSnapshot {
 }
 
 export interface VaultTreeModalDeps {
+        profiles?: SyncProfile[];
+        connections?: SourceConnection[];
+        onDispose?: () => void;
         /** Снимок локальных файлов И папок (забирается при onOpen). */
-        getLocalSnapshot: () => LocalSnapshot;
+        getLocalSnapshot: () => LocalSnapshot | Promise<LocalSnapshot>;
         /** Манифест источника (getManifest + dispose — ответственность вызывающего). */
         fetchRemote: () => Promise<RemoteEntry[]>;
         /** Кэш последнего применённого состояния (статусы + даты). */
@@ -294,7 +301,7 @@ export class VaultTreeModal extends Modal {
         private localFilter: LocalFilterId = 'all';
         private search = '';
         /** [5] Файлы скрыты до явного «Показать файлы» (быстрый первый экран). */
-        private showFiles = false;
+        private showFiles = true;
         private treeEl: HTMLElement | null = null;
         private treeUl: HTMLElement | null = null;
         private currentFlat: VisibleNode[] | null = null;
@@ -375,6 +382,7 @@ export class VaultTreeModal extends Modal {
 
         onClose(): void {
                 this.closed = true;
+                this.deps.onDispose?.();
                 this.editor = null;
                 this.currentFlat = null;
                 this.renderToken++;
@@ -426,6 +434,8 @@ export class VaultTreeModal extends Modal {
         // ── Загрузка данных ──
 
         private async loadTrees(): Promise<void> {
+                const draft = this.editor?.getPolicy();
+                this.fetchError=null;this.remoteLoaded=false;
                 let remote: RemoteEntry[] = [];
                 try {
                         remote = await this.deps.fetchRemote();
@@ -433,7 +443,14 @@ export class VaultTreeModal extends Modal {
                 } catch (e: unknown) {
                         this.fetchError = e instanceof Error ? e.message : String(e);
                 }
-                const snapshot = this.deps.getLocalSnapshot();
+                let snapshot: {files:string[];folders:string[]};
+                try { snapshot = await this.deps.getLocalSnapshot(); }
+                catch (e) {
+                        this.fetchError = String(e);
+                        if (this.editor) return; // Keep the existing draft and snapshot on Retry.
+                        snapshot = {files:[],folders:[]};
+                }
+                if (this.closed) return;
                 this.localEmpty = snapshot.files.length === 0 && snapshot.folders.length === 0;
                 this.editor = new PolicyEditor({
                         localFiles: snapshot.files,
@@ -452,6 +469,7 @@ export class VaultTreeModal extends Modal {
                         mirrorLevel: this.deps.mirrorLevel?.(),
                 });
                 // [overhaul v4 / Этап 2] editor создан — перерисовать панель
+                if (draft) this.editor.replacePolicy(draft);
                 // fileExclusions (раньше render() не нашёл editor, теперь есть).
                 this.renderFileExclusionsPanel();
         }
@@ -487,6 +505,8 @@ export class VaultTreeModal extends Modal {
                         this.render();
                 });
                 row.append(preset);
+                const root=el('button',{cls:'vts-btn',text:i18n.getLocale()==='ru'?'Весь vault: назначить профиль':'Entire vault: assign profile'});
+                root.addEventListener('click',()=>this.openProfileAssignment([{scope:'vault',path:''}]));row.append(root);
 
                 // [W2-T07] Чекбокс «Зеркало» УДАЛЁН: policy.mirror — мёртвое
                 // легаси-поле (BUG-5/W1-T05), движок читает уровни зеркала.
@@ -532,8 +552,8 @@ export class VaultTreeModal extends Modal {
                 const oldPanel = this.contentEl.querySelector('.vts-file-exclusions');
                 if (oldPanel) oldPanel.remove();
 
-                const panel = el('div', { cls: 'vts-file-exclusions' });
-                panel.append(el('h4', { text: t.fileExclusionsTitle }));
+                const panel = el('details', { cls: 'vts-file-exclusions' });
+                panel.append(el('summary', { text: t.fileExclusionsTitle }));
 
                 // описание / empty state
                 if (exclusions.length === 0) {
@@ -854,7 +874,7 @@ export class VaultTreeModal extends Modal {
                 const rootLevel = this.editor.preset === 'full' && !this.editor.folderPolicyFor('')
                         ? 'full'
                         : this.editor.preset;
-                this.levelEl.textContent = rootLevel;
+                this.renderLevelFooter();
                 // preset select тоже мог сброситься — обновим
                 this.refreshPresetSelect();
         }
@@ -1001,13 +1021,21 @@ export class VaultTreeModal extends Modal {
         private renderRow(node: TreeNode, depth: number): HTMLElement {
                 const t = this.deps.labels;
                 const li = el('li', { cls: `vts-row vts-${node.kind} vts-depth-${depth}` });
+                li.style.paddingInlineStart=`${8+depth*16}px`;
                 li.setAttribute('role', 'treeitem');
+                li.setAttribute('tabindex','0'); li.setAttribute('aria-level',String(depth+1));
+                if(node.kind==='folder') li.setAttribute('aria-expanded',String(this.expanded.has(node.path)));
+                li.addEventListener('keydown',e=>{
+                        if(e.target!==li)return;
+                        if(e.key==='Enter'){e.preventDefault();this.openProfileAssignment([{scope:node.kind==='folder'?'folder':'file',path:node.path}]);}
+                        if(node.kind==='folder'&&(e.key==='ArrowRight'||e.key==='ArrowLeft')){e.preventDefault();if(e.key==='ArrowRight')this.expanded.add(node.path);else this.expanded.delete(node.path);this.renderTree();}
+                });
                 li.setAttribute('data-path', node.path);
                 li.setAttribute('data-kind', node.kind);
                 li.setAttribute('data-side', this.tab);
 
                 // [W2-T07 / Е1] Выделение мультивыбора (визуальный класс строки).
-                if (node.kind === 'folder' && this.selected.has(node.path)) {
+                if (this.selected.has(node.path)) {
                         li.classList.add('vts-selected');
                 }
 
@@ -1030,6 +1058,8 @@ export class VaultTreeModal extends Modal {
                         cb.indeterminate = state === 'indeterminate';
                         cb.disabled = this.deps.isSyncRunning();
                         cb.setAttribute('data-path', node.path);
+                        cb.setAttribute('aria-label',`${i18n.getLocale()==='ru'?'Синхронизировать':'Sync'} ${node.path}`);
+                        cb.addEventListener('click',e=>e.stopPropagation());
                         cb.addEventListener('change', () => {
                                 this.onCheckboxChange(node, cb.checked ? 'include' : 'exclude');
                         });
@@ -1039,21 +1069,9 @@ export class VaultTreeModal extends Modal {
                 li.append(el('span', { cls: `vts-icon vts-icon-${node.kind}`, text: node.kind === 'folder' ? '📁' : '' }));
                 li.append(el('span', { cls: 'vts-label', text: node.name }));
 
-                // [W2-T07 / Е3=1] Бейдж уровня custom-папки: ⚡ лёгкое (жёлтый),
-                // ⚡⚡ полное (красный). fetch-бейджа нет — «подгрузка» на папке
-                // неразличима с наследованием (spec §2.1). Цвет — готовые
-                // vts-c-warn/vts-c-danger (styles.ts — вне этого файла, классы
-                // vts-badge-* для точечной стилизации в следующем батче).
-                if (node.kind === 'folder' && this.editor) {
-                        const custom = this.editor.folderCustomLevel(node.path);
-                        if (custom === 'light' || custom === 'full') {
-                                li.append(el('span', {
-                                        cls: `vts-badge vts-badge-${custom} vts-c-${custom === 'full' ? 'danger' : 'warn'}`,
-                                        text: custom === 'full' ? t.badgeFull : t.badgeLight,
-                                }));
-                        }
-                }
-
+                const assignments=this.editor?.assignmentCount(this.tab==='remote'?this.editor.localAssignmentPath(node.path):node.path) ?? 0;
+                if(node.remoteEntry?.provider) li.append(el('span',{cls:'vts-st vts-c-muted',text:node.remoteEntry.provider}));
+                if(assignments) li.append(el('span',{cls:'vts-st vts-c-accent',text:`${i18n.getLocale()==='ru'?'Профили':'Profiles'}: ${assignments}`}));
                 // Статусная колонка (цветной текст) — разная легенда вкладок.
                 const statusEl = el('span', { cls: 'vts-row-status' });
                 if (node.kind === 'file') {
@@ -1072,8 +1090,8 @@ export class VaultTreeModal extends Modal {
                         li.classList.add('vts-state-excluded');
                 }
 
-                if (node.kind === 'folder') {
-                        // [W2-T07 / Е1] Мультивыбор: Ctrl/⌘+ЛКМ — всегда; в режиме
+                {
+                        // Multi-selection and menus are available for files as well as folders.: Ctrl/⌘+ЛКМ — всегда; в режиме
                         // «выбрать несколько» — обычный тап (A2, мобильный паритет).
                         li.addEventListener('click', (e) => this.onRowClick(e as MouseEvent, node));
                         // [W2-T07 / BUG-18] «⋯» — то же контекст-меню, что и правый
@@ -1091,10 +1109,6 @@ export class VaultTreeModal extends Modal {
                         li.addEventListener('contextmenu', (e) => {
                                 this.onContextMenu(e as MouseEvent, node);
                         });
-                } else if (this.tab === 'remote') {
-                        li.addEventListener('contextmenu', (e) => {
-                                this.onContextMenu(e as MouseEvent, node);
-                        });
                 }
                 return li;
         }
@@ -1105,6 +1119,7 @@ export class VaultTreeModal extends Modal {
                 if (this.tab === 'remote') {
                         const st = this.editor!.remoteStatusOf(node.path);
                         switch (st.kind) {
+                                case 'rule': return this.ruleStatusSpan(st.write);
                                 case 'synced': return statusSpan('ok', t.stSynced);
                                 case 'changed': return statusSpan('warn', t.stChanged);
                                 case 'new': return statusSpan('accent', t.stNew);
@@ -1116,9 +1131,22 @@ export class VaultTreeModal extends Modal {
                 return this.localStatusSpan(st);
         }
 
+        private ruleStatusSpan(mode: WriteMode): HTMLElement {
+                const ru = i18n.getLocale() === 'ru';
+                const labels = {
+                        changes: ru ? 'проверка и разрешение конфликтов' : 'check and resolve conflicts',
+                        preserve: ru ? 'сохраняется по правилу' : 'preserved by rule',
+                        create: ru ? 'существующий файл сохраняется' : 'existing file preserved',
+                        update: ru ? 'обновление после проверки локальных правок' : 'update after checking local edits',
+                        remote: ru ? 'проверка соответствия источнику' : 'source content check',
+                };
+                return statusSpan('faint', labels[mode]);
+        }
+
         private localStatusSpan(st: LocalStatus): HTMLElement {
                 const t = this.deps.labels;
                 switch (st.kind) {
+                        case 'rule': return this.ruleStatusSpan(st.write);
                         case 'synced': return statusSpan('ok', t.stLSynced(st.t !== undefined ? formatSyncDay(st.t) : null));
                         case 'changed': return statusSpan('warn', t.stLChanged);
                         // [W2-T07 / конец BUG-1-UI] Честные статусы по уровню:
@@ -1208,7 +1236,7 @@ export class VaultTreeModal extends Modal {
          * (stopPropagation).
          */
         private onRowClick(e: MouseEvent, node: TreeNode): void {
-                if (node.kind !== 'folder' || !this.editor || this.deps.isSyncRunning()) return;
+                if (!this.editor || this.deps.isSyncRunning()) return;
                 const additive = e.ctrlKey || e.metaKey || this.multiSelectMode;
                 if (!additive) {
                         if (this.selected.size > 0) {
@@ -1251,32 +1279,11 @@ export class VaultTreeModal extends Modal {
                 const targets = group ?? [node.path];
                 const isFolder = node.kind === 'folder';
 
-                // [W2-T07 / Е1] Уровни зеркала — на папках, ОБЕ вкладки: модель
-                // mirrorFolders не зависит от стороны просмотра. Override
-                // самодостаточен (работает и при глобальном fetch — Д2).
-                if (isFolder) {
-                        const levelItems: Array<[MirrorLevel, string]> = [
-                                ['fetch', t.menuSetLevelFetch],
-                                ['light', t.menuSetLevelLight],
-                                ['full', t.menuSetLevelFull],
-                        ];
-                        for (const [level, title] of levelItems) {
-                                menu.addItem((item: MenuItemLike) => {
-                                        item.setTitle(title);
-                                        item.onClick(() => this.applyToModel(() => {
-                                                for (const p of targets) this.editor?.setFolderLevel(p, level);
-                                        }));
-                                });
-                        }
-                        menu.addItem((item: MenuItemLike) => {
-                                item.setTitle(t.menuResetToInherit);
-                                item.onClick(() => this.applyToModel(() => {
-                                        for (const p of targets) this.editor?.resetFolderLevel(p);
-                                }));
-                        });
-                        menu.addSeparator();
-                }
-
+                menu.addItem((item:MenuItemLike)=>{
+                        item.setTitle(i18n.getLocale()==='ru'?'Назначить профиль…':'Assign profile…');
+                        item.onClick(()=>this.openProfileAssignment(targets.map(path=>({path,scope:this.editor!.allNodes().find(n=>n.path===path)?.kind==='folder'?'folder':'file'}))));
+                });
+                menu.addSeparator();
                 if (this.tab === 'remote') {
                         if (isFolder && !group) {
                                 // [3] ОДИН пункт «Специфическая синхронизация» вместо пары
@@ -1322,6 +1329,15 @@ export class VaultTreeModal extends Modal {
                 return menu;
         }
 
+        private openProfileAssignment(targets:{scope:'vault'|'folder'|'file';path:string}[]):void {
+                if(!this.editor || this.deps.isSyncRunning())return;
+                if(this.tab==='remote') targets=targets.map(t=>t.scope==='vault'?t:{...t,path:this.editor!.localAssignmentPath(t.path)});
+                const modal=new ProfileAssignmentModal(this.app,{targets,policy:this.editor.getPolicy(),
+                        profiles:this.deps.profiles ?? [],connections:this.deps.connections ?? [],
+                        apply:assignments=>{this.editor!.assignProfiles(assignments,this.deps.profiles ?? []);this.render();}});
+                trackModal(modal);modal.open();
+        }
+
         /** Мутация модели из меню + перерисовка (дерево/бейджи/футер). */
         private applyToModel(mutate: () => void): void {
                 mutate();
@@ -1364,12 +1380,7 @@ export class VaultTreeModal extends Modal {
         /** [W2-T07 / Е3] Футер: глобальный уровень + счётчики custom-папок. */
         private renderLevelFooter(): void {
                 if (!this.levelEl || !this.editor) return;
-                const t = this.deps.labels;
-                const counts = this.editor.customLevelCounts();
-                const parts = [`${t.levelFooter} ${levelDisplayName(t, this.editor.mirrorLevel)}`];
-                if (counts.light > 0) parts.push(t.cntLevelLight(counts.light));
-                if (counts.full > 0) parts.push(t.cntLevelFull(counts.full));
-                this.levelEl.textContent = parts.join(' · ');
+                this.levelEl.textContent = `${i18n.getLocale()==='ru'?'Назначений профилей':'Profile assignments'}: ${this.editor.assignmentCount()}`;
         }
 
         private async onSave(): Promise<void> {

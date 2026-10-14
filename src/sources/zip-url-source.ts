@@ -1,3 +1,4 @@
+import type { TransferObserver } from './types';
 // ============================================================
 // --- SOURCES/ZIP-URL-SOURCE (фаза 5, задача 5-e) ---
 // Универсальный источник синхронизации: zip-архив по прямой
@@ -86,7 +87,7 @@ export function detectProvider(rawUrl: string): ProviderDetection {
         //    dl=1 заставляет отдавать файл (папку — zip'ом), а не страницу.
         if (
                 (host === 'dropbox.com' || host.endsWith('.dropbox.com')) &&
-                (seg[0] === 's' || seg[0] === 'sh') &&
+                (seg[0] === 's' || seg[0] === 'sh' || (seg[0] === 'scl' && (seg[1] === 'fi' || seg[1] === 'fo') && Boolean(seg[2]))) &&
                 seg.length >= 2 &&
                 seg[1] !== ''
         ) {
@@ -121,7 +122,8 @@ export function detectProvider(rawUrl: string): ProviderDetection {
         if (seg[0] === 's' && seg.length >= 2 && /^[a-z0-9_-]+$/i.test(seg[1]) && seg[1].length >= NEXTCLOUD_TOKEN_MIN_LEN) {
                 const rest = seg.slice(2);
                 if (rest.length === 0 || (rest.length === 1 && rest[0] === 'download')) {
-                        const downloadUrl = u.pathname.endsWith('/download') ? rawUrl : rawUrl + '/download';
+                        if (!u.pathname.endsWith('/download')) u.pathname += '/download';
+                        const downloadUrl = u.toString();
                         return { provider: 'nextcloud', downloadUrl };
                 }
         }
@@ -173,13 +175,12 @@ export interface ZipUrlSourceOptions {
          * загрузка»).
          *
          * >0 — «аренда» сессии: dispose() становится мягким, ставит таймер
-         * на TTL мс. В пределах TTL последующие ensureSession/getManifest/fetch
-         * ПЕРЕИСПОЛЬЗУЮТ кэш (reader + zipEntries), НЕ скачивают заново. После
+         * на TTL мс. fetch может использовать reader текущего снимка;
+         * getManifest всегда открывает свежий снимок. После
          * истечения таймера — реальный release reader (tmp-файл удаляется).
          *
-         * Типичный сценарий: retry/scan/policy-modal/test в пределах одного
-         * пользовательского цикла синхронизации (≈5 минут) → 1 скачивание вместо
-         * до 4× полных скачиваний (оптимизация №1 аудита, §7.1).
+         * A subsequent listing needs a fresh archive, including retry/scan/policy
+         * previews. Downloads within the current snapshot share its reader.
          *
          * Реальный release (без ожидания таймера) — forceDispose(), который
          * main.ts вызывает в onunload (плагин выключается → tmp вычищается).
@@ -239,9 +240,11 @@ function toArrayBuffer(data: Uint8Array | ArrayBuffer): ArrayBuffer {
 
 export class ZipUrlSource implements SyncSource {
         readonly kind = 'zip-url' as const;
-        /** [Phase 5.1] пер-файлового лимита нет: архив скачивается целиком (см. SyncSource). */
-        readonly maxFileSizeBytes?: number;
+        readonly maxFileSizeBytes=64*1024*1024;
+        readonly deletionSafety = 'immutable' as const;
+        /** Bounded portable extraction; the archive itself uses separate staging. */
 
+        private manifestObserve?: TransferObserver;
         private readonly opts: ZipUrlSourceOptions;
         private readonly messages: ZipUrlSourceMessages;
 
@@ -274,10 +277,14 @@ export class ZipUrlSource implements SyncSource {
                 this.timer = opts.timer ?? { setTimeout, clearTimeout, now: () => Date.now() };
         }
 
-        async getManifest(signal: AbortSignal): Promise<RemoteEntry[]> {
+        async getManifest(signal: AbortSignal,observe?:TransferObserver): Promise<RemoteEntry[]> {
                 if (signal.aborted) {
                         throw abortedError();
                 }
+                this.manifestObserve=observe;
+                if (this.activeOps > 0) throw new Error('Archive snapshot is in use');
+                // A resource lease does not establish freshness for a new listing.
+                await this.forceDispose();
                 const { cache } = await this.ensureSession(signal);
                 const entries: RemoteEntry[] = [];
                 for (const e of cache.values()) {
@@ -291,7 +298,7 @@ export class ZipUrlSource implements SyncSource {
                 return entries;
         }
 
-        async fetch(entry: RemoteEntry, signal: AbortSignal): Promise<ArrayBuffer> {
+        async fetch(entry: RemoteEntry, signal: AbortSignal,observe?:TransferObserver): Promise<ArrayBuffer> {
                 if (signal.aborted) {
                         throw abortedError();
                 }
@@ -307,7 +314,8 @@ export class ZipUrlSource implements SyncSource {
                         if (signal.aborted) {
                                 throw abortedError();
                         }
-                        const data = await extractEntry(reader, zipEntry);
+                        observe?.({stage:'verify'});
+                        const data = await extractEntry(reader, zipEntry,signal);
                         if (data.byteLength !== entry.size) {
                                 throw new Error(
                                         `размер распакованной записи не совпал с манифестом: ${entry.path} ` +
@@ -328,10 +336,9 @@ export class ZipUrlSource implements SyncSource {
          * «dispose = следующая сессия скачивает заново».
          *
          * При sessionTtlMs>0 — SOFT release: ставит таймер на TTL мс. В пределах
-         * TTL последующие ensureSession/getManifest/fetch переиспользуют кэш
-         * (reader + zipEntries), НЕ скачивая архив заново. Это оптимизация №1
-         * аудита (§7.1): retry/scan/policy-modal/test в пределах пользовательского
-         * цикла (≈5 минут) → 1 скачивание вместо до 4× полных.
+         * TTL fetch может переиспользовать reader текущего снимка.
+         * Новый getManifest всегда скачивает архив заново: аренда ресурсов
+         * не доказывает свежесть списка файлов.
          *
          * Реальный release (без ожидания таймера) — forceDispose(), который
          * main.ts вызывает в onunload.
@@ -486,6 +493,7 @@ export class ZipUrlSource implements SyncSource {
                         cache = new Map<string, ZipEntry>();
                         for (const e of entries) {
                                 if (!e.isDir) {
+                                        if (cache.has(e.name)) throw new Error(`Archive path collision: ${e.name}`);
                                         cache.set(e.name, e);
                                 }
                         }
@@ -513,7 +521,7 @@ export class ZipUrlSource implements SyncSource {
                 signal: AbortSignal,
         ): Promise<RandomAccessReader> {
                 let url = det.downloadUrl;
-                let reader = await this.opts.downloader.download(url, { signal, onProgress: this.opts.onProgress });
+                let reader = await this.opts.downloader.download(url, { signal, onProgress:p=>{this.opts.onProgress?.(p);this.manifestObserve?.({stage:'manifest',bytes:p.bytesTransferred,totalBytes:p.totalBytes??undefined,capability:p.capability??'streaming'});} });
                 let kind = await this.classify(reader);
 
                 if (kind === 'html' && det.provider === 'gdrive' && !url.includes('confirm=t')) {
@@ -523,7 +531,7 @@ export class ZipUrlSource implements SyncSource {
                                 throw abortedError();
                         }
                         url = url + '&confirm=t';
-                        reader = await this.opts.downloader.download(url, { signal, onProgress: this.opts.onProgress });
+                        reader = await this.opts.downloader.download(url, { signal, onProgress:p=>{this.opts.onProgress?.(p);this.manifestObserve?.({stage:'manifest',bytes:p.bytesTransferred,totalBytes:p.totalBytes??undefined,capability:p.capability??'streaming'});} });
                         kind = await this.classify(reader);
                 }
 

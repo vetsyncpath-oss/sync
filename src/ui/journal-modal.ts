@@ -23,6 +23,10 @@
 
 import type { JournalEntry, JournalOutcome, JournalTrigger } from '../core/journal';
 import { i18n } from '../i18n';
+import { jobHistory } from './job-cards';
+import { operationTable } from './operation-table';
+import { tr } from './dom';
+import { sessionLabel } from './session-label';
 import type { JournalLabels } from '../i18n/types';
 
 // TODO(i18n): универсальной подписи «Закрыть» в словаре нет (в jrnl-секции
@@ -137,13 +141,17 @@ export class JournalModalView {
 		// Цветной бейдж исхода: j-outcome-ok / j-outcome-cancelled / j-outcome-error.
 		main.append(el('span', {
 			cls: `jrnl-outcome j-outcome-${e.outcome}`,
-			text: t[OUTCOME_KEY[e.outcome]],
+			text: sessionLabel(e,t[OUTCOME_KEY[e.outcome]]),
 		}));
 		main.append(el('span', { cls: 'jrnl-duration', text: formatDuration(e.durationMs, t) }));
-		main.append(el('span', { cls: 'jrnl-engine', text: e.engine }));
-		main.append(el('span', { cls: 'jrnl-level', text: levelName(e.mirrorLevel) }));
+                main.append(el('span', { cls: 'jrnl-engine', text: e.sources?.join(', ') || e.engine }));
+                if(!e.profilesMode)main.append(el('span', { cls: 'jrnl-level', text: levelName(e.mirrorLevel) }));
 		main.append(el('span', { cls: 'jrnl-trigger', text: t[TRIGGER_KEY[e.trigger]] }));
 		row.append(main);
+                if(e.attemptOnly)row.append(el('p',{text:tr('Запуск не состоялся','Run did not start')}));
+                if(e.blockedReason)row.append(el('p',{text:e.blockedReason}));
+                if(e.jobResults?.length)row.append(jobHistory(e.jobResults,e.jobResultsTotal));
+                if(e.results?.length){const details=el('details');details.append(el('summary',{text:tr('Результаты по файлам','File results')}),operationTable(e.results));if((e.resultsTotal??0)>e.results.length)details.append(el('p',{text:tr('Показаны первые ','Showing first ')+e.results.length+' / '+e.resultsTotal}));row.append(details);}
 
 		const stats = this.statsLine(e);
 		if (stats !== '') {
@@ -169,6 +177,7 @@ export class JournalModalView {
 		const t = this.deps.labels;
 		const parts: string[] = [];
 		if (e.downloaded > 0) parts.push(t.statDownloaded(e.downloaded));
+                if(e.uploaded)parts.push(tr('Отправлено в Drive: ','Uploaded to Drive: ')+e.uploaded);
 		if (e.updated > 0) parts.push(t.statUpdated(e.updated));
 		if (e.deletedLight > 0) parts.push(t.statDeletedLight(e.deletedLight));
 		if (e.deletedFull > 0) parts.push(t.statDeletedFull(e.deletedFull));
@@ -176,6 +185,11 @@ export class JournalModalView {
 		if (e.conflicts > 0) parts.push(t.statConflicts(e.conflicts));
 		if (e.skipped > 0) parts.push(t.statSkipped(e.skipped));
 		if (e.errors > 0) parts.push(t.statErrors(e.errors));
+                if(e.received)parts.push(tr('Получено из источника: ','Read from source: ')+e.received);
+                if(e.deferredConflicts)parts.push(tr('Ожидают решения: ','Awaiting decision: ')+e.deferredConflicts);
+		const deferred = (e.deferredDeletions ?? 0) - (e.blockedDeletions ?? 0);
+		if (deferred > 0) parts.push(t.statDeferred(deferred));
+		if ((e.blockedDeletions ?? 0) > 0) parts.push(t.statBlocked(e.blockedDeletions!));
 		return parts.join(' · ');
 	}
 

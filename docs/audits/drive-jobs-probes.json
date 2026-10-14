@@ -1,0 +1,168 @@
+[
+  {
+    "probe": "single binary file",
+    "result": {
+      "ok": true,
+      "count": 1,
+      "excluded": 0
+    }
+  },
+  {
+    "probe": "single file inside a plugin folder",
+    "result": {
+      "ok": true,
+      "files": [
+        ".obsidian/plugins/example/main.js"
+      ]
+    }
+  },
+  {
+    "probe": "single plugin file repeated across API pages",
+    "result": {
+      "ok": false,
+      "code": "path-collision",
+      "message": "Drive path collision: .obsidian/plugins/example/main.js"
+    }
+  },
+  {
+    "probe": "one file ID repeated across listing pages",
+    "result": {
+      "ok": false,
+      "code": "path-collision",
+      "message": "Drive path collision: note.md"
+    }
+  },
+  {
+    "probe": "two distinct IDs with one name",
+    "result": {
+      "ok": false,
+      "code": "path-collision",
+      "message": "Drive path collision: note.md"
+    }
+  },
+  {
+    "probe": "binary plus excluded Google native object with one name",
+    "result": {
+      "ok": false,
+      "code": "path-collision",
+      "message": "Drive path collision: note.md"
+    }
+  },
+  {
+    "probe": "case alias",
+    "result": {
+      "ok": false,
+      "code": "path-collision",
+      "message": "Drive path collision: note.md"
+    }
+  },
+  {
+    "probe": "NFC alias",
+    "result": {
+      "ok": false,
+      "code": "path-collision",
+      "message": "Drive path collision: é.md"
+    }
+  },
+  {
+    "probe": "missing local plus inaccessible/404 remote",
+    "result": "pending"
+  },
+  {
+    "probe": "actual host policy: note.md",
+    "result": [
+      "note.md"
+    ]
+  },
+  {
+    "probe": "actual host policy: note.conflict-drive-local-123.md",
+    "result": []
+  },
+  {
+    "probe": "warm no-op 1",
+    "result": {
+      "writes": 1,
+      "metadataBytes": 403,
+      "downloaded": 0,
+      "uploaded": 0,
+      "failed": 0
+    }
+  },
+  {
+    "probe": "warm no-op 20",
+    "result": {
+      "writes": 20,
+      "metadataBytes": 104820,
+      "downloaded": 0,
+      "uploaded": 0,
+      "failed": 0
+    }
+  },
+  {
+    "probe": "warm no-op 100",
+    "result": {
+      "writes": 100,
+      "metadataBytes": 2572200,
+      "downloaded": 0,
+      "uploaded": 0,
+      "failed": 0
+    }
+  },
+  {
+    "probe": "review counters and repeated identical proposal",
+    "result": [
+      {
+        "edit": "first",
+        "deferred": 1,
+        "reviewCount": 1,
+        "copyCount": 1
+      },
+      {
+        "edit": "second",
+        "deferred": 2,
+        "reviewCount": 1,
+        "copyCount": 2
+      },
+      {
+        "edit": "first",
+        "deferred": 2,
+        "reviewCount": 1,
+        "copyCount": 3
+      }
+    ]
+  },
+  {
+    "probe": "separate operation stores lose unresolved cross-job path protection",
+    "result": {
+      "oldStatus": "committing",
+      "newLocal": "B"
+    }
+  },
+  {
+    "probe": "rename-only manifest migration",
+    "result": {
+      "originalEntries": 1,
+      "migratedEntries": 0
+    }
+  },
+  {
+    "probe": "unrelated legacy folder mapping resets Drive identity",
+    "result": true
+  },
+  {
+    "probe": "extensionless filename shadows a plain-object prototype key",
+    "result": {
+      "failed": 1,
+      "problem": "Cannot read properties of undefined (reading 'kind')",
+      "scope": "session",
+      "otherDownloaded": false
+    }
+  },
+  {
+    "probe": "V6 migration leaves inherit unresolved",
+    "result": {
+      "schedule": "inherit",
+      "periodicDelay": "NaN"
+    }
+  }
+]

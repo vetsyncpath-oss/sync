@@ -1,3 +1,37 @@
+import { NodeHttpTransport, BufferedHostTransport } from './src/adapters/host-transport';
+import { GoogleConnections } from './src/adapters/google-connections';
+import { pickGoogleFolder } from './src/ui/gdrive-folder-picker';
+import { DriveCoordinator } from './src/core/drive-coordinator';
+import { DriveStateStore, driveRecoveryReferences, driveNamespace, driveLifecycleHistory, discoverDriveStates, type DriveResolution } from './src/core/drive-state';
+import { localDirectoryBlocks } from './src/core/local-job-authority';
+import { JobPolicy } from './src/core/job-policy';
+import { JobBatch, awaitJobObservation, emptyStats, mergeJobStats, sharedJobFailure, type JobRunResult, type JobProjection } from './src/core/job-runtime';
+import { verifyDriveRootAuthority } from './src/core/drive-job-authority';
+import { validateManifest } from './src/core/source-validation';
+import { GoogleDriveRoot } from './src/sources/gdrive-root';
+import { GDriveOAuthSource } from './src/sources/gdrive-oauth-source';
+import { effectiveBehavior } from './src/core/profile-policy';
+import { sourceCandidates, sourcePathForDestination } from './src/core/source-bindings';
+import { applyPolicy, isPolicyPathIncluded } from './src/core/policy';
+import { isCovered } from './src/core/mirror';
+import { AcknowledgedSave } from './src/core/acknowledged-save';
+import { SyncFault, diagnosticText, syncIssue } from './src/core/sync-issue';
+import type { SyncProgress } from './src/sources/types';
+import { sessionLabel } from './src/ui/session-label';
+import { connectionIssues, connectionValues } from './src/engines/connection-validation';
+import { jobCards } from './src/ui/job-cards';
+import { DriveLifecycleModal } from './src/ui/drive-lifecycle-modal';
+import { RecoveryModal } from './src/ui/recovery-modal';
+import { observeLocal } from './src/core/local-version';
+import { ConflictAskModal } from './src/ui/conflict-modal';
+import { validateSettings } from './src/engines/schema';
+import { SyncWorkspaceModal } from './src/ui/sync-workspace-modal';
+import { ProfileLibraryModal } from './src/ui/profile-library';
+import { compileProfiles, migrateProfilePolicy, STANDARD_PROFILES, validateProfiles, validateProfileConnections, type SyncProfile, type SourceConnection } from './src/core/profiles';
+import { RoutedSource, routedNamespace } from './src/sources/routed-source';
+import { computeLocalPath } from './src/core/policy';
+import { scanVaultTree } from './src/core/mirror';
+import { validateFileRules, resolveFileRule, type FileRule } from './src/core/file-rules';
 import {
         App,
         Notice,
@@ -25,7 +59,10 @@ import { NodeArchiveDownloader, NodeZipRangeTransport } from './src/adapters/arc
 import { i18n, setLocale, resolveLabel, type Locale } from './src/i18n';
 import type { ZipRangeTransport } from './src/sources/zip-test-connection';
 import { Coordinator } from './src/core/coordinator';
-import { Scheduler, type SchedulerInterval, type SchedulerSnapshot } from './src/core/scheduler';
+import { OperationStore } from './src/core/operation-store';
+import { RecoveryStore } from './src/core/recovery-store';
+import { DurableMutations } from './src/core/durable-mutations';
+import { Scheduler, resolveSchedule, type AutoTickContext, type AutoTrigger, type SchedulerInterval, type SchedulerSnapshot } from './src/core/scheduler';
 import { FetchTransport } from './src/adapters/fetch-transport';
 import { BufferArchiveReader } from './src/core/archive';
 import { ConflictResolver, buildStampedPath, formatConflictTimestamp } from './src/core/conflict';
@@ -38,7 +75,7 @@ import { isSourceConfigured, reconnectStatus } from './src/core/config-guards';
 import { FailedQueue } from './src/core/queue';
 import { PathPolicy } from './src/core/path-policy';
 import type { SyncPolicy } from './src/core/policy';
-import { VaultTreeModal, type VaultTreeModalLabels } from './src/ui/vault-tree-modal';
+import type { VaultTreeModalLabels } from './src/ui/vault-tree-modal';
 import { injectPluginCss, removePluginCss } from './src/ui/styles';
 // [W2-T02] чистая display-логика статус-бара (чип Д13 + сегменты состояний)
 import { statusBarView } from './src/ui/statusbar-view';
@@ -75,7 +112,7 @@ import { migrateAllPluginExclusionsToGranular } from './src/core/migration';
 import { FileJournal, journalSummary, topErrorsFrom, type JournalEntry, type JournalIo } from './src/core/journal';
 import { JournalModalView } from './src/ui/journal-modal';
 import { SyncPopoverView, type PopoverState } from './src/ui/sync-popover';
-import { OnboardingModalView, type OnboardingChoice } from './src/ui/onboarding-modal';
+
 // [W5-T01] governance — fail-closed state machine для контроля менеджер-плагина.
 // Чистый модуль: main.ts владеет инстансом GovernanceState, обновляет его по
 // probe и интегрирует guard в runSession (fail-closed на старте сессии).
@@ -110,11 +147,7 @@ import {
     describeVamStatus,
     vamAllowsWork,
 } from './src/vam/vam-bridge';
-// [VAM] Статусная модалка (команда «Статус доступа (VAM)» + Диагностика):
-// показывает granted/blocked/pending с причиной; скрытый бэкдор —
-// 10 ЛКМ по телу модалки → мягкий режим (сессионный, без записи в data.json).
-// [overhaul S1/H-2] жест ПУБЛИЧЕН: работает у любого пользователя, знающего
-// о нём (осознанное решение владельца); UI о жесте не сообщает.
+// Access status is informational; its UI cannot grant access.
 import { VamStatusModal } from './src/ui/vam-status-modal';
 // [overhaul S4 / S3-review #2] общий реестр модалок (main + vault-tree-modal).
 import { trackModal, closeAllTrackedModals } from './src/ui/modal-registry';
@@ -134,9 +167,15 @@ const BEFORE_SESSION_TIMEOUT_MS = 10_000;
 // --- INTERFACES ---
 // ============================================================
 
-type SyncState = 'idle' | 'syncing' | 'error' | 'offline' | 'conflicts' | 'unconfigured';
+type SyncState = 'idle' | 'syncing' | 'error' | 'offline' | 'conflicts' | 'unconfigured' | 'blocked';
 
 interface GitSyncSettings {
+        vaultPolicy?: SyncPolicy;
+        profiles?: SyncProfile[];
+        connections?: SourceConnection[];
+        failedQueues?: Record<string, FailedFile[]>;
+        maxPayloadMiB?:number;recoveryLimitMiB?:number;historyLimit?:number;
+        sourceCircuits?:Record<string,{retryAt:number;failures:number}>;
         repoUrl: string;
         accessToken: string;
         branch: string;
@@ -214,6 +253,7 @@ interface GitSyncSettings {
         onboarded?: boolean;
         /** [W2-T06] синхронизировать интерфейс (workspace.json). */
         workspaceSync?: boolean;
+        workspaceSyncApplied?: boolean;
         /** [W4-T01] интервал авто-синхронизации (планировщик). Дефолт 'off' —
          *  авто-синк отключён до явного выбора пользователя. */
         autoSyncInterval?: 'off' | 'startup-only' | '15m' | '30m' | '1h' | '2h';
@@ -279,9 +319,11 @@ class StatusBarManager {
         // Обновляется только setStatus('syncing', {phase}) от Coordinator;
         // любой не-syncing статус сбрасывает в -1 (полоса не рендерится).
         private pipelinePhase = -1;
+        private attention?:'deletions'|'conflicts';
+        private fileIndex=0;private fileTotal=0;private currentPath='';
         // [W2-T02 / Д13=1] уровень зеркала для чипа опасности;
         // display-логика — чистая statusBarView (src/ui/statusbar-view.ts).
-        private mirrorLevel: MirrorLevel = 'fetch';
+        private mirrorLevel: MirrorLevel | undefined = 'fetch';
 
         setElement(el: HTMLElement) {
                 this.statusBarEl = el;
@@ -294,8 +336,15 @@ class StatusBarManager {
                 bytesTransferred?: number;
                 totalBytes?: number;
                 phase?: number;
+                attention?:'deletions'|'conflicts';fileIndex?:number;fileTotal?:number;currentPath?:string;
         }) {
+                if(options?.phase!==undefined&&options.phase!==this.pipelinePhase){this.bytesTransferred=0;this.totalBytes=0;}
                 this.state = state;
+                this.attention=options?.attention;
+                if(options?.fileIndex!==undefined)this.fileIndex=options.fileIndex;
+                if(options?.fileTotal!==undefined)this.fileTotal=options.fileTotal;
+                if(options?.currentPath!==undefined)this.currentPath=options.currentPath;
+                if(state!=='syncing'||(options?.phase!==undefined&&options.phase!==4)){this.fileIndex=0;this.fileTotal=0;this.currentPath='';}
                 if (options?.progressText !== undefined) this.progressText = options.progressText;
                 if (options?.pendingCount !== undefined) this.pendingCount = options.pendingCount;
                 if (options?.bytesTransferred !== undefined) this.bytesTransferred = options.bytesTransferred;
@@ -314,7 +363,7 @@ class StatusBarManager {
 
         // [W2-T02 / Д13=1] чип уровня зеркала: вызывается при старте (onload
         // после buildEngine) и при каждой смене конфигурации (prepareSession).
-        setMirrorLevel(level: MirrorLevel) {
+        setMirrorLevel(level: MirrorLevel | undefined) {
                 this.mirrorLevel = level;
                 this.updateDisplay();
         }
@@ -340,6 +389,7 @@ class StatusBarManager {
                 if (!this.statusBarEl) return;
                 const view = statusBarView(this.state, {
                         pendingCount: this.pendingCount,
+                        attention:this.attention,
                         progressText: this.progressText,
                         bytesTransferred: this.bytesTransferred,
                         totalBytes: this.totalBytes,
@@ -365,13 +415,13 @@ class StatusBarManager {
 
 class SettingsManager {
         private plugin: GitSyncPlugin;
-        private saveQueued = false;
-        private saveInProgress = false;
+        private readonly writer: AcknowledgedSave<GitSyncSettings>;
         private debouncedSave: ReturnType<typeof debounce>;
 
         constructor(plugin: GitSyncPlugin) {
                 this.plugin = plugin;
-                this.debouncedSave = debounce(() => this.doSave(), DEBOUNCE_MS);
+                this.writer = new AcknowledgedSave(snapshot => plugin.saveData(snapshot));
+                this.debouncedSave = debounce(() => {void this.doSave().catch(error=>{const message=diagnosticText(error);console.error('[VaultSync] settings save failed',message);new Notice((i18n.getLocale()==='ru'?'Настройки не сохранены: ':'Settings were not saved: ')+message,10000);});}, DEBOUNCE_MS);
         }
 
         async load(): Promise<GitSyncSettings> {
@@ -503,15 +553,7 @@ class SettingsManager {
         }
 
         private async doSave(): Promise<void> {
-                if (this.saveInProgress) { this.saveQueued = true; return; }
-                this.saveInProgress = true;
-                try {
-                        const dataToSave = JSON.parse(JSON.stringify(this.plugin.settings));
-                        await this.plugin.saveData(dataToSave);
-                } finally {
-                        this.saveInProgress = false;
-                        if (this.saveQueued) { this.saveQueued = false; await this.doSave(); }
-                }
+                await this.writer.save(this.plugin.settings);
         }
 }
 
@@ -529,7 +571,9 @@ async function showConfirmModal(
         flow: ConfirmFlow,
         sections: ConfirmSections,
         engine: string,
+        signal?:AbortSignal,
 ): Promise<boolean> {
+        if(signal?.aborted)return false;
         const modal = new Modal(app);
         const view = new ConfirmModalView({
                 contentEl: modal.contentEl,
@@ -542,7 +586,9 @@ async function showConfirmModal(
         modal.onOpen = () => view.render();
         // Esc/фон: трактуем как cancel. После proceed/cancel-клика флаг
         // view.resolved уже выставлен — повторный вызов close() игнор.
-        modal.onClose = () => view.close();
+        const abort=()=>modal.close();
+        signal?.addEventListener('abort',abort,{once:true});
+        modal.onClose = () => {signal?.removeEventListener('abort',abort);view.close();};
         trackModal(modal); // [overhaul S3/M-18]
         modal.open();
         return view.waitForResult();
@@ -592,64 +638,6 @@ async function showYesNoModal(
 }
 
 
-// --- CLASS: Conflict Ask Modal (фаза 3-7: ConfirmUI для core/conflict.ts) ---
-// Три явных выбора вместо старого yes/no-диалога. Последовательность
-// обеспечивает ConflictResolver — один await на конфликт (фикс Б-21).
-
-class ConflictAskModal extends Modal {
-        private resolved = false;
-        private _resolve: ((choice: ConflictChoice) => void) | null = null;
-
-        constructor(app: App, private info: ConflictInfo) {
-                super(app);
-        }
-
-        onOpen() {
-                const { contentEl } = this;
-                const t = i18n.t;
-                contentEl.empty();
-                contentEl.createEl('h2', { text: t.modalConflictTitle });
-                const msgEl = contentEl.createDiv({ cls: 'git-sync-confirm-message' });
-                // БЗ-03: путь выводится через DOM-узел, а не innerHTML
-                msgEl.createEl('p').createEl('code', { text: this.info.path });
-                msgEl.createEl('p', { text: t.modalConflictDesc });
-                msgEl.createEl('p', { text: t.modalConflictQuestion });
-                const btns = contentEl.createDiv({ cls: 'modal-button-container' });
-                new Setting(btns)
-                        .addButton(b => {
-                                b.setButtonText(t.modalConflictKeepRemote).setCta();
-                                b.onClick(() => this.resolve('remote-wins'));
-                        })
-                        .addButton(b => {
-                                b.setButtonText(t.settConflictLocalWins);
-                                b.onClick(() => this.resolve('local-wins'));
-                        })
-                        .addButton(b => {
-                                b.setButtonText(t.settConflictKeepBoth).setWarning();
-                                b.onClick(() => this.resolve('keep-both'));
-                        });
-        }
-
-        onClose() {
-                if (!this.resolved) this.resolve('keep-both');
-        }
-
-        wait(): Promise<ConflictChoice> {
-                return new Promise<ConflictChoice>((resolve) => {
-                        this._resolve = resolve;
-                        this.open();
-                });
-        }
-
-        private resolve(choice: ConflictChoice) {
-                if (this.resolved) return;
-                this.resolved = true;
-                this._resolve?.(choice);
-                this.close();
-        }
-}
-
-
 /**
  * [overhaul v4 / Этап 4] Слияние base fileExclusions из пресета с
  * существующими пользовательскими исключениями.
@@ -688,12 +676,30 @@ function mergeFileExclusions(
 // ============================================================
 
 export default class GitSyncPlugin extends Plugin {
-        settings!: GitSyncSettings;
+        declare settings: GitSyncSettings;
 
         private settingsManager!: SettingsManager;
         private statusBar!: StatusBarManager;
         private gitSource!: GitSource;
         private coordinator!: Coordinator;
+        private mutations!: DurableMutations;
+        private lastBlockReason?: string;
+        private requestedSources?: string[];
+        private currentTrigger: 'manual'|'auto'|'retry'|'scan'|'force'='manual';
+        private sessionOwned = false;
+        private sessionController?: AbortController;
+        private statusModal?: Modal;
+        private builtEngineConfigKey = '';
+        private configurationEpoch = 0;
+        private configurationKey = '';
+        private preparedConfigRevision = 0;
+        private proposedLastSync?:number;
+        private combinedSession=false;
+        private activeJobRunner?:Coordinator;
+        private jobRuns:JobRunResult[]=[];
+        private jobSubscribers=new Set<()=>void>();
+        private autoJobBlocks=new Map<string,string>();
+        private autoReady=false;private unloading=false;
         // [W4-T01] планировщик авто-синхронизации: создается в onload (после buildEngine),
         // интервал из settings.autoSyncInterval; снимается в onunload.
         private scheduler?: Scheduler;
@@ -710,11 +716,7 @@ export default class GitSyncPlugin extends Plugin {
         // Публичное поле: vam-bridge читает его через структурный порт
         // VamPluginPort, SettingsTab — для чипа Диагностики.
         vam: VamGate | null = null;
-        // [VAM] мягкий режим (сессионный; СКРЫТЫЙ жест статусной модалки —
-        // 10 ЛКМ по её телу; [overhaul S1/H-2] доступен ЛЮБОМУ пользователю,
-        // знающему о нём — осознанное решение владельца, UI о жесте не
-        // сообщает): true → работа разрешена без подтверждения VAM. НЕ
-        // пишется в data.json — следующая загрузка стартует с честным гейтом.
+        // Legacy integration flag, session-only. No user-facing gesture enables it.
         vamSoftMode = false;
         // [W5-T02] реестр подписчиков window.vaultSync. Создаётся в onload,
         // выставляется как window.vaultSync = { getState, onChanged },
@@ -743,18 +745,27 @@ export default class GitSyncPlugin extends Plugin {
 
         // [3-review] Б-21 на уровне интеграции: ask-модалки строго по одной
         private askChain: Promise<unknown> = Promise.resolve();
+        private sessionProgress?:SyncProgress;
+        private hostTransportLimit=0;
+        private googleConnections?:GoogleConnections;
+        private autoPaused=false;
+        private autoBlockedReason?:string;
+        private hostTransport?:import('./src/sources/types').NetTransport;
+        private autoSchedulers=new Map<string,Scheduler>();
 
         // [W1-T03/BUG-17] возврат сети больше не затирает error слепым 'idle':
         // при непустой failed-очереди показываем 'error' + pendingCount.
         // queue создаётся в buildEngine() позже onload — отсюда optional-chaining.
         private onlineHandler = () => {
+                this.wakeAutoSync();
+                if(this.sessionOwned||this.coordinator?.isRunning())return;
                 const r = reconnectStatus(this.queue?.size() ?? 0);
                 this.statusBar.setState(r.state, r.state === 'error' ? { pendingCount: r.pendingCount } : undefined);
         };
-        private offlineHandler = () => this.statusBar.setState('offline');
+        private offlineHandler = () => {if(!this.sessionOwned&&!this.coordinator?.isRunning())this.statusBar.setState('offline');};
         private focusHandler = () => {
                 this.statusBar.setLastSync(this.settings.lastSyncTime);
-                this.statusBar.refresh();
+                this.statusBar.refresh();this.wakeAutoSync();this.popoverView?.update(this.snapshotPopoverState());
         };
 
         async onload() {
@@ -821,13 +832,16 @@ export default class GitSyncPlugin extends Plugin {
                 // [В3-2] новые ID команд cloud-sync-*; назначенные вручную хоткеи
                 // слетают один раз — сознательное решение пользователя
                 this.addCommand({ id: 'cloud-sync-now', name: i18n.t.cmdSyncFromGit, callback: () => this.syncNow() });
+                this.addCommand({id:'cloud-sync-workspace',name:i18n.getLocale()==='ru'?'Открыть рабочее окно синхронизации':'Open sync workspace',callback:()=>this.openVaultTreeModal()});
+                this.addCommand({id:'cloud-sync-drive-inbox',name:i18n.getLocale()==='ru'?'Drive: неизвестные состояния и удаления':'Drive: unknown states and deletions',callback:()=>this.openDriveInboxModal()});
+                this.addCommand({id:'cloud-sync-recovery',name:i18n.getLocale()==='ru'?'Восстановительные копии':'Recovery copies',callback:()=>this.openRecoveryModal()});
                 this.addCommand({ id: 'cloud-sync-retry-failed', name: i18n.t.cmdRetryFailed, callback: () => this.retryFailedFiles() });
                 this.addCommand({ id: 'cloud-sync-force-reset', name: i18n.t.cmdForceReset, callback: () => this.forceResync() });
                 this.addCommand({
                         id: 'cloud-sync-cancel', name: i18n.t.cmdCancelSync,
                         checkCallback: (checking) => {
-                                if (checking) return this.coordinator?.isRunning() ?? false;
-                                if (this.coordinator?.isRunning()) this.cancelSync();
+                                if (checking) return Boolean(this.sessionController) || (this.coordinator?.isRunning() ?? false);
+                                if (this.sessionController || this.coordinator?.isRunning()) this.cancelSync();
                         }
                 });
                 this.addCommand({ id: 'cloud-sync-scan-missing', name: i18n.t.cmdScanMissing, callback: () => this.scanAndRestoreMissing() });
@@ -841,11 +855,11 @@ export default class GitSyncPlugin extends Plugin {
                 // [W2-T02 / Д13=1] чип уровня зеркала: начальное значение после
                 // сборки движка (миграция 3.0 внутри buildEngine могла выставить
                 // mirrorLevel из legacy-полей).
-                this.statusBar.setMirrorLevel(this.currentMirrorLevel());
+                this.statusBar.setMirrorLevel(this.settings.profiles ? undefined : this.currentMirrorLevel());
 
                 // [W4-T01] планировщик авто-синхронизации: интервал из настроек
                 // (дефолт 'off' → ничего не планируется до явного выбора).
-                this.startAutoSync();
+                this.app.workspace.onLayoutReady(()=>{if(this.unloading)return;this.autoReady=true;this.startAutoSync();this.notifyVaultSync();});
 
                 // [W5-T02] window.vaultSync — read-only pub/sub для сторонних
                 // плагинов и будущего менеджер-плагина (Е7=3, Д15). Singleton
@@ -868,8 +882,8 @@ export default class GitSyncPlugin extends Plugin {
 
                 this.registerInterval(window.setInterval(() => {
                         this.statusBar.setLastSync(this.settings.lastSyncTime);
-                        this.statusBar.refresh();
-                }, 60000));
+                        this.statusBar.refresh();this.popoverView?.update(this.snapshotPopoverState());
+                }, 1000));
 
                 window.addEventListener('online', this.onlineHandler);
                 window.addEventListener('offline', this.offlineHandler);
@@ -877,7 +891,9 @@ export default class GitSyncPlugin extends Plugin {
         }
 
         onunload() {
+                this.unloading=true;this.activeJobRunner?.cancel();this.jobSubscribers?.clear();
                 removePluginCss();
+                this.sessionController?.abort();
                 // [overhaul S3/M-18] живые модалки закрываются ДО dispose'ов —
                 // их колбэки больше не стреляют по выгруженному плагину.
                 closeAllTrackedModals();
@@ -891,7 +907,7 @@ export default class GitSyncPlugin extends Plugin {
                 window.removeEventListener('offline', this.offlineHandler);
                 window.removeEventListener('focus', this.focusHandler);
                 this.coordinator?.cancel();
-                this.scheduler?.stop();
+                for(const scheduler of this.autoSchedulers.values())scheduler.stop();
                 // [W6-T01] Принудительный release ZIP-сессии (минуя TTL): tmp-файл
                 // вычищается немедленно при выгрузке плагина, не дожидаясь
                 // истечения 5-мин аренды. forceDispose идемпотентен — безопасен
@@ -907,7 +923,8 @@ export default class GitSyncPlugin extends Plugin {
                 this.vaultSyncHook?.dispose();
                 this.vaultSyncHook = undefined;
                 try { delete (window as any).vaultSync; } catch { /* IE-quirk fallback — Obsidian не нужен */ (window as any).vaultSync = undefined; }
-                void this.persistEngineState('checkpoint');
+                this.googleConnections?.disconnect();
+                void this.persistEngineState('checkpoint').catch(error=>console.error('[vault-sync] unload checkpoint failed',diagnosticText(error)));
         }
 
         /**
@@ -916,20 +933,17 @@ export default class GitSyncPlugin extends Plugin {
          * 'obsidian-git-sync' ломался при любом переименовании/форке плагина.
          */
         private openStatusPopover(): void {
+                if (this.statusModal) { this.popoverView?.update(this.snapshotPopoverState()); return; }
                 const openPluginSettings = () => {
                         // @ts-ignore
                         (this.app as any).setting.open();
                         // @ts-ignore
                         (this.app as any).setting.openTabById(this.manifest.id);
                 };
-                if (!this.isConfiguredForSource()) {
-                        openPluginSettings();
-                        return;
-                }
                 // [W2-T03 wiring] popover в обёртке Modal (v3.0 interim: будущий
                 // polish — позиционированная плавающая панель у статус-бара;
                 // пока — работает везде, включая мобильные).
-                const modal = new Modal(this.app);
+                const modal = new Modal(this.app); this.statusModal = modal;
                 modal.titleEl.setText(i18n.t.pop.title);
                 this.popoverView = new SyncPopoverView({
                         contentEl: modal.contentEl,
@@ -937,22 +951,25 @@ export default class GitSyncPlugin extends Plugin {
                         state: this.snapshotPopoverState(),
                         onSync: () => { modal.close(); void this.syncNow(); },
                         onCancel: () => { this.cancelSync(); },
-                        onRetry: () => { modal.close(); void this.retryFailedFiles(); },
+                        onRetry: paths => { modal.close(); void this.retryFailedFiles('manual',paths); },
+                        onExportDiagnostics:()=>void this.exportSyncDiagnostics(),
                         onPauseAuto: () => this.pauseAutoSync(),
                         onOpenJournal: () => { modal.close(); this.openJournalModal(); },
                         onOpenSettings: () => { modal.close(); openPluginSettings(); },
+                        onOpenWorkspace:()=>{modal.close();this.openVaultTreeModal();},
+                        onRecovery:()=>{modal.close();this.openRecoveryModal();},
                         onClose: () => modal.close(),
                         formatTime: (ms: number) => new Date(ms).toLocaleString(),
                         formatBytes,
                 });
                 this.popoverView.render();
-                modal.onClose = () => { this.popoverView = undefined; };
+                modal.onClose = () => { if (this.statusModal === modal) { this.popoverView = undefined; this.statusModal = undefined; } };
                 trackModal(modal); // [overhaul S3/M-18]
                 modal.open();
                 void this.journal.load().then((entries) => {
                         const last = entries[0] ?? null;
-                        if (this.popoverView) {
-                                (this.popoverView as unknown as { lastEntry: unknown }).lastEntry = last;
+                        if (this.statusModal === modal && this.popoverView) {
+                                this.popoverView.setLastEntry(last);
                                 this.popoverView.update(this.snapshotPopoverState());
                         }
                 });
@@ -962,14 +979,18 @@ export default class GitSyncPlugin extends Plugin {
         private snapshotPopoverState(): PopoverState {
                 const sb = this.statusBar as unknown as {
                         state: string; pendingCount: number;
-                        bytesTransferred: number; totalBytes: number; pipelinePhase: number;
+                        bytesTransferred: number; totalBytes: number; pipelinePhase: number;attention?:'deletions'|'conflicts';fileIndex:number;fileTotal:number;currentPath:string;
                 };
                 const status = sb.state as PopoverState['status'];
                 const pending = sb.pendingCount ?? 0;
                 return {
                         status,
                         mirrorLevel: this.currentMirrorLevel(),
-                        pendingErrorCount: status === 'error' ? pending : this.queue.all().length,
+                        profilesMode:Boolean(this.settings.profiles?.length),
+                        attention:sb.attention,fileIndex:sb.fileIndex,fileTotal:sb.fileTotal,currentPath:sb.currentPath,
+                        blockedReason:status==='blocked'?this.lastBlockReason:undefined,
+                        pendingErrorCount:this.queue.all().length,
+                        ...(status==='syncing'?this.sessionProgress:{}),
                         conflictsCount: status === 'conflicts' ? pending : 0,
                         // [P2/3.2] живая фаза конвейера из setStatus-потока Coordinator
                         // (раньше хардкод -1 — полоса была декоративной, бэклог 3.2).
@@ -978,7 +999,7 @@ export default class GitSyncPlugin extends Plugin {
                         totalBytes: sb.totalBytes ?? 0,
                         lastSyncTime: this.settings.lastSyncTime || null,
                         // [W4-T04] снимок планировщика для popover-индикатора.
-                        scheduler: this.schedulerSnapshot(),
+                        scheduler: this.schedulerSnapshot(),jobs:this.automaticJobSnapshots(),
                 };
         }
 
@@ -1011,55 +1032,17 @@ export default class GitSyncPlugin extends Plugin {
 
         /** [W2-T06 wiring] онбординг первого запуска (Д8=1). */
         private maybeShowOnboarding(): void {
-                if (this.settings.onboarded) return;
-                if (!this.isConfiguredForSource()) return;
-                const modal = new Modal(this.app);
-                modal.titleEl.setText(i18n.t.onb.title);
-                let view: OnboardingModalView | null = null;
-                view = new OnboardingModalView({
-                        contentEl: modal.contentEl,
-                        manifest: { fileCount: 0, sizeMb: '?', isMobile: Platform.isMobileApp },
-                        workspaceSyncDefault: this.settings.workspaceSync ?? true,
-                        onChoose: (choice: OnboardingChoice, workspaceSync: boolean) => {
-                                this.settings.workspaceSync = workspaceSync;
-                                this.settings.onboarded = true;
-                                modal.close();
-                                void this.saveSettingsImmediate().then(() => {
-                                        if (choice === 'cancel') return;
-                                        if (choice === 'custom') { this.openVaultTreeModal(); return; }
-                                        // [P2/M4] канонические билдеры пресетов + сохранение
-                                        // пер-папочного охвата зеркала (как в applyStructurePreset).
-                                        // [overhaul S1-review #2] pluginDir() — как в applyStructurePreset: папка
-                                        // плагина (data.json с секретами) исключается из пресета и при
-                                        // выборе из онбординга, не только из настроек.
-                                        const base = choice === 'obsidian' ? obsidianOnlyPolicy(this.pluginDir()) : fullVaultPolicy(this.pluginDir());
-                                        if (!this.settings.syncPolicies) this.settings.syncPolicies = {};
-                                        const existing = this.settings.syncPolicies[this.builtSourceId];
-                                        const policy = {
-                                                ...base,
-                                                mirror: existing?.mirror ?? false,
-                                                mirrorFolders: existing?.mirrorFolders,
-                                                // [overhaul v4 / Этап 4] сохраняем кастомные user exclusions
-                                                fileExclusions: mergeFileExclusions(
-                                                        base.fileExclusions ?? [],
-                                                        existing?.fileExclusions,
-                                                ),
-                                        };
-                                        this.settings.syncPolicies[this.builtSourceId] = policy;
-                                        this.coordinator?.setSyncPolicy(policy);
-                                        void this.saveSettingsImmediate().then(() => void this.syncNow());
-                                });
-                        },
-                        onClose: () => { view?.close(); },
-                });
-                view.render();
-                modal.onClose = () => { view?.close(); if (!this.settings.onboarded) { this.settings.onboarded = true; void this.saveSettingsImmediate(); } };
-                trackModal(modal); // [overhaul S3/M-18]
-                modal.open();
+                if(this.settings.onboarded)return;
+                const modal=new Modal(this.app),ru=i18n.getLocale()==='ru';
+                modal.contentEl.createEl('h2',{text:ru?'Настройте синхронизацию':'Set up synchronization'});
+                modal.contentEl.createEl('p',{text:ru?'Файлы загружаются из источников в этот vault. Добавьте подключение, выберите область и профиль поведения в рабочем окне. Запускайте синхронизацию кнопкой или задайте расписание для источников.':'Files are downloaded from sources into this vault. Add a connection, choose its scope and behaviour in the workspace. Run synchronization with the button or choose a schedule for each source.'});
+                new Setting(modal.contentEl).addButton(button=>button.setButtonText(ru?'Настроить':'Set up').setCta().onClick(()=>{modal.close();this.openVaultTreeModal();}))
+                        .addButton(button=>button.setButtonText(ru?'Позже':'Later').onClick(()=>modal.close()));
+                trackModal(modal);modal.open();
         }
 
         async saveSettings() { this.settingsManager.queueSave(); }
-        async saveSettingsImmediate() { await this.settingsManager.saveImmediate(); }
+        async saveSettingsImmediate() { await this.settingsManager.saveImmediate();this.autoBlockedReason=undefined; }
 
         // ============================================================
         // --- СБОРКА ДВИГАТЕЛЯ (Coordinator + GitSource + адаптеры) ---
@@ -1075,6 +1058,7 @@ export default class GitSyncPlugin extends Plugin {
                 // со старым git_<djb2(repoUrl)> / <kind>_<djb2(vaultUrl)>).
                 this.builtKind = this.desiredSourceKind();
                 this.builtSourceId = this.makeSourceId(this.builtKind);
+                this.builtEngineConfigKey = JSON.stringify(this.engineValues(this.builtKind));
                 // [W3-T03] gitSource поле оставлено для migrateLegacyShas (git-only
                 // шаг в prepareSession); инстанс строится через реестр как и любой другой.
                 const initialSource: import('./src/sources/types').SyncSource =
@@ -1102,22 +1086,17 @@ export default class GitSyncPlugin extends Plugin {
                 // [overhaul v4 / Этап 4] гранулярная миграция: folder-exclude pluginDir
                 // → fileExclusions (data.json и т.п. точечно, main.js/manifest.json в синке).
                 await this.runV4Migration();
+                await this.ensureProfileSettings();
 
                 this.queue = new FailedQueue();
-                this.queue.mergeBack(this.settings.failedQueue ?? []);
+                this.queue.mergeBack((this.settings.failedQueues ? this.settings.failedQueues[this.cache.namespace] ?? [] : this.settings.failedQueue ?? []));
 
                 // [W2-T08] журнал сессий: IO-адаптер к configDir/vault-sync-journal.json
                 // (adapter.read: null = файла нет — первый запуск, НЕ warn).
                 const journalPath = `${this.manifest.dir ? `${this.manifest.dir}/` : ''}vault-sync-journal.json`;
                 const journalIo: JournalIo = {
-                        read: async () => {
-                                try {
-                                        const data = await this.app.vault.adapter.read(journalPath);
-                                        return data ?? null;
-                                } catch {
-                                        return null; // ENOENT — первый запуск
-                                }
-                        },
+                        read: async () => (await this.app.vault.adapter.exists(journalPath))?this.app.vault.adapter.read(journalPath):null,
+                        quarantine:async raw=>{const path=journalPath+'.corrupt-'+crypto.randomUUID();await this.app.vault.adapter.write(path,raw);if(await this.app.vault.adapter.read(path)!==raw)throw Error('Diagnostic backup verification failed');},
                         write: async (s) => {
                                 await this.app.vault.adapter.write(journalPath, s);
                         },
@@ -1132,17 +1111,20 @@ export default class GitSyncPlugin extends Plugin {
                         ui: {
                                 // [overhaul S4 / S3-review #2] конфликтная модалка — в реестре:
                                 // onClose резолвит 'keep-both' — по выгруженному плагину стрелять нельзя.
-                                askConflict: (info) => this.serializeAsk(() => {
+                                askConflict: (info,signal) => this.serializeAsk(() => {
                                         const m = new ConflictAskModal(this.app, info);
                                         trackModal(m);
-                                        return m.wait();
-                                }),
+                                        return m.wait(signal);
+                                },signal),
                         },
                         // [overhaul v4 / Этап 3] light-стратегия из настроек.
                         lightStrategy: this.settings.lightConflictStrategy ?? 'keep-local',
                 });
 
+                this.mutations = new DurableMutations(new OperationStore(this.fsAdapter),new RecoveryStore(this.makeVaultAdapter(),this.recoveryDirectory()),this.makeVaultAdapter());
+                const pluginForLimits=this;
                 this.coordinator = new Coordinator({
+                        mutations: this.mutations,
                         source: initialSource,
                         vault: this.makeVaultAdapter(),
                         cache: this.cache,
@@ -1160,16 +1142,18 @@ export default class GitSyncPlugin extends Plugin {
                                 deletingFiles: (n) => i18n.t.noticeDeletingFiles(n),
                                 orphanWarning: (n) => i18n.t.noticeOrphanFiles(n),
                                 syncedWithErrors: (n) => i18n.t.noticeSyncedWithErrors(n),
-                                success: (dl, del, conf, dur) => i18n.t.noticeSuccess(dl, del, conf, dur),
+                                success: (dl, del, conf, dur) => this.combinedSession?'':i18n.t.noticeSuccess(dl, del, conf, dur),
                                 fileTooLarge: (sz, limit) => i18n.t.errFileTooLarge(sz, limit),
                                 conflictKeptLocal: (p) => i18n.t.noticeConflictKeptLocal(p),
                                 conflictBoth: (p) => i18n.t.noticeConflictBoth(p),
+                                conflictsDeferred: i18n.getLocale()==='ru'?'Конфликты требуют ручного запуска синхронизации':'Conflicts need a manual sync',
                                 nothingToRetry: i18n.t.noticeNoFailedFiles,
                                 retryNotDue: (n) => i18n.t.noticeRetryNotDue(n),
                                 // [overhaul S6 / D-4] припаркованные записи (retry cap):
                                 // автоповторы прекращены — внятный путь лечения в Notice.
                                 retryParked: (n) => i18n.t.noticeRetryParked(n),
                                 deletionsDeferred: (n) => i18n.t.noticeDeletionsDeferred(n),
+                                deletionsBlocked: (n) => i18n.t.noticeDeletionsBlocked(n),
                                 // [P2/3.2] фазы конвейера — текст статус-бара на границах фаз
                                 // (словарь pop.* общий с popover-полосой — единый источник).
                                 phaseManifest: i18n.t.pop.phaseManifest,
@@ -1180,9 +1164,13 @@ export default class GitSyncPlugin extends Plugin {
                                 phaseFinalize: i18n.t.pop.phaseFinalize,
                         },
                         options: {
+                                configurationRevision: () => this.getConfigurationRevision(),
+                                preparedRevision: () => this.preparedConfigRevision,
                                 // [W1-T07 / BUG-5] Единый вход модели удалений — уровень
                                 // зеркала (deleteMissing-тумблер из логики умер).
                                 mirrorLevel: () => this.currentMirrorLevel(),
+                                get maxFileSizeBytes(){return pluginForLimits.maxPayloadBytes();},get bufferBudgetBytes(){return pluginForLimits.maxPayloadBytes()*4;},
+                                sourceCircuits:()=>this.settings.sourceCircuits??= {},
                                 useTrash: () => this.settings.useTrash,
                                 isOnline: () => navigator.onLine,
                                 isConfigured: () => this.isConfiguredForSource(),
@@ -1195,8 +1183,9 @@ export default class GitSyncPlugin extends Plugin {
                         },
                         // [POLICY Phase 2] политика текущего источника; отсутствует в
                         // data.json = undefined = legacy-режим (ничего не меняется).
-                        syncPolicy: this.settings.syncPolicies?.[this.builtSourceId],
+                        syncPolicy: this.effectiveProfilePolicy(this.builtSourceId),
                 });
+                this.preparedConfigRevision = this.getConfigurationRevision();
         }
 
         /** Разовая миграция lastSyncShas (data.json) в файл кэша (дизайн §8.1). */
@@ -1268,12 +1257,35 @@ export default class GitSyncPlugin extends Plugin {
                  * (transport, downloader, messages, onProgress, onRateLimitWait).
                  * Реестр передаёт ctx в конструктор движка как есть.
                  */
-                private engineCtx(): EngineCtx {
+                private maxPayloadBytes():number {
+                        const configured=this.settings.maxPayloadMiB;
+                        return (Platform.isDesktopApp&&Number.isFinite(configured)&&configured!>=4&&configured!<=256?configured!:Platform.isDesktopApp?64:16)*1024*1024;
+                }
+                private networkTransport(kind:string):import('./src/sources/types').NetTransport {
+                        if(!Platform.isDesktopApp&&kind==='webdav')return new FetchTransport({timeoutMs:REQUEST_TIMEOUT_MS,bodyTimeoutMs:REQUEST_TIMEOUT_MS});
+                        const limit=this.maxPayloadBytes();
+                        if(!this.hostTransport||this.hostTransportLimit!==limit){this.hostTransportLimit=limit;this.hostTransport=Platform.isDesktopApp?
+                                new NodeHttpTransport({timeoutMs:REQUEST_TIMEOUT_MS,idleTimeoutMs:REQUEST_TIMEOUT_MS,maxBytes:limit}):new BufferedHostTransport(requestUrl,{maxBytes:limit});}
+                        return this.hostTransport;
+                }
+
+                private googleService():GoogleConnections {
+                        if(!this.googleConnections)this.googleConnections=new GoogleConnections({
+                                transport:()=>this.networkTransport('gdrive'),
+                                secrets:()=>{if(!Platform.isDesktopApp||!this.app.secretStorage)throw Error('Google OAuth requires Obsidian desktop with SecretStorage (1.11.4+)');return this.app.secretStorage;},
+                                guard:()=>{if(!Platform.isDesktopApp||!this.app.secretStorage)throw Error('Google OAuth requires Obsidian desktop with SecretStorage (1.11.4+)');if(!this.assertNetworkAllowed())throw Error('Source access blocked');},
+                                connections:()=>this.settings.connections??[],maxBytes:()=>this.maxPayloadBytes(),
+                                openBrowser:url=>require('electron').shell.openExternal(url),
+                                pick:(client,signal)=>pickGoogleFolder(this.app,client,signal),
+                        });return this.googleConnections;
+                }
+
+                private engineCtx(kind = this.builtKind): EngineCtx {
                         const t = i18n.t;
-                        const kind = this.builtKind;
                         if (kind === 'git') {
-                                return {
+                                return {transport:this.networkTransport(kind),
                                         messages: {
+                                                unsupportedBranches: () => i18n.getLocale()==='ru'?'Синхронизация всех веток не поддерживается. Укажите одну ветку или оставьте поле пустым для ветки репозитория по умолчанию.':'All-branches sync is unsupported. Enter one branch or leave it empty for the repository default.',
                                                 branchNotFound: (b: string) => t.errBranchNotFound(b),
                                                 fetchBranch: (st: number) => t.errFetchBranch(st),
                                                 fetchTree: () => t.errFetchTree,
@@ -1288,7 +1300,7 @@ export default class GitSyncPlugin extends Plugin {
                         }
                         if (kind === 'yandex') {
                                 return {
-                                        transport: new FetchTransport({ timeoutMs: REQUEST_TIMEOUT_MS }),
+                                        transport: this.networkTransport(kind),
                                         archiveDownloader: this.getArchiveDownloader(),
                                         onRateLimitWait: (waitMs: number) => {
                                                 new Notice(t.noticeRateLimitedCloud(Math.ceil(waitMs / 1000)), 10000);
@@ -1307,11 +1319,13 @@ export default class GitSyncPlugin extends Plugin {
                         // (cast: EngineCtx.messages — общий Record, см. git-ветку.)
                         if (kind === 'gdrive') {
                                 return {
-                                        transport: new FetchTransport({ timeoutMs: REQUEST_TIMEOUT_MS }),
+                                        googleTransport:values=>this.googleService().transport(values),maxPayloadBytes:this.maxPayloadBytes(),
+                                        transport: this.networkTransport(kind),
                                         onRateLimitWait: (waitMs: number) => {
                                                 new Notice(t.noticeRateLimitedCloud(Math.ceil(waitMs / 1000)), 10000);
                                         },
                                         messages: {
+                                                folderRequired: () => i18n.getLocale()==='ru'?'Укажите ID публичной папки Drive. API-ключ не предоставляет доступ к личному диску.':'Specify a public Drive folder ID. An API key does not grant access to your private Drive.',
                                                 apiKeyMissing: () => t.errGdriveApiKeyMissing,
                                                 listFailed: (st: number) => t.errGdriveListFailed(st),
                                                 downloadFailed: (st: number) => t.errGdriveDownloadFailed(st),
@@ -1328,7 +1342,7 @@ export default class GitSyncPlugin extends Plugin {
                         // английских DEFAULT_MESSAGES. (cast — как в gdrive-ветке.)
                         if (kind === 'webdav') {
                                 return {
-                                        transport: new FetchTransport({ timeoutMs: REQUEST_TIMEOUT_MS }),
+                                        transport: this.networkTransport(kind),
                                         messages: {
                                                 credentialsMissing: () => t.errWebdavCredentialsMissing,
                                                 propfindFailed: (st: number) => t.errWebdavPropfindFailed(st),
@@ -1347,16 +1361,8 @@ export default class GitSyncPlugin extends Plugin {
                                 // [W3-T04] лёгкий транспорт для Test Connection (HEAD + Range-хвост).
                                 // undefined на мобайле → ZipUrlSource.testConnection() идёт fallback full.
                                 rangeTransport: this.getZipRangeTransport(),
-                                // [W6-T01] TTL сессионного архива 5 минут: retry/scan/policy-modal/test
-                                // в пределах пользовательского цикла → 1 скачивание вместо до 4× (оптимизация №1).
-                                zipSessionTtlMs: 5 * 60 * 1000,
-                                onProgress: (p: { bytesTransferred: number; totalBytes: number | null }) => {
-                                        this.statusBar.setState('syncing', {
-                                                progressText: t.sbSyncing,
-                                                bytesTransferred: p.bytesTransferred,
-                                                totalBytes: p.totalBytes ?? 0,
-                                        });
-                                },
+                                // TTL bounds resource retention; every new manifest obtains a fresh archive.
+                                zipSessionTtlMs: 0,
                                 messages: {
                                         htmlInsteadOfArchive: (url: string) => t.errHtmlInsteadOfArchive(url),
                                         notAnArchive: (url: string) => t.errNotAnArchive(url),
@@ -1446,19 +1452,21 @@ export default class GitSyncPlugin extends Plugin {
 
 
         private isConfiguredForSource(): boolean {
-                return isSourceConfigured(this.desiredSourceKind(), {
-                        repoUrl: this.settings.repoUrl,
-                        accessToken: this.settings.accessToken,
-                        vaultUrl: this.settings.vaultUrl,
-                        // [W6-T03] gdrive: apiKey (secret).
-                        apiKey: this.settings.gdriveApiKey,
-                        // [W6-T05] webdav: baseUrl + username (password optional).
-                        baseUrl: this.settings.webdavBaseUrl,
-                        username: this.settings.webdavUsername,
-                        password: this.settings.webdavPassword,
-                        rootPath: this.settings.webdavRootPath,
-                });
+                if(this.settings.vaultPolicy){
+                        try{
+                                const policy=compileProfiles(this.settings.vaultPolicy,this.settings.profiles??[]),rules=policy.fileRules??[];
+                                const required=new Set(rules.flatMap(rule=>rule.source?[rule.source]:[]));
+                                if(policy.defaultSource&&!rules.some(rule=>rule.scope==='vault'&&!rule.names&&rule.source))required.add(policy.defaultSource);
+                                const running=this.sessionOwned?this.coordinator?.getCurrentSource().sources:undefined;
+                                const ids=running?.length?running.map(source=>source.id):[...required];
+                                return ids.length>0&&ids.some(id=>{const connection=this.settings.connections?.find(c=>c.id===id);if(!connection)return false;
+                                        return connectionIssues(connection).length===0;
+                                });
+                        }catch{return false;}
+                }
+                return isSourceConfigured(this.desiredSourceKind(), {repoUrl:'',accessToken:'',vaultUrl:'',...this.engineValues(this.desiredSourceKind())});
         }
+
 
         // [W3-T03] makeGitOptions / makeZipOptions / makeYandexOptions удалены:
         // их содержание поглощено engineCtx() — единый ctx для buildEngine,
@@ -1475,46 +1483,19 @@ export default class GitSyncPlugin extends Plugin {
                 if (!this.zipDownloader) {
                         this.zipDownloader = Platform.isMobileApp
                                 ? {
-                                        // [5-review M2] мобильная «мягкая отмена» (дизайн §7.1):
-                                        // requestUrl не прерывается — проверяем signal ПОСЛЕ
-                                        // завершения и отбрасываем результат отменённой сессии
-                                        download: async (url: string, opts?: { signal?: AbortSignal }) => {
-                                                // [P1/BUG-19] Лимит проверяется ДО загрузки: HEAD content-length
-                                                // до полного GET — мобильный OOM предотвращается, а не
-                                                // фиксируется постфактум. HEAD не сработал (пресайнед-URL
-                                                // без HEAD, редирект) — страховочная проверка после GET
-                                                // остаётся.
-                                                const limitMb = this.settings.mobileArchiveWarnBytes ?? 200;
-                                                if (limitMb > 0) {
-                                                        let headBytes = 0;
-                                                        try {
-                                                                const head = await requestUrl({ url, method: 'HEAD' });
-                                                                const clHead = head.headers?.['content-length'] ?? head.headers?.['Content-Length'];
-                                                                headBytes = Number(clHead ?? 0);
-                                                        } catch {
-                                                                // HEAD не поддержан — идём на GET, решение по факту.
-                                                        }
-                                                        if (headBytes > limitMb * 1024 * 1024) {
-                                                                throw new Error(i18n.t.errMobileArchiveTooLarge(formatBytes(headBytes), limitMb));
-                                                        }
-                                                }
-                                                // requestUrl сам ведёт редиректы и бросает на не-2xx
-                                                const res = await requestUrl({ url, method: 'GET' });
-                                                // [7-d] дизайн §7.1: мобильный порог архива (0 = off);
-                                                // постфактум-страховка (сервер соврал в HEAD / не дал длину)
-                                                const clHeader = res.headers?.['content-length'] ?? res.headers?.['Content-Length'];
-                                                const clBytes = Number(clHeader ?? 0);
-                                                if (limitMb > 0 && clBytes > limitMb * 1024 * 1024) {
-                                                        throw new Error(i18n.t.errMobileArchiveTooLarge(formatBytes(clBytes), limitMb));
-                                                }
-                                                if (opts?.signal?.aborted) {
-                                                        const e: Error & { aborted: boolean } = Object.assign(
-                                                                new Error('archive download aborted (mobile)'),
-                                                                { aborted: true },
-                                                        );
-                                                        throw e;
-                                                }
-                                                return new BufferArchiveReader(res.arrayBuffer);
+                                        download:async(url,opts)=>{
+                                                const configured=(this.settings.mobileArchiveWarnBytes??200)*1024*1024;
+                                                const limit=Math.min(configured>0?configured:32*1024*1024,32*1024*1024);
+                                                const transport=new BufferedHostTransport(requestUrl,{maxBytes:limit});
+                                                const head=await transport.fetch(url,{method:'HEAD',signal:opts.signal});
+                                                const size=Number(head.headers['content-length']);
+                                                if(!Number.isSafeInteger(size)||size<=0)throw new SyncFault('mobile-archive-size','Mobile archive download requires a known Content-Length; use desktop for this link','source');
+                                                if(size>limit)throw new SyncFault('file-too-large',i18n.t.errMobileArchiveTooLarge(formatBytes(size),limit/1024/1024),'source');
+                                                opts.onProgress?.({bytesTransferred:0,totalBytes:size,capability:'buffered'});
+                                                const res=await transport.fetch(url,{signal:opts.signal,maxBytes:limit});
+                                                if(res.status!==200)throw new SyncFault('archive-http',`Archive download HTTP ${res.status}`,'source');
+                                                const data=await res.arrayBuffer();opts.signal?.throwIfAborted();opts.onProgress?.({bytesTransferred:data.byteLength,totalBytes:size,capability:'buffered'});
+                                                return new BufferArchiveReader(data);
                                         },
                                 }
                                 : new NodeArchiveDownloader();
@@ -1541,7 +1522,7 @@ export default class GitSyncPlugin extends Plugin {
         private gcKeepSet(currentSourceId: string): Set<string> {
                 // [W3-T03] git-кэш держится всегда (возврат к git — без полного resync);
                 // sourceId считается через реестр (байт-в-байт с легаси).
-                const keep = new Set([currentSourceId]);
+                const keep = new Set([currentSourceId,...Object.entries(this.settings.failedQueues ?? {}).filter(([,files])=>files.length>0).map(([id])=>id)]);
                 if (this.settings.repoUrl.trim().length > 0) {
                         keep.add(EngineRegistry.makeSourceId('git', this.engineValues('git')));
                 }
@@ -1554,64 +1535,151 @@ export default class GitSyncPlugin extends Plugin {
                 // структурные фильтры и отвечает только за безопасность
                 // (zip-slip, расширения, скрипты, .git, конфликт-копии).
                 // Нет политики — legacy-режим по настройкам syncMode/folders.
-                const hasPolicy = this.settings.syncPolicies?.[this.builtSourceId] !== undefined;
+                const hasPolicy = this.settings.vaultPolicy !== undefined || this.settings.syncPolicies?.[this.builtSourceId] !== undefined;
                 return new PathPolicy({
                         syncMode: hasPolicy ? 'full-vault' : this.settings.syncMode,
                         allowedFolders: hasPolicy ? '' : this.settings.allowedFolders,
                         ignoredFolders: hasPolicy ? '' : this.settings.ignoredFolders,
                         allowPlugins: this.settings.allowPlugins,
                         allowSnippets: this.settings.allowSnippets,
+                        protectedPaths: [this.pluginDir()],
                 });
         }
 
-        /** Свежесть движка перед сессией: политика, стратегия, источник, sourceId. */
-        private async prepareSession(): Promise<void> {
-                // [7-f I-1] свап источника/кэша во время живой сессии запрещён:
-                // dispose старого источника mid-flight и потеря кэш-записей сессии
-                // (без потери данных, но с лишними перекачками); настройки сохранены —
-                // следующий вход подхватит их
-                if (this.coordinator.isRunning()) return;
-                // [W2-T02 / Д13=1] настройки могли смениться с прошлой сессии —
-                // чип уровня зеркала обновляется перед каждой сессией.
-                this.statusBar.setMirrorLevel(this.currentMirrorLevel());
-                // [AUDIT A.1 fix] run legacy migration here (not in onload) —
-                // so that manifest-git.json is written only when sync actually runs.
-                if (this.builtKind === 'git') await this.migrateLegacyShas();
-                const kind = this.desiredSourceKind();
-                const sourceId = this.makeSourceId(kind);
-                if (kind !== this.builtKind || sourceId !== this.builtSourceId) {
-                        // [W3-T03] сменился тип источника или URL: новый инстанс через реестр.
-                        this.builtKind = kind;
-                        this.builtSourceId = sourceId;
-                        const nextSource: import('./src/sources/types').SyncSource =
-                                EngineRegistry.create(kind, this.engineValues(kind), this.engineCtx());
-                        if (kind === 'git') {
-                                this.gitSource = nextSource as import('./src/sources/git-source').GitSource;
-                        }
-                        await this.coordinator.setSource(nextSource);
-                        this.cache = new ManifestCache(this.fsAdapter, sourceId);
-                        await this.cache.load();
-                        this.coordinator.setCache(this.cache);
-                        await gcManifestCaches(this.fsAdapter, this.gcKeepSet(sourceId));
-                }
-                // [overhaul S2/M-5] PathPolicy строится ПОСЛЕ возможного свапа
-                // источника: makePolicy() читает syncPolicies[builtSourceId] — раньше
-                // первая сессия после смены источника получала structural-фильтры по
-                // УСТАРЕВШЕМУ id (чужая политика или легаси-режим вместо свежей).
-                this.coordinator.setPolicy(this.makePolicy());
-                this.conflictResolver.setStrategy(this.settings.conflictStrategy);
-                // [overhaul v4 / Этап 3] light-стратегия тоже обновляется на каждой сессии
-                // (пользователь мог сменить её в SettingsTab без перезагрузки плагина).
-                this.conflictResolver.setLightStrategy(this.settings.lightConflictStrategy ?? 'keep-local');
-                // [POLICY Phase 2] политика следует за sourceId: после
-                // возможного свапа источника/кэша перечитываем её
-                // (каждую сессию: пользователь мог сохранить новую в modal).
-                this.coordinator.setSyncPolicy(this.settings.syncPolicies?.[this.builtSourceId]);
+        private recoveryDirectory(): string {
+                const directory = this.pluginDir();
+                if (!directory) throw new Error('Plugin directory unavailable; operation state cannot be protected');
+                return `${directory}/recovery-v2`;
         }
 
-        // ============================================================
-        // --- СЕССИИ (тонкие обёртки над Coordinator) ---
-        // ============================================================
+        /** Semantic epoch stays in memory. No credential/fingerprint is written to the ledger. */
+        private getConfigurationRevision(): number {
+                const kind = this.desiredSourceKind();
+                const config = JSON.stringify({maxPayload:this.settings.maxPayloadMiB,recoveryBudget:this.settings.recoveryLimitMiB,historyBudget:this.settings.historyLimit, profiles:this.settings.profiles, connections:this.settings.connections, kind, values: this.engineValues(kind), mirror: this.currentMirrorLevel(),
+                        policy: this.settings.vaultPolicy ?? this.settings.syncPolicies?.[this.makeSourceId(kind)], syncMode: this.settings.syncMode,
+                        allowed: this.settings.allowedFolders, ignored: this.settings.ignoredFolders,
+                        plugins: this.settings.allowPlugins, snippets: this.settings.allowSnippets,
+                        conflict: this.settings.conflictStrategy, light: this.settings.lightConflictStrategy, trash: this.settings.useTrash });
+                if (config !== this.configurationKey) { this.configurationKey = config; this.configurationEpoch++; }
+                return this.configurationEpoch;
+        }
+
+        async ensureProfileSettings(): Promise<void> {
+                const previous = structuredClone({profiles:this.settings.profiles,connections:this.settings.connections,
+                        syncPolicies:this.settings.syncPolicies,vaultPolicy:this.settings.vaultPolicy,mirrorLevel:this.settings.mirrorLevel,workspaceSyncApplied:this.settings.workspaceSyncApplied});
+                try {
+                const before = JSON.stringify([this.settings.profiles, this.settings.syncPolicies,this.settings.vaultPolicy,this.settings.connections,this.settings.workspaceSyncApplied]);
+                const profiles = this.settings.profiles ??= structuredClone([...STANDARD_PROFILES]);
+                for(const builtin of STANDARD_PROFILES)if(!profiles.some(p=>p.id===builtin.id))profiles.push(structuredClone(builtin));
+                this.settings.connections ??= [];
+                validateProfiles(profiles, this.settings.connections);
+                const policies = this.settings.syncPolicies ??= {};
+                const id = this.makeSourceId(this.desiredSourceKind());
+                if (!policies[id]) {
+                        policies[id] = migrateSettingsToV3({settings:{...this.settings,migratedV3:false},syncPolicies:{},
+                                currentSourceId:id,pluginDir:this.pluginDir()}).syncPolicies[id] ?? {version:1,mirror:false,folders:[]};
+                }
+                for (const [key, policy] of Object.entries(policies)) policies[key] = migrateProfilePolicy(policy, profiles, key,
+                        this.currentMirrorLevel(), this.settings.conflictStrategy, this.settings.lightConflictStrategy ?? 'keep-local');
+                if(!this.settings.vaultPolicy) {
+                        const connectionId='connection_'+id;
+                        const configured=isSourceConfigured(this.desiredSourceKind(),{repoUrl:'',accessToken:'',vaultUrl:'',...this.engineValues(this.desiredSourceKind())});
+                        const referenced=profiles.some(p=>p.source==='primary')||policies[id].assignments?.some(a=>a.source==='primary');
+                        if((configured||referenced)&&!this.settings.connections.some(c=>c.id===connectionId))this.settings.connections.push({
+                                id:connectionId,name:i18n.getLocale()==='ru'?'Основной источник':'Default source',
+                                kind:this.desiredSourceKind(),values:this.engineValues(this.desiredSourceKind())});
+                        this.settings.vaultPolicy=structuredClone(policies[id]);
+                        this.settings.vaultPolicy.defaultSource=configured?connectionId:undefined;
+                        for(const profile of profiles)if(profile.source==='primary')profile.source=connectionId;
+                        for(const assignment of this.settings.vaultPolicy.assignments ?? [])if(assignment.source==='primary')assignment.source=connectionId;
+                }
+                for(const policy of [...Object.values(policies),this.settings.vaultPolicy])for(const assignment of policy.assignments??[]){
+                    const inherited=profiles.find(profile=>profile.id===assignment.profileId)?.source;
+                    if(!assignment.source&&inherited)assignment.source=inherited;
+                }
+                for(const profile of profiles)delete profile.source;
+                validateProfiles(profiles,this.settings.connections);
+                if(!this.settings.workspaceSyncApplied && this.settings.workspaceSync===false){
+                        this.settings.vaultPolicy.fileExclusions??=[];
+                        for(const pattern of ['workspace.json','workspace-mobile.json'])if(!this.settings.vaultPolicy.fileExclusions.some(e=>e.pattern===pattern&&e.scope==='.obsidian'))this.settings.vaultPolicy.fileExclusions.push({pattern,scope:'.obsidian',note:'Workspace layout is device-specific'});
+                }
+                this.settings.workspaceSyncApplied=true;
+                compileProfiles(this.settings.vaultPolicy,profiles);
+                const legacyLevel=this.settings.mirrorLevel;this.settings.mirrorLevel='fetch';
+                if (legacyLevel!=='fetch' || before !== JSON.stringify([profiles,policies,this.settings.vaultPolicy,this.settings.connections,this.settings.workspaceSyncApplied])) await this.saveSettingsImmediate();
+                } catch(e) { Object.assign(this.settings,previous); throw e; }
+        }
+
+        private effectiveProfilePolicy(id: string): SyncPolicy {
+                const policy = this.settings.vaultPolicy ?? this.settings.syncPolicies?.[id] ?? {version:1 as const,mirror:false,folders:[]};
+                return compileProfiles(policy, this.settings.profiles ?? []);
+        }
+
+        private async routingContext(preview = false, selectedIds?: readonly string[]): Promise<{source:RoutedSource; namespace:string}> {
+                const kind = this.desiredSourceKind(), id = this.makeSourceId(kind);
+                const policy = this.effectiveProfilePolicy(id), rules = policy.fileRules ?? [];
+                validateProfiles(this.settings.profiles ?? [], this.settings.connections ?? []);
+                const defaultSource=policy.defaultSource ?? (this.settings.vaultPolicy?'unassigned':'primary');
+                const needed = new Set(rules.flatMap(r => r.source ? [r.source] : []));
+                const all=this.settings.connections ?? [];
+                const usesDefault=!rules.some(r=>r.scope==='vault'&&!r.names&&r.source);
+                const descriptors = all.filter(c=>preview || needed.has(c.id) || (usesDefault&&c.id===defaultSource));
+                if(defaultSource==='primary')descriptors.unshift({id:'primary',name:'Default source',kind,values:this.engineValues(kind)});
+                const configured=(c:SourceConnection)=>connectionIssues(c).length===0;
+                if(selectedIds?.some(id=>!descriptors.some(c=>c.id===id)))throw Error(i18n.getLocale()==='ru'?'Выбранному источнику не назначены области. Настройте их в дереве.':'Selected source has no assigned scope. Assign it in the tree.');
+                for(const id of needed)if(!descriptors.some(c=>c.id===id))throw Error('Missing assigned source; ownership configuration needs repair');
+                const active=descriptors.sort((a,b)=>Number(b.id===defaultSource)-Number(a.id===defaultSource));
+                if(!active.length)throw Error(i18n.getLocale()==='ru'?'Не выбран источник синхронизации. Откройте «Подключения → Источник для хранилища» и выберите подключение либо назначьте его папке в дереве.':'No sync source selected. Open Connections → Vault source and select a connection, or assign one to a folder in the tree.');
+                const identity = active.map(c=>({id:c.id,kind:c.kind,values:Object.fromEntries(
+                        [...EngineRegistry.get(c.kind).settingsSchema.filter(f=>f.type!=='secret' && !f.secret).map(f=>[f.key,c.values[f.key]]),...(c.kind==='gdrive'?[['authMode',c.values.authMode],['accountSub',c.values.accountSub]]:[])])}));
+                const namespace = this.settings.vaultPolicy ? await routedNamespace({defaultSource,connections:identity},rules,policy.folders) : needed.size ? await routedNamespace(identity,rules,policy.folders) : id;
+                const mapped = (path:string) => {
+                        const r=[...policy.folders].filter(r=>r.target && (path===r.path || !r.path || path.startsWith(r.path+'/')))
+                                .sort((a,b)=>b.path.length-a.path.length)[0];
+                        return r ? computeLocalPath(path,r.path,r) : path;
+                };
+                const members=active.map(c=>({id:c.id,name:c.name,source:selectedIds&&!selectedIds.includes(c.id)?
+                        {kind:c.kind,getManifest:async()=>{throw Error('Source outside this run');},fetch:async()=>{throw Error('Source outside this run');}}:
+                        (()=>{try{if(!configured(c))throw new SyncFault('source-unavailable',`Source ${c.name} is not configured`,'source');return EngineRegistry.create(c.kind,structuredClone(c.values),this.engineCtx(c.kind));}
+                            catch(error){return {kind:c.kind,getManifest:async()=>{throw error;},fetch:async()=>{throw error;}};}})()}));
+                return {source:new RoutedSource(members,structuredClone(rules),mapped,defaultSource,selectedIds),namespace};
+        }
+
+        /** Свежесть движка перед сессией: политика, стратегия, источник, sourceId. */
+        private async prepareSession(selectedIds?: readonly string[]): Promise<void> {
+                this.mutations?.recovery.setLimit((this.settings.recoveryLimitMiB??512)*1024*1024);this.mutations?.store.setLimit(this.settings.historyLimit??10000);
+                if (this.coordinator.isRunning()) return;
+                this.sessionController?.signal.throwIfAborted();
+                await this.ensureProfileSettings();
+                this.sessionController?.signal.throwIfAborted();
+                const preparingRevision = this.getConfigurationRevision();
+                const kind = this.desiredSourceKind(), sourceId = this.makeSourceId(kind);
+                const {source,namespace} = await this.routingContext(false,selectedIds);
+                const nextCache=namespace===this.cache.namespace ? this.cache : new ManifestCache(this.fsAdapter,namespace);
+                try {
+                        if(nextCache!==this.cache) await nextCache.load();
+                        this.sessionController?.signal.throwIfAborted();
+                        if(preparingRevision!==this.getConfigurationRevision()) throw new Error('Configuration changed while preparing sync');
+                } catch(e) { await source.dispose(); throw e; }
+                await this.coordinator.setSource(source);
+                if (nextCache !== this.cache) {
+                        const queues=this.settings.failedQueues ??= {};
+                        queues[this.cache.namespace]=this.queue.all();
+                        this.queue.clear(); this.queue.mergeBack(queues[namespace] ?? []);
+                        this.cache=nextCache;this.coordinator.setCache(this.cache);
+                }
+                this.builtKind=source.kind;this.builtSourceId=sourceId;
+                const compiled=this.effectiveProfilePolicy(sourceId);
+                const runIds=selectedIds??source.sources?.map(connection=>connection.id);
+                this.coordinator.setPolicy(runIds?this.makePolicy().forSources(runIds,compiled.defaultSource,compiled.fileRules??[],compiled.folders,['pull']):this.makePolicy());
+                this.conflictResolver.setStrategy(this.settings.conflictStrategy);
+                this.conflictResolver.setLightStrategy(this.settings.lightConflictStrategy ?? 'keep-local');
+                this.coordinator.setSyncPolicy(this.effectiveProfilePolicy(sourceId));
+                if (preparingRevision !== this.getConfigurationRevision()) throw new Error('Configuration changed while preparing sync');
+                await gcManifestCaches(this.fsAdapter,this.gcKeepSet(this.cache.namespace));
+                this.preparedConfigRevision=preparingRevision;
+                this.sessionController?.signal.throwIfAborted();
+        }
 
         /** [POLICY Phase 3] Сводка политики текущего источника для кнопки настроек. */
         getPolicySummaryForCurrentSource(): string {
@@ -1691,13 +1759,16 @@ export default class GitSyncPlugin extends Plugin {
                 if (!this.builtSourceId) return;
                 const base = preset === 'obsidian' ? obsidianOnlyPolicy(pluginDir) : fullVaultPolicy(pluginDir);
                 if (!this.settings.syncPolicies) this.settings.syncPolicies = {};
-                const existing = this.settings.syncPolicies[this.builtSourceId];
-                this.settings.syncPolicies[this.builtSourceId] = {
+                const existing = this.settings.vaultPolicy ?? this.settings.syncPolicies[this.builtSourceId];
+                const presetPolicy:SyncPolicy = {
                         ...base,
                         mirror: existing?.mirror ?? false,
                         // [P2/M4] охват зеркала сохраняется (раньше затирался —
                         // смена пресета снимала защиту off-папок от full-зеркала).
                         mirrorFolders: existing?.mirrorFolders,
+                        fileRules: existing?.fileRules,
+                        assignments: existing?.assignments,
+                        defaultSource:existing?.defaultSource,
                         // [overhaul v4 / Этап 4] fileExclusions: берём из base (новый
                         // пресет со стандартными machine-specific исключениями) И
                         // ДОБАВЛЯЕМ существующие пользовательские исключения, которых
@@ -1709,97 +1780,283 @@ export default class GitSyncPlugin extends Plugin {
                         ),
                 };
                 await this.saveSettingsImmediate();
-                this.coordinator?.setSyncPolicy(this.settings.syncPolicies[this.builtSourceId]);
+                this.settings.syncPolicies[this.builtSourceId]=presetPolicy;
+                if(this.settings.vaultPolicy)this.settings.vaultPolicy=presetPolicy;
+                this.coordinator?.setSyncPolicy(this.effectiveProfilePolicy(this.builtSourceId));
+        }
+
+        async saveFileRules(sourceId: string, rules: FileRule[]): Promise<void> {
+                if (!sourceId || sourceId !== this.builtSourceId) throw new Error('Source changed; reopen settings');
+                validateFileRules(rules);
+                const policies = this.settings.syncPolicies ??= {};
+                const previous = policies[sourceId];
+                // Introducing rules must not widen a legacy config-only / folder-filtered scope.
+                const legacy = previous ?? migrateSettingsToV3({
+                        settings: { ...this.settings, migratedV3: false }, syncPolicies: {},
+                        currentSourceId: sourceId, pluginDir: this.pluginDir(),
+                }).syncPolicies[sourceId] ?? { version: 1 as const, mirror: false, folders: [] };
+                const policy: SyncPolicy = { ...legacy, fileRules: structuredClone(rules) };
+                policies[sourceId] = policy;
+                try { await this.saveSettingsImmediate(); }
+                catch (error) {
+                        if (previous) policies[sourceId] = previous;
+                        else delete policies[sourceId];
+                        throw error;
+                }
+                if (sourceId === this.builtSourceId) this.coordinator?.setSyncPolicy(policy);
+        }
+
+        openProfileLibrary(sources:boolean):void {
+                void this.ensureProfileSettings().then(()=>{
+                        const revision=this.getConfigurationRevision();const google=this.googleService().actions();
+                        const modal=new ProfileLibraryModal(this.app,this.settings.profiles ?? [],this.settings.connections ?? [],async(profiles,connections,defaultSource)=>{
+                                if(revision!==this.getConfigurationRevision())throw new Error('Settings changed; reopen the profile library');
+                                validateProfiles(profiles,connections);
+                                for(const policy of this.settings.vaultPolicy?[{...this.settings.vaultPolicy,defaultSource}]:Object.values(this.settings.syncPolicies ?? {}))validateProfileConnections(policy,profiles,connections);
+                                if(this.settings.vaultPolicy){
+                                        const compiled=compileProfiles({...this.settings.vaultPolicy,defaultSource},profiles);
+                                        for(const id of [compiled.defaultSource,...(compiled.fileRules??[]).map(r=>r.source)])if(id&&!connections.some(c=>c.id===id))throw Error('Connection is used by a vault assignment');
+                                }
+                                const oldProfiles=this.settings.profiles,oldConnections=this.settings.connections,oldPolicy=this.settings.vaultPolicy;
+                                this.settings.profiles=profiles;this.settings.connections=connections;
+                                if(oldPolicy)this.settings.vaultPolicy={...oldPolicy,defaultSource};
+                                try{await this.saveSettingsImmediate();this.restartAutoSync();}catch(e){this.settings.profiles=oldProfiles;this.settings.connections=oldConnections;this.settings.vaultPolicy=oldPolicy;throw e;}
+                        },sources,this.settings.vaultPolicy?.defaultSource,this.settings.vaultPolicy,false,google);trackModal(modal);modal.open();
+                }).catch(e=>new Notice(String(e)));
         }
 
         /** [POLICY Phase 3] Модалка структуры-политики: дерево local+remote, чекбоксы, rename/move. */
         openVaultTreeModal(): void {
-                if (!this.coordinator || !this.builtSourceId) {
-                        new Notice(i18n.t.noticeConfigMissing);
-                        return;
-                }
-                if (this.coordinator.isRunning()) {
-                        new Notice(i18n.t.noticePolicyModalBlocked, 3000);
-                        return;
-                }
-                // [overhaul S1/H-3] гейт ДО открытия: fetchRemote модалки тянет
-                // манифест источника в сеть (плюс повторные вызовы из UI).
-                if (!this.assertNetworkAllowed()) return;
-                const sourceId = this.builtSourceId;
-                const source = this.coordinator.getCurrentSource();
-                const modal = new VaultTreeModal(this.app, {
-                        getLocalSnapshot: () => {
-                                // [Phase 4.1] файлы И папки раздельно: пути TFolder
-                                // раньше становились файловыми узлами («текущий vault
-                                // показывает только файлы»). TFolder отличаем по
-                                // массиву children (без импорта типов).
-                                const files: string[] = [];
-                                const folders: string[] = [];
-                                for (const f of this.app.vault.getAllLoadedFiles()) {
-                                        if (Array.isArray((f as unknown as { children?: unknown }).children)) {
-                                                folders.push(f.path);
-                                        } else {
-                                                files.push(f.path);
-                                        }
-                                }
-                                return { files, folders };
-                        },
-                        getCache: () => {
-                                const entries = this.cache.entries();
-                                const map = new Map<string, CacheEntry>();
-                                for (const [path, entry] of Object.entries(entries)) {
-                                        map.set(path, { ...entry });
-                                }
-                                // [5-диагностика] видимость состояния кэша для отладки
-                                // «синхронизированные файлы показаны local-only».
-                                this.verboseLog(
-                                        `policy modal: sourceId=${this.builtSourceId}, ` +
-                                        `cache entries=${map.size}, generatedAt файла кэша см. в manifest-файле`);
-                                return map;
-                        },
-                        pluginDir: this.pluginDir(),
-                        fetchRemote: async () => {
-                                // [overhaul S1/H-3] повторные fetch из открытой модалки —
-                                // тоже под гейтом (статус доступа мог смениться после
-                                // открытия; отказ → пустое дерево, причина — в Notice).
-                                if (!this.assertNetworkAllowed()) return [];
-                                // Сессия манифеста источника: getManifest + dispose
-                                // (tmp-архив ZIP-источника не должен переживать модалку).
-                                try {
-                                        return await source.getManifest(new AbortController().signal);
-                                } finally {
-                                        try { await source.dispose?.(); } catch { /* ignore */ }
-                                }
-                        },
-                        pathPolicy: this.makePolicy(),
-                        initialPolicy: this.settings.syncPolicies?.[sourceId]
-                                ?? { version: 1, mirror: false, folders: [] },
-                        // [W2-T07 wiring] глобальный уровень из настроек: модалка
-                        // показывает честные статусы по РЕАЛЬНОМУ уровню сессии.
-                        mirrorLevel: () => this.currentMirrorLevel(),
-                        isSyncRunning: () => this.coordinator?.isRunning() ?? false,
-                        onSave: async (policy) => {
-                                if (!this.settings.syncPolicies) this.settings.syncPolicies = {};
-                                this.settings.syncPolicies[sourceId] = policy;
-                                await this.saveSettingsImmediate();
-                                // Горячий свап: следующая sync() уже с новой политикой.
-                                this.coordinator?.setSyncPolicy(policy);
-                        },
-                        labels: i18n.t.vts,
-                });
-                trackModal(modal); // [overhaul S3/M-18] (VaultTreeModal: onClose — метод класса, обёртка его сохраняет)
-                modal.open();
+                void this.openProfileTree().catch(e=>new Notice(String(e)));
         }
 
-        async syncNow(): Promise<void> {
+        private async openProfileTree(): Promise<void> {
+                await this.ensureProfileSettings();
+                let revision=this.getConfigurationRevision();const abort=new AbortController();const google=this.googleService().actions();
+                const modal=new SyncWorkspaceModal(this.app,{
+                        policy:this.settings.vaultPolicy!,profiles:this.settings.profiles ?? [],connections:this.settings.connections ?? [],google,
+                        pathPolicy:this.makePolicy(),pluginDir:this.pluginDir(),
+                        isRunning:()=>this.sessionOwned || (this.coordinator?.isRunning() ?? false),
+                        local:async()=>{
+                                const snapshot=await scanVaultTree(this.makeVaultAdapter(),{signal:abort.signal,
+                                        pruneFolder:path=>path==='.git'||path==='.trash'||path===`${this.pluginDir()}/recovery-v2`});
+                                return {files:snapshot.files,folders:snapshot.folders};
+                        },
+                        fetch:async(connection,signal)=>{
+                                if(!this.assertNetworkAllowed())throw Error(i18n.getLocale()==='ru'?'Доступ к источнику заблокирован':'Source access blocked');
+                                if(!isSourceConfigured(connection.kind,{repoUrl:'',accessToken:'',vaultUrl:'',...connection.values}))throw Error('Source is not configured');
+                                const source=EngineRegistry.create(connection.kind,structuredClone(connection.values),this.engineCtx(connection.kind));
+                                try{return source.getBrowseSnapshot?await source.getBrowseSnapshot(signal):await source.getManifest(signal);}finally{await source.dispose?.();}
+                        },
+                        check:(connection,signal)=>this.checkSourceConnection(connection,signal),
+                        checkDownload:(connection,signal)=>this.checkSourceConnection(connection,signal,true),
+                        run:ids=>this.syncNow(ids),
+                        recovery:()=>this.openRecoveryModal(),jobs:()=>this.automaticJobSnapshots(),subscribeJobs:listener=>this.subscribeJobs(listener),
+                        dispose:()=>{abort.abort();google.releaseDraft?.();},
+                        save:async(policy,connections,profiles=this.settings.profiles??[])=>{
+                                if(revision!==this.getConfigurationRevision()||this.sessionOwned||this.coordinator?.isRunning())throw Error('Settings changed or sync started; reopen the tree');
+                                validateProfiles(profiles,connections);validateProfileConnections(policy,profiles,connections);
+                                const compiled=compileProfiles(policy,profiles);
+                                for(const source of [policy.defaultSource,...(compiled.fileRules ?? []).map(r=>r.source)])if(source&&!connections.some(c=>c.id===source))throw Error('Missing source connection');
+                                const previous={vaultPolicy:this.settings.vaultPolicy,connections:this.settings.connections,profiles:this.settings.profiles,onboarded:this.settings.onboarded};
+                                this.settings.vaultPolicy=structuredClone(policy);this.settings.connections=structuredClone(connections);this.settings.profiles=structuredClone(profiles);this.settings.onboarded=true;
+                                try{await this.saveSettingsImmediate();revision=this.getConfigurationRevision();this.restartAutoSync();this.statusBar.setState(this.isConfiguredForSource()?'idle':'unconfigured');}catch(e){Object.assign(this.settings,previous);throw e;}
+                        },
+                });trackModal(modal);modal.open();
+        }
+
+        private async executeSync(mode:'manual'|'auto'|'retry'|'force'|'scan'='manual',paths?:readonly string[],autoRetry=false,driveControl?:{namespace:string;resolution?:DriveResolution},automaticTrigger?:AutoTrigger):Promise<import('./src/sources/types').SyncStats|null> {
+                const source=this.coordinator.getCurrentSource();
+                if(driveControl||!(source instanceof RoutedSource))return this.executeLegacySync(mode,paths,autoRetry,driveControl);
+                const started=Date.now(),signal=this.sessionController!.signal,guard=()=>{signal.throwIfAborted();if(this.preparedConfigRevision!==this.getConfigurationRevision())throw new SyncFault('configuration-changed','Settings changed during synchronization','session');};
+                guard();const compiled=this.effectiveProfilePolicy(this.builtSourceId),rules=compiled.fileRules??[],defaultSource=compiled.defaultSource??(this.settings.vaultPolicy?'unassigned':'primary'),basePolicy=this.makePolicy(),vault=this.makeVaultAdapter();
+                validateProfileConnections(this.settings.vaultPolicy??compiled,this.settings.profiles??[],this.settings.connections??[]);
+                try{await this.mutations.store.load();}catch(error){throw new SyncFault('operation-journal',`Shared mutation state is unreadable: ${diagnosticText(error)}`,'session');}
+                let stores:DriveStateStore[];try{stores=await discoverDriveStates(this.fsAdapter);}catch(error){throw new SyncFault('authority-corrupt',`Retained Drive ownership cannot be read: ${diagnosticText(error)}`,'session');}
+                const authority=new JobPolicy(compiled,defaultSource,JobPolicy.history(stores)),stateByNamespace=new Map(stores.map(store=>[store.namespace,store]));
+                const members=source.executionMembers(),byId=new Map(members.map(member=>[member.id,member])),aggregate=emptyStats();this.combinedSession=true;
+                const pullQuestions:{id:string;runner:Coordinator;paths:string[]}[]=[],driveQuestions:{id:string;driver:DriveCoordinator;paths:string[]}[]=[];
+                const observedSignals=new Map(members.filter(member=>authority.bidirectionalOwners.has(member.id)).map(member=>{let complete!:()=>void;const promise=new Promise<void>(resolve=>complete=resolve);return [member.id,{promise,complete}] as const;}));
+                const observedRoots=new Map<string,import('./src/sources/gdrive-client').DriveFile>();
+                const batch=new JobBatch(signal,guard,states=>{this.publishJobs(states);this.popoverView?.update(this.snapshotPopoverState());},{observed:job=>observedSignals.get(job.id)?.complete()});
+                const map=(path:string)=>{const folder=compiled.folders.filter(folder=>folder.target&&(!folder.path||path===folder.path||path.startsWith(folder.path+'/'))).sort((a,b)=>b.path.length-a.path.length)[0];return folder?computeLocalPath(path,folder.path,folder):path;};
+                type Observation={view:RoutedSource;state?:DriveStateStore;remoteBlock?:import('./src/sources/types').SyncIssue;localBlocks?:import('./src/core/path-policy').PathBlock[]};
+                const results=await batch.run<Observation>(members.map(member=>({id:member.id,name:member.name,kind:member.source.kind})),async(job,observeSignal)=>{
+                        const member=byId.get(job.id)!;
+                        try{const entries=await member.source.getManifest(observeSignal,event=>this.makeSyncUI().setStatus('syncing',{stage:event.stage,progressText:job.name,lastActivityAt:Date.now()}));observeSignal.throwIfAborted();guard();validateManifest(entries);
+                                const observation:Observation={view:source.executionView(job.id,entries)};
+                                if(member.source instanceof GDriveOAuthSource){const snapshot=member.source.inventorySnapshot;if(!snapshot)throw new SyncFault('response-format','Drive run snapshot is missing','source');observedRoots.set(job.id,structuredClone(snapshot.root));
+                                        const connection=this.settings.connections?.find(connection=>connection.id===job.id),namespace=await driveNamespace(String(connection?.values.accountSub??''),snapshot.root.id,job.id,compiled);
+                                        observation.state=stateByNamespace.get(namespace)??new DriveStateStore(this.fsAdapter,namespace);await observation.state.load();}
+                                const projected=await observation.view.getManifest(observeSignal);
+                                const initial=basePolicy.withBlockedTargets(authority.blocksFor(job.id,observation.state?.namespace)).forSources([job.id],compiled.defaultSource,rules,compiled.folders);
+                                const participating=projected.filter(entry=>{const local=entry.resolvedDestination?entry.path:map(entry.path);return initial.isPathSafe(local)&&initial.isPathAllowed(local)&&isPolicyPathIncluded(entry.sourcePath??entry.path,local,compiled);});
+                                const targets=participating.map(entry=>entry.resolvedDestination?entry.path:map(entry.path)),directories=targets.map(local=>{return local.split('/').slice(0,-1).join('/');});
+                                observation.localBlocks=await localDirectoryBlocks(vault,directories,observeSignal,targets);
+                                const cached=new Map<string,string[]>();for(const path of Object.keys(this.cache.entries())){const key=path.normalize('NFC').toLowerCase(),paths=cached.get(key)??[];paths.push(path);cached.set(key,paths);}for(const target of targets)if(cached.get(target.normalize('NFC').toLowerCase())?.some(path=>path!==target))observation.localBlocks.push({path:target,reason:'cached-path-alias'});
+                                return observation;
+                        }finally{observedSignals.get(job.id)?.complete();}
+                },async(job,observation)=>{
+                        guard();const member=byId.get(job.id)!,stats=emptyStats(),blockedRows=new Map<string,import('./src/sources/types').SyncFileResult>();
+                        // Probe owned effects before admitting directory creation. Unsettled targets remain reserved.
+                        const namespaces=new Set([this.cache.namespace,...observation.state?[observation.state.namespace]:[]]);
+                        for(const record of this.mutations.store.records().filter(record=>['committing','blocked'].includes(record.status)&&namespaces.has(record.namespace))){
+                                const origin=record.effect?.kind==='set'?record.effect.remote.path:record.path;if(authority.owner(origin)!==job.id)continue;
+                                try{const recovered=await this.mutations.recover(record.namespace,signal,candidate=>candidate.id===record.id);
+                                        for(const settled of recovered){const effect=settled.effect;if(effect?.kind==='set'&&this.queue.all().some(file=>file.path===effect.remote.path&&file.hash===effect.remote.hash))this.queue.delete(effect.remote.path);}}
+                                catch(error){signal.throwIfAborted();const issue=syncIssue(error,'recovery');if(sharedJobFailure(issue))throw error;blockedRows.set(origin,{path:origin,source:job.name,status:'pending',reason:'recovery-review',issue});}
+                        }
+                        const pendingBlocks=this.mutations.store.records().filter(record=>['committing','blocked'].includes(record.status)).flatMap(record=>[record.path,...record.from?[record.from]:[]].map(path=>({path,descendants:true,ancestors:true,reason:'recovery-overlap'})));
+                        const policy=basePolicy.withBlockedTargets([...pendingBlocks,...authority.blocksFor(job.id,observation.state?.namespace),...observation.localBlocks??[]]),pathPolicy=policy.forSources([job.id],compiled.defaultSource,rules,compiled.folders);
+                        const eligible=(path:string)=>{const reason=pathPolicy.blockReason(path);if(reason){blockedRows.set(path,{path,source:job.name,status:'pending',reason});return false;}return pathPolicy.isPathSafe(path)&&pathPolicy.isPathAllowed(path);};
+                        observation.view.setExecutionFilter(eligible);observation.view.setExecutionDirections(['pull']);
+                        if(observation.state&&(authority.bidirectionalOwners.has(job.id)||stateByNamespace.has(observation.state.namespace)))try{await observation.state.ensureWriterVersion();}catch(error){throw new SyncFault('checkpoint',`Drive writer fence failed: ${diagnosticText(error)}`,'session',false,'job');}
+                        const pullPolicy=policy.forSources([job.id],compiled.defaultSource,rules,compiled.folders,['pull']),runner=this.coordinator.executionContext(observation.view,pullPolicy);
+                        const cancel=()=>runner.cancel();signal.addEventListener('abort',cancel,{once:true});this.activeJobRunner=runner;
+                        try{const pull=mode==='retry'?await runner.retryFailed(autoRetry?'auto':'manual',paths,true):mode==='force'?await runner.forceResync(true):await runner.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan',deferQuestions:true,finishing:automaticTrigger==='finishing'});
+                                if(pull){mergeJobStats(stats,pull);const asks=pull.results?.filter(row=>row.reason==='decision-required').map(row=>row.path)??[];if(asks.length)pullQuestions.push({id:job.id,runner,paths:asks});}
+                        }finally{signal.removeEventListener('abort',cancel);this.activeJobRunner=undefined;}
+                        if(signal.aborted||stats.problems?.some(sharedJobFailure))return stats;
+                        if(member.source instanceof GDriveOAuthSource&&authority.bidirectionalOwners.has(job.id)){
+                                if(observation.remoteBlock||authority.writerBlocked(job.id)){
+                                        const issue=observation.remoteBlock??{code:'binding-inverse',message:'Bidirectional mapping is ambiguous; Drive writes are blocked',scope:'source' as const,stage:'preparing' as const,retryable:false};
+                                        stats.failed++;stats.outcome='error';stats.problem=issue.message;stats.problems!.push(issue);
+                                }else{
+                                        const snapshot=member.source.inventorySnapshot!,drivePolicy=policy.forSources([job.id],compiled.defaultSource,rules,compiled.folders,['bidirectional']);
+                                        const localForRemote=(path:string)=>sourceCandidates(path,job.id,rules,defaultSource,map).map(candidate=>resolveFileRule(candidate,rules).remotePath!==undefined?candidate:map(candidate))
+                                                .filter(local=>eligible(local)&&drivePolicy.isPathAllowed(local)&&isPolicyPathIncluded(path,local,compiled));
+                                        const remoteForLocal=(path:string)=>{if(paths&&!paths.includes(path)||!eligible(path))return undefined;const remote=sourcePathForDestination(path,job.id,rules,defaultSource,compiled.folders);return remote&&localForRemote(remote).includes(path)?remote:undefined;};
+                                        const driver=new DriveCoordinator({vault,mutations:this.mutations,state:observation.state!,root:new GoogleDriveRoot(member.source.client,snapshot.root.id,guard),queue:this.queue,signal,auto:mode==='auto'||autoRetry,restoreOnly:mode==='scan',allowQuestions:false,skipQueued:automaticTrigger==='finishing',guard,
+                                                localPaths:async()=>{const scan=await scanVaultTree(vault,{signal,pruneFolder:path=>path==='.git'||path==='.trash'||basePolicy.isProtectedPath(path)});return scan.files.filter(path=>remoteForLocal(path)!==undefined);},
+                                                localForRemote,remoteForLocal,behavior:path=>{const behavior=effectiveBehavior(resolveFileRule(path,rules));return isCovered({level:'fetch',folders:compiled.mirrorFolders??{}},path)?behavior:{...behavior,deletions:'keep'};},
+                                                allowArtifact:(origin,path,remote)=>{const originRemote=sourcePathForDestination(origin,job.id,rules,defaultSource,compiled.folders);return (!paths||paths.includes(origin)||paths.includes(path))&&!!originRemote&&localForRemote(originRemote).includes(origin)
+                                                        &&isPolicyPathIncluded(originRemote,origin,compiled)&&drivePolicy.isArtifactPathAllowed(origin,path)&&isPolicyPathIncluded(remote,path,compiled);},
+                                                ask:(path,localSize,remoteSize)=>this.serializeAsk(()=>{const modal=new ConflictAskModal(this.app,{path,localSize,remoteSize},true);trackModal(modal);return modal.wait(signal);},signal),
+                                                observe:event=>this.makeSyncUI().setStatus('syncing',{stage:event.stage,lastActivityAt:Date.now(),progressText:job.name,bytesTransferred:event.bytes,totalBytes:event.totalBytes}),
+                                        });
+                                        let drive:import('./src/sources/types').SyncStats;try{drive=await driver.run(snapshot.items.filter(item=>!item.file.mimeType.startsWith('application/vnd.google-apps.')));}catch(error){const issue=syncIssue(error,'recovery');drive={...emptyStats(),outcome:signal.aborted?'cancelled':'error',failed:signal.aborted?0:1,problems:signal.aborted?[]:[issue],problem:issue.message};}
+                                        drive.problems=drive.problems?.map(issue=>['checkpoint','checkpoint-cleanup'].includes(issue.code)?{...issue,domain:'job'}:issue);mergeJobStats(stats,drive);
+                                        const asks=drive.results?.filter(row=>row.reason==='decision-required').map(row=>row.path)??[];if(asks.length)driveQuestions.push({id:job.id,driver,paths:asks});
+                                }
+                        }
+                        stats.results!.push(...blockedRows.values());stats.deferredDeletions=(stats.deferredDeletions??0)+blockedRows.size;
+                        stats.pendingAfter=this.queue.all().filter(file=>authority.owner(file.originPath??file.path)===job.id).length;return stats;
+                },async(job,observation,admitSignal)=>{
+                        if(!authority.bidirectionalOwners.has(job.id)||!(byId.get(job.id)!.source instanceof GDriveOAuthSource))return;
+                        await awaitJobObservation(Promise.all([...observedSignals.values()].map(entry=>entry.promise)),admitSignal);guard();
+                        const current=byId.get(job.id)!.source as GDriveOAuthSource;
+                        const claims=[...authority.bidirectionalOwners].map(id=>{const source=byId.get(id)?.source,connection=this.settings.connections?.find(connection=>connection.id===id);
+                                return {connectionId:id,folderId:String(connection?.values.folderId??''),...(source instanceof GDriveOAuthSource?{observed:observedRoots.get(id),client:source.client}:{})};});
+                        try{await verifyDriveRootAuthority(job.id,new GoogleDriveRoot(current.client,current.inventorySnapshot!.root.id,guard),claims,admitSignal);}
+                        catch(error){admitSignal.throwIfAborted();observation.remoteBlock=syncIssue(error,'preparing');}
+                });
+                const statsById=new Map(results.map(result=>[result.job.id,result.stats]));
+                try{
+                        const answer=async(id:string,paths:string[],run:()=>Promise<import('./src/sources/types').SyncStats|null>)=>{
+                                if(signal.aborted||results.some(result=>result.stats.problems?.some(sharedJobFailure)))return;guard();const old=statsById.get(id)!,fresh=await run();if(!fresh)return;
+                                for(const field of ['downloaded','uploaded','updated','deleted','deletedDrive','bytesTransferred','failed'] as const)old[field]=(old[field]??0)+(fresh[field]??0);
+                                old.results=old.results?.filter(row=>row.reason!=='decision-required'||!paths.includes(row.path));old.results!.push(...fresh.results??[]);
+                                old.problems!.push(...fresh.problems??[]);old.deferredConflicts=Math.max(0,(old.deferredConflicts??0)-paths.length)+(fresh.deferredConflicts??0);if(fresh.outcome!=='ok')old.outcome=fresh.outcome;
+                        };
+                        if(mode!=='auto'&&!autoRetry){for(const question of pullQuestions){const cancel=()=>question.runner.cancel();signal.addEventListener('abort',cancel,{once:true});this.activeJobRunner=question.runner;
+                                try{await answer(question.id,question.paths,()=>question.runner.sync({trigger:'manual',forcedPaths:new Set(question.paths),onlyForcedPaths:true}));}finally{signal.removeEventListener('abort',cancel);this.activeJobRunner=undefined;}}
+                                for(const question of driveQuestions)await answer(question.id,question.paths,()=>question.driver.resolveQuestions(question.paths));}
+                        for(const result of results){result.stats.problems=result.stats.problems?.map(issue=>({...issue,jobId:'job:'+result.job.id,connectionId:result.job.id}));mergeJobStats(aggregate,result.stats);}
+                        aggregate.pendingAfter=this.queue.all().filter(file=>members.some(member=>member.id===authority.owner(file.originPath??file.path))).length;aggregate.jobResults=batch.snapshot();
+                        for(const job of aggregate.jobResults){const stats=statsById.get(job.connectionId)!;job.downloaded=stats.downloaded;job.uploaded=stats.uploaded??0;job.deleted=stats.deleted;job.failed=stats.failed;job.attention=(stats.deferredConflicts??0)+(stats.deferredDeletions??0);job.issues=stats.problems??[];job.pending=this.queue.all().filter(file=>authority.owner(file.originPath??file.path)===job.connectionId).length;
+                                if(job.outcome!=='blocked')job.outcome=stats.outcome==='cancelled'?'cancelled':stats.failed?(stats.downloaded||(stats.uploaded??0)||stats.deleted?'partial':'failed'):job.attention||job.pending?'needs-attention':'success';}
+                        this.publishJobs(aggregate.jobResults);aggregate.duration=Date.now()-started;
+                        if(signal.aborted)aggregate.outcome='cancelled';else if(aggregate.problems?.length||aggregate.deferredDeletions)aggregate.outcome='error';
+                        await this.persistEngineState('session-end');this.statusBar.setState(aggregate.failed?'error':aggregate.deferredConflicts||aggregate.deferredDeletions?'conflicts':'idle');return aggregate;
+                }finally{this.activeJobRunner=undefined;try{await source.dispose();}catch(error){console.warn('[VaultSync] Job provider cleanup deferred:',diagnosticText(error));}}
+        }
+
+        private async executeLegacySync(mode:'manual'|'auto'|'retry'|'force'|'scan'='manual',paths?:readonly string[],autoRetry=false,driveControl?:{namespace:string;resolution?:DriveResolution}):Promise<import('./src/sources/types').SyncStats|null> {
+                const source=this.coordinator.getCurrentSource(),compiled=this.effectiveProfilePolicy(this.builtSourceId);
+                const rules=compiled.fileRules??[],hasDrive=rules.some(r=>r.direction==='bidirectional');this.combinedSession=hasDrive;
+                if(!hasDrive&&driveControl)throw new SyncFault('configuration-changed','This Drive binding is no longer active');
+                if(!hasDrive)return mode==='retry'?this.coordinator.retryFailed(autoRetry?'auto':'manual',paths):mode==='force'?this.coordinator.forceResync():this.coordinator.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan'});
+                validateProfileConnections(this.settings.vaultPolicy!,this.settings.profiles??[],this.settings.connections??[]);
+                if(!(source instanceof RoutedSource))throw new SyncFault('routing','Drive requires a routed source','session');
+                source.setExecutionDirections(['pull']);
+                const signal=this.sessionController!.signal;signal.throwIfAborted();
+                // Every selected source inventory must succeed before either engine changes vault/Drive files.
+                await source.getManifest(signal);
+                const members=source.executionMembers().filter(member=>member.source instanceof GDriveOAuthSource)
+                        .map(member=>({...member,source:member.source as GDriveOAuthSource,inventory:(member.source as GDriveOAuthSource).inventorySnapshot!}));
+                const states=new Map<string,DriveStateStore>();
+                for(const member of members){const connection=this.settings.connections?.find(c=>c.id===member.id);const namespace=await driveNamespace(String(connection?.values.accountSub??''),member.inventory.root.id,member.id,compiled);
+                        const state=new DriveStateStore(this.fsAdapter,namespace);await state.load();await state.ensureWriterVersion();if(!driveControl)await this.mutations.recover(namespace,signal);states.set(member.id,state);}
+                if(driveControl&&![...states.values()].some(state=>state.namespace===driveControl.namespace))throw new SyncFault('configuration-changed','This Drive history belongs to an inactive account, root or mapping; effects are blocked');
+                const stats=driveControl?null:mode==='retry'?await this.coordinator.retryFailed(autoRetry?'auto':'manual',paths,true):mode==='force'?await this.coordinator.forceResync(true):await this.coordinator.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan',deferQuestions:true});
+                if(signal.aborted||stats?.outcome==='cancelled'||stats?.problems?.some(issue=>issue.scope==='session'))return stats;
+                const aggregate:import('./src/sources/types').SyncStats=stats?structuredClone(stats):{totalFiles:0,downloaded:0,deleted:0,skipped:0,failed:0,bytesTransferred:0,duration:0,conflicts:0,outcome:'ok'};
+                const started=Date.now(),vault=this.makeVaultAdapter(),basePolicy=this.makePolicy(),defaultSource=compiled.defaultSource??'primary';
+                const questions:{driver:DriveCoordinator;paths:string[]}[]=[];
+                const map=(path:string)=>{const f=compiled.folders.filter(f=>f.target&&(!f.path||path===f.path||path.startsWith(f.path+'/'))).sort((a,b)=>b.path.length-a.path.length)[0];return f?computeLocalPath(path,f.path,f):path;};
+                for(const member of members){
+                        if(driveControl&&states.get(member.id)!.namespace!==driveControl.namespace)continue;
+                        signal.throwIfAborted();const pathPolicy=basePolicy.forSources([member.id],compiled.defaultSource,rules,compiled.folders,['bidirectional']);
+                        const localForRemote=(path:string)=>sourceCandidates(path,member.id,rules,defaultSource,map).flatMap(candidate=>applyPolicy([{path:candidate,hash:'route',hashAlg:'weak',size:0,resolvedDestination:resolveFileRule(candidate,rules).remotePath!==undefined}],compiled,pathPolicy,[]).transformedManifest.map(entry=>entry.path)).filter(local=>isPolicyPathIncluded(path,local,compiled));
+                        const remoteForLocal=(path:string)=>{if(paths&&!paths.includes(path))return undefined;
+                                const remote=sourcePathForDestination(path,member.id,rules,defaultSource,compiled.folders);return remote&&localForRemote(remote).includes(path)?remote:undefined;};
+                        const driver=new DriveCoordinator({vault,mutations:this.mutations,state:states.get(member.id)!,root:new GoogleDriveRoot(member.source.client,member.inventory.root.id,()=>{signal.throwIfAborted();if(this.preparedConfigRevision!==this.getConfigurationRevision())throw new SyncFault('configuration-changed','Settings changed during Drive synchronization','session');}),queue:this.queue,
+                                signal,auto:mode==='auto'||autoRetry,restoreOnly:mode==='scan',allowQuestions:false,probeOnly:!!driveControl&&!driveControl.resolution,resolution:driveControl?.resolution,
+                                guard:()=>{signal.throwIfAborted();if(this.preparedConfigRevision!==this.getConfigurationRevision())throw new SyncFault('configuration-changed','Settings changed during Drive synchronization','session');},
+                                localPaths:async()=>{const scan=await scanVaultTree(vault,{signal,pruneFolder:p=>p==='.git'||p==='.trash'||basePolicy.isProtectedPath(p)});return scan.files.filter(p=>remoteForLocal(p)!==undefined);},
+                                localForRemote,remoteForLocal,behavior:path=>{const behavior=effectiveBehavior(resolveFileRule(path,rules));
+                                        return isCovered({level:'fetch',folders:compiled.mirrorFolders??{}},path)?behavior:{...behavior,deletions:'keep'};},
+                                allowArtifact:(origin,path,remote)=>{
+                                        const originRemote=sourcePathForDestination(origin,member.id,rules,defaultSource,compiled.folders);
+                                        return (!paths||paths.includes(origin)||paths.includes(path))&&!!originRemote&&localForRemote(originRemote).includes(origin)
+                                                &&isPolicyPathIncluded(originRemote,origin,compiled)&&pathPolicy.isArtifactPathAllowed(origin,path)&&isPolicyPathIncluded(remote,path,compiled);
+                                },
+                                ask:(path,localSize,remoteSize)=>this.serializeAsk(()=>{const modal=new ConflictAskModal(this.app,{path,localSize,remoteSize},true);trackModal(modal);return modal.wait(signal);},signal),
+                                observe:event=>this.makeSyncUI().setStatus('syncing',{stage:event.stage,lastActivityAt:Date.now(),progressText:member.name,bytesTransferred:event.bytes,totalBytes:event.totalBytes}),
+                        });
+                        this.makeSyncUI().setStatus('syncing',{stage:'apply',progressText:member.name,lastActivityAt:Date.now()});
+                        const result=await driver.run(member.inventory.items.filter(item=>!item.file.mimeType.startsWith('application/vnd.google-apps.')));
+                        const questionPaths=result.results?.filter(row=>row.reason==='decision-required').map(row=>row.path)??[];if(questionPaths.length)questions.push({driver,paths:questionPaths});
+                        for(const field of ['totalFiles','downloaded','uploaded','deleted','deletedDrive','skipped','failed','bytesTransferred','conflicts','deferredConflicts','deferredDeletions'] as const)aggregate[field]=(aggregate[field]??0)+(result[field]??0);
+                        aggregate.problems=[...aggregate.problems??[],...result.problems??[]];aggregate.results=[...aggregate.results??[],...result.results??[]];aggregate.followUp ||= result.followUp;
+                        if(result.outcome!=='ok'){aggregate.outcome=result.outcome;aggregate.problem=result.problem;}
+                        if(result.problems?.some(issue=>issue.scope==='session')||result.outcome==='cancelled')break;
+                }
+                if(mode!=='auto'&&!autoRetry&&mode!=='scan'&&!signal.aborted&&!aggregate.problems?.some(issue=>issue.scope==='session')){
+                        const mergeAnswers=(answer:import('./src/sources/types').SyncStats|null,oldDeferred:number)=>{
+                                if(!answer)return;for(const field of ['downloaded','uploaded','deleted','deletedDrive','failed','bytesTransferred','conflicts'] as const)aggregate[field]=(aggregate[field]??0)+(answer[field]??0);
+                                aggregate.deferredConflicts=Math.max(0,(aggregate.deferredConflicts??0)-oldDeferred)+(answer.deferredConflicts??0);
+                                aggregate.problems?.push(...answer.problems??[]);aggregate.results?.push(...answer.results??[]);
+                                if(answer.outcome==='error'||answer.outcome==='cancelled'){aggregate.outcome=answer.outcome;aggregate.problem=answer.problem;}
+                        };
+                        if(stats?.deferredConflicts){const before=stats.deferredConflicts,oldDeletes=stats.deferredDeletions??0;
+                                const answer=await this.coordinator.sync({trigger:'manual'});mergeAnswers(answer,before);
+                                if(answer)aggregate.deferredDeletions=Math.max(0,(aggregate.deferredDeletions??0)-oldDeletes)+(answer.deferredDeletions??0);
+                        }
+                        for(const question of questions){if(signal.aborted||aggregate.problems?.some(issue=>issue.scope==='session'))break;
+                                aggregate.results=aggregate.results?.filter(row=>row.reason!=='decision-required'||!question.paths.includes(row.path));
+                                mergeAnswers(await question.driver.resolveQuestions(question.paths),question.paths.length);
+                        }
+                }
+                aggregate.duration+=Date.now()-started;
+                const runIds=source.executionMembers().map(member=>member.id),runPolicy=basePolicy.forSources(runIds,compiled.defaultSource,rules,compiled.folders);
+                aggregate.pendingAfter=this.queue.all().filter(file=>(file.originPath?runPolicy.isArtifactPathAllowed(file.originPath,file.path):runPolicy.isPathAllowed(file.path))&&!effectiveBehavior(resolveFileRule(file.originPath??file.path,rules)).protected).length;
+                if(signal.aborted)aggregate.outcome='cancelled';
+                else if(!aggregate.failed&&!aggregate.pendingAfter&&!aggregate.notAttempted&&!aggregate.problems?.length)aggregate.outcome=aggregate.deferredDeletions?'error':'ok';
+                await this.persistEngineState('session-end');this.statusBar.setState(aggregate.outcome==='error'?'error':aggregate.deferredConflicts||aggregate.deferredDeletions?'conflicts':'idle');
+                return aggregate;
+        }
+
+        async syncNow(selectedIds?: readonly string[]): Promise<void> {
+                if(!selectedIds && !this.isConfiguredForSource()){this.openVaultTreeModal();return;}
                 await this.runSession('manual', async () => {
-                        await this.prepareSession();
-                        const stats = await this.coordinator.sync();
+                        await this.prepareSession(selectedIds);
+                        const stats = await this.executeSync();
                         // [7-d] небезопасные пути видны пользователю, не только в консоли
                         const skipped = this.coordinator.getSkippedUnsafeCount();
                         if (skipped > 0) new Notice(i18n.t.noticeSkippedUnsafe(skipped), 10000);
                         return stats;
-                });
+                },selectedIds);
         }
 
         // ============================================================
@@ -1807,104 +2064,110 @@ export default class GitSyncPlugin extends Plugin {
         // ============================================================
 
         /** Старт планировщика: читает autoSyncInterval из настроек и запускает.
-         *  Идемпотентен — повторный вызов пересоздаёт экземпляр (старый снимается). */
+         *  Идемпотентен — сохраняет экземпляры и потреблённый startup cycle. */
+        private wakeAutoSync():void {for(const scheduler of this.autoSchedulers?.values()??[])scheduler.wake();}
+        private automaticSourceIds():string[]{
+                const policy=this.effectiveProfilePolicy(this.builtSourceId),rules=policy.fileRules??[];
+                const ids=new Set(rules.flatMap(rule=>rule.source?[rule.source]:[]));
+                if(!rules.some(rule=>rule.scope==='vault'&&!rule.names&&rule.source))ids.add(policy.defaultSource??(this.settings.vaultPolicy?'unassigned':'primary'));
+                ids.delete('unassigned');return [...ids];
+        }
         startAutoSync(): void {
-                if (!this.queue) return; // buildEngine не позван — нет deps.
-                const interval = (this.settings.autoSyncInterval ?? 'off') as SchedulerInterval;
-                this.scheduler = new Scheduler({
-                        // [overhaul S2/M-7] плавающие промосы тиков — под .catch:
-                        // scheduler живёт в core/ (без Notice) и глотать отказы не
-                        // имеет права; runSession теперь тотален, это страховка.
-                        onAutoTick: () => { this.runAutoSession().catch((e) => console.error('[VaultSync] auto-tick failed:', e)); },
-                        onAutoRetry: () => { this.retryFailedFiles().catch((e) => console.error('[VaultSync] auto-retry failed:', e)); },
-                        queue: this.queue,
-                });
-                if (interval !== 'off') {
-                        this.scheduler.start(interval);
+                if(!this.queue||this.unloading||this.app?.workspace&&!this.autoReady)return;
+                this.autoSchedulers??=new Map();this.autoJobBlocks??=new Map();
+                const ids=this.automaticSourceIds(),selected=new Set(ids);
+                for(const [id,scheduler] of this.autoSchedulers)if(!selected.has(id))scheduler.stop();
+                for(const id of ids){
+                        const connection=this.settings.connections?.find(connection=>connection.id===id),interval=resolveSchedule(connection?.auto,this.settings.autoSyncInterval??'off');
+                        let scheduler=this.autoSchedulers.get(id);const reenable=!!scheduler&&scheduler.getInterval()==='off'&&interval!=='off';
+                        if(!scheduler){scheduler=new Scheduler({queue:this.queue,onAutoRetry:()=>{},
+                                canRun:()=>!this.unloading&&!this.autoBlockedReason&&!this.autoJobBlocks?.has(id)&&!this.sessionOwned&&!this.coordinator?.isRunning()&&navigator.onLine&&isSyncAllowed(this.governance)&&vamAllowsWork(this),
+                                onAutoTick:context=>this.runAutoSession([id],context?.initialCheck??scheduler!.snapshot().lastAutoTickAt===null,context),
+                                onStateChange:()=>{this.emitJobProjection();this.popoverView?.update(this.snapshotPopoverState());}});this.autoSchedulers.set(id,scheduler);}
+                        scheduler.start(interval,undefined,reenable);if(this.autoPaused)scheduler.pause();
                 }
+                this.scheduler=[...this.autoSchedulers.values()].find(scheduler=>scheduler.getInterval()!=='off');
+        }
+
+        private publishJobs(states:JobRunResult[]):void{const known=new Set([...(this.settings.connections??[]).map(connection=>connection.id),...states.map(state=>state.connectionId),'primary']);
+                const merged=new Map((this.jobRuns??[]).filter(state=>known.has(state.connectionId)).map(state=>[state.connectionId,state]));for(const state of states)merged.set(state.connectionId,structuredClone(state));this.jobRuns=[...merged.values()];this.emitJobProjection();}
+        private emitJobProjection():void{this.notifyVaultSync();for(const listener of this.jobSubscribers??[]){try{listener();}catch{console.warn('[VaultSync] job view listener failed');}}}
+        subscribeJobs(listener:()=>void):()=>void{this.jobSubscribers??=new Set();this.jobSubscribers.add(listener);return()=>this.jobSubscribers.delete(listener);}
+
+        automaticJobSnapshots():JobProjection[]{
+                return this.automaticSourceIds().map(id=>{
+                        const connection=this.settings.connections?.find(connection=>connection.id===id),configuredAuto=connection?.auto??'inherit',scheduler=this.autoSchedulers?.get(id);
+                        const interval=resolveSchedule(configuredAuto,this.settings.autoSyncInterval??'off'),fallback=new Scheduler({queue:this.queue,onAutoRetry:()=>{},onAutoTick:()=>{}}).snapshot();
+                        const schedule=scheduler?.snapshot()??{...fallback,interval};
+                        return {jobId:'job:'+id,connectionId:id,name:connection?.name??id,kind:connection?.kind??this.builtKind??'git',configuredAuto,
+                                schedule:{...schedule,blockedReason:this.autoBlockedReason??this.autoJobBlocks?.get(id)??schedule.blockedReason},run:this.jobRuns?.find(run=>run.connectionId===id)&&structuredClone(this.jobRuns.find(run=>run.connectionId===id)!)};
+                });
         }
 
         /** Переконфигурация интервала (вызывается из SettingsTab.onChange). */
         restartAutoSync(): void {
-                this.scheduler?.stop();
                 this.startAutoSync();
         }
 
         /** Pause/resume toggle — вызывается из popover actionPauseAuto. */
         pauseAutoSync(): void {
-                if (!this.scheduler) return;
-                if (this.scheduler.isPaused()) this.scheduler.resume();
-                else this.scheduler.pause();
+                const active=[...this.autoSchedulers.values()].filter(s=>s.getInterval()!=='off');
+                if(!active.length)return;
+                const resume=active.every(s=>s.isPaused());this.autoPaused=!resume;for(const scheduler of active)resume?scheduler.resume():scheduler.pause();
                 // [W5-T02] статус авто-синк изменился (paused↔running) — уведомляем подписчиков.
-                this.notifyVaultSync();
+                this.notifyVaultSync();this.popoverView?.update(this.snapshotPopoverState());
         }
 
         /** Снимок состояния для popover. null — scheduler не инициализирован
          *  или интервал 'off' (popover не рендерит scheduler-секцию). */
         schedulerSnapshot(): SchedulerSnapshot | null {
-                if (!this.scheduler) return null;
-                const s = this.scheduler.snapshot();
-                if (s.interval === 'off') return null;
-                return s;
+                const states=this.automaticJobSnapshots().map(job=>job.schedule).filter(schedule=>schedule.interval!=='off');
+                if(!states.length)return null;
+                const state=states.sort((a,b)=>(a.nextTickAt??Infinity)-(b.nextTickAt??Infinity))[0];
+                return {...state,blockedReason:this.autoBlockedReason,paused:states.every(s=>s.paused),pending:states.some(s=>s.pending),running:states.some(s=>s.running)};
         }
 
-        /** Auto-сессия: headless-режим (W4-T02). coordinator.sync с trigger='auto'
-         *  идёт без confirm-модалки; mirrorLevel=fetch/light → удаления откладываются,
-         *  full → исполняются с trash. Notice-фильтр через verboseNotices. */
-        private async runAutoSession(): Promise<void> {
-                await this.runSession('auto', async () => {
-                        await this.prepareSession();
-                        return await this.coordinator.sync({ trigger: 'auto' });
-                });
+        /** Background pull keeps its existing deletion guards. The explicitly
+         *  bidirectional Drive profile propagates confirmed tracked deletions through trash. */
+        private async runAutoSession(sourceIds?:readonly string[],initialCheck=false,context?:AutoTickContext): Promise<import('./src/core/scheduler').AutoTickResult> {
+                if(!sourceIds?.length)return {accepted:true};
+                const stats=await this.runSession('auto', async () => {
+                        await this.prepareSession(sourceIds);
+                        return await this.executeSync('auto',undefined,false,undefined,context?.trigger);
+                },sourceIds);
+                if(stats?.outcome==='cancelled')return {accepted:true,cancelled:true,outcome:'cancelled'};
+                const compiled=this.effectiveProfilePolicy(this.builtSourceId),due=this.queue.all().filter(file=>!file.poisoned&&sourceIds.includes(resolveFileRule(file.originPath??file.path,compiled.fileRules).source??compiled.defaultSource??''));
+                const retryAt=due.length?Math.min(...due.map(file=>file.nextRetryAt)):undefined;
+                const retryableFailure=stats?.problems?.some(issue=>issue.retryable&&(issue.scope==='source'||issue.scope==='session'));
+                const transferred=Boolean(stats&&(stats.downloaded||stats.uploaded||stats.updated||stats.deleted));
+                const job=stats?.jobResults?.find(job=>sourceIds.includes(job.connectionId)),fatal=stats?.problems?.some(sharedJobFailure);
+                const block=job?.issues.find(issue=>!issue.retryable&&['auth-required','root-unavailable','source-unavailable','checkpoint','checkpoint-cleanup'].includes(issue.code));
+                if(block){this.autoJobBlocks??=new Map();this.autoJobBlocks.set(job!.connectionId,block.message);}
+                const retryHint=job?.issues.filter(issue=>issue.retryable).reduce<number|undefined>((at,issue)=>Math.min(at??Infinity,issue.retryAt??Date.now()+60_000),undefined);
+                return {accepted:stats!==null,retryAt:block||fatal?undefined:retryAt??retryHint??((retryableFailure||!stats&&!this.autoBlockedReason)?Date.now()+60_000:undefined),
+                        followUp:!fatal&&!block&&Boolean(stats&&(stats.followUp||transferred||initialCheck&&!stats.failed)),retryableFailure,
+                        outcome:job?.outcome??stats?.outcome,blockedReason:block?.message};
         }
 
-        async retryFailedFiles(): Promise<void> {
-                await this.runSession('retry', async () => {
+        async retryFailedFiles(trigger:'manual'|'auto'='manual',paths?:readonly string[]): Promise<void> {
+                await this.runSession(trigger==='auto'?'auto':'retry', async () => {
                         await this.prepareSession();
-                        return await this.coordinator.retryFailed();
+                        return await this.executeSync('retry',paths,trigger==='auto');
                 });
         }
 
         async forceResync(): Promise<void> {
-                // [W2-T04] единый confirm-modal (flow='force'): noRecovery предупреждение
-                // если корзина выключена. Имя движка — this.builtKind (BUG-10: не хардкод GitHub).
-                const confirmed = await showConfirmModal(
-                        this.app, 'force', { noRecovery: !this.settings.useTrash }, this.builtKind,
-                );
-                if (!confirmed) return;
                 await this.runSession('force', async () => {
                         await this.prepareSession();
-                        return await this.coordinator.forceResync();
+                        return await this.executeSync('force');
                 });
         }
 
         async scanAndRestoreMissing(): Promise<void> {
-                const t = i18n.t;
-                // [overhaul S1/H-3+M-4] гейт ДО трафика (collectMissing зовёт
-                // getManifest до runSession) и ДО setStatus('syncing').
-                if (!this.assertNetworkAllowed()) return;
-                this.statusBar.setState('syncing', { progressText: '...' });
-                new Notice(t.noticeCheckingSource);
-                // [4-review-fix] скан тоже под fresh-политикой и под защитой:
-                // сетевой сбой/отмена больше не оставляют статус-бар в 'syncing'
-                // и не дают unhandled rejection из команды
-                try {
+                await this.runSession('scan', async () => {
                         await this.prepareSession();
-                        const missing = await this.coordinator.collectMissing();
-                        if (missing === null) { this.statusBar.setState('idle'); return; }
-                        if (missing.length === 0) { new Notice(t.noticeNoMissingFiles); this.statusBar.setState('idle'); return; }
-                        // [W2-T04] scan-flow: toRestore + список путей топ-10.
-                        const confirmed = await showConfirmModal(
-                                this.app, 'scan', { toRestore: missing.length, paths: missing }, this.builtKind,
-                        );
-                        if (!confirmed) { this.statusBar.setState('idle'); return; }
-                        await this.runSession('scan', async () => {
-                                return await this.coordinator.sync({ forcedPaths: new Set(missing) });
-                        });
-                } catch (e: any) {
-                        this.statusBar.setState('error');
-                        new Notice(t.noticeScanFailed(e?.message ?? String(e)));
-                }
+                        return this.executeSync('scan');
+                });
         }
 
         /** [overhaul S1/H-3] Гейт внесессионного сетевого трафика: testConnection,
@@ -1937,16 +2200,40 @@ export default class GitSyncPlugin extends Plugin {
         /** [W2-T08] Обёртка сессии: честная запись в журнал (Д7=1).
          *  Coordinator владеет outcome (W1-T01: флаги отмены видны ему);
          *  здесь — только старт/длительность/триггер/движок и top-3 ошибок. */
-        private async runSession(trigger: 'manual' | 'auto' | 'retry' | 'scan' | 'force', fn: () => Promise<import('./src/sources/types').SyncStats | null>): Promise<import('./src/sources/types').SyncStats | null> {
+        private async runSession(trigger: 'manual' | 'auto' | 'retry' | 'scan' | 'force', fn: () => Promise<import('./src/sources/types').SyncStats | null>, sourceIds?: readonly string[]): Promise<import('./src/sources/types').SyncStats | null> {
+                if (this.sessionOwned || this.coordinator?.isRunning()) { new Notice(i18n.t.noticeSyncInProgress); return null; }
+                if(trigger!=='auto'){this.autoBlockedReason=undefined;this.autoJobBlocks?.clear();}
+                this.proposedLastSync=undefined;this.sessionOwned = true; this.currentTrigger = trigger; this.lastBlockReason = undefined;
+                this.sessionController = new AbortController();
+                this.requestedSources = sourceIds?.map(id => this.settings.connections?.find(c => c.id === id)?.name ?? id);
+                const startedAt = Date.now();
+                this.statusBar?.setState('syncing', { phase: -1, pendingCount: 0, bytesTransferred: 0, totalBytes: 0, progressText: i18n.getLocale() === 'ru' ? 'Подготовка запуска…' : 'Preparing run…' });
+                if (trigger !== 'auto' && this.app && this.statusBar && this.queue && this.journal) this.openStatusPopover();
+                try {const stats=await this.runOwnedSession(trigger, fn);if(stats?.problems?.some(issue=>!issue.retryable&&(stats.jobResults?sharedJobFailure(issue):issue.scope==='session'||issue.code==='auth-required')))this.autoBlockedReason=stats.problem;return stats;}
+                catch (error) {
+                        if(!this.sessionController.signal.aborted){this.lastBlockReason=diagnosticText(error);this.statusBar?.setState('error');new Notice(i18n.t.noticeSyncFailed(this.lastBlockReason),10000);}
+                        else this.statusBar?.setState('idle');
+                        this.autoBlockedReason=this.lastBlockReason;try{await this.recordJournal(trigger, null, startedAt);}catch(journalError){console.error('[VaultSync] journal unavailable',diagnosticText(journalError));}return null;
+                }
+                finally {
+                        this.sessionOwned = false; this.sessionController = undefined;this.sessionProgress=undefined;this.combinedSession=false;this.wakeAutoSync();
+                        this.popoverView?.update(this.snapshotPopoverState());
+                        const modal = this.statusModal;
+                        if (modal) void this.journal.load().then(entries => {
+                                if (this.statusModal === modal) this.popoverView?.setLastEntry(entries[0] ?? null);
+                        });
+                        this.notifyVaultSync();
+                }
+        }
+
+        private async runOwnedSession(trigger: 'manual' | 'auto' | 'retry' | 'scan' | 'force', fn: () => Promise<import('./src/sources/types').SyncStats | null>): Promise<import('./src/sources/types').SyncStats | null> {
                 // [VAM] гейт «работы, требующей входа» (§5, fail-closed): единая
                 // точка для ВСЕХ сессий — manual/auto/retry/scan/force (аналог
                 // гейта AI-запросов донора: AIEngine.processText/chat/embeddings).
                 // Двойная сверка §9.4: сигнал читается в момент использования,
                 // не кэшируется; не-granted → VamAccessError ДО ухода какого-либо
                 // трафика (Notice — не чаще раза в 3 с, троттлинг в vam-bridge).
-                // Мягкий режим (сессионный; публичный скрытый жест — см. поле
-                // vamSoftMode и vam-status-modal.ts) — единственное исключение.
-                // Отказ = null без журнала: сессия не началась, записи нет.
+                // Denied attempts are recorded separately from executed sessions.
                 try {
                         assertVamAllowed(this);
                 } catch (e) {
@@ -1955,7 +2242,7 @@ export default class GitSyncPlugin extends Plugin {
                                 // [overhaul S1/M-4] вызывшая команда могла уже
                                 // поставить 'syncing' (scan-путь) — coordinator
                                 // не запускался и статус никто не сбросит.
-                                this.statusBar.setState('idle');
+                                await this.recordBlockedAttempt(trigger,describeVamStatus(this.vam)??i18n.t.vam.modalDenied);
                                 return null;
                         }
                         throw e;
@@ -1965,7 +2252,8 @@ export default class GitSyncPlugin extends Plugin {
                 // (pull канала + applyManagerProbe на его стороне). Ошибки и
                 // таймаут 10 с не меняют вердикт; vaultSyncAuth отсутствует →
                 // поведение прежнее (W5-совместимость, optional chaining).
-                await awaitBeforeSession((window as unknown as Record<string, unknown>).vaultSyncAuth, BEFORE_SESSION_TIMEOUT_MS);
+                await awaitBeforeSession((window as unknown as Record<string, unknown>).vaultSyncAuth, BEFORE_SESSION_TIMEOUT_MS, this.sessionController?.signal);
+                if (!this.assertNetworkAllowed()) { await this.recordBlockedAttempt(trigger,blockReason(this.governance)??describeVamStatus(this.vam)??i18n.t.noticeManagerRequired); return null; }
                 // [W5-T01] guard: fail-closed на старте КАЖДОЙ сессии. Если
                 // governance.blocked — отказываем с внятным Notice и не идём
                 // в prepareSession (сеть/диск/manifest не трогаем). Это
@@ -1975,15 +2263,23 @@ export default class GitSyncPlugin extends Plugin {
                         new Notice(i18n.t.noticeGovernanceBlocked(reason), 10000);
                         this.notifyVaultSync();
                         // [overhaul S1/M-4] симметрично VAM-ветке выше.
-                        this.statusBar.setState('idle');
+                        await this.recordBlockedAttempt(trigger,reason);
                         return null;
                 }
                 const startedAt = Date.now();
-                let stats: import('./src/sources/types').SyncStats | null = null;
+                let stats: import('./src/sources/types').SyncStats | null = null;let journalRecorded=false;
                 try {
                         stats = await fn();
+                        journalRecorded=true;await this.recordJournal(trigger,stats,startedAt);
+                        if(stats&&stats.outcome==='ok'&&!stats.failed&&!stats.deferredConflicts&&!stats.deferredDeletions&&!stats.pendingAfter){
+                                const previous={lastSyncTime:this.settings.lastSyncTime,totalSyncCount:this.settings.totalSyncCount};
+                                this.settings.lastSyncTime=this.proposedLastSync??Date.now();this.settings.totalSyncCount++;
+                                try{await this.saveSettingsImmediate();}catch{Object.assign(this.settings,previous);throw new SyncFault('settings-save','Successful sync state could not be saved','session');}
+                                this.statusBar.setLastSync(this.settings.lastSyncTime);
+                        }
                         return stats;
                 } catch (e) {
+                        if (this.sessionController?.signal.aborted) { this.statusBar.setState('idle'); return null; }
                         // [overhaul S2/M-7] не-VAM ошибки сессии (дисковые ошибки
                         // prepareSession/cache.reset, неожиданные исключения движков)
                         // раньше уходили в unhandled rejection: команды и auto-тики
@@ -1991,21 +2287,10 @@ export default class GitSyncPlugin extends Plugin {
                         // семантику (stats=null → записи нет — сессия не началась).
                         console.error('[VaultSync] session error:', e);
                         new Notice(i18n.t.noticeSyncFailed(e instanceof Error ? e.message : String(e)), 10000);
-                        this.statusBar.setState('error');
+                        this.lastBlockReason=diagnosticText(e);const issue=syncIssue(e,'preparing');if(!issue.retryable&&(issue.scope==='session'||issue.code==='auth-required'||issue.code==='io'))this.autoBlockedReason=this.lastBlockReason;this.statusBar.setState('error');
                         return null;
                 } finally {
-                        await this.recordJournal(trigger, stats, startedAt);
-                        // [P1/M13] сессия завершилась — открытый popover получает
-                        // свежую lastEntry (журнал только что записан), не снапшот
-                        // на момент открытия модалки.
-                        if (this.popoverView) {
-                                void this.journal.load().then((entries) => {
-                                        if (this.popoverView) {
-                                                (this.popoverView as unknown as { lastEntry: unknown }).lastEntry = entries[0] ?? null;
-                                                this.popoverView.update(this.snapshotPopoverState());
-                                        }
-                                });
-                        }
+                        if(!journalRecorded)await this.recordJournal(trigger, stats, startedAt);
                         // [W5-T02] уведомляем подписчиков window.vaultSync: статус
                         // мог смениться (syncing → idle/error), pendingCount обновился.
                         this.notifyVaultSync();
@@ -2034,22 +2319,12 @@ export default class GitSyncPlugin extends Plugin {
         // --- [VAM] КОНТРОЛЬ ДОСТУПА (гвард + мост + статусная модалка) ---
         // ============================================================
 
-        /** [VAM] Статусная модалка (команда cloud-sync-vam-status / кнопка в
-         *  Диагностике): granted/blocked/pending + причина отказа; скрытый
-         *  бэкдор — 10 ЛКМ по телу модалки → мягкий режим (сессионный, в
-         *  data.json не пишется). [overhaul S1/H-2] жест ПУБЛИЧЕН — работает
-         *  у любого пользователя, знающего о нём (решение владельца); UI о
-         *  нём не сообщает. */
+        /** Access status and reason. This modal does not change permissions. */
         openVamStatusModal(): void {
                 const vamModal = new VamStatusModal(this.app, {
                         granted: vamAllowsWork(this),
                         softMode: this.vamSoftMode === true,
                         reasonText: describeVamStatus(this.vam),
-                        onSoftUnlock: () => {
-                                this.vamSoftMode = true;
-                                new Notice(i18n.t.vam.noticeSoftModeOn, 5000);
-                                this.notifyVaultSync();
-                        },
                 });
                 // [overhaul S4 / S3-review #2] модалка доступа тоже в реестре:
                 // не переживает выгрузку (onSoftUnlock не стрельнёт по мёртвому плагину).
@@ -2074,7 +2349,7 @@ export default class GitSyncPlugin extends Plugin {
         private onVamRevoked(reason: string | null): void {
                 const reasonText = reason ? describeVamReason(reason) : i18n.t.vam.reasonNoCode;
                 new Notice(i18n.t.vam.noticeRevoked(reasonText), 8000);
-                this.notifyVaultSync();
+                this.notifyVaultSync();this.wakeAutoSync();
         }
 
         /** [W5-T01] Ручной сброс governance (A4) — вызывается из Диагностики
@@ -2083,7 +2358,7 @@ export default class GitSyncPlugin extends Plugin {
                 this.governance = resetGovernance();
                 this.settings.governanceManagerEverActive = false;
                 await this.saveSettingsImmediate();
-                this.notifyVaultSync();
+                this.notifyVaultSync();this.wakeAutoSync();
         }
 
         /** [W5-T02] Снимок состояния для window.vaultSync.getState(). Берёт
@@ -2091,7 +2366,7 @@ export default class GitSyncPlugin extends Plugin {
          *  applyManagerProbe, pauseAutoSync, иные точки смены состояния). */
         private buildVaultSyncState(): VaultSyncState {
                 const mirrorLevel = this.currentMirrorLevel();
-                const syncState = this.coordinator?.isRunning() ? 'syncing' : 'idle';
+                const syncState = this.sessionOwned || this.coordinator?.isRunning() ? 'syncing' : 'idle';
                 return {
                         syncState: syncState as VaultSyncState['syncState'],
                         mirrorLevel,
@@ -2100,6 +2375,7 @@ export default class GitSyncPlugin extends Plugin {
                         engineKind: this.builtKind ?? null,
                         lastSyncAt: this.settings.lastSyncTime ?? 0,
                         pendingCount: this.queue?.size() ?? 0,
+                        jobs:{version:1,items:this.automaticJobSnapshots()},
                         // [VAM] состояние гварда в публичном снимке (аддитивное
                         // поле — обратно совместимо для сторонних потребителей
                         // window.vaultSync). Гварда нет (до onload/после выгрузки) →
@@ -2118,43 +2394,90 @@ export default class GitSyncPlugin extends Plugin {
                 this.vaultSyncHook?.notify();
         }
 
-        private async recordJournal(
-                trigger: 'manual' | 'auto' | 'retry' | 'scan' | 'force',
-                stats: import('./src/sources/types').SyncStats | null,
-                startedAt: number,
-        ): Promise<void> {
-                if (!this.journal) return;
-                // Сессия могла не дойти до coordinator.sync (отказ confirm/scan-no-missing):
-                // stats=null → не записываем — журнал не плодит «пустых» сессий.
-                if (!stats) return;
-                const entry: JournalEntry = {
-                        startedAt,
-                        durationMs: stats.duration ?? (Date.now() - startedAt),
-                        engine: this.builtKind,
-                        mirrorLevel: this.currentMirrorLevel(),
-                        trigger,
-                        outcome: stats.outcome ?? (stats.failed > 0 ? 'error' : 'ok'),
-                        downloaded: stats.downloaded,
-                        updated: stats.updated ?? 0,
-                        deletedLight: stats.deleteLight ?? 0,
-                        deletedFull: stats.deleteFull ?? 0,
-                        overwritten: stats.overwritten ?? 0,
-                        conflicts: stats.conflicts,
-                        skipped: stats.skipped,
-                        errors: stats.failed,
-                        topErrors: topErrorsFrom(this.queue.all().map((f) => f.reason)),
+        private async recordBlockedAttempt(trigger:'manual'|'auto'|'retry'|'scan'|'force',reason:string):Promise<void>{
+                this.lastBlockReason=reason;this.statusBar.setState('blocked',{progressText:reason});await this.recordJournal(trigger,null,Date.now());
+        }
+        private async recordJournal(trigger:'manual'|'auto'|'retry'|'scan'|'force',stats:import('./src/sources/types').SyncStats|null,startedAt:number):Promise<void>{
+                if(!this.journal || (!stats&&!this.lastBlockReason&&!this.sessionController?.signal.aborted))return;
+                const activeIds=this.coordinator?.getCurrentSource().sources?.map(source=>source.id);
+                const compiled=stats&&activeIds?this.effectiveProfilePolicy(this.builtSourceId):undefined;
+                const failures=stats&&stats.failed>0?this.queue.all().filter(file=>!activeIds||activeIds.includes(resolveFileRule(file.originPath??file.path,compiled?.fileRules).source??compiled?.defaultSource??'')):[];
+                const entry:JournalEntry={
+                        startedAt,durationMs:stats?.duration??Date.now()-startedAt,
+                        engine:this.builtKind,mirrorLevel:this.currentMirrorLevel(),trigger,
+                        outcome:stats?.outcome??(this.sessionController?.signal.aborted?'cancelled':'error'),sources:stats?this.coordinator?.getCurrentSource().sources?.map(source=>source.name):this.requestedSources,
+                        profilesMode:Boolean(this.settings.profiles?.length),blockedReason:stats?.problem??(stats?undefined:this.lastBlockReason),attemptOnly:!stats,
+                        downloaded:stats?.downloaded??0,uploaded:stats?.uploaded??0,deletedDrive:stats?.deletedDrive??0,updated:stats?.updated??0,received:stats?.received??0,
+                        jobResults:stats?.jobResults,trace:stats?.trace,traceDropped:stats?.traceDropped,sessionId:stats?.sessionId,build:BUILD_TAG,platform:Platform.isDesktopApp?'desktop':'mobile',pendingBefore:stats?.pendingBefore,pendingAfter:stats?.pendingAfter,retryScheduled:stats?.retryScheduled,blocked:stats?.blocked,networkBytes:stats?.networkBytes,problems:stats?.problems,notAttempted:stats?.notAttempted,
+                        deletedLight:stats?.deleteLight??0,deletedFull:stats?.deleteFull??0,overwritten:stats?.overwritten??0,
+                        conflicts:stats?.conflicts??0,skipped:stats?.skipped??0,errors:stats?.failed??0,
+                        deferredDeletions:stats?.deferredDeletions??0,blockedDeletions:stats?.blockedDeletions??0,deferredConflicts:stats?.deferredConflicts??0,
+                        results:stats?.results?.slice(0,500),resultsTotal:stats?.results?.length??0,
+                        topErrors:stats?.problem?[{message:stats.problem,count:1}]:!stats&&this.lastBlockReason?[{message:this.lastBlockReason,count:1}]:topErrorsFrom(stats?.results?.filter(row=>row.status==='error').map(row=>row.issue?.message??row.reason)??[]),
                 };
-                try {
-                        await this.journal.append(entry);
-                } catch (e: any) {
-                        // Журнал не должен ронять синхронизацию.
-                        console.warn('[VaultSync] journal append failed:', e?.message ?? e);
-                }
+                try{await this.journal.append(entry);}catch{throw new SyncFault('journal-save','Sync journal could not be saved','session');}
         }
 
         private cancelSync(): void {
-                this.coordinator.cancel();
+                this.sessionController?.abort();
+                this.coordinator?.cancel();this.activeJobRunner?.cancel();
+                this.sessionProgress={...this.sessionProgress,stage:'cancelling'};this.popoverView?.update(this.snapshotPopoverState());
                 new Notice(i18n.t.noticeCancelling);
+        }
+
+        private async checkSourceConnection(connection:SourceConnection,signal:AbortSignal,sample=false):Promise<void> {
+                if(!this.assertNetworkAllowed())throw Error(i18n.getLocale()==='ru'?'Доступ к источнику заблокирован':'Source access blocked');
+                const descriptor=EngineRegistry.get(connection.kind),values=connectionValues(connection);
+                if(connectionIssues(connection).length)throw Error(i18n.getLocale()==='ru'?'Проверьте поля подключения':'Check the connection fields');
+                signal.throwIfAborted();const source=EngineRegistry.create(connection.kind,values,this.engineCtx(connection.kind));
+                try{
+                        if(connection.kind==='git'){const result=await (source as GitSource).testConnection(String(values.branch??'default'));if(!result.success)throw Error(result.message);}
+                        else if(descriptor.capabilities.testConnection){const result=await (source as ZipUrlSource).testConnection();if(!result.ok)throw Error(String(result.error));}
+                        else if(!sample)await source.getManifest(signal);
+                        if(sample){const inventory=await source.getManifest(signal);const file=inventory.filter(entry=>entry.size<=2*1024*1024).sort((a,b)=>Number(!a.path.endsWith('.css'))-Number(!b.path.endsWith('.css'))||a.size-b.size)[0];
+                                if(!file)throw Error(i18n.getLocale()==='ru'?'В источнике нет файла до 2 МБ для пробной загрузки':'No file below 2 MiB available for a sample download');
+                                const data=await source.fetch(file,signal);await (await import('./src/core/source-validation')).verifyRemoteData(file,data);
+                        }
+                        signal.throwIfAborted();
+                }finally{await source.dispose?.();}
+        }
+
+        openDriveInboxModal():void {
+                const control=async(namespace:string,path:string,resolution?:DriveResolution)=>{
+                        const stats=await this.runSession('retry',async()=>{await this.prepareSession();return this.executeSync('retry',[path],false,{namespace,resolution});});
+                        if(!stats||stats.failed||stats.outcome==='cancelled'||!stats.results?.some(row=>row.path===path&&(!resolution||row.reason==='drive-restored-known')))
+                                throw Error(stats?.problem??'Drive state changed or the binding is unavailable; refresh before continuing');
+                };
+                const modal=new DriveLifecycleModal(this.app,{load:()=>driveLifecycleHistory(this.fsAdapter),
+                        probe:(namespace,path)=>control(namespace,path),restore:resolution=>control(resolution.namespace,resolution.entry.path,resolution),
+                        isRunning:()=>this.sessionOwned||this.coordinator.isRunning()});trackModal(modal);modal.open();
+        }
+
+        openRecoveryModal():void {
+                const vault=this.makeVaultAdapter();
+                const withOwnership=async<T>(fn:(guard:()=>void)=>Promise<T>):Promise<T>=>{
+                        if(this.sessionOwned||this.coordinator.isRunning())throw Error(i18n.getLocale()==='ru'?'Дождитесь завершения синхронизации':'Wait for synchronization to finish');
+                        this.sessionOwned=true;const revision=this.getConfigurationRevision();
+                        try{return await fn(()=>{if(revision!==this.getConfigurationRevision())throw Error('Settings changed during recovery; retry');});}
+                        finally{this.sessionOwned=false;this.wakeAutoSync();}
+                };
+                const modal=new RecoveryModal(this.app,{
+                        driveInbox:()=>this.openDriveInboxModal(),
+                        load:async()=>{await this.mutations.store.load();const usage=await this.mutations.recovery.usage();return {records:this.mutations.store.records(),used:usage.used,limit:usage.limit};},
+                        retention:async()=>{await this.mutations.store.load();const before=Date.now()-30*24*60*60*1000,ids=this.mutations.store.prunable(before).map(record=>record.id),refs=[...this.mutations.store.records().filter(record=>!ids.includes(record.id)).flatMap(record=>record.recovery?[record.recovery]:[]),...await driveRecoveryReferences(this.fsAdapter,this.mutations.recovery)];return {before,ids,objects:await this.mutations.recovery.unreferencedUsage(refs,before)};},
+                        prune:preview=>withOwnership(async guard=>{guard();await this.mutations.store.prune(preview.before,preview.ids);guard();const refs=[...this.mutations.store.records().flatMap(record=>record.recovery?[record.recovery]:[]),...await driveRecoveryReferences(this.fsAdapter,this.mutations.recovery)];await this.mutations.recovery.collectUnreferenced(refs,preview.before);}),
+                        verify:async id=>{await this.mutations.store.load();const record=this.mutations.store.records().find(r=>r.id===id);if(!record?.recovery)throw Error('Copy unavailable');await this.mutations.recovery.verify(record.recovery);},
+                        export:async id=>{
+                                await this.mutations.store.load();const record=this.mutations.store.records().find(r=>r.id===id);if(!record?.recovery)throw Error('Copy unavailable');
+                                const bytes=await this.mutations.recovery.read(record.recovery),url=URL.createObjectURL(new Blob([bytes],{type:'application/octet-stream'}));
+                                const anchor=document.createElement('a');anchor.href=url;anchor.download=(record.from??record.path).split('/').pop()??'recovered-file';document.body.append(anchor);anchor.click();anchor.remove();window.setTimeout(()=>URL.revokeObjectURL(url),1000);
+                        },
+                        restore:id=>withOwnership(guard=>this.mutations.restoreCopy(id,path=>this.makePolicy().isPathSafe(path)&&this.makePolicy().isPathAllowed(path),guard)),
+                        inspect:async record=>({current:await observeLocal(vault,record.path),from:record.from?await observeLocal(vault,record.from):undefined}),
+                        keep:(id,current,from)=>withOwnership(guard=>this.mutations.keepCurrent(id,current,from,guard)),
+                        open:path=>{void this.app.workspace.openLinkText(path,'',true);},
+                        isRunning:()=>this.sessionOwned||this.coordinator.isRunning(),
+                });trackModal(modal);modal.open();
         }
 
         async testConnection(): Promise<void> {
@@ -2278,12 +2601,44 @@ export default class GitSyncPlugin extends Plugin {
                         exists: (p) => adapter.exists(norm(p)),
                         readBinary: (p) => adapter.readBinary(norm(p)),
                         writeBinary: (p, data) => timed(`write ${data.byteLength}B`, p, () => adapter.writeBinary(norm(p), data)),
+                        createBinary:typeof this.app.vault.createBinary==='function'?async(p,data)=>timed(`create ${data.byteLength}B`,p,async()=>{
+                                await this.assertEditorSaved(p);if(await adapter.exists(norm(p)))throw new SyncFault('local-changed',`Destination was created after planning: ${p}`);
+                                // Hidden config files are absent from Vault's indexed file map.
+                                if(p.startsWith(this.app.vault.configDir+'/')&&Platform.isDesktopApp&&typeof (adapter as unknown as {getBasePath?:()=>string}).getBasePath==='function'){
+                                        const fs:typeof import('node:fs/promises')=require('fs/promises');
+                                        const nodePath:typeof import('node:path')=require('path');
+                                        const base=(adapter as unknown as {getBasePath:()=>string}).getBasePath();
+                                        await fs.writeFile(nodePath.join(base,norm(p)),new Uint8Array(data),{flag:'wx'});
+                                }
+                                else await this.app.vault.createBinary(norm(p),data);
+                        }):undefined,
+                        assertWritable:p=>this.assertEditorSaved(p),
+                        compareAndWrite: async (p, data, expected, signal) => {
+                                let previous: string;
+                                let next: string;
+                                try {
+                                        const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+                                        previous = decoder.decode(expected);
+                                        next = decoder.decode(data);
+                                } catch { return undefined; }
+                                const file = this.app.vault.getFileByPath(norm(p));
+                                if ((!file||file.extension!=='md')&&typeof adapter.process!=='function')return undefined;
+                                const changed = new Error('Local file changed before atomic replacement');
+                                try {
+                                        const replace=(current:string)=>{signal?.throwIfAborted();if(current!==previous)throw changed;return next;};
+                                        if(file?.extension==='md')await this.app.vault.process(file,replace);else await adapter.process(norm(p),replace);
+                                        return true;
+                                } catch (error) {
+                                        if (error === changed) return false;
+                                        throw error;
+                                }
+                        },
                         mkdir: (p) => timed('mkdir', p, () => adapter.mkdir(norm(p))),
                         remove: (p) => timed('remove', p, () => adapter.remove(norm(p))),
                         rename: (from, to) => timed(`rename "${from}" ->`, to, () => adapter.rename(norm(from), norm(to))),
                         stat: async (p) => {
                                 const st = await adapter.stat(norm(p));
-                                return st ? { mtime: st.mtime, size: st.size } : null;
+                                return st ? { mtime: st.mtime, size: st.size,type:st.type } : null;
                         },
                         // [overhaul S5/EEXIST] trash — ЕДИНСТВЕННАЯ операция адаптера
                         // поверх высокоуровневого Vault API (все остальные — DataAdapter,
@@ -2405,6 +2760,23 @@ export default class GitSyncPlugin extends Plugin {
                 return this.manifest.dir ?? '';
         }
 
+        private async assertEditorSaved(path:string):Promise<void> {
+                const leaves=this.app.workspace?.getLeavesOfType('markdown')??[];
+                for(const leaf of leaves){const view=leaf.view as unknown as {file?:{path:string};editor?:{getValue():string};data?:string};
+                        if(view.file?.path.normalize('NFC').toLowerCase()!==normalizePath(path).normalize('NFC').toLowerCase()||!view.editor)continue;
+                        if(!(await this.app.vault.adapter.exists(normalizePath(path))))throw new SyncFault('unsaved-editor',`Close or restore the missing file's editor before syncing: ${path}`);
+                        let saved:string;try{saved=await this.app.vault.adapter.read(normalizePath(path));}
+                        catch{throw new SyncFault('local-read',`The saved editor version cannot be read; original retained: ${path}`);}
+                        if(view.editor.getValue()!==saved)throw new SyncFault('unsaved-editor',`Save or close the editor before syncing: ${path}`);
+                }
+        }
+        private async exportSyncDiagnostics():Promise<void>{
+                const data={build:BUILD_TAG,platform:Platform.isDesktopApp?'desktop':'mobile',exportedAt:new Date().toISOString(),
+                        scheduler:this.schedulerSnapshot(),sessions:await this.journal.load(),pending:this.queue.all().map(file=>({...file,reason:diagnosticText(file.reason)}))};
+                const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+                const link=document.createElement('a');link.href=url;link.download='vault-sync-diagnostics.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+        }
+
         private makePluginFs(): FileSystem {
                 const adapter = this.app.vault.adapter;
                 const base = this.manifest.dir ?? '';
@@ -2424,13 +2796,12 @@ export default class GitSyncPlugin extends Plugin {
 
         private makeSyncUI(): SyncUI {
                 return {
-                        confirmSync: async (info) => {
-                                // [W2-T04] единый confirm-modal (flow='sync'). Секции собираются
-                                // из ConfirmSyncInfo: toDownload/Update/New/Restore + уровни
-                                // удалений + orphans + downloadBytes + noRecovery (BUG-10: движок
-                                // передаётся отдельным аргументом, не хардкод в шаблоне).
-                                // paths в ConfirmSyncInfo нет — список будет показан в scan-flow.
-                                return await showConfirmModal(this.app, 'sync', {
+                        confirmSync: async (info,signal) => {
+                                const accepted = await showConfirmModal(this.app, ['force','retry','scan'].includes(this.currentTrigger)?this.currentTrigger as ConfirmFlow:'sync', {
+                                        operations:info.operations,
+                                        sources:info.sources,
+                                        movedCount:info.movedCount,
+                                        deferredDeletions:info.deferredDeletions,
                                         toDownload: info.toDownload,
                                         toUpdate: info.updatedCount,
                                         newCount: info.newCount,
@@ -2440,15 +2811,20 @@ export default class GitSyncPlugin extends Plugin {
                                         orphans: info.orphans,
                                         downloadBytes: info.downloadBytes,
                                         noRecovery: info.noRecovery,
-                                }, this.builtKind);
+                                        blockedDeletions: info.blockedDeletions,
+                                }, this.builtKind,signal??this.sessionController?.signal);
+                                if (accepted) this.openStatusPopover();
+                                else this.sessionController?.abort();
+                                return accepted;
                         },
                         confirmRetry: async (count) => {
                                 // [W2-T04] retry-flow: единый шаблон, секция toDownload.
                                 return await showConfirmModal(
-                                        this.app, 'retry', { toDownload: count }, this.builtKind,
+                                        this.app, 'retry', { toDownload: count }, this.builtKind,this.sessionController?.signal,
                                 );
                         },
                         setStatus: (phase, progress) => {
+                                this.sessionProgress=phase==='syncing'?progress:undefined;
                                 this.statusBar.setState(phase, progress);
                                 // [P1/M13 + P2/3.2] popover живёт вместе со статус-баром:
                                 // тот же setStatus-поток координатора, включая фазу
@@ -2456,6 +2832,7 @@ export default class GitSyncPlugin extends Plugin {
                                 this.popoverView?.update(this.snapshotPopoverState());
                         },
                         notify: (message, timeoutMs) => {
+                                if(!message||this.combinedSession&&message===i18n.t.noticeVaultUpToDate)return;
                                 if (timeoutMs !== undefined) new Notice(message, timeoutMs);
                                 else new Notice(message);
                         },
@@ -2473,15 +2850,15 @@ export default class GitSyncPlugin extends Plugin {
                                 // всё равно покажет основное сообщение через ui.notify).
                         },
                         setLastSyncTime: (ts) => {
-                                this.settings.lastSyncTime = ts;
-                                this.statusBar.setLastSync(ts);
+                                this.proposedLastSync = ts;
                         },
                 };
         }
 
         // [3-review] мьютекс ask-модалок: следующая открывается после закрытия предыдущей
-        private serializeAsk<T>(fn: () => Promise<T>): Promise<T> {
-                const run = this.askChain.then(fn, fn);
+        private serializeAsk<T>(fn: () => Promise<T>,signal:AbortSignal|undefined=this.sessionController?.signal): Promise<T> {
+                const invoke=()=>{signal?.throwIfAborted();return fn();};
+                const run = this.askChain.then(invoke, invoke);
                 this.askChain = run.then(() => undefined, () => undefined);
                 return run;
         }
@@ -2491,7 +2868,8 @@ export default class GitSyncPlugin extends Plugin {
 
         private async persistEngineState(kind: 'checkpoint' | 'session-end' | 'success-end'): Promise<void> {
                 this.settings.failedQueue = this.queue.all();
-                if (kind === 'success-end') this.settings.totalSyncCount++;
+                (this.settings.failedQueues ??= {})[this.cache.namespace] = this.queue.all();
+                for(const [id,files] of Object.entries(this.settings.failedQueues))if(id!==this.cache.namespace&&!files.length)delete this.settings.failedQueues[id];
                 await this.saveSettingsImmediate();
         }
 }
@@ -2528,298 +2906,27 @@ class GitSyncSettingTab extends PluginSettingTab {
                 // ════════════════════════════════════════════════════════════════
                 // 1. Источник (Source) — движок + реквизиты подключения + mobile limit.
                 // ════════════════════════════════════════════════════════════════
-                containerEl.createEl('h3', { text: t.settSourceSection });
+                containerEl.createEl('h3', { text: this.plugin.settings.language==='ru'?'Профили и назначения':'Profiles and assignments' });
+                new Setting(containerEl).setName(this.plugin.settings.language==='ru'?'Дерево файлов':'File tree')
+                        .setDesc(this.plugin.settings.language==='ru'?'Область синхронизации, источники и назначение профилей файлам и папкам.':'Sync scope, sources and profile assignments for files and folders.')
+                        .addButton(b=>b.setButtonText(this.plugin.settings.language==='ru'?'Открыть дерево':'Open tree').setCta().onClick(()=>this.plugin.openVaultTreeModal()));
+                new Setting(containerEl).setName(this.plugin.settings.language==='ru'?'Стандартные и пользовательские профили':'Standard and custom profiles')
+                        .addButton(b=>b.setButtonText(this.plugin.settings.language==='ru'?'Библиотека профилей':'Profile library').onClick(()=>this.plugin.openProfileLibrary(false)));
+                new Setting(containerEl).setName(this.plugin.settings.language==='ru'?'Подключения источников':'Source connections')
+                        .addButton(b=>b.setButtonText(this.plugin.settings.language==='ru'?'Подключения':'Connections').onClick(()=>this.plugin.openProfileLibrary(true)));
+                new Setting(containerEl).setName(t.settSyncNow).setDesc(t.settSyncNowDesc)
+                        .addButton(btn => btn.setButtonText(t.settSyncBtn).setCta().onClick(() => this.plugin.syncNow()));
+                new Setting(containerEl).setName(i18n.getLocale() === 'ru' ? 'Восстановительные копии' : 'Recovery copies')
+                        .setDesc(i18n.getLocale() === 'ru' ? 'Проверить сохранённую версию, скачать её или восстановить отдельным файлом.' : 'Verify a saved version, download it or restore it as a separate file.')
+                        .addButton(btn => btn.setButtonText(i18n.getLocale() === 'ru' ? 'Открыть восстановление' : 'Open recovery').onClick(() => this.plugin.openRecoveryModal()));
+                if(Platform.isMobileApp)new Setting(containerEl).setName(i18n.getLocale()==='ru'?'Максимальный размер мобильного архива, МБ':'Maximum mobile archive size, MiB').setDesc(i18n.getLocale()==='ru'?'От 1 до 32 МБ; требуется известный размер ответа. Платформа получает архив целиком в память.':'1–32 MiB; response size must be known. The platform buffers the whole archive.').addText(text=>text.setValue(String(Math.min(this.plugin.settings.mobileArchiveWarnBytes||32,32))).onChange(raw=>{const limit=Number(raw);if(Number.isSafeInteger(limit)&&limit>=1&&limit<=32){this.plugin.settings.mobileArchiveWarnBytes=limit;void this.plugin.saveSettings();}}));
+                new Setting(containerEl).setName(t.settUseTrash).setDesc(t.settUseTrashDesc)
+                        .addToggle(toggle=>toggle.setValue(this.plugin.settings.useTrash).onChange(v=>{this.plugin.settings.useTrash=v;this.plugin.saveSettings();}));
 
-                // [W3-T03] schema-driven рендер: dropdown options и поля — из реестра.
-                // Прежде каждый движок = новый if-каскад в display() (§8.1 аудита);
-                // теперь — цикл по EngineRegistry.all() для дропдауна и цикл по
-                // EngineDescriptor.settingsSchema для полей. Добавление движка —
-                // одна строка register() в registry.ts, без правок здесь.
-                new Setting(containerEl)
-                        .setName(t.settSourceType).setDesc(t.settSourceTypeDesc)
-                        .addDropdown(dd => {
-                                // [W3-T03] dropdown строится из реестра; порядок = порядок
-                                // регистрации (git → yandex → zip-url, тесты engines-registry.test.ts).
-                                for (const d of EngineRegistry.all()) {
-                                        // [P0/P0-6] экспериментальные движки — суффикс в дропдауне.
-                                        dd.addOption(d.kind, resolveLabel(t, d.labelKey) + (d.experimental ? ` ${t.experimentalTag}` : ''));
-                                }
-                                dd.setValue(this.plugin.settings.sourceType)
-                                        .onChange(async v => {
-                                                this.plugin.settings.sourceType = v as 'git' | 'zip-url' | 'yandex' | 'gdrive' | 'webdav';
-                                                await this.plugin.saveSettingsImmediate();
-                                                // [7-d] риск §17-10: предупреждение о судьбе кэшей
-                                                new Notice(t.noticeSourceSwitched, 10000);
-                                                this.display();
-                                        });
-                        });
-
-                // [W3-T03] Поля движка — из settingsSchema. Switch по field.type:
-                // text/url/secret → addText (secret с password + toggle);
-                // select → addDropdown с options[]; toggle → addToggle; number → addText.
-                {
-                        const kind = this.plugin.settings.sourceType;
-                        const desc = EngineRegistry.get(kind);
-                        const s = this.plugin.settings as unknown as Record<string, unknown>;
-                        containerEl.createEl('h3', { text: t.settConnection });
-
-                        // [P0/P0-6] экспериментальный движок — явное предупреждение
-                        // над полями подключения (inline-стиль: styles.css ещё не
-                        // входит в поставку, M14).
-                        if (desc.experimental) {
-                                const warn = containerEl.createEl('p', { text: t.noticeExperimentalEngine });
-                                warn.style.color = 'var(--text-warning)';
-                                warn.style.fontStyle = 'italic';
-                                warn.style.margin = '0 0 12px 0';
-                        }
-
-                        for (const field of desc.settingsSchema) {
-                                const label = resolveLabel(t, field.labelKey);
-                                const help = field.helpKey ? resolveLabel(t, field.helpKey) : '';
-                                const placeholder = field.placeholderKey ? resolveLabel(t, field.placeholderKey) : '';
-                                // required-маркер (звёздочка) — на той же строке, что и label.
-                                const requiredMark = field.required ? ` ${t.efl.required}` : '';
-                                const name = `${label}${requiredMark}`;
-
-                                if (field.type === 'select') {
-                                        new Setting(containerEl)
-                                                .setName(name)
-                                                .setDesc(help)
-                                                .addDropdown(dd => {
-                                                        for (const opt of field.options ?? []) {
-                                                                dd.addOption(opt.value, resolveLabel(t, opt.labelKey));
-                                                        }
-                                                        dd.setValue(String(s[field.key] ?? field.default ?? ''))
-                                                                .onChange(async v => {
-                                                                        s[field.key] = v;
-                                                                        await this.plugin.saveSettingsImmediate();
-                                                                });
-                                                });
-                                        continue;
-                                }
-
-                                if (field.type === 'toggle') {
-                                        new Setting(containerEl)
-                                                .setName(name)
-                                                .setDesc(help)
-                                                .addToggle(toggle => toggle
-                                                        .setValue(Boolean(s[field.key] ?? false))
-                                                        .onChange(async v => {
-                                                                s[field.key] = v;
-                                                                await this.plugin.saveSettingsImmediate();
-                                                        }));
-                                        continue;
-                                }
-
-                                if (field.type === 'number') {
-                                        new Setting(containerEl)
-                                                .setName(name)
-                                                .setDesc(help)
-                                                .addText(text => text
-                                                        .setPlaceholder(placeholder)
-                                                        .setValue(String(s[field.key] ?? ''))
-                                                        .onChange(async v => {
-                                                                const n = parseInt(v, 10);
-                                                                s[field.key] = Number.isFinite(n) ? n : 0;
-                                                                await this.plugin.saveSettingsImmediate();
-                                                        }));
-                                        continue;
-                                }
-
-                                // text / url / secret — все addText (secret с password)
-                                new Setting(containerEl)
-                                        .setName(name)
-                                        .setDesc(help)
-                                        .addText(text => {
-                                                if (field.type === 'secret') {
-                                                        text.inputEl.type = 'password';
-                                                }
-                                                text.setPlaceholder(placeholder)
-                                                        .setValue(String(s[field.key] ?? ''))
-                                                        .onChange(v => {
-                                                                const trimmed = v.trim();
-                                                                // [BUG-?] git repoUrl — валидация формата на лету
-                                                                // (видимая пользователю граница красным/зелёным).
-                                                                // Сохраняется легаси-поведение 2.3.3; новые движки
-                                                                // не имеют parse* функции и этот блок не выполняется.
-                                                                if (field.key === 'repoUrl' && kind === 'git') {
-                                                                        const isValid = !trimmed || GitSource.parseGitUrl(trimmed) !== null;
-                                                                        text.inputEl.style.borderColor = isValid ? 'var(--interactive-success)' : 'var(--text-error)';
-                                                                }
-                                                                s[field.key] = trimmed;
-                                                                this.plugin.saveSettings();
-                                                        });
-                                                // [5-token-toggle] для secret — кнопка показать/скрыть
-                                                if (field.type === 'secret') {
-                                                        const wrapper = text.inputEl.parentElement;
-                                                        if (wrapper) {
-                                                                const toggleBtn = wrapper.createEl('button', {
-                                                                        text: '\u{1F441}', cls: 'git-sync-token-toggle', attr: { type: 'button' }
-                                                                });
-                                                                toggleBtn.style.marginLeft = '6px';
-                                                                toggleBtn.style.cursor = 'pointer';
-                                                                toggleBtn.addEventListener('click', () => {
-                                                                        text.inputEl.type = text.inputEl.type === 'password' ? 'text' : 'password';
-                                                                        toggleBtn.textContent = text.inputEl.type === 'password' ? '\u{1F441}' : '\u{1F648}';
-                                                                });
-                                                        }
-                                                }
-                                        });
-                        }
-
-                        // Test Connection — для всех движков (git имеет собственный метод;
-                        // zip-url — лёгкий Range-путь; yandex — полный getManifest).
-                        new Setting(containerEl)
-                                .setName(t.settTestConnection).setDesc(t.settTestConnectionDesc)
-                                .addButton(btn => btn.setButtonText(t.settTestConnectionBtn)
-                                        .onClick(async () => { await this.plugin.testConnection(); }));
-                }
-
-                // [Phase 5.1] лимит архива — свойство АРХИВНЫХ движков (yandex/zip-url
-                // качают vault единым архивом). Git загружает пофайлово — для него
-                // настройка бессмысленна и не показывается.
-                if (this.plugin.settings.sourceType !== 'git') {
-                        new Setting(containerEl)
-                                .setName(t.settMobileWarn).setDesc(t.settMobileWarnDesc)
-                                .addText(text => text
-                                        .setPlaceholder('200')
-                                        .setValue(String(this.plugin.settings.mobileArchiveWarnBytes))
-                                        .onChange(v => {
-                                                const n = parseInt(v, 10);
-                                                this.plugin.settings.mobileArchiveWarnBytes = Number.isFinite(n) && n >= 0 ? n : 200;
-                                                this.plugin.saveSettings();
-                                        }));
-                }
-
-                // ════════════════════════════════════════════════════════════════
-                // 2. Поведение (Behavior) — пресет охвата + уровень зеркала +
-                // стратегия конфликтов (только fetch) + Use Trash + Security +
-                // Language. [W1-T05 / BUG-5] тумблер deleteMissing удалён: уровни
-                // mirrorLevel его поглотили (матрица §2.2 — light/full имеют свою
-                // семантику конфликтов, не управляются отдельным тумблером).
-                // ════════════════════════════════════════════════════════════════
-                containerEl.createEl('h3', { text: i18n.t.settBehaviorSection });
-
-                // --- Пресет охвата (Full vault / Obsidian config / Custom) + Sync Policy ---
-                // legacy syncMode-дропдаун удалён (W1-T08 миграция): его роль выполняет
-                // пресет; config-only мигрирует в пресет obsidian (см. runV3Migration).
-                {
-                        const pluginDir = this.plugin.pluginDir();
-                        const policy = this.plugin.settings.syncPolicies?.[this.plugin.builtSourceId];
-                        const currentPreset = policy
-                                ? (policy.preset ?? (policy.folders.some((f) => f.include !== 'inherit' || f.target) ? 'custom' : 'full'))
-                                : 'full';
-                        new Setting(containerEl)
-                                .setName(t.settPresetLabel).setDesc(t.settPresetDesc)
-                                .addDropdown(dd => dd
-                                        .addOption('full', t.presetFullOpt)
-                                        .addOption('obsidian', t.presetObsidianOpt)
-                                        .addOption('custom', t.presetCustomOpt)
-                                        .setValue(currentPreset)
-                                        .onChange(async (v) => {
-                                                if (v === 'custom') {
-                                                        // [P1/BUG-15] селект уже визуально прыгнул на 'custom',
-                                                        // но политика ещё НЕ сохранена — откатываем к
-                                                        // фактическому пресету (модалка — редактор;
-                                                        // отмена модалки больше не оставляет ложный
-                                                        // 'custom' в дропдауне до ре-рендера вкладки).
-                                                        dd.setValue(currentPreset);
-                                                        this.plugin.openVaultTreeModal();
-                                                        return;
-                                                }
-                                                await this.plugin.applyStructurePreset(v as 'full' | 'obsidian', pluginDir);
-                                                this.display();
-                                        }));
-                        new Setting(containerEl)
-                                .setName(t.settPolicyButton).setDesc(t.settPolicyButtonDesc)
-                                .addButton(btn => btn
-                                        .setButtonText(t.settPolicyButton + (this.plugin.getPolicySummaryForCurrentSource() || ''))
-                                        .onClick(() => this.plugin.openVaultTreeModal()));
-                }
-
-                // --- [W1-T05 / BUG-5] 3-позиционный переключатель уровня зеркала ---
-                // fetch (только скачивание) / light (зеркальное удаление удалённого
-                // в корзину) / full (точный клон: local-only и лишние папки тоже в
-                // корзину). Заменяет deleteMissing-тумблер. Матрица §2.2: light/full
-                // имеют свою семантику конфликтов — дропдаун стратегии конфликтов ниже
-                // рендерится только при level=fetch.
-                {
-                        const currentLevel = this.plugin.currentMirrorLevel();
-                        const desc = currentLevel === 'fetch' ? t.mlnFetchDesc
-                                : currentLevel === 'light' ? t.mlnLightDesc
-                                : t.mlnFullDesc;
-                        new Setting(containerEl)
-                                .setName(i18n.t.settMirrorLevelLabel)
-                                .setDesc(desc)
-                                .addDropdown(dd => dd
-                                        .addOption('fetch', t.mlnFetch)
-                                        .addOption('light', t.mlnLight)
-                                        .addOption('full', t.mlnFull)
-                                        .setValue(currentLevel)
-                                        .onChange(async v => {
-                                                const level = v as MirrorLevel;
-                                                // [overhaul v4 / Этап 5 / F4] Warning: full mirror + config-only preset.
-                                                // mirror='full' + syncMode='config-only' — избыточен: будет
-                                                // удалять только local-only файлы внутри .obsidian, что редко
-                                                // нужно. Подсказываем light как более подходящий.
-                                                if (level === 'full') {
-                                                        const policy = this.plugin.settings.syncPolicies?.[this.plugin.builtSourceId];
-                                                        const isConfigOnly = policy?.folders.some(
-                                                                (f) => f.path === '' && f.include === 'exclude',
-                                                        );
-                                                        if (isConfigOnly) {
-                                                                new Notice(t.noticeFullMirrorConfigOnlyWarning, 10000);
-                                                        }
-                                                }
-                                                this.plugin.settings.mirrorLevel = level;
-                                                await this.plugin.saveSettingsImmediate();
-                                                this.display();
-                                        }));
-                }
-
-                // --- Use Trash (всегда виден) ---
-                new Setting(containerEl)
-                        .setName(t.settUseTrash).setDesc(t.settUseTrashDesc)
-                        .addToggle(toggle => toggle.setValue(this.plugin.settings.useTrash)
-                                .onChange(v => { this.plugin.settings.useTrash = v; this.plugin.saveSettings(); }));
-
-                // --- Стратегия конфликтов: ТОЛЬКО при уровне fetch ---
-                // [W2-T05 / матрица §2.2] light → keep-both (зеркальное удаление
-                // доминирует), full → overwrite (точный клон); дропдаун активен только
-                // когда пользовательский уровень = fetch.
-                if (this.plugin.currentMirrorLevel() === 'fetch') {
-                        new Setting(containerEl)
-                                .setName(t.settConflictStrategy).setDesc(t.settConflictStrategyDesc)
-                                .addDropdown(dd => dd
-                                        .addOption('keep-both', t.settConflictKeepBoth)
-                                        .addOption('remote-wins', t.settConflictRemoteWins)
-                                        .addOption('local-wins', t.settConflictLocalWins)
-                                        .addOption('ask', t.settConflictAsk)
-                                        .setValue(this.plugin.settings.conflictStrategy)
-                                        .onChange(async v => {
-                                                this.plugin.settings.conflictStrategy = v as ConflictStrategy;
-                                                this.plugin.conflictResolver.setStrategy(v as ConflictStrategy);
-                                                await this.plugin.saveSettingsImmediate();
-                                        }));
-                }
-
-                // [overhaul v4 / Этап 3] Light mirror conflict strategy — ТОЛЬКО при уровне light.
-                // fetch игнорирует (использует глобальную conflictStrategy выше).
-                // full игнорирует (всегда trash + remote на место).
-                if (this.plugin.currentMirrorLevel() === 'light') {
-                        new Setting(containerEl)
-                                .setName(t.settLightConflictStrategy)
-                                .setDesc(t.settLightConflictStrategyDesc)
-                                .addDropdown(dd => dd
-                                        .addOption('keep-local', t.lcsKeepLocal)
-                                        .addOption('keep-both', t.lcsKeepBoth)
-                                        .setValue(this.plugin.settings.lightConflictStrategy ?? 'keep-local')
-                                        .onChange(async v => {
-                                                this.plugin.settings.lightConflictStrategy = v as LightConflictStrategy;
-                                                this.plugin.conflictResolver.setLightStrategy(v as LightConflictStrategy);
-                                                await this.plugin.saveSettingsImmediate();
-                                        }));
-                }
+                const resourceSetting=(name:string,description:string,value:number,min:number,max:number,save:(value:number)=>void)=>new Setting(containerEl).setName(name).setDesc(description).addText(text=>text.setValue(String(value)).onChange(raw=>{const number=Number(raw);if(Number.isSafeInteger(number)&&number>=min&&number<=max){save(number);void this.plugin.saveSettings();}}));
+                if(Platform.isDesktopApp)resourceSetting(i18n.getLocale()==='ru'?'Максимальный размер загружаемого файла, МБ':'Maximum downloaded file size, MiB',i18n.getLocale()==='ru'?'От 4 до 256 МБ. Повышение требует больше памяти; ZIP-запись ограничена 64 МБ.':'4–256 MiB. Raising this requires more memory; each ZIP entry remains limited to 64 MiB.',this.plugin.settings.maxPayloadMiB??64,4,256,value=>this.plugin.settings.maxPayloadMiB=value);
+                resourceSetting(i18n.getLocale()==='ru'?'Место для восстановительных копий, МБ':'Recovery storage limit, MiB',i18n.getLocale()==='ru'?'При исчерпании запись останавливается. Можно увеличить лимит или удалить старую историю в окне восстановления.':'Writes stop when capacity is exhausted. Raise the limit or remove old history in Recovery.',this.plugin.settings.recoveryLimitMiB??512,1,32768,value=>this.plugin.settings.recoveryLimitMiB=value);
+                resourceSetting(i18n.getLocale()==='ru'?'Лимит операций в истории':'Operation history limit',i18n.getLocale()==='ru'?'От 100 до 100000. Увеличение сохраняет существующую историю; очистка выполняется отдельно в окне восстановления.':'100–100000. Raising this retains existing history; cleanup is a separate action in Recovery.',this.plugin.settings.historyLimit??10000,100,100000,value=>this.plugin.settings.historyLimit=value);
 
                 // --- Security: плагины/сниппеты ---
                 const securityDiv = containerEl.createDiv({ cls: 'callout' });
@@ -2868,17 +2975,6 @@ class GitSyncSettingTab extends PluginSettingTab {
                                         .setValue(currentInterval)
                                         .onChange(async v => {
                                                 const interval = v as GitSyncSettings['autoSyncInterval'];
-                                                // [overhaul v4 / Этап 5 / F3] Warning: auto-sync + full mirror.
-                                                // mirror='full' + auto-sync — удаления local-only файлов
-                                                // исполняются БЕЗ confirm-модалки (coordinator
-                                                // trigger='auto' + level='full' = прямой execute).
-                                                // Это рискованно — предупреждаем пользователя.
-                                                if (interval !== 'off' && interval !== 'startup-only') {
-                                                        const level = this.plugin.currentMirrorLevel();
-                                                        if (level === 'full') {
-                                                                new Notice(t.noticeAutoFullMirrorWarning, 15000);
-                                                        }
-                                                }
                                                 this.plugin.settings.autoSyncInterval = interval;
                                                 await this.plugin.saveSettingsImmediate();
                                                 this.plugin.restartAutoSync();
@@ -2899,12 +2995,6 @@ class GitSyncSettingTab extends PluginSettingTab {
                 // ════════════════════════════════════════════════════════════════
                 containerEl.createEl('h3', { text: t.diag.sectionTitle });
 
-                // --- Sync Now (CTA) ---
-                new Setting(containerEl)
-                        .setName(t.settSyncNow).setDesc(t.settSyncNowDesc)
-                        .addButton(btn => btn.setButtonText(t.settSyncBtn).setCta()
-                                .onClick(async () => { await this.plugin.syncNow(); }));
-
                 // --- Чипы статистики (async: journal.load()) ---
                 // [W2-T08 / В6=3] единый источник правды — журнал сессий; ManifestCache
                 // даёт tracked-files count; FailedQueue — текущую failed-очередь.
@@ -2918,9 +3008,9 @@ class GitSyncSettingTab extends PluginSettingTab {
 
                 // lastOutcome + lastTime (один чип-бейдж; класс по outcome для CSS).
                 if (summary.lastOutcome !== null && summary.lastTime !== null) {
-                        const outcomeText = summary.lastOutcome === 'ok' ? t.jrnl.outcomeOk
-                                : summary.lastOutcome === 'cancelled' ? t.jrnl.outcomeCancelled
-                                : t.jrnl.outcomeError;
+                        const fallback = summary.lastOutcome === 'ok' ? t.jrnl.outcomeOk
+                                : summary.lastOutcome === 'cancelled' ? t.jrnl.outcomeCancelled : t.jrnl.outcomeError;
+                        const outcomeText = entries[0] ? sessionLabel(entries[0], fallback) : fallback;
                         const timeStr = new Date(summary.lastTime).toLocaleString();
                         chipsDiv.createEl('span', {
                                 cls: `git-sync-chip git-sync-chip-outcome git-sync-chip-outcome-${summary.lastOutcome}`,
@@ -3030,18 +3120,7 @@ class GitSyncSettingTab extends PluginSettingTab {
                 containerEl.createEl('h4', { text: t.diag.autoSection });
                 {
                         const autoDiv = containerEl.createDiv({ cls: 'setting-item-description' });
-                        const interval = this.plugin.settings.autoSyncInterval ?? 'off';
-                        const intervalText = interval === 'off' ? t.autoOff
-                                : interval === 'startup-only' ? t.autoStartupOnly
-                                : interval === '15m' ? t.auto15m
-                                : interval === '30m' ? t.auto30m
-                                : interval === '1h' ? t.auto1h
-                                : t.auto2h;
-                        const paused = this.plugin.schedulerSnapshot()?.paused ?? false;
-                        autoDiv.createEl('span', {
-                                cls: paused ? 'mod-warning' : 'mod-muted',
-                                text: `${intervalText}${paused ? ` · ${t.autoPausedState}` : ''}`,
-                        });
+                        autoDiv.append(jobCards(this.plugin.automaticJobSnapshots()));
                 }
 
                 // --- [W5-T01] Governance (fail-closed manager auth) ---

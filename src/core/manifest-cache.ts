@@ -1,6 +1,6 @@
 // src/core/manifest-cache.ts — кэш манифеста источника (фаза 3, задача 3-6).
 // Фикс С-01 аудита: кэш «путь→хэш» тысяч файлов живёт в отдельном файле
-// manifest-<sourceId>.json с атомарной записью (tmp → rename), а НЕ в
+// manifest-<sourceId>.json с проверенной публикацией и сохранением предыдущей версии, а НЕ в
 // data.json настроек плагина (формат и размещение — дизайн §8.1).
 // Ядро не импортирует obsidian/node — только FileSystem из sources/types.
 
@@ -69,6 +69,8 @@ function parseCacheFile(raw: string, expectedSourceId: string): CacheEntries {
 /** Выделить id источника из имени файла кэша; null — если файл не кэш. */
 function parseCacheFileId(name: string): string | null {
         if (!name.startsWith(FILE_PREFIX)) return null;
+        if(name.endsWith('.previous'))return parseCacheFileId(name.slice(0,-9));
+        if(name.endsWith('.bak.tmp'))return parseCacheFileId(name.slice(0,-4));
         if (name.endsWith(BAK_SUFFIX)) {
                 return name.slice(FILE_PREFIX.length, name.length - BAK_SUFFIX.length) || null;
         }
@@ -84,16 +86,24 @@ function parseCacheFileId(name: string): string | null {
         return null;
 }
 
-/** In-memory кэш манифеста одного источника с атомарной записью на диск. */
+/** In-memory кэш с сериализованной восстанавливаемой публикацией. */
 export class ManifestCache {
         private readonly fs: FileSystem;
         private readonly sourceId: string;
         private cache: CacheEntries = {};
+        private ioChain: Promise<void> = Promise.resolve();
+
+        private serialize<T>(operation: () => Promise<T>): Promise<T> {
+                const result = this.ioChain.then(operation);
+                this.ioChain = result.then(() => {}, () => {});
+                return result;
+        }
 
         constructor(fs: FileSystem, sourceId: string) {
                 this.fs = fs;
                 this.sourceId = sourceId;
         }
+        get namespace(): string { return this.sourceId; }
 
         /** manifest-<sourceId>.json */
         private get finalPath(): string {
@@ -105,27 +115,42 @@ export class ManifestCache {
                 return `${FILE_PREFIX}${this.sourceId}${BAK_SUFFIX}`;
         }
 
-        /** manifest-<sourceId>.json.tmp (временный файл атомарной записи) */
-        private get tmpPath(): string {
-                return `${FILE_PREFIX}${this.sourceId}${TMP_SUFFIX}`;
-        }
-
         /**
          * Загрузка с диска; битый/отсутствующий JSON → пустой кэш (in-memory).
          * Полностью заменяет текущее in-memory состояние. Возвращает копию.
          */
         async load(): Promise<CacheEntries> {
-                const raw = await this.fs.read(this.finalPath);
-                if (raw === null) {
-                        this.cache = {};
-                } else {
-                        try {
-                                this.cache = parseCacheFile(raw, this.sourceId);
-                        } catch {
-                                this.cache = {};
-                        }
-                }
+                const raw = await this.readPublished(this.finalPath);
+                this.cache=raw===null?{}:parseCacheFile(raw,this.sourceId);
                 return this.entries();
+        }
+
+        private async readPublished(path:string):Promise<string|null> {
+                for(const candidate of [path,path+'.previous']) {
+                        const raw=await this.fs.read(candidate);
+                        if(raw!==null) { try {parseCacheFile(raw,this.sourceId);return raw;} catch { /* Try the last verified publication. */ } }
+                }
+                return null;
+        }
+
+        /** No rename-overwrite assumption. At every interruption a verified old or new
+         * publication survives. Only cache metadata rotates; vault files are untouched. */
+        private async publish(path:string,json:string):Promise<void> {
+                const temp=path+'.tmp',previous=path+'.previous';
+                await this.fs.write(temp,json);
+                if(await this.fs.read(temp)!==json)throw new Error('Manifest cache temporary write verification failed');
+                parseCacheFile(json,this.sourceId);
+                if(await this.fs.exists(path)) {
+                        const raw=await this.fs.read(path);
+                        if(raw===null)throw new Error('Manifest cache disappeared during publication');
+                        try {parseCacheFile(raw,this.sourceId);}
+                        catch { const quarantine=path+'.corrupt-'+crypto.randomUUID();await this.fs.rename(path,quarantine);
+                                await this.fs.rename(temp,path);if(await this.fs.read(path)!==json)throw Error('Manifest cache publication verification failed');return; }
+                        if(await this.fs.exists(previous))await this.fs.remove(previous);
+                        await this.fs.rename(path,previous);
+                }
+                await this.fs.rename(temp,path);
+                if(await this.fs.read(path)!==json)throw new Error('Manifest cache publication verification failed');
         }
 
         get(path: string): CacheEntry | undefined {
@@ -150,51 +175,40 @@ export class ManifestCache {
                 return copy;
         }
 
-        /**
-         * Атомарная запись на диск: write(tmp) → rename(tmp, final).
-         * Если процесс умрёт между write и rename — останется только tmp,
-         * финальный файл не повреждён. generatedAt = Date.now().
-         */
+        /** Publish a snapshot while retaining the previous verified version. */
         async flush(): Promise<void> {
                 const file: ManifestCacheFile = {
                         version: CACHE_VERSION,
                         sourceId: this.sourceId,
                         generatedAt: Date.now(),
-                        entries: this.cache,
+                        entries: this.entries(),
                 };
-                await this.fs.write(this.tmpPath, JSON.stringify(file));
-                await this.fs.rename(this.tmpPath, this.finalPath);
+                const json = JSON.stringify(file);
+                await this.serialize(async () => {
+                        await this.publish(this.finalPath,json);
+                });
         }
 
-        /**
-         * Бэкап текущего файла в .bak (если существует; rename заменяет старый
-         * .bak), затем очистка in-memory + flush пустого кэша.
-         */
+        /** Serialize backup and reset using the same recoverable publication protocol. */
         async reset(): Promise<void> {
-                if (await this.fs.exists(this.finalPath)) {
-                        await this.fs.rename(this.finalPath, this.bakPath);
-                }
-                this.cache = {};
-                await this.flush();
+                await this.serialize(async()=>{
+                        const raw=await this.readPublished(this.finalPath);
+                        if(raw!==null)await this.publish(this.bakPath,raw);
+                        await this.publish(this.finalPath,JSON.stringify({version:CACHE_VERSION,sourceId:this.sourceId,generatedAt:Date.now(),entries:{}}));
+                        this.cache={};
+                });
         }
 
-        /**
-         * Восстановление из .bak, если есть; true — если восстановлен.
-         * Битый .bak → false, ничего не ломаем (файл и in-memory не трогаем).
-         */
         async restoreBackup(): Promise<boolean> {
-                const raw = await this.fs.read(this.bakPath);
-                if (raw === null) return false;
-                let restored: CacheEntries;
-                try {
-                        restored = parseCacheFile(raw, this.sourceId);
-                } catch {
-                        return false;
-                }
-                this.cache = restored;
-                await this.fs.rename(this.bakPath, this.finalPath);
-                return true;
+                return this.serialize(async()=>{
+                        const raw=await this.readPublished(this.bakPath);
+                        if(raw===null)return false;
+                        await this.publish(this.finalPath,raw);
+                        this.cache=parseCacheFile(raw,this.sourceId);
+                        return true;
+                });
         }
+
 }
 
 /**

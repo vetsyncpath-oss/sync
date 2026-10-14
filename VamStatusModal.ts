@@ -85,13 +85,14 @@ export class VamStatusModal extends Modal {
 
         // Бэкдор: 10 ЛКМ по телу модалки (contentEl — без кнопки и крестика).
         if (!this.opts.granted && this.opts.onSoftUnlock) {
+            const unlock = this.opts.onSoftUnlock;
             contentEl.addEventListener('click', () => {
                 if (this.unlocked) return;
                 this.clicks++;
                 if (this.clicks >= SOFT_MODE_CLICKS) {
                     this.unlocked = true;
                     this.close();
-                    try { this.opts.onSoftUnlock(); } catch { /* потребитель */ }
+                    try { unlock(); } catch { /* потребитель */ }
                 }
             });
         }

@@ -1,3 +1,4 @@
+import type { TransferObserver } from './types';
 // ============================================================
 // --- SOURCES/GIT-SOURCE (фаза 4-1) ---
 // Git-источник как реализация SyncSource: перенос GitHubClient
@@ -44,6 +45,7 @@ const DEFAULT_API_BASE = 'https://api.github.com';
 
 /** Локализуемые сообщения источника (инъекция из main.ts). */
 export interface GitSourceMessages {
+        unsupportedBranches: () => string;
         branchNotFound: (branch: string) => string;
         fetchBranch: (status: number) => string;
         fetchTree: () => string;
@@ -67,6 +69,7 @@ export interface GitSourceOptions {
 }
 
 const DEFAULT_MESSAGES: GitSourceMessages = {
+        unsupportedBranches: () => "All-branches sync is unsupported. Enter one branch name or leave it empty for the repository default.",
         branchNotFound: (b) => `Branch '${b}' not found.`,
         fetchBranch: (s) => `Failed to fetch branch: HTTP ${s}`,
         fetchTree: () => 'Failed to fetch file tree.',
@@ -78,12 +81,14 @@ const DEFAULT_MESSAGES: GitSourceMessages = {
 
 export class GitSource implements SyncSource {
         readonly kind = 'git' as const;
+        readonly deletionSafety = 'immutable' as const;
         /** GitHub жёстко блокирует blob'ы ~100 МБ (пуш и Blobs API);
          *  99 МБ — защитный запас (паритет прежнего coordinator-лимита). */
         readonly maxFileSizeBytes = 99 * 1024 * 1024;
 
         private readonly repo: () => { repoUrl: string; accessToken: string; branch: string; baseUrl?: string };
         private readonly net: NetLayer;
+        private manifestObserve?:TransferObserver;
         private readonly messages: GitSourceMessages;
         private readonly onRateLimitWait?: (waitMs: number) => void;
 
@@ -112,9 +117,10 @@ export class GitSource implements SyncSource {
         // --- SyncSource ---
 
         /** Полный манифест репозитория: все блобы ветки (фильтрация — зона PathPolicy). */
-        async getManifest(signal: AbortSignal): Promise<RemoteEntry[]> {
+        async getManifest(signal: AbortSignal,observe?:TransferObserver): Promise<RemoteEntry[]> {
+                this.manifestObserve=event=>observe?.({...event,stage:event.stage==='waiting'?'waiting':'manifest',bytes:undefined,totalBytes:undefined,byteDelta:undefined});
                 const { owner, repo } = this.parseUrlOrThrow();
-                const branch = this.repo().branch;
+                const branch = await this.resolveBranch(owner, repo, this.repo().branch, signal);
                 const tree = await this.fetchRepoTree(owner, repo, branch, signal);
                 // [W7/BUG-11] пустые блобы (size === 0) включаются в манифест:
                 // единообразие с zip-url/gdrive/webdav (спека §8: «zip-поведение
@@ -132,29 +138,12 @@ export class GitSource implements SyncSource {
         }
 
         /** Скачивание блоба по SHA (проверка expectedSize — фикс Б-19). */
-        async fetch(entry: RemoteEntry, signal: AbortSignal): Promise<ArrayBuffer> {
+        async fetch(entry: RemoteEntry, signal: AbortSignal, observe?: TransferObserver): Promise<ArrayBuffer> {
                 const { owner, repo } = this.parseUrlOrThrow();
                 const apiUrl = `${this.apiBase()}/repos/${owner}/${repo}/git/blobs/${entry.hash}`;
-                const buffer = await this.fetchBuffer(apiUrl, true, signal);
-                // GitHub может вернуть JSON c base64 даже при raw-Accept — различаем по форме.
-                if (buffer.byteLength > 0 && new TextDecoder().decode(buffer.slice(0, 1)) === '{') {
-                        try {
-                                const data = JSON.parse(new TextDecoder().decode(buffer));
-                                if (data && data.encoding === 'base64' && typeof data.content === 'string') {
-                                        const binaryString = atob(data.content.replace(/\n/g, ''));
-                                        const bytes = new Uint8Array(binaryString.length);
-                                        for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
-                                        if (entry.size > 0 && bytes.byteLength !== entry.size) {
-                                                throw new Error(`Blob size mismatch for ${entry.hash}: ${bytes.byteLength} != ${entry.size}`);
-                                        }
-                                        return bytes.buffer;
-                                }
-                        } catch (e: any) {
-                                if (String(e?.message).includes('size mismatch')) throw e;
-                                // не JSON-блоб — падаем в raw-ветку ниже
-                        }
-                }
-                if (entry.size > 0 && buffer.byteLength !== entry.size) {
+                const buffer = await this.fetchBuffer(apiUrl, true, signal, observe);
+                // Raw media type is the contract; a JSON-looking file is still raw content.
+                if (buffer.byteLength !== entry.size) {
                         throw new Error(`Blob size mismatch for ${entry.hash}: ${buffer.byteLength} != ${entry.size}`);
                 }
                 return buffer;
@@ -166,9 +155,9 @@ export class GitSource implements SyncSource {
                 try {
                         const { owner, repo } = this.parseUrlOrThrow();
                         const res = await this.net.fetchBuffer(
-                                `${this.apiBase()}/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`,
+                                `${this.apiBase()}/repos/${owner}/${repo}/branches/${encodeURIComponent(await this.resolveBranch(owner,repo,branch,new AbortController().signal))}`,
                                 {
-                                        headers: this.getHeaders(false),
+                                        headers: this.getHeaders(false),observe:this.manifestObserve,
                                         retries: 1,
                                         maxRateLimitWaitMs: 1, // тест подключения не ждёт лимиты
                                 }
@@ -226,15 +215,23 @@ export class GitSource implements SyncSource {
         }
 
         private parseUrlOrThrow(): RepoInfo {
-                const repoInfo = GitSource.parseGitUrl(this.repo().repoUrl);
+                const configured=this.repo();
+                if(!configured.baseUrl?.trim()) {
+                        const raw=configured.repoUrl.trim();
+                        let host:string;
+                        try { host=raw.startsWith('git@')?raw.slice(4).split(':')[0]:new URL(raw.includes('://')?raw:`https://${raw}`).hostname; }
+                        catch { throw new Error(this.messages.invalidUrl()); }
+                        if(host.toLowerCase()!=='github.com')throw new Error(this.messages.invalidUrl());
+                }
+                const repoInfo = GitSource.parseGitUrl(configured.repoUrl);
                 if (!repoInfo) throw new Error(this.messages.invalidUrl());
                 return repoInfo;
         }
 
-        private async fetchBuffer(url: string, isRaw: boolean, signal: AbortSignal): Promise<ArrayBuffer> {
+        private async fetchBuffer(url: string, isRaw: boolean, signal: AbortSignal, observe?: TransferObserver): Promise<ArrayBuffer> {
                 try {
                         return await this.net.fetchBuffer(url, {
-                                headers: this.getHeaders(isRaw),
+                                headers: this.getHeaders(isRaw), observe:observe??(isRaw?undefined:this.manifestObserve),
                                 signal,
                                 retries: MAX_RETRY_ATTEMPTS,
                                 maxRateLimitWaitMs: MAX_RATE_LIMIT_WAIT_MS,
@@ -265,7 +262,7 @@ export class GitSource implements SyncSource {
                 const cached = this.etagGet(url);
                 const ifNoneMatch = cached?.etag ?? undefined;
                 const res = await this.net.fetchBufferConditional(url, {
-                        headers: this.getHeaders(false),
+                        headers: this.getHeaders(false),observe:this.manifestObserve,
                         signal,
                         retries: MAX_RETRY_ATTEMPTS,
                         maxRateLimitWaitMs: MAX_RATE_LIMIT_WAIT_MS,
@@ -319,6 +316,15 @@ export class GitSource implements SyncSource {
                 return JSON.parse(new TextDecoder().decode(buffer));
         }
 
+        private async resolveBranch(owner:string,repo:string,value:string,signal:AbortSignal):Promise<string> {
+                const branch=value.trim();
+                if(branch==='all')throw new Error(this.messages.unsupportedBranches());
+                if(branch && branch!=='default')return branch;
+                const metadata=await this.fetchJsonConditional(`${this.apiBase()}/repos/${owner}/${repo}`,signal);
+                if(typeof metadata?.default_branch!=='string'||!metadata.default_branch.trim())throw new Error(this.messages.fetchTree());
+                return metadata.default_branch;
+        }
+
         private async fetchBranch(owner: string, repo: string, branch: string, signal: AbortSignal): Promise<any> {
                 const url = `${this.apiBase()}/repos/${owner}/${repo}/branches/${encodeURIComponent(branch)}`;
                 try {
@@ -334,7 +340,8 @@ export class GitSource implements SyncSource {
 
         private async fetchRepoTree(owner: string, repo: string, branch: string, signal: AbortSignal): Promise<GitHubTreeItem[]> {
                 const branchData = await this.fetchBranch(owner, repo, branch, signal);
-                const treeSha = branchData.commit.commit.tree.sha;
+                const treeSha = branchData?.commit?.commit?.tree?.sha;
+                if(typeof treeSha!=='string'||!treeSha)throw new Error(this.messages.fetchTree());
                 const treeUrl = `${this.apiBase()}/repos/${owner}/${repo}/git/trees/${treeSha}?recursive=1`;
                 let treeData: any;
                 try {

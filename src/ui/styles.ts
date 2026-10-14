@@ -1,3 +1,5 @@
+import { WORKSPACE_CSS } from './sync-workspace-styles';
+export { WORKSPACE_CSS };
 // src/ui/styles.ts — рантайм-инъекция CSS плагина (Phase 4.1).
 //
 // ПРОБЛЕМА: styles.css грузится Obsidian'ом как ОТДЕЛЬНЫЙ файл папки плагина.
@@ -306,6 +308,13 @@ export const PLUGIN_CSS = `/* ==================================================
 .pop-file-progress, .pop-current-path, .pop-bytes-progress { color: var(--text-muted); font-size: 0.9em; margin-top: 4px; }
 .pop-current-path { font-family: var(--font-monospace); font-size: 0.8em; word-break: break-all; }
 .pop-progress-sub { margin-top: 4px; }
+.pop-active-file { display: grid; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--background-modifier-border); }
+.pop-active-file code, .pop-active-file span, .pop-live-errors p { white-space: normal; overflow-wrap: anywhere; min-width: 0; }
+.pop-active-file small { color: var(--text-muted); }
+.pop-targeted-retries { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.pop-targeted-retries button { white-space: normal; overflow-wrap: anywhere; text-align: start; }
+.pop-popover { width: 100%; box-sizing: border-box; max-height: 75vh; overflow: auto; }
+
 
 .pop-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 12px 0; }
 .pop-actions button { padding: 6px 14px; border-radius: 4px; }
@@ -574,7 +583,7 @@ export function injectPluginCss(): void {
         if (document.getElementById(STYLE_ID) !== null) return;
         const style = document.createElement("style");
         style.id = STYLE_ID;
-        style.textContent = PLUGIN_CSS;
+        style.textContent = PLUGIN_CSS + WORKSPACE_CSS;
         document.head.append(style);
 }
 

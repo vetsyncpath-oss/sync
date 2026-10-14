@@ -1,3 +1,4 @@
+import type { TransferObserver } from './types';
 // ============================================================
 // --- SOURCES/GDRIVE-SOURCE (W6-T03) ---
 // Нативный Google Drive источник: вместо ZIP-движка, который
@@ -52,6 +53,7 @@ const GDRIVE_MAX_FILE_SIZE = 100 * 1024 * 1024;
 /** Локализуемые сообщения источника (инъекция из main.ts). */
 export interface GDriveSourceMessages {
         apiKeyMissing: () => string;
+        folderRequired: () => string;
         listFailed: (status: number) => string;
         downloadFailed: (status: number) => string;
         rateLimitExceedsHour: () => string;
@@ -65,15 +67,9 @@ export interface GDriveSourceMessages {
 }
 
 export interface GDriveSourceOptions {
-        /**
-         * Текущая конфигурация GDrive (читается на каждом запросе):
-         *   - apiKey: API key из Google Cloud Console (требуется для auth).
-         *   - folderId: ID папки для листинга (опционально — иначе все файлы
-         *     пользователя, что может быть медленно на больших Drive).
-         *   - includeDocs: true = включать Google Docs/Sheets/Slides (по
-         *     умолчанию false — пропускаем, т.к. для alt=media нужен export,
-         *     а не сам файл).
-         */
+        /** API key and public folder ID. Private-account OAuth and native document
+         * export are unsupported. includeDocs is retained for legacy callers only;
+         * native documents remain excluded regardless of its value. */
         config: () => { apiKey: string; folderId?: string; includeDocs?: boolean };
         transport?: NetTransport;
         onRateLimitWait?: (waitMs: number) => void;
@@ -82,6 +78,7 @@ export interface GDriveSourceOptions {
 }
 
 const DEFAULT_MESSAGES: GDriveSourceMessages = {
+        folderRequired: () => 'Specify a public Drive folder ID. An API key does not grant access to your private Drive.',
         apiKeyMissing: () => 'Google Drive API key is required.',
         listFailed: (s) => `Failed to list files: HTTP ${s}`,
         downloadFailed: (s) => `Failed to download file: HTTP ${s}`,
@@ -159,10 +156,12 @@ function abortedError(): Error & { aborted: boolean } {
 
 export class GDriveSource implements SyncSource {
         readonly kind = 'gdrive' as const;
+        readonly deletionSafety = 'unverified' as const;
         readonly maxFileSizeBytes = GDRIVE_MAX_FILE_SIZE;
 
         private readonly config: () => { apiKey: string; folderId?: string; includeDocs?: boolean };
         private readonly net: NetLayer;
+        private manifestObserve?:TransferObserver;
         private readonly messages: GDriveSourceMessages;
         private readonly onRateLimitWait?: (waitMs: number) => void;
 
@@ -188,22 +187,20 @@ export class GDriveSource implements SyncSource {
                 this.net = new NetLayer(transport);
         }
 
-        async getManifest(signal: AbortSignal): Promise<RemoteEntry[]> {
+        async getManifest(signal: AbortSignal,observe?:TransferObserver): Promise<RemoteEntry[]> {
+                this.manifestObserve=event=>observe?.({...event,stage:event.stage==='waiting'?'waiting':'manifest',bytes:undefined,totalBytes:undefined,byteDelta:undefined});
                 if (signal.aborted) throw abortedError();
                 const { apiKey, folderId, includeDocs } = this.config();
-                if (!apiKey) throw new Error(this.messages.apiKeyMissing());
+                if (!folderId?.trim() || folderId.trim()==='root') throw new Error(this.messages.folderRequired());
+                if (!apiKey.trim()) throw new Error(this.messages.apiKeyMissing());
 
                 // Очищаем кэш перед ре-листингом (старые ID могли стать невалидными).
                 this.pathToId.clear();
 
                 const entries: RemoteEntry[] = [];
 
-                // [P0/C2] BFS от корня: folderId (если задан) или 'root' —
-                // псевдоним корневой папки My Drive (Drive API v3 поддерживает
-                // 'root' как валидный parent в q). Каждый уровень — отдельный
-                // files.list-запрос; папки попадают в очередь, файлы — в манифест
-                // с путями вида dir/name.
-                const rootId = folderId && folderId.trim() !== '' ? folderId.trim() : 'root';
+                // Traverse the explicitly selected public folder.
+                const rootId = folderId.trim();
                 const queue: { id: string; path: string }[] = [{ id: rootId, path: '' }];
                 const visited = new Set<string>([rootId]);
 
@@ -314,11 +311,12 @@ export class GDriveSource implements SyncSource {
                 return entries;
         }
 
-        async fetch(entry: RemoteEntry, signal: AbortSignal): Promise<ArrayBuffer> {
+        async fetch(entry: RemoteEntry, signal: AbortSignal, observe?: TransferObserver): Promise<ArrayBuffer> {
                 if (signal.aborted) throw abortedError();
                 // [P0/C1] Drive API требует ключ на КАЖДОМ запросе, включая alt=media.
-                const { apiKey } = this.config();
-                if (!apiKey) throw new Error(this.messages.apiKeyMissing());
+                const { apiKey, folderId } = this.config();
+                if (!folderId?.trim() || folderId.trim()==='root') throw new Error(this.messages.folderRequired());
+                if (!apiKey.trim()) throw new Error(this.messages.apiKeyMissing());
                 const id = this.pathToId.get(entry.path);
                 if (!id) {
                         // Кэш не содержит ID — getManifest не зван или файл удалён.
@@ -332,8 +330,8 @@ export class GDriveSource implements SyncSource {
                 // [overhaul S1/H-4] В 404-ошибку уходит ТОЛЬКО id файла: раньше
                 // передавался весь url — с `key=<apiKey>` — и секрет персистился
                 // в FailedFile.reason → data.json → topErrors журнала → UI.
-                const buffer = await this.fetchBuffer(url, signal, id);
-                if (entry.size > 0 && buffer.byteLength !== entry.size) {
+                const buffer = await this.fetchBuffer(url, signal, id, observe, entry.size);
+                if (buffer.byteLength !== entry.size) {
                         throw new Error(`GDrive: size mismatch for ${entry.path}: ${buffer.byteLength} != ${entry.size}`);
                 }
                 return buffer;
@@ -358,7 +356,7 @@ export class GDriveSource implements SyncSource {
         private buildListUrl(apiKey: string, folderId: string, _includeDocs: boolean, pageToken: string | undefined): string {
                 const params = new URLSearchParams();
                 params.set('key', apiKey);
-                params.set('fields', 'files(id,name,mimeType,size,modifiedTime,sha256Checksum,md5Checksum),nextPageToken');
+                params.set('fields', 'files(id,name,mimeType,size,modifiedTime,sha256Checksum,md5Checksum),nextPageToken,incompleteSearch');
                 params.set('pageSize', '200');
                 params.set('q', `trashed=false and '${folderId}' in parents`);
                 if (pageToken) {
@@ -380,7 +378,7 @@ export class GDriveSource implements SyncSource {
         private async fetchJson(url: string, signal: AbortSignal): Promise<unknown> {
                 try {
                         const buffer = await this.net.fetchBuffer(url, {
-                                headers: { 'Accept': 'application/json' },
+                                headers: { 'Accept': 'application/json' },observe:this.manifestObserve,
                                 signal,
                                 retries: MAX_RETRY_ATTEMPTS,
                                 maxRateLimitWaitMs: MAX_RATE_LIMIT_WAIT_MS,
@@ -389,7 +387,7 @@ export class GDriveSource implements SyncSource {
                         });
                         return JSON.parse(new TextDecoder().decode(buffer));
                 } catch (e: any) {
-                        if (e?.rateLimitExceeded) throw new Error(this.messages.rateLimitExceedsHour());
+                        if (e?.rateLimitExceeded) {e.message=this.messages.rateLimitExceedsHour();throw e;}
                         if (e?.status) throw new Error(this.messages.listFailed(e.status));
                         throw e;
                 }
@@ -400,6 +398,7 @@ export class GDriveSource implements SyncSource {
                         throw new Error(this.messages.invalidResponse('not an object'));
                 }
                 const obj = json as Record<string, unknown>;
+                if (obj.incompleteSearch === true) throw new Error(this.messages.manifestTruncated());
                 if (!Array.isArray(obj.files)) {
                         throw new Error(this.messages.invalidResponse('files is not an array'));
                 }
@@ -427,10 +426,10 @@ export class GDriveSource implements SyncSource {
          * [overhaul S1/H-4] notFoundLabel — ЧТО называть в 404-сообщении
          * (id файла или путь): НИКОГДА не url с ключом (утечка секрета).
          */
-        private async fetchBuffer(url: string, signal: AbortSignal, notFoundLabel: string): Promise<ArrayBuffer> {
+        private async fetchBuffer(url: string, signal: AbortSignal, notFoundLabel: string, observe?: TransferObserver, expectedSize?:number): Promise<ArrayBuffer> {
                 try {
                         return await this.net.fetchBuffer(url, {
-                                headers: { 'Accept': 'application/octet-stream' },
+                                headers: { 'Accept': 'application/octet-stream' }, observe, expectedSize,
                                 signal,
                                 retries: MAX_RETRY_ATTEMPTS,
                                 maxRateLimitWaitMs: MAX_RATE_LIMIT_WAIT_MS,
@@ -438,9 +437,9 @@ export class GDriveSource implements SyncSource {
                                 onRateLimitWait: (waitMs: number) => this.onRateLimitWait?.(waitMs),
                         });
                 } catch (e: any) {
-                        if (e?.rateLimitExceeded) throw new Error(this.messages.rateLimitExceedsHour());
-                        if (e?.status === 404) throw new Error(this.messages.fileNotFound(notFoundLabel));
-                        if (e?.status) throw new Error(this.messages.downloadFailed(e.status));
+                        if (e?.rateLimitExceeded) {e.message=this.messages.rateLimitExceedsHour();throw e;}
+                        if (e?.status === 404) {e.message=this.messages.fileNotFound(notFoundLabel);throw e;}
+                        if (e?.status) {e.message=this.messages.downloadFailed(e.status);throw e;}
                         throw e;
                 }
         }

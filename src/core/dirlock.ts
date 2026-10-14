@@ -1,3 +1,4 @@
+import { SyncFault } from './sync-issue';
 // ============================================================
 // --- CORE/DIRLOCK (фаза 4-1: перенос из main.ts без изменений
 // логики) ---
@@ -11,6 +12,7 @@
 export interface MkdirAdapter {
         exists(path: string): Promise<boolean>;
         mkdir(path: string): Promise<void>;
+        stat?(path:string):Promise<{type?:string}|null>;
 }
 
 export class DirLock {
@@ -41,11 +43,13 @@ export class DirLock {
                 for (const part of parts) {
                         currentPath = currentPath === '' ? part : `${currentPath}/${part}`;
                         const exists = await adapter.exists(currentPath);
+                        if(exists&&(await adapter.stat?.(currentPath))?.type==='file')throw new SyncFault('path-collision',`Parent is a file: ${currentPath}`);
                         if (!exists) {
                                 try {
                                         await adapter.mkdir(currentPath);
                                 } catch (e: any) {
                                         const nowExists = await adapter.exists(currentPath);
+                                        if(nowExists&&(await adapter.stat?.(currentPath))?.type==='file')throw new SyncFault('path-collision',`Parent is a file: ${currentPath}`);
                                         if (!nowExists) {
                                                 throw new Error(`Failed to create directory ${currentPath}: ${e?.message ?? e}`);
                                         }
