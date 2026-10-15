@@ -1,0 +1,53 @@
+{
+  "date": "2026-10-15",
+  "ourRuntime": "a5a4d16bb55976aaa6a88727396c9ca54cc9d680",
+  "syncEngine": "a795a46abe8b6d6fc6a319152cda1b65cfc9c8b9",
+  "upstreamManifestVersion": "3.3.1",
+  "upstreamGdrivePackageVersion": "0.0.1",
+  "method": "Real list/inventory/observeDrive/decider methods, fake API/DB/runtime constants. Not full sync or wall-clock/live network benchmark. Same visible set; upstream root already known. Local scan, effects, persistence and other stages excluded.",
+  "results": [
+    {
+      "name": "100 files in 10 sibling folders",
+      "files": 100,
+      "folders": 10,
+      "syncEngineListRequests": 1,
+      "syncEngineListed": 110,
+      "oursInventoryRequests": 12,
+      "oursInventoryPlusWarmIdentityRequests": 312,
+      "oursInventoryItems": 110
+    },
+    {
+      "name": "100 files at depth 10",
+      "files": 100,
+      "folders": 10,
+      "syncEngineListRequests": 1,
+      "syncEngineListed": 110,
+      "oursInventoryRequests": 12,
+      "oursInventoryPlusWarmIdentityRequests": 1212,
+      "oursInventoryItems": 110
+    },
+    {
+      "name": "1000 files in 100 sibling folders",
+      "files": 1000,
+      "folders": 100,
+      "syncEngineListRequests": 2,
+      "syncEngineListed": 1100,
+      "oursInventoryRequests": 102,
+      "oursInventoryPlusWarmIdentityRequests": 3102,
+      "oursInventoryItems": 1100
+    },
+    {
+      "name": "Sync Engine same-name duplicate",
+      "listed": [
+        "same.md"
+      ],
+      "selectedId": "newer"
+    },
+    {
+      "name": "Sync Engine bootstrap equal size with different UIDs",
+      "tasks": [
+        "addRecord"
+      ]
+    }
+  ]
+}
