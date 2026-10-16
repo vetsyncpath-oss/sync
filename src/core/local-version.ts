@@ -1,3 +1,4 @@
+import { SyncFault } from './sync-issue';
 import type { VaultAdapter } from '../sources/types';
 import { sha256Hex } from './hasher';
 
@@ -14,8 +15,8 @@ export function sameVersion(a: LocalVersion, b: LocalVersion): boolean {
         return a.kind === 'missing' ? b.kind === 'missing'
                 : b.kind === 'file' && a.sha256 === b.sha256 && a.size === b.size;
 }
-export class StalePlanError extends Error {
-        constructor(path: string) { super(`Local file changed after planning: ${path}`); this.name = 'StalePlanError'; }
+export class StalePlanError extends SyncFault {
+        constructor(path: string) { super('local-changed',`Local file changed after planning: ${path}`,'file',true); this.name = 'StalePlanError'; }
 }
 export async function assertLocal(vault: VaultAdapter, path: string, expected: LocalVersion): Promise<void> {
         if (!sameVersion(await observeLocal(vault, path), expected)) throw new StalePlanError(path);

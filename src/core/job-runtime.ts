@@ -26,10 +26,10 @@ export function mergeJobStats(target:SyncStats,value:SyncStats):void{
     if(value.problem)target.problem=value.problem;
 }
 /** Only shared integrity/capacity failures stop unrelated writers. Provider failures stay in their job. */
-export function sharedJobFailure(issue:SyncIssue):boolean{return issue.domain!=='job'&&['operation-journal','history-quota','checkpoint','checkpoint-cleanup','history-cleanup','recovery-invalid','recovery-quota','settings-save','policy-corrupt','authority-corrupt','authority-blocked','journal-write'].includes(issue.code);}
+export function sharedJobFailure(issue:SyncIssue):boolean{return issue.domain!=='job'&&['operation-journal','history-quota','checkpoint','checkpoint-cleanup','history-cleanup','recovery-invalid','recovery-quota','settings-save','policy-corrupt','authority-corrupt','authority-blocked','journal-write','journal-save','retry-budget-persist','journal-recovery'].includes(issue.code);}
 export function accountedOutcome(stats:SyncStats):JobOutcome{
     if(stats.outcome==='cancelled')return 'cancelled';
-    if(stats.failed||stats.problems?.length)return stats.downloaded||(stats.uploaded??0)||stats.deleted?'partial':'failed';
+    if(stats.outcome==='error'||stats.failed||stats.problems?.length)return stats.downloaded||(stats.uploaded??0)||stats.deleted?'partial':'failed';
     if(stats.deferredConflicts||stats.deferredDeletions||stats.pendingAfter)return 'needs-attention';return 'success';
 }
 
@@ -40,7 +40,7 @@ export class JobBatch {
     constructor(private readonly signal:AbortSignal,private readonly guard:()=>void,private readonly changed?:(states:JobRunResult[])=>void,private readonly options:JobBatchOptions={}){}
     snapshot():JobRunResult[]{return [...this.states.values()].map(state=>structuredClone(state));}
     private emit():void{try{this.changed?.(this.snapshot());}catch(error){console.warn('[VaultSync] job subscriber failed');}}
-    async run<T>(jobs:readonly JobDescriptor[],observe:(job:JobDescriptor,signal:AbortSignal)=>Promise<T>,apply:(job:JobDescriptor,observed:T)=>Promise<SyncStats>,admit?:(job:JobDescriptor,observed:T,signal:AbortSignal)=>Promise<void>):Promise<{job:JobDescriptor;stats:SyncStats}[]>{
+    async run<T>(jobs:readonly JobDescriptor[],observe:(job:JobDescriptor,signal:AbortSignal)=>Promise<T>,apply:(job:JobDescriptor,observed:T,progress:SyncStats)=>Promise<SyncStats>,admit?:(job:JobDescriptor,observed:T,signal:AbortSignal)=>Promise<void>):Promise<{job:JobDescriptor;stats:SyncStats}[]>{
         const runId=crypto.randomUUID();for(const job of jobs)this.states.set(job.id,{jobId:'job:'+job.id,connectionId:job.id,name:job.name,kind:job.kind,runId,activity:'queued',downloaded:0,uploaded:0,deleted:0,failed:0,pending:0,attention:0,startedAt:Date.now(),issues:[]});this.emit();
         return Promise.all(jobs.map(async job=>{
             const state=this.states.get(job.id)!;let stats=emptyStats(),observationDone=false;
@@ -58,12 +58,12 @@ export class JobBatch {
                 const work=this.applyChain.then(async()=>{
                     this.signal.throwIfAborted();this.guard();
                     if(this.stopped){stats.outcome='error';state.outcome='blocked';stats.problems=[{code:'authority-blocked',message:'A shared integrity failure blocks new effects',scope:'session',stage:'preparing',retryable:false}];return;}
-                    state.activity='running';this.emit();stats=await apply(job,snapshot);
+                    state.activity='running';this.emit();stats=await apply(job,snapshot,stats);
                     if(stats.problems?.some(sharedJobFailure))this.stopped=true;
                 });this.applyChain=work.then(()=>{},()=>{});await work;
             }catch(error){
                 observed();if(this.signal.aborted){stats.outcome='cancelled';state.outcome='cancelled';}
-                else {const issue=syncIssue(error,state.activity==='running'?'apply':'manifest');stats.failed=1;stats.outcome='error';stats.problem=issue.message;stats.problems=[issue];if(sharedJobFailure(issue))this.stopped=true;}
+                else {const issue=syncIssue(error,state.activity==='running'?'apply':'manifest');stats.failed++;stats.outcome='error';stats.problem=issue.message;stats.problems=[...stats.problems??[],issue];if(sharedJobFailure(issue))this.stopped=true;}
             }
             stats.problems=stats.problems?.map(issue=>({...issue,jobId:state.jobId,connectionId:job.id}));
             Object.assign(state,{activity:'idle',outcome:state.outcome??accountedOutcome(stats),downloaded:stats.downloaded,uploaded:stats.uploaded??0,deleted:stats.deleted,

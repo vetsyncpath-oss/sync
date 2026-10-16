@@ -1,3 +1,4 @@
+import { SendBudget, SendBudgetError, sendWithBudget } from '../core/send-budget';
 // Small URL/query helpers adapted from hesprs/sync-engine, a795a46, under MIT.
 // See licenses/sync-engine-MIT.txt and THIRD_PARTY_NOTICES.md.
 import type { NetRequest, NetResponse, NetTransport } from './types';
@@ -24,7 +25,7 @@ export interface DriveFile {
 }
 export interface DriveItem { path: string; file: DriveFile; parentId?: string }
 export interface DriveInventory { root: DriveFile; items: DriveItem[]; excluded: number; diagnostics: RemoteBrowseDiagnostic[]; completeness: 'complete' | 'unstable' }
-export interface DriveUploadState { url: string; offset: number; size: number; fileId: string }
+export interface DriveUploadState { sendAttempts?:Record<string,number>; url: string; offset: number; size: number; fileId: string }
 const escapeQuery = (value: string) => value.replaceAll('\\', String.raw`\\`).replaceAll("'", String.raw`\'`);
 function buildUrl(base: string, path: string, query: Record<string, string> = {}): string {
     const url = new URL(base + path); for (const [key,value] of Object.entries(query)) url.searchParams.set(key,value); return url.href;
@@ -187,16 +188,26 @@ export class GoogleDriveClient {
             if (!match || !Number.isSafeInteger(Number(match[1])) || Number(match[1])>=bytes.byteLength) throw new SyncFault('response-format','Invalid upload acknowledgement','file');
             return Number(match[1])+1;
         };
+        const budgets=new Map<string,SendBudget>();
+        const budgetFor=(step:string)=>{
+            let budget=budgets.get(step);
+            if(!budget){budget=new SendBudget(5,state!.sendAttempts?.[step]??0,async attempts=>{
+                state={...state!,sendAttempts:{...state!.sendAttempts,[step]:attempts}};
+                await persist(structuredClone(state));
+            });budgets.set(step,budget);}
+            return budget;
+        };
         let probe = Boolean(previous), transient = 0, stalls = 0;
         while (true) {
             signal.throwIfAborted();
             const end=Math.min(state.offset+8*1024*1024,bytes.byteLength);
-            const request:NetRequest={method:'PUT',signal,redirect:'error',maxBytes:1024*1024,
+            const step=probe?`probe:${state.offset}`:`chunk:${state.offset}:${end-state.offset}`;
+            const request:NetRequest={sendBudget:budgetFor(step),method:'PUT',signal,redirect:'error',maxBytes:1024*1024,
                 headers:{'Content-Range':probe||bytes.byteLength===0?`bytes */${bytes.byteLength}`:`bytes ${state.offset}-${end-1}/${bytes.byteLength}`},
                 body:probe?new Uint8Array(0):new Uint8Array(bytes,state.offset,end-state.offset)};
             let response:NetResponse;
-            try {response=await this.transport.fetch(state.url,request);}
-            catch (error) {signal.throwIfAborted();if(++transient>4||error instanceof SyncFault&&!error.retryable)throw error;await sleepInterruptible(1000*2**(transient-1),signal);probe=true;continue;}
+            try {response=await sendWithBudget(this.transport,state.url,request);}
+            catch (error) {signal.throwIfAborted();if(error instanceof SendBudgetError)throw error;if(++transient>4||error instanceof SyncFault&&!error.retryable)throw error;await sleepInterruptible(1000*2**(transient-1),signal);probe=true;continue;}
             if (response.status===200 || response.status===201) {
                 const file=parseFile(await googleResponse(response,signal));
                 if(file.id!==fileId)throw new SyncFault('integrity','Drive returned a different upload target','file');

@@ -250,8 +250,7 @@ export class Coordinator {
         // ============================================================
 
         /**
-         * Сессия синхронизации. null = не стартовала (guard/отмена на
-         * подтверждении); иначе — честная статистика, включая отмену
+         * Сессия синхронизации. null = не стартовала (admission guard); иначе — честная статистика, включая отмену
          * посередине (кэш отражает только реально записанное).
          */
         async sync(opts: { forcedPaths?: Set<string>; forceAll?: boolean; trigger?: 'manual' | 'auto'; missingOnly?:boolean;onlyForcedPaths?:boolean;deferQuestions?:boolean;finishing?:boolean } = {}): Promise<SyncStats | null> {
@@ -588,7 +587,7 @@ export class Coordinator {
                                 };
 
                                 this.sessionStage='confirm';ui.setStatus('syncing',{phase:2,stage:'confirm',lastActivityAt:Date.now()});
-                                if (!(await cancellable(ui.confirmSync(info,controller.signal),controller.signal))) {stats.outcome='cancelled';return null;}
+                                if (!(await cancellable(ui.confirmSync(info,controller.signal),controller.signal))) {stats.outcome='cancelled';return stats;}
                         }
 
                         this.guard();
@@ -635,9 +634,9 @@ export class Coordinator {
                         try {
                                 this.trace({stage:'finalize'});ui.setStatus('syncing',{phase:5,stage:'finalize',lastActivityAt:Date.now()});
                                 try { await this.persist('checkpoint'); }
-                                catch(error){const issue=syncIssue(error,'checkpoint');issue.scope='session';stats.problem=issue.message;stats.problems!.push(issue);stats.outcome='error';}
+                                catch(error){const issue=syncIssue(new SyncFault('checkpoint',diagnosticText(error),'session',false,'shared'),'checkpoint');issue.scope='session';stats.problem=issue.message;stats.problems!.push(issue);stats.outcome='error';}
                                 try { await this.current.mutations?.store.compact(); }
-                                catch(error) {const issue=syncIssue(error,'checkpoint');issue.scope='session';stats.problems!.push(issue);stats.problem=issue.message;stats.outcome='error';}
+                                catch(error) {const issue=syncIssue(new SyncFault('checkpoint',diagnosticText(error),'session',false,'shared'),'checkpoint');issue.scope='session';stats.problems!.push(issue);stats.problem=issue.message;stats.outcome='error';}
                                 if(this.current.mutations?.store.cleanupProblem){const problem=this.current.mutations.store.cleanupProblem;stats.problems!.push({code:'checkpoint-cleanup',message:problem,stage:'checkpoint',scope:'session',retryable:false});stats.problem=problem;stats.outcome='error';}
                                 try { await this.current.source.dispose?.(); } catch(error) { console.warn('[VaultSync] Source cleanup deferred:',diagnosticText(error)); }
                                 stats.pendingAfter=this.activeFailureCount();
@@ -645,7 +644,7 @@ export class Coordinator {
                                 stats.blocked=this.activeFailures().filter(file=>file.poisoned).length;
                                 stats.duration=Date.now()-startTime;
                                 if(stats.outcome==='ok'&&(stats.failed>0||stats.pendingAfter>0||stats.notAttempted||stats.deferredDeletions))stats.outcome='error';
-                                if(stats.outcome==='ok'&&!stats.deferredDeletions&&!stats.deferredConflicts) {ui.setLastSyncTime(Date.now());try{await this.persist('success-end');}catch(error){const issue=syncIssue(error,'checkpoint');issue.scope='session';stats.problem=issue.message;stats.problems!.push(issue);stats.outcome='error';}}
+                                if(stats.outcome==='ok'&&!stats.deferredDeletions&&!stats.deferredConflicts) {ui.setLastSyncTime(Date.now());try{await this.persist('success-end');}catch(error){const issue=syncIssue(new SyncFault('checkpoint',diagnosticText(error),'session',false,'shared'),'checkpoint');issue.scope='session';stats.problem=issue.message;stats.problems!.push(issue);stats.outcome='error';}}
                                 stats.duration=Date.now()-startTime;
                                 if(stats.outcome==='cancelled'){ui.setStatus('idle');ui.notify(m.cancelled);}
                                 else if(stats.problem){ui.setStatus('error',{pendingCount:stats.pendingAfter});ui.notify(m.syncFailed(stats.problem),10000);}
@@ -934,7 +933,7 @@ export class Coordinator {
                                                                 if (bytesEqual(before, data)) return;
                                                                 if (vault.compareAndWrite) {
                                                                         const result = await vault.compareAndWrite(path, data, before, signal);
-                                                                        if (result === false) throw new Error('Local file changed before replacement');
+                                                                        if (result === false) throw new SyncFault('local-changed','Local file changed before replacement','file',true);
                                                                         if (result === true) return;
                                                                 }
                                                         }
@@ -977,7 +976,7 @@ export class Coordinator {
                                 }
                                 if(phase==='checkpoint'||persistenceFailure){
                                         if(!persistenceFailure){
-                                                persistenceFailure=Object.assign(new Error('Checkpoint failed after file processing; sync stopped without re-queuing applied files'),{cause:e});
+                                                persistenceFailure=new SyncFault('checkpoint',`Checkpoint failed after file processing; sync stopped without re-queuing applied files: ${diagnosticText(e)}`,'session',false,'shared');
                                                 console.error('[VaultSync] checkpoint FAILED:',e);
                                         }
                                         throw persistenceFailure;
@@ -1080,7 +1079,7 @@ export class Coordinator {
                                 this.controller?.signal.throwIfAborted();
                                 await vault.writeBinary(recoveryPath, local);
                                 const current = await vault.readBinary(path);
-                                if (!bytesEqual(current, local)) throw new Error('Local file changed before deletion');
+                                if (!bytesEqual(current, local)) throw new SyncFault('local-changed','Local file changed before deletion','file',true);
                                 this.controller?.signal.throwIfAborted();
                                 if (this.current.mutations) await this.current.mutations.delete(cache.namespace, {
                                         id: planned.id, planId: this.plan!.id, path, before: planned.expected, effect: { kind: 'delete', path }, guard: () => this.guard(path),

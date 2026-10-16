@@ -147,3 +147,18 @@ test('host admission blocks two writers of the same Drive root while an independ
  const result=await h.plugin.executeSync('auto');assert.equal(h.driveDownloads(),0);assert(!h.f.files.has('a.md'));assert(!h.f.files.has('Other/a.md'));assert.equal(str(h.f.files.get('Git/b.md')!),'REMOTE');assert.equal(result.jobResults.find((job:any)=>job.connectionId==='git').outcome,'success');
  for(const id of ['drive','drive2'])assert(result.jobResults.find((job:any)=>job.connectionId===id).issues.some((issue:any)=>issue.code==='remote-ownership'));
 });
+
+test('host batch final persistence failure keeps completed transfers and error outcome',async()=>{
+    const h=await host();h.plugin.persistEngineState=async()=>{throw new Error('Final persistence unavailable');};
+    const stats=await h.plugin.executeSync('manual');
+    assert(stats.downloaded>0);assert.equal(stats.outcome,'error');
+    assert(stats.problems.some((issue:any)=>issue.stage==='checkpoint'&&issue.scope==='session'));
+    assert(stats.jobResults.some((job:any)=>job.downloaded>0));
+});
+
+test('cancelled pull phase cannot fall through to Drive writes in the same job',async()=>{
+    const h=await host();h.f.coordinator.executionContext=(()=>({cancel:()=>{},sync:async()=>({totalFiles:0,downloaded:0,deleted:0,skipped:0,failed:0,bytesTransferred:0,duration:0,conflicts:0,outcome:'cancelled',problems:[],results:[]})})) as any;
+    const stats=await h.plugin.executeSync('manual');
+    assert.equal(stats.outcome,'cancelled');assert.equal(h.driveDownloads(),0);assert(!h.f.files.has('a.md'));
+    assert(stats.jobResults.every((job:any)=>job.outcome==='cancelled'));
+});

@@ -17,8 +17,7 @@
 //      отказ ДО ухода какого-либо трафика.
 //    • describeVamStatus / describeVamReason — локализация машинных кодов
 //      причины (§7: «локализуйте у себя, не сравнивайте с UI-строками»).
-//    • vamAllowsWork(plugin) — булев срез для чипов/модалки (soft mode
-//      учитывается так же, как в доноре).
+//    • vamAllowsWork(plugin) — булев срез для чипов/модалки (VAM обязателен для этой сборки).
 // ============================================================================
 
 import { Notice } from 'obsidian';
@@ -28,21 +27,16 @@ import { i18n } from '../i18n';
 /** Минимальный структурный порт плагина (без импорта main.ts). */
 interface VamPluginPort {
     vam?: VamGate | null;
-    /** Мягкий режим (сессионный; скрытый жест статусной модалки — 10 ЛКМ по
-     *  её телу; [overhaul S1/H-2] доступен ЛЮБОМУ пользователю, знающему о
-     *  нём — осознанное решение владельца, UI о жесте не сообщает): true →
-     *  работа разрешена без подтверждения VAM. */
+    /** Deprecated compatibility field; never grants access in this build. */
     vamSoftMode?: boolean;
 }
 
 /** Анти-спам: не чаще одного Notice об отказе в 3 секунды. */
 let lastDeniedNoticeAt = 0;
 
-/** Разрешена ли работа, требующая входа. Fail-closed: гварда нет → false.
- *  Мягкий режим — единственное осознанное исключение (включает любой
- *  пользователь, знающий скрытый жест модалки — см. поле vamSoftMode). */
+/** VAM is mandatory: only a current granted gate authorizes work. */
 export function vamAllowsWork(plugin: VamPluginPort | null | undefined): boolean {
-    return plugin?.vamSoftMode === true || plugin?.vam?.isGranted() === true;
+    return plugin?.vam?.isGranted() === true;
 }
 
 /**
