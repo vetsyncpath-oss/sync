@@ -1,0 +1,12 @@
+Full source snapshot: 43b00eae13379ef72038b4901d25d85da1d36148
+Archive: sync-overhaul-43b00ea.zip
+Files: 209 (151 TypeScript files)
+SHA-256: 8522653c8c4248af6de09bc805db265ec58145efa49f7bee1dc902d38ec8b851
+Every archive file byte-verified against the Git commit.
+
+Start with docs/overhaul-vnext2/README.md.
+Implementation status: docs/overhaul-vnext2/implementation-w1-results.md.
+Baseline contracts: docs/overhaul-vnext/.
+Includes complete source, tests, package.json, lockfile, build scripts and licenses.
+This is a source snapshot with a partial overhaul implementation, not an installable release.
+Latest recorded verification: 575 tests, TypeScript and production build passed.
