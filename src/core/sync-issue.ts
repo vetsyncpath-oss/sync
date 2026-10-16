@@ -1,3 +1,4 @@
+import { SendBudgetError } from './send-budget';
 import { NetError } from './net';
 import type { PipelineStage, SyncIssue } from '../sources/types';
 
@@ -15,6 +16,7 @@ export class SyncFault extends Error {
 }
 export function syncIssue(error: unknown, stage: PipelineStage,seen=new Set<unknown>()): SyncIssue {
     const message = diagnosticText(error);
+    if(error instanceof SendBudgetError)return {code:error.code,message,stage,scope:error.code==='retry-budget-persist'?'session':'file',domain:error.code==='retry-budget-persist'?'shared':undefined,retryable:false};
     const cause=(error as {cause?:unknown})?.cause;
     if(!(error instanceof NetError)&&!(error instanceof SyncFault)&&cause instanceof Error&&!seen.has(cause)){
         seen.add(error);return {...syncIssue(cause,stage,seen),message};

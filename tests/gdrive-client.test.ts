@@ -142,7 +142,7 @@ test('resumable transfer follows a partial acknowledgement, not bytes sent',asyn
         return response(200,{...file('reserved','a.md',size),md5Checksum:md5Hex(bytes)});
     }};
     await new GoogleDriveClient(transport).upload('reserved',{id:'reserved'},bytes,true,new AbortController().signal,async state=>{states.push(state.offset);});
-    assert.deepEqual(states,[0,4194304]);assert.equal(ranges[1],`bytes 4194304-${size-1}/${size}`);
+    assert.deepEqual(states,[0,0,4194304,4194304]);assert.equal(ranges[1],`bytes 4194304-${size-1}/${size}`);
 });
 test('unknown completed upload is queried before replaying bytes',async()=>{
     let requests=0;const headers:string[]=[];
@@ -206,4 +206,30 @@ test('Drive restore capabilities are requested as booleans and inconsistent repe
     let pages=0;const client=new GoogleDriveClient({fetch:async url=>{assert(new URL(url).searchParams.get('fields')?.includes('canUntrash'));if(new URL(url).pathname.endsWith('/root-id'))return response(200,{id:'root-id',name:'Root',mimeType:DRIVE_FOLDER,version:'1'});
         return response(200,{files:[{...file('one','a.md'),capabilities:{canUntrash:pages>0}}],...(pages++===0?{nextPageToken:'next'}:{})});}});
     assert.equal((await client.inventory('root-id',new AbortController().signal)).completeness,'unstable');
+});
+
+test('persisted exhausted chunk budget permits a status probe but never replays bytes after restart',async()=>{
+ let requests=0;const ranges:string[]=[];const client=new GoogleDriveClient({fetch:async(_url,request)=>{requests++;ranges.push(request.headers!['Content-Range']);return response(308,{});}});
+ await assert.rejects(client.upload('reserved',{},new ArrayBuffer(8),true,new AbortController().signal,async()=>{},
+  {url:'https://www.googleapis.com/upload/drive/v3/files?upload_id=test',offset:0,size:8,fileId:'reserved',sendAttempts:{'chunk:0:8':5}}),(error:any)=>error.code==='retry-budget-exhausted');
+ assert.equal(requests,1);assert.deepEqual(ranges,['bytes */8']);
+});
+test('persisted exhausted status probe is not reset on restart',async()=>{
+ let requests=0;const client=new GoogleDriveClient({fetch:async()=>{requests++;return response(308,{});}});
+ await assert.rejects(client.upload('reserved',{},new ArrayBuffer(8),true,new AbortController().signal,async()=>{},
+  {url:'https://www.googleapis.com/upload/drive/v3/files?upload_id=test',offset:0,size:8,fileId:'reserved',sendAttempts:{'probe:0':5}}),(error:any)=>error.code==='retry-budget-exhausted');assert.equal(requests,0);
+});
+test('more than five advancing upload steps are valid and each is charged before dispatch',async()=>{
+ const data=new ArrayBuffer(8);let sent=0;let latest:import('../src/sources/gdrive-client').DriveUploadState|undefined;
+ const client=new GoogleDriveClient({fetch:async(_url,request)=>{
+  if(request.method==='POST')return response(200,{}, {location:'https://www.googleapis.com/upload/drive/v3/files?upload_id=test'});
+  assert.equal(latest?.sendAttempts?.[`chunk:${sent}:${8-sent}`],1);sent++;
+  return sent<8?response(308,{}, {range:`bytes=0-${sent-1}`}):response(200,{...file('reserved','a.md',8),md5Checksum:md5Hex(data)});
+ }});
+ await client.upload('reserved',{},data,true,new AbortController().signal,async state=>{latest=structuredClone(state);});assert.equal(sent,8);
+});
+test('upload budget persistence failure prevents even the status probe',async()=>{
+ let sent=0;const client=new GoogleDriveClient({fetch:async()=>{sent++;return response(308,{});}});
+ await assert.rejects(client.upload('reserved',{},new ArrayBuffer(8),true,new AbortController().signal,async()=>{throw Error('disk');},
+  {url:'https://www.googleapis.com/upload/drive/v3/files?upload_id=test',offset:0,size:8,fileId:'reserved'}),(error:any)=>error.code==='retry-budget-persist');assert.equal(sent,0);
 });

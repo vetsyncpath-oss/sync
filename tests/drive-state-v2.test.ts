@@ -129,3 +129,11 @@ test('corrupt lifecycle evidence cannot enable a restore or conflicting baseline
         memory.files.set(filename(1),await envelope({...state,inbox:{constructor:corrupt}}));await assert.rejects(()=>new DriveStateStore(memory.fs,namespace).load(),/Invalid Drive inbox/);
     }
 });
+
+test('upload send budgets survive verified checkpoint publication and reopen',async()=>{
+ const f=await legacy(),store=new DriveStateStore(f.memory.fs,namespace);await store.load();
+ await store.save(s=>{s.pending[f.intent.path].copyUpload!.sendAttempts={'chunk:262144:262144':5,'probe:262144':2};});
+ const restarted=new DriveStateStore(f.memory.fs,namespace);await restarted.load();
+ assert.deepEqual(restarted.pending('constructor')!.copyUpload!.sendAttempts,{'chunk:262144:262144':5,'probe:262144':2});
+ await assert.rejects(restarted.save(s=>{s.pending[f.intent.path].copyUpload!.sendAttempts={'probe:262144':-1};}),/attempt budget/);
+});

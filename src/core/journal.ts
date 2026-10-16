@@ -1,4 +1,4 @@
-import { diagnosticText } from './sync-issue';
+import { diagnosticText, SyncFault } from './sync-issue';
 import type { SyncIssue } from '../sources/types';
 // src/core/journal.ts — журнал сессий синхронизации [W2-T08].
 //
@@ -43,6 +43,7 @@ export type JournalOutcome = 'ok' | 'cancelled' | 'error';
 
 /** Одна завершённая сессия синхронизации (сериализуется в JSON как есть). */
 export interface JournalEntry {
+        journalId?:string;
         jobResults?:import('./job-runtime').JobRunResult[];
         jobResultsTotal?:number;
         uploaded?:number;deletedDrive?:number;
@@ -91,6 +92,7 @@ export interface JournalEntry {
  * read() → null означает «файла ещё нет» (первый запуск — норма, НЕ warn).
  */
 export interface JournalIo {
+        pending?: {read():Promise<string|null>;write(raw:string):Promise<void>};
         quarantine?(raw:string):Promise<void>;
         read(): Promise<string | null>;
         write(s: string): Promise<void>;
@@ -98,6 +100,7 @@ export interface JournalIo {
 
 /** Контракт хранилища журнала (реализация — FileJournal; фэйки — в тестах). */
 export interface JournalStore {
+        recover?():Promise<void>;
         /** Новые сверху: index 0 = последняя сессия. Никогда не бросает. */
         load(): Promise<JournalEntry[]>;
         /** Добавляет запись в голову кольца; ошибка записи ПРОБРАСЫВАЕТСЯ. */
@@ -150,6 +153,7 @@ function coerceEntry(raw: unknown): JournalEntry | null {
         }
         return {
                 trace:Array.isArray(r.trace)?r.trace.filter(event=>!!event&&typeof event==='object'&&typeof event.stage==='string'&&Number.isFinite(event.at)).slice(-500):undefined,traceDropped:num(r.traceDropped),
+                journalId:typeof r.journalId==='string'?r.journalId:undefined,
                 sessionId:typeof r.sessionId==='string'?r.sessionId:undefined,build:typeof r.build==='string'?r.build:undefined,platform:typeof r.platform==='string'?r.platform:undefined,
                 pendingBefore:num(r.pendingBefore),pendingAfter:num(r.pendingAfter),retryScheduled:num(r.retryScheduled),blocked:num(r.blocked),notAttempted:num(r.notAttempted),networkBytes:num(r.networkBytes),
                 problems:Array.isArray(r.problems)?r.problems.filter((v):v is SyncIssue=>!!v&&typeof v==='object'&&typeof v.message==='string'&&typeof v.code==='string').slice(0,20):undefined,
@@ -201,7 +205,7 @@ export class FileJournal implements JournalStore {
                 this.io = io;
         }
 
-        async load(): Promise<JournalEntry[]> {
+        private async readHistory(): Promise<JournalEntry[]> {
                 let raw: string | null;this.readFailed=false;this.corruptRaw=undefined;
                 try {
                         raw = await this.io.read();
@@ -231,21 +235,65 @@ export class FileJournal implements JournalStore {
                 return entries.slice(0, JOURNAL_LIMIT);
         }
 
-        async append(entry: JournalEntry): Promise<void> {
-                const work=this.chain.then(async()=>{
-                        const prev=await this.load();
-                        if(this.readFailed)throw Error('Journal is unreadable; refusing to replace diagnostic history');
-                        if(this.corruptRaw!==undefined){if(!this.io.quarantine)throw Error('Journal is corrupt; diagnostic backup is required');await this.io.quarantine(this.corruptRaw);}
-                        const normalized={...entry,jobResults:entry.jobResults?.map(coerceJob).filter((job):job is import('./job-runtime').JobRunResult=>!!job).slice(0,100),jobResultsTotal:entry.jobResultsTotal??entry.jobResults?.length};
-                        const next=[normalized,...prev].slice(0,JOURNAL_LIMIT);
-                        while(next.length>1&&JSON.stringify(next).length>8*1024*1024)next.pop();
-                        await this.io.write(JSON.stringify(next));
-                });this.chain=work.catch(()=>{});return work;
+        private serialize<T>(action:()=>Promise<T>):Promise<T>{
+                const work=this.chain.then(action);this.chain=work.then(()=>{},()=>{});return work;
+        }
+        private async writePending(value:unknown):Promise<void>{
+                if(!this.io.pending)return;
+                const raw=JSON.stringify(value);await this.io.pending.write(raw);
+                if(await this.io.pending.read()!==raw)throw new SyncFault('journal-recovery','Pending report verification failed','session',false,'shared');
+        }
+        private async publish(entry:JournalEntry):Promise<void>{
+                const prev=await this.readHistory();
+                if(this.readFailed)throw Error('Journal is unreadable; refusing to replace diagnostic history');
+                if(this.corruptRaw!==undefined){if(!this.io.quarantine)throw Error('Journal is corrupt; diagnostic backup is required');await this.io.quarantine(this.corruptRaw);}
+                const next=[entry,...prev.filter(old=>!entry.journalId||old.journalId!==entry.journalId)].slice(0,JOURNAL_LIMIT);
+                while(next.length>1&&JSON.stringify(next).length>8*1024*1024)next.pop();
+                const raw=JSON.stringify(next);await this.io.write(raw);
+                if(await this.io.read()!==raw)throw Error('Journal publication verification failed');
+        }
+        private async recoverPending():Promise<void>{
+                if(!this.io.pending)return;
+                try{
+                        const raw=await this.io.pending.read();if(raw===null||raw==='null')return;
+                        const value=JSON.parse(raw);
+                        if(!value||value.version!==1||!['append','clear'].includes(value.kind))throw Error('Invalid pending report');
+                        if(value.kind==='clear'){
+                                await this.io.write('[]');if(await this.io.read()!=='[]')throw Error('Journal clear verification failed');
+                        }else{
+                                const entry=coerceEntry(value.entry);
+                                if(!entry?.journalId)throw Error('Invalid pending report entry');
+                                await this.publish(entry);
+                        }
+                        await this.writePending(null);
+                }catch{throw new SyncFault('journal-recovery','Pending sync report could not be recovered; new synchronization is blocked','session',false,'shared');}
+        }
+        recover():Promise<void>{return this.serialize(()=>this.recoverPending());}
+        load():Promise<JournalEntry[]>{
+                return this.serialize(async()=>{
+                        try{await this.recoverPending();}catch(error){console.warn('[VaultSync] report recovery deferred',diagnosticText(error));}
+                        return this.readHistory();
+                });
+        }
+        append(entry:JournalEntry):Promise<void>{
+                // Snapshot before queueing: caller mutation cannot change the durable report.
+                const snapshot=structuredClone(entry);
+                return this.serialize(async()=>{
+                        await this.recoverPending();
+                        const normalized={...snapshot,journalId:snapshot.journalId||snapshot.sessionId||crypto.randomUUID(),jobResults:snapshot.jobResults?.map(coerceJob).filter((job):job is import('./job-runtime').JobRunResult=>!!job).slice(0,100),jobResultsTotal:snapshot.jobResultsTotal??snapshot.jobResults?.length};
+                        if(!coerceEntry(normalized))throw Error('Invalid journal entry');
+                        await this.writePending({version:1,kind:'append',entry:normalized});
+                        await this.publish(normalized);await this.writePending(null);
+                });
+        }
+        clear():Promise<void>{
+                return this.serialize(async()=>{
+                        await this.recoverPending();await this.writePending({version:1,kind:'clear'});
+                        await this.io.write('[]');if(await this.io.read()!=='[]')throw Error('Journal clear verification failed');
+                        await this.writePending(null);
+                });
         }
 
-        async clear(): Promise<void> {
-                await this.io.write('[]');
-        }
 }
 
 // ────────────────────────────────────────────────────────────────────────

@@ -1095,6 +1095,10 @@ export default class GitSyncPlugin extends Plugin {
                 // (adapter.read: null = файла нет — первый запуск, НЕ warn).
                 const journalPath = `${this.manifest.dir ? `${this.manifest.dir}/` : ''}vault-sync-journal.json`;
                 const journalIo: JournalIo = {
+                        pending:{
+                                read:async()=>await this.app.vault.adapter.exists(journalPath+'.pending')?this.app.vault.adapter.read(journalPath+'.pending'):null,
+                                write:async raw=>{await this.app.vault.adapter.write(journalPath+'.pending',raw);},
+                        },
                         read: async () => (await this.app.vault.adapter.exists(journalPath))?this.app.vault.adapter.read(journalPath):null,
                         quarantine:async raw=>{const path=journalPath+'.corrupt-'+crypto.randomUUID();await this.app.vault.adapter.write(path,raw);if(await this.app.vault.adapter.read(path)!==raw)throw Error('Diagnostic backup verification failed');},
                         write: async (s) => {
@@ -2273,6 +2277,7 @@ export default class GitSyncPlugin extends Plugin {
                 const startedAt = Date.now();
                 let stats: import('./src/sources/types').SyncStats | null = null;
                 try {
+                        await this.journal?.recover?.();
                         stats = await fn();
                         // A cancellation during preparation must reach the scheduler as cancellation.
                         if(this.sessionController?.signal.aborted){stats??=emptyStats();stats.outcome='cancelled';}

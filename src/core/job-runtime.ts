@@ -26,7 +26,7 @@ export function mergeJobStats(target:SyncStats,value:SyncStats):void{
     if(value.problem)target.problem=value.problem;
 }
 /** Only shared integrity/capacity failures stop unrelated writers. Provider failures stay in their job. */
-export function sharedJobFailure(issue:SyncIssue):boolean{return issue.domain!=='job'&&['operation-journal','history-quota','checkpoint','checkpoint-cleanup','history-cleanup','recovery-invalid','recovery-quota','settings-save','policy-corrupt','authority-corrupt','authority-blocked','journal-write','journal-save'].includes(issue.code);}
+export function sharedJobFailure(issue:SyncIssue):boolean{return issue.domain!=='job'&&['operation-journal','history-quota','checkpoint','checkpoint-cleanup','history-cleanup','recovery-invalid','recovery-quota','settings-save','policy-corrupt','authority-corrupt','authority-blocked','journal-write','journal-save','retry-budget-persist','journal-recovery'].includes(issue.code);}
 export function accountedOutcome(stats:SyncStats):JobOutcome{
     if(stats.outcome==='cancelled')return 'cancelled';
     if(stats.outcome==='error'||stats.failed||stats.problems?.length)return stats.downloaded||(stats.uploaded??0)||stats.deleted?'partial':'failed';

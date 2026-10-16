@@ -1,3 +1,4 @@
+import { SendBudget, SendBudgetError, sendWithBudget } from './send-budget';
 // ============================================================
 // --- CORE/NET: сетевой слой с ретраями и отменой (фаза 3, задача 3-3) ---
 // Дизайн §11.1 (таблица поведения NetLayer); закрывает баги аудита:
@@ -16,6 +17,7 @@ import type { NetRequest, NetResponse, NetTransport } from '../sources/types';
 
 /** Настройки одного вызова NetLayer.fetchBuffer (дизайн §11.1). */
 export interface NetFetchOptions {
+        sendBudget?: SendBudget;
         observe?: import('../sources/types').TransferObserver;
         maxElapsedMs?: number; maxBytes?: number; method?: string; body?: BodyInit; redirect?: RequestRedirect;
         /** Ожидаемый размер тела, байт: не совпал → ретрай (фикс Б-19). */
@@ -157,6 +159,7 @@ export class NetLayer {
         async fetchBufferConditional(url: string, opts: NetFetchOptions & {ifNoneMatch?: string} = {}): Promise<{body:ArrayBuffer;etag:string|null;notModified:boolean;status:number}> {
                 const retries=opts.retries??DEFAULT_RETRIES, backoffs=opts.retryBackoffMs??DEFAULT_RETRY_BACKOFF_MS, signal=opts.signal;
                 if(!Number.isSafeInteger(retries)||retries<1)throw new NetError('retries must be >= 1');
+                const sendBudget=opts.sendBudget??new SendBudget(Math.min(5,retries));
                 const headers={...opts.headers,...(opts.ifNoneMatch?{'if-none-match':opts.ifNoneMatch}:{})};
                 const started=Date.now(), host=new URL(url).host;
                 const wait=async(ms:number,attempt:number,status?:number)=>{
@@ -169,8 +172,9 @@ export class NetLayer {
                         if(signal?.aborted)throw new NetError('Request cancelled',{aborted:true,attempt,host});
                         opts.observe?.({stage:'download',attempt,maxAttempts:retries,bytes:0,host});
                         let response:NetResponse;
-                        try { response=await this.transport.fetch(url,{method:opts.method,body:opts.body,redirect:opts.redirect,headers,signal,maxBytes:opts.maxBytes??(opts.expectedSize===undefined?undefined:Math.max(opts.expectedSize+1024,Math.ceil(opts.expectedSize*1.1))),observe:event=>opts.observe?.({...event,attempt,maxAttempts:retries,host:event.host??host})}); }
+                        try { response=await sendWithBudget(this.transport,url,{sendBudget,method:opts.method,body:opts.body,redirect:opts.redirect,headers,signal,maxBytes:opts.maxBytes??(opts.expectedSize===undefined?undefined:Math.max(opts.expectedSize+1024,Math.ceil(opts.expectedSize*1.1))),observe:event=>opts.observe?.({...event,attempt,maxAttempts:retries,host:event.host??host})}); }
                         catch(error) {
+                                if(error instanceof SendBudgetError)throw error;
                                 if(signal?.aborted)throw new NetError('Request cancelled',{aborted:true,attempt,host});
                                 const code=(error as {code?:string})?.code??((error as Error)?.name==='RequestTimeoutError'?'timeout':'network');
                                 if(code==='file-too-large'||code==='redirect-policy'||attempt===retries)throw new NetError(`network error after ${attempt} attempt(s): ${errText(error)}`,{attempt,code,host});
@@ -196,6 +200,7 @@ export class NetLayer {
                         let body:ArrayBuffer;
                         try {body=await response.arrayBuffer();}
                         catch(error) {
+                                if(error instanceof SendBudgetError)throw error;
                                 if(signal?.aborted)throw new NetError('Cancelled while reading body',{aborted:true,attempt,host});
                                 const code=(error as {code?:string})?.code??((error as Error)?.name==='RequestTimeoutError'?'timeout':'network');
                                 if(code==='file-too-large'||attempt===retries)throw new NetError(`failed to read body after ${attempt} attempt(s): ${errText(error)}`,{attempt,host,code});

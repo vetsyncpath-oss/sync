@@ -64,3 +64,8 @@ test('actual automatic host path does not schedule retry or finishing after prep
     assert.equal(result.cancelled,true);assert.equal(result.retryAt,undefined);assert.equal(result.followUp,undefined);
     assert.equal(h.entries.length,1);assert.equal(h.entries[0].outcome,'cancelled');
 });
+
+test('unrecovered report blocks execution before effects',async()=>{
+ const h=host();let invoked=false;h.plugin.journal={recover:async()=>{throw new SyncFault('journal-recovery','Pending report unreadable','session',false,'shared');}};
+ const stats=await h.plugin.runOwnedSession('auto',async()=>{invoked=true;return emptyStats();});assert.equal(invoked,false);assert.equal(stats.outcome,'error');assert.equal(stats.problems[0].code,'journal-recovery');
+});
