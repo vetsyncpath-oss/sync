@@ -177,7 +177,7 @@ for (const level of ['fetch', 'light'] as const) {
       assert.equal(info.toDelete, level === 'light' ? 1 : 0);
       assert.equal(info.orphans, level === 'fetch' ? 1 : 0); return false;
     };
-    assert.equal(await f.coordinator.sync(), null); assert(f.files.has('gone.md')); assert(f.cache.get('gone.md')); assert.deepEqual(f.operations, []);
+    assert.equal((await f.coordinator.sync())?.outcome, 'cancelled'); assert(f.files.has('gone.md')); assert(f.cache.get('gone.md')); assert.deepEqual(f.operations, []);
   });
 }
 test('force resync retains the last applied baseline', async () => {
@@ -199,7 +199,7 @@ test('a parked download still prevents unrelated mirror deletion', async () => {
 test('rejecting the preview does not discard a previous-version failure', async () => {
   const f = fixture([entry('a.md')]); const old = entry('a.md', 'OLD');
   f.queue.add(old, 'offline', 0); f.queue.add(old, 'offline', 1); f.ui.confirmSync = async () => false;
-  assert.equal(await f.coordinator.sync(), null); assert.equal(f.queue.all()[0].hash, old.hash); assert(f.queue.all()[0].poisoned);
+  assert.equal((await f.coordinator.sync())?.outcome, 'cancelled'); assert.equal(f.queue.all()[0].hash, old.hash); assert(f.queue.all()[0].poisoned);
 });
 test('failed approved rename cannot authorize downloads or deletions', async () => {
   const f = fixture([entry('old/a.md')], 'light'); f.own('old/a.md', 'REMOTE'); f.own('gone.md');
@@ -229,7 +229,7 @@ test('rejecting the preview cannot rename a file', async () => {
   const f = fixture([entry('old/a.md')]); f.own('old/a.md', 'REMOTE');
   f.deps.syncPolicy = { version: 1, mirror: false, folders: [{ path: 'old', include: 'include', target: { kind: 'move', localPath: 'new' } }] };
   f.ui.confirmSync = async () => false;
-  assert.equal(await f.coordinator.sync(), null); assert(f.files.has('old/a.md')); assert(!f.files.has('new/a.md')); assert.deepEqual(f.operations, []);
+  assert.equal((await f.coordinator.sync())?.outcome, 'cancelled'); assert(f.files.has('old/a.md')); assert(!f.files.has('new/a.md')); assert.deepEqual(f.operations, []);
 });
 test('matching content is insufficient provenance to rename an unrelated path', () => {
   const a = entry('unchanged/a.md'), b = entry('source/b.md');

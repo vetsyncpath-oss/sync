@@ -79,3 +79,20 @@ test('cancellation releases both queued observers and inter-job metadata depende
     const run=batch.run(jobs,async job=>{if(job.id!=='git')await hold.promise;return job.id;},async()=>{applied++;return emptyStats();},async(_job,_snapshot,signal)=>{const {awaitJobObservation}=await import('../src/core/job-runtime');await awaitJobObservation(all.promise,signal);});
     await Promise.resolve();controller.abort();const result=await run;assert.equal(applied,0);assert(result.every(job=>job.stats.outcome==='cancelled'));hold.resolve();
 });
+
+test('job retains confirmed progress when a later stage throws, and unrelated job finishes',async()=>{
+    const batch=new JobBatch(new AbortController().signal,()=>{});
+    const results=await batch.run([{id:'a',name:'A',kind:'git'},{id:'b',name:'B',kind:'git'}],async()=>null,async(job,_snapshot,progress)=>{
+        progress.downloaded=2;progress.bytesTransferred=10;
+        if(job.id==='a')throw new Error('later phase failed');
+        return progress;
+    });
+    assert.equal(results[0].stats.downloaded,2);assert.equal(results[0].stats.bytesTransferred,10);
+    assert.equal(results[0].stats.outcome,'error');assert.equal(results[1].stats.downloaded,2);
+    assert.equal(batch.snapshot()[0].outcome,'partial');assert.equal(batch.snapshot()[1].outcome,'success');
+});
+test('explicit error without failed item counters cannot project success',async()=>{
+    const batch=new JobBatch(new AbortController().signal,()=>{});
+    await batch.run([{id:'a',name:'A',kind:'git'}],async()=>null,async()=>({...emptyStats(),outcome:'error'}));
+    assert.equal(batch.snapshot()[0].outcome,'failed');
+});

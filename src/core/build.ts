@@ -17,4 +17,4 @@
 // Ядро без obsidian/node — константа безопасна для всех окружений.
 
 /** Тег текущей сборки конвейера (этап overhaul). */
-export const BUILD_TAG = 'overhaul-jobs-startup-2026-10-14';
+export const BUILD_TAG = 'overhaul-vnext2-w1-results-2026-10-15';

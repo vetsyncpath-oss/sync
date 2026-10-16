@@ -250,8 +250,7 @@ export class Coordinator {
         // ============================================================
 
         /**
-         * Сессия синхронизации. null = не стартовала (guard/отмена на
-         * подтверждении); иначе — честная статистика, включая отмену
+         * Сессия синхронизации. null = не стартовала (admission guard); иначе — честная статистика, включая отмену
          * посередине (кэш отражает только реально записанное).
          */
         async sync(opts: { forcedPaths?: Set<string>; forceAll?: boolean; trigger?: 'manual' | 'auto'; missingOnly?:boolean;onlyForcedPaths?:boolean;deferQuestions?:boolean;finishing?:boolean } = {}): Promise<SyncStats | null> {
@@ -588,7 +587,7 @@ export class Coordinator {
                                 };
 
                                 this.sessionStage='confirm';ui.setStatus('syncing',{phase:2,stage:'confirm',lastActivityAt:Date.now()});
-                                if (!(await cancellable(ui.confirmSync(info,controller.signal),controller.signal))) {stats.outcome='cancelled';return null;}
+                                if (!(await cancellable(ui.confirmSync(info,controller.signal),controller.signal))) {stats.outcome='cancelled';return stats;}
                         }
 
                         this.guard();
