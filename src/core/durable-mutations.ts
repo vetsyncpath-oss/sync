@@ -25,7 +25,7 @@ export class DurableMutations {
                 if (from) await assertLocal(this.vault, request.path, MISSING);
                 const recovery = request.before.kind === 'file' && (kind !== 'write' || !sameVersion(request.before, after))
                         ? await this.recovery.save(await this.vault.readBinary(from ?? request.path)) : undefined;
-                if (recovery && (recovery.sha256 !== (request.before.kind === 'file' ? request.before.sha256 : '') || recovery.size !== (request.before.kind === 'file' ? request.before.size : -1))) throw new Error('Local file changed during recovery');
+                if (recovery && (recovery.sha256 !== (request.before.kind === 'file' ? request.before.sha256 : '') || recovery.size !== (request.before.kind === 'file' ? request.before.size : -1))) throw new SyncFault('local-changed','Local file changed during recovery','file',true);
                 request.guard(); await this.vault.assertWritable?.(from??request.path);await this.vault.assertWritable?.(request.path); await assertLocal(this.vault, from ?? request.path, request.before);
                 if (from) await assertLocal(this.vault, request.path, MISSING);
                 const record: OperationRecord = { id: request.id, planId: request.planId, path: request.path, before: request.before,

@@ -96,3 +96,13 @@ test('explicit error without failed item counters cannot project success',async(
     await batch.run([{id:'a',name:'A',kind:'git'}],async()=>null,async()=>({...emptyStats(),outcome:'error'}));
     assert.equal(batch.snapshot()[0].outcome,'failed');
 });
+
+test('real coordinator checkpoint failure blocks another queued writer',async()=>{
+ const f=fixture();f.deps.options.persistState=async()=>{throw Error('directory changed');};
+ const batch=new JobBatch(new AbortController().signal,()=>{});const applied:string[]=[];
+ const result=await batch.run([{id:'a',name:'A',kind:'git'},{id:'b',name:'B',kind:'git'}],async()=>null,async(job)=>{
+  applied.push(job.id);return (await f.coordinator.sync())!;
+ });
+ assert.deepEqual(applied,['a']);assert(result[0].stats.problems?.some(issue=>issue.code==='checkpoint'&&issue.domain==='shared'));
+ assert.equal(batch.snapshot()[1].outcome,'blocked');
+});

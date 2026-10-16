@@ -27,5 +27,6 @@ export function syncIssue(error: unknown, stage: PipelineStage,seen=new Set<unkn
         retryAt:error.retryAfterMs === undefined ? undefined : Date.now() + error.retryAfterMs,
         scope:'file', retryable:!error.aborted && !['file-too-large','redirect-policy','response-format'].includes(error.code??'') && (error.code === 'integrity' || error.status === undefined || error.status === 429 || error.status === 408 || error.status >= 500),
     };
-    return { code:/changed|stale/i.test(message)?'local-changed':/exist|directory/i.test(message)?'path-collision':'io', message, stage, retryable:/changed|stale/i.test(message), scope:'file' };
+    // Unknown exceptions are job failures, never evidence of a collision or a safe retry.
+    return {code:'internal-error',message,stage,retryable:false,scope:'session',domain:'job'};
 }

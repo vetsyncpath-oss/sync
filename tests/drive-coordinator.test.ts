@@ -393,3 +393,14 @@ test('404 or relocation during replay keeps the original pending copy IDs and pa
         assert.equal(result.failed,0);assert.equal(f.state.inbox('a.md')!.reason,missing?'drive-unavailable':'drive-relocated');assert.equal(f.state.pending('a.md')!.id,prepared.id);assert.equal(f.state.pending('a.md')!.copyId,prepared.copyId);assert.equal(f.queue.size(),0,'durable unknown must not keep an overdue transient retry');
         assert.equal(f.text('a.md'),'edit');assert.equal(f.text('other.md'),'ready');assert.equal(f.counter,1);assert.equal(f.text('renamed.md'),undefined);assert.equal(new TextDecoder().decode(await f.mutations.recovery.read(prepared.copyBytes!)),'edit');}
 });
+
+test('typed item IO failure does not stop an independent Drive download',async()=>{
+ const f=new Fixture();await f.addRemote('a.md','A');await f.addRemote('b.md','B');const download=f.client.download.bind(f.client);
+ f.client.download=async(file,signal)=>{if(file.name==='a.md')throw new SyncFault('io','directory changed: diagnostic only','file');return download(file,signal);};
+ const stats=await f.run(true);assert.equal(stats.failed,1);assert.equal(f.text('b.md'),'B');assert.equal(f.text('a.md'),undefined);assert.equal(stats.problems?.[0].scope,'file');
+});
+test('unexpected Drive exception stops its job without pretending to be a path conflict',async()=>{
+ const f=new Fixture();await f.addRemote('a.md','A');await f.addRemote('b.md','B');
+ f.client.download=async()=>{throw Error('directory changed');};
+ const stats=await f.run(true);assert.equal(stats.failed,1);assert.equal(f.text('b.md'),undefined);assert.equal(stats.problems?.[0].code,'internal-error');assert.equal(stats.problems?.[0].domain,'job');
+});

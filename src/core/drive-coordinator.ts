@@ -135,7 +135,7 @@ export class DriveCoordinator {
                 }
                 await this.persist(intent);await this.execute(intent);this.p.queue.delete(path);
             }catch(error){if(this.p.signal.aborted){this.stats.outcome='cancelled';break;}
-                const issue=syncIssue(error,'apply');if(issue.code==='io')issue.scope='session';this.stats.problems!.push(issue);this.stats.failed++;this.stats.problem=issue.message;this.stats.outcome='error';
+                const issue=syncIssue(error,'apply');this.stats.problems!.push(issue);this.stats.failed++;this.stats.problem=issue.message;this.stats.outcome='error';
                 const pending=this.p.state.pending(path),base=this.p.state.baseline(path);
                 this.p.queue.add({path,hash:pending?.bytes?.sha256??base?.remoteHash??'drive',size:pending?.bytes?.size??0},issue.message,Date.now(),issue.retryable?'transient':'blocked',Math.max(0,(issue.retryAt??0)-Date.now()),issue);
                 if(issue.scope==='session'||issue.code==='auth-required'||issue.code==='root-unavailable')break;

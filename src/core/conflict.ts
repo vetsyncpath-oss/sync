@@ -1,3 +1,4 @@
+import { SyncFault } from './sync-issue';
 import { cancellable } from './cancellable';
 import type { WriteMode, RuleConflict } from './file-rules';
 // src/core/conflict.ts — разрешитель конфликтов «локаль vs облако»
@@ -334,12 +335,12 @@ export class ConflictResolver {
                 if (transaction) { await transaction.write(path, data, expected); return; }
                 const exists = await this.deps.vault.exists(path);
                 if (expected === null ? exists : !exists || !bytesEqual(await this.deps.vault.readBinary(path), expected)) {
-                        throw new Error(`Local file changed before replacement: ${path}`);
+                        throw new SyncFault('local-changed',`Local file changed before replacement: ${path}`,'file',true);
                 }
                 signal?.throwIfAborted();
                 if (expected && this.deps.vault.compareAndWrite) {
                         const replaced = await this.deps.vault.compareAndWrite(path, data, expected, signal);
-                        if (replaced === false) throw new Error(`Local file changed before replacement: ${path}`);
+                        if (replaced === false) throw new SyncFault('local-changed',`Local file changed before replacement: ${path}`,'file',true);
                         if (replaced === true) return;
                 }
                 signal?.throwIfAborted();

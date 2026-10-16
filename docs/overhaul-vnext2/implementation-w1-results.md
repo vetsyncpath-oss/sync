@@ -30,3 +30,13 @@
 - Остальные W2–W4, параллельные transfers, индекс Drive, миграция хранилищ, GC и новая модель конфликтов этим этапом не реализованы.
 
 Live Google Drive и настоящий Obsidian в этом этапе не запускались. Сборка не является подтверждением live protocol/concurrency gates и не открывает existing-ID overwrite.
+
+## Второй этап W1: классификация ошибок (2026-10-16)
+
+- `syncIssue` больше не выводит local-changed/path-collision/retryable из слов диагностического сообщения. Неизвестное исключение получает internal-error, session scope и job domain: останавливается это задание, а не все источники.
+- StalePlanError и проверки актуальности локальных bytes в conflict/coordinator/durable mutations выдают явный local-changed. Ошибка создания каталога имеет mkdir-failed; состояние «родитель является файлом» по-прежнему отдельно доказывается через stat и выдаёт path-collision.
+- Typed file-scoped IO больше не повышается до session error в DriveCoordinator и при приёме peer artifacts. Независимый файл продолжает работу. Это не превращает любое неизвестное исключение адаптера в безопасный item-local сбой.
+- Checkpoint failures на границе сохранения и compaction явно классифицируются как shared checkpoint failures. Реальный Coordinator/JobBatch тест подтверждает блокировку следующего писателя; подтверждённые эффекты не ставятся повторно в очередь.
+- Добавлено 11 тестов; все 11 воспроизводят дефекты на `294c62e` и проходят после изменения. Полный `npm run verify`: 557/557, TypeScript, стили и production build. `git diff --check` чистый.
+
+Это реализует B06 и часть item/shared isolation R10.2; полная нормализация IO на всех provider/host границах, error effect certainty, account-level blockers и общий retry budget ещё открыты. Generic exceptions могут останавливать больше работы внутри одного задания, чем специально классифицированные ошибки; это преднамеренный предел достоверности, а не обещание полной изоляции всех ошибок.

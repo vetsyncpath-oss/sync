@@ -1659,7 +1659,7 @@ export default class GitSyncPlugin extends Plugin {
                 try {
                         if(nextCache!==this.cache) await nextCache.load();
                         this.sessionController?.signal.throwIfAborted();
-                        if(preparingRevision!==this.getConfigurationRevision()) throw new Error('Configuration changed while preparing sync');
+                        if(preparingRevision!==this.getConfigurationRevision()) throw new SyncFault('configuration-changed','Configuration changed while preparing sync','session',false,'job');
                 } catch(e) { await source.dispose(); throw e; }
                 await this.coordinator.setSource(source);
                 if (nextCache !== this.cache) {
@@ -1675,7 +1675,7 @@ export default class GitSyncPlugin extends Plugin {
                 this.conflictResolver.setStrategy(this.settings.conflictStrategy);
                 this.conflictResolver.setLightStrategy(this.settings.lightConflictStrategy ?? 'keep-local');
                 this.coordinator.setSyncPolicy(this.effectiveProfilePolicy(sourceId));
-                if (preparingRevision !== this.getConfigurationRevision()) throw new Error('Configuration changed while preparing sync');
+                if (preparingRevision !== this.getConfigurationRevision()) throw new SyncFault('configuration-changed','Configuration changed while preparing sync','session',false,'job');
                 await gcManifestCaches(this.fsAdapter,this.gcKeepSet(this.cache.namespace));
                 this.preparedConfigRevision=preparingRevision;
                 this.sessionController?.signal.throwIfAborted();
