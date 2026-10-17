@@ -90,7 +90,7 @@ test('an artifact with a different parent or a digest claim that does not match 
     const b=await peer(remote),result=await b.run();assert.equal(result.results.find((r:any)=>r.path===copy)?.reason,'artifact-remote-edited');assert(!b.f.files.has(copy));assert.equal(str(b.f.files.get('a.md')!),'base');
     remote.folder('elsewhere','Elsewhere','root');remote.files.get('artifact')!.file.parents=['elsewhere'];const c=await peer(remote);await c.run();assert(![...c.f.files.keys()].some(p=>p.includes('.conflict-')));
 });
-test('artifact copy-before-trash reaches a second vault after the tracked origin is explicitly trashed',async()=>{
+test('edited survivor proposal reaches a second vault while the original remains trashed',async()=>{
     const remote=new Remote();remote.add('origin','a.md','base');const a=await peer(remote);a.f.files.set('a.md',ab('base'));await a.run();
     // Enable deletion coverage already requested by the user; the old mirror guard is a separate input.
     a.plugin.effectiveProfilePolicy=()=>compileProfiles({...fullPolicy(),mirrorFolders:{'':{state:'on',level:'light'}}},structuredClone([...STANDARD_PROFILES]));
@@ -98,7 +98,7 @@ test('artifact copy-before-trash reaches a second vault after the tracked origin
     const b=await peer(remote),received=await b.run();assert.equal(received.failed,0);const copy=[...b.f.files.keys()].find(p=>p.includes('.conflict-'))!;
     assert(copy);assert.equal(str(b.f.files.get(copy)!),'survivor');assert(!b.f.files.has('a.md'));assert.equal(remote.files.get('origin')!.file.trashed,true);
     a.f.files.set('a.md',ab('recreated'));const before=remote.uploads,recreated=await a.run();
-    assert.equal(remote.uploads,before);assert.equal(remote.files.get('origin')!.file.trashed,true);assert(recreated.results.some((r:any)=>r.reason==='drive-deleted-review'));
+    assert.equal(remote.uploads,before+1);assert.equal(str(a.f.files.get('a.md')!),'recreated');assert.equal(remote.files.get('origin')!.file.trashed,true);assert(recreated.results.some((r:any)=>r.reason==='drive-proposals-review'));
 });
 test('an artifact transfer error leaves independent canonical files working and retries through its origin named rule',async()=>{
     const remote=new Remote();remote.folder('library','Library','root');remote.add('origin','a.md','base','library');const copy=remote.artifact('origin','Library/a.md');remote.downloadErrorId='artifact';

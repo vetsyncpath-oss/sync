@@ -1,3 +1,4 @@
+import { SendBudgetError } from './send-budget';
 import { NetError } from './net';
 import type { PipelineStage, SyncIssue } from '../sources/types';
 
@@ -15,6 +16,7 @@ export class SyncFault extends Error {
 }
 export function syncIssue(error: unknown, stage: PipelineStage,seen=new Set<unknown>()): SyncIssue {
     const message = diagnosticText(error);
+    if(error instanceof SendBudgetError)return {code:error.code,message,stage,scope:error.code==='retry-budget-persist'?'session':'file',domain:error.code==='retry-budget-persist'?'shared':undefined,retryable:false};
     const cause=(error as {cause?:unknown})?.cause;
     if(!(error instanceof NetError)&&!(error instanceof SyncFault)&&cause instanceof Error&&!seen.has(cause)){
         seen.add(error);return {...syncIssue(cause,stage,seen),message};
@@ -27,5 +29,6 @@ export function syncIssue(error: unknown, stage: PipelineStage,seen=new Set<unkn
         retryAt:error.retryAfterMs === undefined ? undefined : Date.now() + error.retryAfterMs,
         scope:'file', retryable:!error.aborted && !['file-too-large','redirect-policy','response-format'].includes(error.code??'') && (error.code === 'integrity' || error.status === undefined || error.status === 429 || error.status === 408 || error.status >= 500),
     };
-    return { code:/changed|stale/i.test(message)?'local-changed':/exist|directory/i.test(message)?'path-collision':'io', message, stage, retryable:/changed|stale/i.test(message), scope:'file' };
+    // Unknown exceptions are job failures, never evidence of a collision or a safe retry.
+    return {code:'internal-error',message,stage,retryable:false,scope:'session',domain:'job'};
 }

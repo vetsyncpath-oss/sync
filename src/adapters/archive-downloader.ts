@@ -14,35 +14,34 @@ import type { ArchiveDownloadProgress, ArchiveDownloader, RandomAccessReader } f
 import type { HeadResponse, RangeResponse, ZipRangeTransport } from '../sources/zip-test-connection';
 import { FileArchiveReader } from './file-archive-reader';
 
+interface ResumeSnapshot { url?: string; etag?: string; total?: number; }
+function archiveError(code: 'archive-response' | 'archive-timeout', message: string): Error & { code: string } {
+        return Object.assign(new Error(message), { code });
+}
+function strongETag(value?: string): string | undefined {
+        return value && /^"[\x21\x23-\x7e\x80-\xff]*"$/.test(value) ? value : undefined;
+}
+function contentLength(value?: string): number | undefined {
+        if (value === undefined) return undefined;
+        const length = Number(value);
+        if (!/^\d+$/.test(value) || !Number.isSafeInteger(length) || length < 0) throw archiveError('archive-response', 'Invalid archive Content-Length');
+        return length;
+}
+function parseContentRange(value?: string): { start: number; end: number; total: number } | undefined {
+        const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value ?? '');
+        if (!match) return undefined;
+        const [start, end, total] = match.slice(1).map(Number);
+        if (![start, end, total].every(Number.isSafeInteger) || start < 0 || end < start || end >= total) return undefined;
+        return { start, end, total };
+}
+
 const MAX_REDIRECTS = 5;
 const REDIRECT_STATUSES = [301, 302, 303, 307, 308];
 
-/**
- * [W6-T02] Число попыток скачивания архива. Старое поведение = 1 попытка
- * (zero-retry), что является асимметрией надёжности: git/yandex имеют
- * 5 ретраев, zip — ноль. Сетевой чих на 500 МБ архив = провал сессии.
- *
- * 3 попытки с бэкоффом 500ms/1500ms: между попытками 1 + 2 = 2 паузы
- * (поэтому attempts = 1 + retries = 3). Бэкофф экспоненциальный, но
- * capped — иначе на 4-й попытке была бы 13.5s пауза.
- *
- * НЕ ретраятся (isRetryableError возвращает false):
- *   - 4xx (кроме 429) — серверная ошибка, повтор не поможет
- *   - abort (signal.aborted) — намеренная отмена пользователем
- *   - timeout — см. ниже
- *   - "too many redirects" / "redirect without Location"
- *
- * Ретраятся:
- *   - 5xx — временный сбой сервера
- *   - 429 — rate limit (backoff даёт серверу время остыть)
- *   - ECONNRESET/EPIPE/ETIMEDOUT/ECONNABORTED — типичный "сетевой чих"
- *   - stream 'error' mid-download — обрыв связи
- *
- * Timeout НЕ ретраится: timeout означает зависший сервер (req.destroy
- * по таймеру). При ретраях мы бы продолжали стучаться в тот же висяк,
- * расходуя лимит попыток. Пользователь может перезапустить sync вручную.
- * Это также сохраняет существующий тест «timeout → req.destroy + ошибка».
- */
+/** Transitional local retry policy: three attempts, 500/1500 ms backoff.
+ * Explicit HTTP 429/5xx and Node transport codes may retry. User cancellation,
+ * our timeout, invalid ranges and unknown failures do not. Shared RetryBudget,
+ * Retry-After and durable resume receipts remain separate overhaul work. */
 const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_RETRY_BACKOFF_MS: number[] = [500, 1500];
 
@@ -60,8 +59,7 @@ function isRetryableError(e: any): boolean {
         if (e?.aborted) return false;
 
         // Timeout — см. комментарий выше (НЕ ретраим зависания).
-        const msg = String(e?.message ?? e ?? '');
-        if (/timeout/i.test(msg)) return false;
+        if (e?.code === 'archive-timeout') return false;
 
         // HTTP-статусы (от NetError/fetchBuffer).
         const status = typeof e?.status === 'number' ? e.status : null;
@@ -78,19 +76,10 @@ function isRetryableError(e: any): boolean {
         // Проверяем по имени кода — стабильный контракт Node (libuv).
         const code = e?.code;
         if (typeof code === 'string') {
-                if (['ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'ECONNABORTED', 'EAI_AGAIN', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH'].includes(code)) {
+                if (['ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'ECONNABORTED', 'EAI_AGAIN', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'ERR_STREAM_PREMATURE_CLOSE'].includes(code)) {
                         return true;
                 }
         }
-
-        // Прочие ошибки: regex по сообщению (fallback для случаев, когда code
-        // не выставлен — стрим-ошибка без явного errno).
-        if (/ECONNRESET|EPIPE|ETIMEDOUT|ECONNABORTED|socket hang up|network error/i.test(msg)) {
-                return true;
-        }
-
-        // "redirect" / "Location" — серверная/логическая ошибка, не ретраим.
-        if (/redirect/i.test(msg)) return false;
 
         // По умолчанию — не ретраим (fail-closed: лучше упасть, чем молотить).
         return false;
@@ -233,6 +222,7 @@ export class NodeArchiveDownloader implements ArchiveDownloader {
                 const unique = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
                 const tmpPath = pathMod.join(os.tmpdir(), `vaultsync-${unique}.zip`);
 
+                const snapshot: ResumeSnapshot = {};
                 let lastError: unknown = null;
                 for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
                         // Abort перед попыткой — выходим без wait.
@@ -262,7 +252,7 @@ export class NodeArchiveDownloader implements ArchiveDownloader {
                         }
 
                         try {
-                                await this.downloadToFile(url, tmpPath, opts, 0, resumeFromByte);
+                                await this.downloadToFile(url, tmpPath, opts, 0, resumeFromByte, snapshot);
                                 return new TempFileArchiveReader(tmpPath);
                         } catch (e) {
                                 lastError = e;
@@ -288,136 +278,119 @@ export class NodeArchiveDownloader implements ArchiveDownloader {
                 throw lastError;
         }
 
-        /**
-         * Один заход стрима (рекурсивно — по редиректам, ≤ MAX_REDIRECTS).
-         *
-         * [W6-T02] resumeFromByte: 0 = fresh download (truncate tmp); >0 =
-         * продолжить с этой позиции, добавив Range: bytes=N-. Если сервер
-         * отдал 206 (Partial Content) → append к tmp; если 200 (Range ignored)
-         * → truncate + start fresh. 200 на fresh start = overwrite (по умолчанию
-         * fs.createWriteStream truncate'ит).
-         */
+        /** Resume is invocation-local and requires a strong validator and known total.
+         * Pipeline settlement owns the file until it is closed, including failures. */
         private downloadToFile(
                 url: string,
                 tmpPath: string,
                 opts: { signal?: AbortSignal; onProgress?: (p: ArchiveDownloadProgress) => void },
                 depth: number,
-                resumeFromByte: number = 0,
+                resumeFromByte: number,
+                snapshot: ResumeSnapshot,
         ): Promise<void> {
                 return new Promise<void>((resolve, reject) => {
-                        if (opts.signal?.aborted) {
-                                reject(abortedError());
-                                return;
-                        }
-
-                        const httpMod: any = this.getModule(url);
-                        const fs = lazyFs();
-                        // [W6-T02] Range header для resume (пустой объект для fresh download).
-                        const reqOpts: any = { timeout: this.requestTimeoutMs };
-                        if (resumeFromByte > 0) {
-                                reqOpts.headers = { range: `bytes=${resumeFromByte}-` };
-                        }
-                        const onAbort=()=>req.destroy(abortedError());
-                        const cleanup=()=>{opts.signal?.removeEventListener('abort',onAbort);clearTimeout(headerTimer);};
-                        const headerTimer=setTimeout(()=>req.destroy(new Error('Archive response headers timed out')),this.requestTimeoutMs);
-                        const req = httpMod.get(url, reqOpts, (res: any) => {
+                        if (opts.signal?.aborted) { reject(abortedError()); return; }
+                        const { pipeline, Transform } = require('stream') as typeof import('stream');
+                        const resume = resumeFromByte > 0 && snapshot.url === url && snapshot.etag !== undefined
+                                && snapshot.total !== undefined && resumeFromByte < snapshot.total;
+                        const headers: Record<string, string> = { 'accept-encoding': 'identity' };
+                        if (resume) { headers.range = `bytes=${resumeFromByte}-`; headers['if-range'] = snapshot.etag!; }
+                        let req: FakeRequestLike | undefined;
+                        let response: import('http').IncomingMessage | undefined;
+                        let streaming = false, settled = false;
+                        let failure: Error | undefined;
+                        let headerTimer: ReturnType<typeof setTimeout> | undefined;
+                        const cleanup = () => {
                                 clearTimeout(headerTimer);
-                                const status = res.statusCode ?? 0;
-
-                                // Редирект: резолвим Location относительно текущего URL
-                                if (REDIRECT_STATUSES.includes(status)) {
-                                        res.resume(); // слить тело
-                                        const location = res.headers.location;
-                                        if (!location || depth >= MAX_REDIRECTS) {
-                                                cleanup();reject(new Error(
-                                                        `archive download: ${location ? 'too many redirects' : 'redirect without Location'} (HTTP ${status})`,
-                                                ));
-                                                return;
-                                        }
-                                        cleanup();const nextUrl = new URL(location, url).toString();
-                                        // На редиректе resumeFromByte сбрасывается: новый URL —
-                                        // нечего продолжать, стартуем с нуля.
-                                        this.downloadToFile(nextUrl, tmpPath, opts, depth + 1, 0).then(resolve, reject);
-                                        return;
-                                }
-
-                                // [W6-T02] 206 Partial Content: сервер поддержал Range → append.
-                                // 200 на fresh (resumeFromByte=0): обычный write (truncate default).
-                                // 200 на resume (resumeFromByte>0): сервер проигнорировал Range →
-                                // truncate + start fresh.
-                                let out: any;
-                                const partialHonored = status === 206 && resumeFromByte > 0;
-                                if (partialHonored) {
-                                        out = fs.createWriteStream(tmpPath, { flags: 'a' });
-                                } else if (status === 200 && resumeFromByte > 0) {
-                                        // Сервер не понял Range — начать заново, truncate tmp.
-                                        try { fs.unlinkSync(tmpPath); } catch { /* не критично */ }
-                                        out = fs.createWriteStream(tmpPath);
-                                } else if (status < 200 || status >= 300) {
-                                        res.resume();
-                                        const err: Error & { status?: number } = Object.assign(
-                                                new Error(`HTTP ${status} for archive download`),
-                                                { status },
-                                        );
-                                        cleanup();reject(err);
-                                        return;
-                                } else {
-                                        // 200 на fresh (resumeFromByte == 0): обычный truncate-write.
-                                        out = fs.createWriteStream(tmpPath);
-                                }
-
-                                const cl = Number(res.headers['content-length']);
-                                // [W6-T02] Для 206 content-length — это размер ЧАСТИ, не всего.
-                                // totalBytes для прогресса: resumeFromByte + cl (если знаем) или null.
-                                const totalBytes = Number.isFinite(cl) && cl > 0
-                                        ? (partialHonored ? resumeFromByte + cl : cl)
-                                        : null;
-                                let received = partialHonored ? resumeFromByte : 0;
-                                let settled = false;
-
-                                const fail = (e: Error) => {
-                                        if (settled) return;
-                                        settled = true;
-                                        cleanup();
-                                        out.destroy();
-                                        reject(mapNetworkError(e, opts.signal));
-                                };
-
-                                res.on('data', (chunk: Buffer) => {
-                                        received += chunk.length;
-                                        opts.onProgress?.({ bytesTransferred: received, totalBytes });
+                                opts.signal?.removeEventListener('abort', onAbort);
+                        };
+                        const finish = (error?: Error | null) => {
+                                if (settled) return;
+                                settled = true;
+                                cleanup();
+                                if (error) reject(mapNetworkError(error, opts.signal)); else resolve();
+                        };
+                        const fail = (error: Error) => {
+                                if (settled || failure) return;
+                                failure = error;
+                                // Once piping starts only its callback may settle: destroying the
+                                // request alone does not prove the file descriptor has closed.
+                                if (streaming) response?.destroy(error);
+                                else { response?.destroy(); finish(error); }
+                                req?.destroy(error);
+                        };
+                        const onAbort = () => fail(abortedError());
+                        try {
+                                headerTimer = setTimeout(() => fail(archiveError('archive-timeout', 'Archive response headers timed out')), this.requestTimeoutMs);
+                                req = this.getModule(url).get(url, { timeout: this.requestTimeoutMs, headers }, (raw: unknown) => {
+                                        const res = raw as import('http').IncomingMessage;
+                                        if (settled) { res.destroy(); return; }
+                                        response = res;
+                                        clearTimeout(headerTimer);
+                                        const status = res.statusCode ?? 0;
+                                        try {
+                                                if (REDIRECT_STATUSES.includes(status)) {
+                                                        const location = headerStr(res.headers, 'location');
+                                                        if (!location || depth >= MAX_REDIRECTS) throw archiveError('archive-response', 'Invalid archive redirect');
+                                                        const nextUrl = new URL(location, url).toString();
+                                                        // Conservative restart on every redirect; do not forward validators.
+                                                        res.destroy();
+                                                        settled = true;
+                                                        cleanup();
+                                                        this.downloadToFile(nextUrl, tmpPath, opts, depth + 1, 0, snapshot).then(resolve, reject);
+                                                        return;
+                                                }
+                                                if (status !== 200 && status !== 206) {
+                                                        throw Object.assign(archiveError('archive-response', `HTTP ${status} for archive download`), { status });
+                                                }
+                                                const encoding = headerStr(res.headers, 'content-encoding');
+                                                if (encoding && encoding.toLowerCase() !== 'identity') throw archiveError('archive-response', 'Encoded archive representation is unsupported');
+                                                const length = contentLength(headerStr(res.headers, 'content-length'));
+                                                const etag = strongETag(headerStr(res.headers, 'etag'));
+                                                const partial = status === 206;
+                                                if (partial) {
+                                                        const range = parseContentRange(headerStr(res.headers, 'content-range'));
+                                                        if (!resume || !range || range.start !== resumeFromByte || range.total !== snapshot.total
+                                                                || range.end !== range.total - 1 || etag !== snapshot.etag
+                                                                || (length !== undefined && length !== range.end - range.start + 1)) {
+                                                                throw archiveError('archive-response', 'Archive resume range or validator mismatch');
+                                                        }
+                                                } else {
+                                                        if (headerStr(res.headers, 'content-range') !== undefined) throw archiveError('archive-response', 'Unexpected Content-Range on full archive');
+                                                        snapshot.url = url; snapshot.etag = etag; snapshot.total = length;
+                                                }
+                                                const totalBytes = (partial ? snapshot.total : length) ?? null;
+                                                let received = partial ? resumeFromByte : 0;
+                                                const counter = new Transform({
+                                                        transform(chunk: Buffer, _encoding, callback) {
+                                                                received += chunk.length;
+                                                                if (!Number.isSafeInteger(received) || (totalBytes !== null && received > totalBytes)) {
+                                                                        callback(archiveError('archive-response', 'Archive body exceeds declared length')); return;
+                                                                }
+                                                                try { opts.onProgress?.({ bytesTransferred: received, totalBytes }); }
+                                                                catch (error) { callback(error instanceof Error ? error : new Error(String(error))); return; }
+                                                                callback(null, chunk);
+                                                        },
+                                                        flush(callback) {
+                                                                callback(totalBytes !== null && received !== totalBytes
+                                                                        ? archiveError('archive-response', 'Archive body length mismatch') : undefined);
+                                                        },
+                                                });
+                                                const out = lazyFs().createWriteStream(tmpPath, { flags: partial ? 'a' : 'w' });
+                                                streaming = true;
+                                                pipeline(res, counter, out, error => finish(failure ?? error));
+                                        } catch (error) { fail(error instanceof Error ? error : new Error(String(error))); }
                                 });
-                                res.on('error', fail);res.on('aborted',()=>fail(new Error('Archive response interrupted')));
-                                out.on('error', fail);
-                                out.on('finish', () => {
-                                        if (settled) return;
-                                        // [overhaul S3/M-13] Усечённый ответ: раньше обрезанный
-                                        // поток «успешно» завершался и диагностика откладывалась
-                                        // до EOCD/CRC на этапе чтения архива. Сверяем полученные
-                                        // байты с Content-Length (для 206 — totalBytes уже
-                                        // учитывает resumeFromByte).
-                                        if (totalBytes !== null && received !== totalBytes) {
-                                                fail(new Error(
-                                                        `усечённый ответ: получено ${received} из ${totalBytes} байт (Content-Length)`,
-                                                ));
-                                                return;
-                                        }
-                                        settled = true;
-                                        cleanup();
-                                        resolve();
-                                });
-                                res.pipe(out);
-                        });
-
-                        opts.signal?.addEventListener('abort',onAbort,{once:true});if(opts.signal?.aborted)onAbort();
-                        req.on('error', (e: Error) => {cleanup();reject(mapNetworkError(e, opts.signal));});
-                        // [5-review M1] Node-опция timeout только ЭМИТИТ событие —
-                        // без обработчика зависший сервер вешает стрим навсегда
-                        req.on('timeout', () => {
-                                req.destroy(new Error(`archive download timeout after ${this.requestTimeoutMs}ms`));
-                        });
+                                req.on('error', (error: Error) => fail(error));
+                                req.on('timeout', () => fail(archiveError('archive-timeout', `archive download timeout after ${this.requestTimeoutMs}ms`)));
+                                if (!settled) {
+                                        opts.signal?.addEventListener('abort', onAbort, { once: true });
+                                        if (opts.signal?.aborted) onAbort();
+                                }
+                        } catch (error) { fail(error instanceof Error ? error : new Error(String(error))); }
                 });
         }
+
 }
 
 // ============================================================

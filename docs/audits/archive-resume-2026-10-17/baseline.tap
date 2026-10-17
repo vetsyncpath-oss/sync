@@ -1,0 +1,525 @@
+TAP version 13
+# Subtest: resume uses strong If-Range and exact remaining bytes
+not ok 1 - resume uses strong If-Range and exact remaining bytes
+  ---
+  duration_ms: 17.399178
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:416:30'
+  failureType: 'testCodeFailure'
+  error: 'Archive response interrupted'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    IncomingMessage.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:336:38)
+    IncomingMessage.emit (node:events:509:28)
+    IncomingMessage._destroy (node:_http_incoming:244:10)
+    _destroy (node:internal/streams/destroy:122:10)
+    IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    Socket.socketCloseListener (node:_http_client:705:11)
+    Socket.emit (node:events:521:24)
+    TCP.<anonymous> (node:net:355:12)
+  ...
+# Subtest: resume rejects wrong start
+not ok 2 - resume rejects wrong start
+  ---
+  duration_ms: 5.211198
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:436:34'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Archive response interrupted
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Archive response interrupted'
+  stack: |-
+    IncomingMessage.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:336:38)
+    IncomingMessage.emit (node:events:509:28)
+    IncomingMessage._destroy (node:_http_incoming:244:10)
+    _destroy (node:internal/streams/destroy:122:10)
+    IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    Socket.socketCloseListener (node:_http_client:705:11)
+    Socket.emit (node:events:521:24)
+    TCP.<anonymous> (node:net:355:12)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:441:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: resume rejects wrong total
+not ok 3 - resume rejects wrong total
+  ---
+  duration_ms: 2.439879
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:436:34'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Archive response interrupted
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Archive response interrupted'
+  stack: |-
+    IncomingMessage.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:336:38)
+    IncomingMessage.emit (node:events:509:28)
+    IncomingMessage._destroy (node:_http_incoming:244:10)
+    _destroy (node:internal/streams/destroy:122:10)
+    IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    Socket.socketCloseListener (node:_http_client:705:11)
+    Socket.emit (node:events:521:24)
+    TCP.<anonymous> (node:net:355:12)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:441:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: resume rejects missing range
+not ok 4 - resume rejects missing range
+  ---
+  duration_ms: 2.40052
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:436:34'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Archive response interrupted
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Archive response interrupted'
+  stack: |-
+    IncomingMessage.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:336:38)
+    IncomingMessage.emit (node:events:509:28)
+    IncomingMessage._destroy (node:_http_incoming:244:10)
+    _destroy (node:internal/streams/destroy:122:10)
+    IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    Socket.socketCloseListener (node:_http_client:705:11)
+    Socket.emit (node:events:521:24)
+    TCP.<anonymous> (node:net:355:12)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:441:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: resume rejects changed validator
+not ok 5 - resume rejects changed validator
+  ---
+  duration_ms: 2.186668
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:436:34'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Archive response interrupted
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Archive response interrupted'
+  stack: |-
+    IncomingMessage.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:336:38)
+    IncomingMessage.emit (node:events:509:28)
+    IncomingMessage._destroy (node:_http_incoming:244:10)
+    _destroy (node:internal/streams/destroy:122:10)
+    IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    Socket.socketCloseListener (node:_http_client:705:11)
+    Socket.emit (node:events:521:24)
+    TCP.<anonymous> (node:net:355:12)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:441:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: resume rejects missing validator
+not ok 6 - resume rejects missing validator
+  ---
+  duration_ms: 2.051875
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:436:34'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Archive response interrupted
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Archive response interrupted'
+  stack: |-
+    IncomingMessage.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:336:38)
+    IncomingMessage.emit (node:events:509:28)
+    IncomingMessage._destroy (node:_http_incoming:244:10)
+    _destroy (node:internal/streams/destroy:122:10)
+    IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    Socket.socketCloseListener (node:_http_client:705:11)
+    Socket.emit (node:events:521:24)
+    TCP.<anonymous> (node:net:355:12)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:441:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: resume rejects short segment
+not ok 7 - resume rejects short segment
+  ---
+  duration_ms: 1.879735
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:436:34'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Archive response interrupted
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Archive response interrupted'
+  stack: |-
+    IncomingMessage.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:336:38)
+    IncomingMessage.emit (node:events:509:28)
+    IncomingMessage._destroy (node:_http_incoming:244:10)
+    _destroy (node:internal/streams/destroy:122:10)
+    IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    Socket.socketCloseListener (node:_http_client:705:11)
+    Socket.emit (node:events:521:24)
+    TCP.<anonymous> (node:net:355:12)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:441:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: resume rejects unsafe integer
+not ok 8 - resume rejects unsafe integer
+  ---
+  duration_ms: 1.879314
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:436:34'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Archive response interrupted
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Archive response interrupted'
+  stack: |-
+    IncomingMessage.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:336:38)
+    IncomingMessage.emit (node:events:509:28)
+    IncomingMessage._destroy (node:_http_incoming:244:10)
+    _destroy (node:internal/streams/destroy:122:10)
+    IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    Socket.socketCloseListener (node:_http_client:705:11)
+    Socket.emit (node:events:521:24)
+    TCP.<anonymous> (node:net:355:12)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:441:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: resume restarts without strong validator (absent)
+not ok 9 - resume restarts without strong validator (absent)
+  ---
+  duration_ms: 2.67913
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:444:67'
+  failureType: 'testCodeFailure'
+  error: 'Archive response interrupted'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    IncomingMessage.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:336:38)
+    IncomingMessage.emit (node:events:509:28)
+    IncomingMessage._destroy (node:_http_incoming:244:10)
+    _destroy (node:internal/streams/destroy:122:10)
+    IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    Socket.socketCloseListener (node:_http_client:705:11)
+    Socket.emit (node:events:521:24)
+    TCP.<anonymous> (node:net:355:12)
+  ...
+# Subtest: resume restarts without strong validator (W/"weak")
+not ok 10 - resume restarts without strong validator (W/"weak")
+  ---
+  duration_ms: 2.179977
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:444:67'
+  failureType: 'testCodeFailure'
+  error: 'Archive response interrupted'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    IncomingMessage.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:336:38)
+    IncomingMessage.emit (node:events:509:28)
+    IncomingMessage._destroy (node:_http_incoming:244:10)
+    _destroy (node:internal/streams/destroy:122:10)
+    IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    Socket.socketCloseListener (node:_http_client:705:11)
+    Socket.emit (node:events:521:24)
+    TCP.<anonymous> (node:net:355:12)
+  ...
+# Subtest: resume 200 fallback replaces the entire partial file
+not ok 11 - resume 200 fallback replaces the entire partial file
+  ---
+  duration_ms: 1.600784
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:454:30'
+  failureType: 'testCodeFailure'
+  error: 'Archive response interrupted'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    IncomingMessage.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:336:38)
+    IncomingMessage.emit (node:events:509:28)
+    IncomingMessage._destroy (node:_http_incoming:244:10)
+    _destroy (node:internal/streams/destroy:122:10)
+    IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    Socket.socketCloseListener (node:_http_client:705:11)
+    Socket.emit (node:events:521:24)
+    TCP.<anonymous> (node:net:355:12)
+  ...
+# Subtest: fresh download rejects unexpected status 206
+not ok 12 - fresh download rejects unexpected status 206
+  ---
+  duration_ms: 2.897089
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:461:63'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:466:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: fresh download rejects unexpected status 204
+not ok 13 - fresh download rejects unexpected status 204
+  ---
+  duration_ms: 1.821046
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:461:63'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:466:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: download rejects encoded representation before publication
+not ok 14 - download rejects encoded representation before publication
+  ---
+  duration_ms: 2.090943
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:468:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:473:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: fresh chunked download remains supported
+ok 15 - fresh chunked download remains supported
+  ---
+  duration_ms: 1.835287
+  type: 'test'
+  ...
+# Subtest: body cancellation settles without a retry
+ok 16 - body cancellation settles without a retry
+  ---
+  duration_ms: 1.868077
+  type: 'test'
+  ...
+# Subtest: synchronous request failure releases header timer
+not ok 17 - synchronous request failure releases header timer
+  ---
+  duration_ms: 1.00756
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:493:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    1 !== 0
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:511:25)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: repeated body interruption never publishes a truncated reader and closes files
+not ok 18 - repeated body interruption never publishes a truncated reader and closes files
+  ---
+  duration_ms: 3.049309
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:513:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    1 !== 2
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 2
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:535:25)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: redirect after interruption restarts without forwarding validator
+not ok 19 - redirect after interruption restarts without forwarding validator
+  ---
+  duration_ms: 1.440913
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:540:30'
+  failureType: 'testCodeFailure'
+  error: 'Archive response interrupted'
+  code: 'ERR_TEST_FAILURE'
+  stack: |-
+    IncomingMessage.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:336:38)
+    IncomingMessage.emit (node:events:509:28)
+    IncomingMessage._destroy (node:_http_incoming:244:10)
+    _destroy (node:internal/streams/destroy:122:10)
+    IncomingMessage.destroy (node:internal/streams/destroy:84:5)
+    Socket.socketCloseListener (node:_http_client:705:11)
+    Socket.emit (node:events:521:24)
+    TCP.<anonymous> (node:net:355:12)
+  ...
+# Subtest: header timeout is typed and never retried
+not ok 20 - header timeout is typed and never retried
+  ---
+  duration_ms: 30.807126
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:555:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Archive response headers timed out
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Archive response headers timed out'
+  stack: |-
+    Timeout._onTimeout (/tmp/zip-audit-hIdHfx/tests.cjs:279:56)
+    listOnTimeout (node:internal/timers:635:17)
+    process.processTimers (node:internal/timers:571:7)
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:560:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: retry classification does not trust error message text
+not ok 21 - retry classification does not trust error message text
+  ---
+  duration_ms: 0.888079
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:563:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    3 !== 1
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 3
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:573:25)
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: controlled reset rejects shifted range even when body length matches
+not ok 22 - controlled reset rejects shifted range even when body length matches
+  ---
+  duration_ms: 11.8902
+  type: 'test'
+  location: '/tmp/zip-audit-hIdHfx/tests.cjs:575:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    async TestContext.<anonymous> (/tmp/zip-audit-hIdHfx/tests.cjs:594:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+1..22
+# tests 22
+# suites 0
+# pass 2
+# fail 20
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 107.284752

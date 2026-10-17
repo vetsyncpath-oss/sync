@@ -1,0 +1,277 @@
+TAP version 13
+# Subtest: B43 concurrent cold fetch shares exactly one archive opening
+not ok 1 - B43 concurrent cold fetch shares exactly one archive opening
+  ---
+  duration_ms: 3.913785
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5420:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    2 !== 1
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 2
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5437:25)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+  ...
+# Subtest: B43 dispose during opening rejects late publication (TTL=0)
+not ok 2 - B43 dispose during opening rejects late publication (TTL=0)
+  ---
+  duration_ms: 0.605555
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5440:58'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5452:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 dispose during opening rejects late publication (TTL=60000)
+not ok 3 - B43 dispose during opening rejects late publication (TTL=60000)
+  ---
+  duration_ms: 0.257459
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5440:58'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5452:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 concurrent manifest is explicitly busy and does not invalidate first observer
+not ok 4 - B43 concurrent manifest is explicitly busy and does not invalidate first observer
+  ---
+  duration_ms: 3.719141
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5458:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5471:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 cancelled waiter does not cancel the shared download for another waiter
+not ok 5 - B43 cancelled waiter does not cancel the shared download for another waiter
+  ---
+  duration_ms: 0.621199
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5477:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    2 !== 1
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 2
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5497:25)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 changed URL invalidates cached snapshot rather than returning its bytes
+not ok 6 - B43 changed URL invalidates cached snapshot rather than returning its bytes
+  ---
+  duration_ms: 0.378942
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5502:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5508:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 changed URL during opening prevents publication and disposes reader
+not ok 7 - B43 changed URL during opening prevents publication and disposes reader
+  ---
+  duration_ms: 0.358942
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5512:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5523:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 manifest fingerprint is checked even when expected size matches
+not ok 8 - B43 manifest fingerprint is checked even when expected size matches
+  ---
+  duration_ms: 0.355117
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5526:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5529:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 classifier read failure releases its downloaded reader exactly once
+not ok 9 - B43 classifier read failure releases its downloaded reader exactly once
+  ---
+  duration_ms: 1.203939
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5532:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    0 !== 1
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 1
+  actual: 0
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5541:25)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 forceDispose during extraction defers reader cleanup until extraction settles
+not ok 10 - B43 forceDispose during extraction defers reader cleanup until extraction settles
+  ---
+  duration_ms: 0.496009
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5543:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    1 !== 0
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 0
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5560:25)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 timeout retains unabortable opening and bounds replacement attempts
+not ok 11 - B43 timeout retains unabortable opening and bounds replacement attempts
+  ---
+  duration_ms: 50.590058
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5569:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5576:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 immediate forceDispose invalidates manifest before physical opening
+not ok 12 - B43 immediate forceDispose invalidates manifest before physical opening
+  ---
+  duration_ms: 0.441347
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5590:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5598:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 cleanup failure keeps reader accounted and explicit dispose retries cleanup
+not ok 13 - B43 cleanup failure keeps reader accounted and explicit dispose retries cleanup
+  ---
+  duration_ms: 0.37107
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5601:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5613:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 failed opening can be retried without a cached rejected promise
+ok 14 - B43 failed opening can be retried without a cached rejected promise
+  ---
+  duration_ms: 0.256638
+  type: 'test'
+  ...
+# Subtest: B43 progress from disposed opening cannot update later observation
+not ok 15 - B43 progress from disposed opening cannot update later observation
+  ---
+  duration_ms: 0.287275
+  type: 'test'
+  location: '/tmp/zip-audit-W4F82j/tests.cjs:5630:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/zip-audit-W4F82j/tests.cjs:5646:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B43 concurrent forceDispose shares one physical reader cleanup
+ok 16 - B43 concurrent forceDispose shares one physical reader cleanup
+  ---
+  duration_ms: 0.198961
+  type: 'test'
+  ...
+1..16
+# tests 16
+# suites 0
+# pass 2
+# fail 14
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 69.518416

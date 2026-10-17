@@ -1,0 +1,98 @@
+{
+  "complete": true,
+  "status": "pass",
+  "exitCode": 0,
+  "errors": [],
+  "scenarios": [
+    {
+      "id": "B43-ZIP-01",
+      "name": "B43 concurrent cold fetch shares exactly one archive opening",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-02",
+      "name": "B43 dispose during opening rejects late publication (TTL=0)",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-03",
+      "name": "B43 dispose during opening rejects late publication (TTL=60000)",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-04",
+      "name": "B43 concurrent manifest is explicitly busy and does not invalidate first observer",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-05",
+      "name": "B43 cancelled waiter does not cancel the shared download for another waiter",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-06",
+      "name": "B43 changed URL invalidates cached snapshot rather than returning its bytes",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-07",
+      "name": "B43 changed URL during opening prevents publication and disposes reader",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-08",
+      "name": "B43 manifest fingerprint is checked even when expected size matches",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-09",
+      "name": "B43 classifier read failure releases its downloaded reader exactly once",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-10",
+      "name": "B43 forceDispose during extraction defers reader cleanup until extraction settles",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-11",
+      "name": "B43 timeout retains unabortable opening and bounds replacement attempts",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-12",
+      "name": "B43 immediate forceDispose invalidates manifest before physical opening",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-13",
+      "name": "B43 cleanup failure keeps reader accounted and explicit dispose retries cleanup",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-14",
+      "name": "B43 failed opening can be retried without a cached rejected promise",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-15",
+      "name": "B43 progress from disposed opening cannot update later observation",
+      "status": "pass"
+    },
+    {
+      "id": "B43-ZIP-16",
+      "name": "B43 concurrent forceDispose shares one physical reader cleanup",
+      "status": "pass"
+    }
+  ],
+  "baselineCommit": null,
+  "providerSha256": "4519d8f33912d18bf69bffade6169f3687db1a15b979b9ca2a75be1f9d848ccd",
+  "fixtureSha256": "577cf76cf20945d3256c7be91cfdb7db08eb0a38c5b58d28a88ca1d3fdcf19c6",
+  "tapSha256": "9c915af2d16aa32ca6d63b211a2d86d99ecfa66665d1104f0e617a68d7929c20",
+  "node": "v24.19.0",
+  "limitations": [
+    "Injected provider transport; no live ZIP provider/Obsidian",
+    "B43 partial: singleflight/lifecycle only; HTTP Range/validator acceptance remains open"
+  ],
+  "tapNormalization": "Trailing whitespace removed from captured lines; scenario results unchanged."
+}

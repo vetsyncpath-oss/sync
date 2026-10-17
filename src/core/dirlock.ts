@@ -51,7 +51,7 @@ export class DirLock {
                                         const nowExists = await adapter.exists(currentPath);
                                         if(nowExists&&(await adapter.stat?.(currentPath))?.type==='file')throw new SyncFault('path-collision',`Parent is a file: ${currentPath}`);
                                         if (!nowExists) {
-                                                throw new Error(`Failed to create directory ${currentPath}: ${e?.message ?? e}`);
+                                                throw new SyncFault('mkdir-failed',`Failed to create directory ${currentPath}: ${e?.message ?? e}`);
                                         }
                                 }
                         }

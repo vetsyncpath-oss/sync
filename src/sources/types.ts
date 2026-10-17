@@ -138,6 +138,7 @@ export interface VaultAdapter {
 
 /** HTTP-транспорт, изолирующий core/ от requestUrl / Node https. */
 export interface NetTransport {
+        readonly accountsSendBudget?: boolean;
         fetch(url: string, options: NetRequest): Promise<NetResponse>;
 }
 
@@ -160,6 +161,7 @@ export interface SyncIssue {
 export interface FileActivity extends TransferEvent { path: string; source?: string; lastActivityAt: number }
 
 export interface NetRequest {
+        sendBudget?: import('../core/send-budget').SendBudget;
         observe?: TransferObserver;
         maxBytes?: number;
         method?: string;

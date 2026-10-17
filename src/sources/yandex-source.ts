@@ -23,6 +23,7 @@ import type { TransferObserver } from './types';
 import type { ArchiveDownloader, NetTransport, RemoteEntry, SyncSource } from './types';
 import { NetLayer, NetError, sleepInterruptible, type NetFetchOptions } from '../core/net';
 import { ZipUrlSource } from './zip-url-source';
+import { SyncFault } from '../core/sync-issue';
 
 /** База публичного API Яндекс.Диска (дизайн §5.1). */
 const API_BASE = 'https://cloud-api.yandex.net/v1/disk';
@@ -41,6 +42,32 @@ const DEFAULT_HREF_TTL_MS = 600000;
 
 /** Попыток NetLayer на скачивание файла по href (§6.1 fetchOne). */
 const DOWNLOAD_RETRIES = 3;
+
+export interface YandexInventoryLimits {
+        maxNodes: number;
+        maxObservations: number;
+        maxFolders: number;
+}
+/** Provider boundary defaults; the shared schema/UI defaults registry is still pending. */
+const INVENTORY_LIMITS: Readonly<YandexInventoryLimits> = Object.freeze({ maxNodes: 100000, maxObservations: 200000, maxFolders: 10000 });
+function unstableInventory(): SyncFault {
+        return new SyncFault('inventory-unstable', 'Yandex inventory is inconsistent; no complete snapshot is available', 'source');
+}
+class InventoryTraversal {
+        private readonly seen = new Set<string>();
+        private observations = 0;
+        private folders = 0;
+        readonly paths = new Map<string, string>();
+        constructor(private readonly limits: Readonly<YandexInventoryLimits>) {}
+        visit(path: string, folder: boolean): void {
+                if (++this.observations > this.limits.maxObservations) this.exceeded();
+                if (this.seen.has(path)) throw unstableInventory();
+                if (this.seen.size >= this.limits.maxNodes || (folder && this.folders >= this.limits.maxFolders)) this.exceeded();
+                this.seen.add(path);
+                if (folder) this.folders++;
+        }
+        private exceeded(): never { throw new SyncFault('inventory-limit', 'Yandex inventory traversal limit exceeded; no complete snapshot is available', 'source'); }
+}
 
 /** Локализуемые сообщения источника (инъекция из main.ts). */
 export interface YandexSourceMessages {
@@ -72,6 +99,8 @@ export interface YandexSourceOptions {
         hrefTtlMs?: number;
         /** Для тестов: инъекция времени (default Date.now). */
         now?(): number;
+        /** Explicit provider bounds; includes root and directories, not only files. */
+        inventoryLimits?: Partial<YandexInventoryLimits>;
 }
 
 const DEFAULT_MESSAGES: YandexSourceMessages = {
@@ -122,6 +151,10 @@ export class YandexSource implements SyncSource {
         private readonly onRateLimitWait?: (waitMs: number) => void;
         private readonly hrefTtlMs: number;
         private readonly now: () => number;
+        private readonly inventoryLimits: Readonly<YandexInventoryLimits>;
+        private observationActive = false;
+        private manifestReady = false;
+        private generation = 0;
 
         /** item.path каждой записи манифеста — для E2 при fetch. */
         private apiPaths: Map<string, string> = new Map();
@@ -133,6 +166,9 @@ export class YandexSource implements SyncSource {
         private zipDelegate: ZipUrlSource | null = null;
 
         constructor(opts: YandexSourceOptions) {
+                const limits = { ...INVENTORY_LIMITS, ...opts.inventoryLimits };
+                if (Object.values(limits).some(value => !Number.isSafeInteger(value) || value < 1)) throw new Error('Invalid Yandex inventory limit');
+                this.inventoryLimits = Object.freeze(limits);
                 this.publicKey = opts.publicKey;
                 this.net = new NetLayer({fetch:async(url,request)=>{
                         while(this.cooldownUntil>Date.now()){request.observe?.({stage:'waiting',retryAt:this.cooldownUntil});await sleepInterruptible(this.cooldownUntil-Date.now(),request?.signal);}
@@ -153,6 +189,30 @@ export class YandexSource implements SyncSource {
          * Для файловой ссылки — file-ветка (делегат ZipUrlSource).
          */
         async getManifest(signal: AbortSignal, observe?: TransferObserver): Promise<RemoteEntry[]> {
+                if (this.observationActive) throw new SyncFault('observation-busy', 'Yandex source already has an active observation', 'source');
+                this.observationActive = true;
+                this.manifestReady = false;
+                this.apiPaths.clear();
+                this.hrefCache.clear();
+                const generation = ++this.generation;
+                try {
+                        signal.throwIfAborted();
+                        const entries = await this.observeManifest(signal, observe);
+                        signal.throwIfAborted();
+                        if (generation !== this.generation) throw new SyncFault('inventory-unavailable', 'Yandex observation was disposed before publication', 'source');
+                        this.manifestReady = true;
+                        return entries;
+                } catch (error) {
+                        this.apiPaths.clear();
+                        this.hrefCache.clear();
+                        throw error;
+                } finally {
+                        this.observationActive = false;
+                        this.manifestObserve = undefined;
+                }
+        }
+
+        private async observeManifest(signal: AbortSignal, observe?: TransferObserver): Promise<RemoteEntry[]> {
                 this.manifestObserve=observe;observe?.({stage:'manifest'});
                 // Повторный getManifest в file-ветке: старый делегат утилизируем,
                 // href файловой ссылки будет перевыпрошен заново (семантика п.3).
@@ -175,19 +235,21 @@ export class YandexSource implements SyncSource {
 
                 // Папочная ветка: первая страница корня уже получена выше,
                 // её пагинацию продолжаем, подпапки уходим в BFS-очередь.
-                this.apiPaths = new Map();
+                const traversal = new InventoryTraversal(this.inventoryLimits);
+                traversal.visit(typeof root.path === 'string' && root.path ? root.path : '/', true);
                 const entries: RemoteEntry[] = [];
                 const queue: FolderNode[] = [];
-                await this.consumeFolderPages(undefined, '', root, entries, queue, signal);
-                const visited=new Set<string>();
-                while (queue.length > 0) {
-                        if(entries.length>250_000||visited.size>10_000)throw new Error('Yandex inventory traversal limit exceeded');
-                        const node = queue.shift();
-                        if (node === undefined) break;
+                await this.consumeFolderPages(undefined, '', root, entries, queue, signal, traversal);
+                for (let cursor = 0; cursor < queue.length; cursor++) {
+                        signal.throwIfAborted();
+                        const node = queue[cursor];
                         const firstPage = await this.fetchListing(node.apiPath, 0, signal);
-                        await this.consumeFolderPages(node.apiPath, node.prefix, firstPage, entries, queue, signal);
+                        await this.consumeFolderPages(node.apiPath, node.prefix, firstPage, entries, queue, signal, traversal);
                 }
-                this.manifestObserve?.({stage:'manifest',items:entries.length});return entries;
+                this.manifestObserve?.({stage:'manifest',items:entries.length});
+                signal.throwIfAborted();
+                this.apiPaths = traversal.paths;
+                return entries;
         }
 
         /**
@@ -196,6 +258,7 @@ export class YandexSource implements SyncSource {
          * 403/404 → инвалидация кэша + РОВНО один повтор (E2 → скачать).
          */
         async fetch(entry: RemoteEntry, signal: AbortSignal, observe?: TransferObserver): Promise<ArrayBuffer> {
+                if (!this.manifestReady) throw new SyncFault('inventory-unavailable', 'Yandex download requires a complete current manifest', 'source');
                 // File-ветка: байты отдаёт делегат (zip-сессия режима B).
                 if (this.zipDelegate !== null) {
                         return this.zipDelegate.fetch(entry, signal, observe);
@@ -219,10 +282,11 @@ export class YandexSource implements SyncSource {
 
         /** Конец сессии: href-кэш очищен, делегат file-ветки утилизирован. */
         fileSizeLimit():number|undefined{return this.zipDelegate?.maxFileSizeBytes;}
-        async forceDispose():Promise<void>{this.hrefCache.clear();await this.zipDelegate?.forceDispose();this.zipDelegate=null;}
+        private invalidateManifest(): void { this.generation++; this.manifestReady = false; this.apiPaths.clear(); this.hrefCache.clear(); }
+        async forceDispose():Promise<void>{this.invalidateManifest();await this.zipDelegate?.forceDispose();this.zipDelegate=null;}
         async dispose(): Promise<void> {
                 // §5.4: href живёт только в рамках сессии синхронизации.
-                this.hrefCache.clear();
+                this.invalidateManifest();
                 if (this.zipDelegate !== null) {
                         const delegate = this.zipDelegate;
                         this.zipDelegate = null;
@@ -265,22 +329,29 @@ export class YandexSource implements SyncSource {
                 entries: RemoteEntry[],
                 queue: FolderNode[],
                 signal: AbortSignal,
+                traversal: InventoryTraversal,
         ): Promise<void> {
                 let page: any = firstPage;
                 let offset = 0;
                 let collected = 0;
+                let expectedTotal: number | undefined;
                 for (;;) {
+                        signal.throwIfAborted();
                         // Контракт-проверка (риск №7) — на КАЖДОЙ странице листинга.
                         const embedded = page?._embedded;
                         if (!embedded || !Array.isArray(embedded.items)) {
-                                throw new Error(this.messages.structureChanged());
+                                throw unstableInventory();
                         }
                         const total = embedded.total;
-                        if (typeof total !== 'number' || !Number.isFinite(total) || total < 0) {
-                                throw new Error(this.messages.structureChanged());
-                        }
+                        if (!Number.isSafeInteger(total) || total < 0 || (expectedTotal !== undefined && total !== expectedTotal)
+                                || embedded.items.length > PAGE_SIZE || collected + embedded.items.length > total
+                                || (embedded.items.length === 0 && collected < total)
+                                || (embedded.offset !== undefined && embedded.offset !== offset)
+                                || (embedded.limit !== undefined && embedded.limit !== PAGE_SIZE)) throw unstableInventory();
+                        expectedTotal = total;
 
                         for (const raw of embedded.items as ListingItem[]) {
+                                signal.throwIfAborted();
                                 const item: ListingItem = raw ?? {};
                                 if (typeof item.name !== 'string' || item.name === '' || typeof item.type !== 'string') {
                                         throw new Error(this.messages.structureChanged());
@@ -291,9 +362,12 @@ export class YandexSource implements SyncSource {
                                         if (typeof item.path !== 'string' || item.path === '') {
                                                 throw new Error(this.messages.structureChanged());
                                         }
+                                        traversal.visit(item.path, true);
                                         queue.push({ apiPath: item.path, prefix: prefix + item.name + '/' });
                                 } else if (item.type === 'file') {
-                                        this.appendFileEntry(item, prefix, entries);
+                                        if (typeof item.path !== 'string' || item.path === '') throw unstableInventory();
+                                        traversal.visit(item.path, false);
+                                        this.appendFileEntry(item, prefix, entries, traversal.paths);
                                 } else {
                                         throw new Error(this.messages.structureChanged());
                                 }
@@ -301,11 +375,12 @@ export class YandexSource implements SyncSource {
 
                         this.manifestObserve?.({stage:'manifest',items:entries.length});
                         collected += embedded.items.length;
-                        if (collected >= total) break;
+                        if (collected === total) break;
+                        if (embedded.items.length !== PAGE_SIZE) throw unstableInventory();
                         offset += PAGE_SIZE;
                         if (offset > MAX_TOTAL_OFFSET) {
                                 // total лжёт о размере — вечная пагинация (§5.3, риск №7).
-                                throw new Error(this.messages.structureChanged());
+                                throw new SyncFault('inventory-limit', 'Yandex folder pagination limit exceeded', 'source');
                         }
                         page = await this.fetchListing(apiPath, offset, signal);
                 }
@@ -316,7 +391,7 @@ export class YandexSource implements SyncSource {
          *  манифеста, диффом трактуется как «удалён из источника», и при живом
          *  зеркале локальный файл удаляется — недопустимая потеря данных.
          *  Аналогично item без path (E2-контракт листинга). */
-        private appendFileEntry(item: ListingItem, prefix: string, entries: RemoteEntry[]): void {
+        private appendFileEntry(item: ListingItem, prefix: string, entries: RemoteEntry[], paths: Map<string, string>): void {
                 // [W7/BUG-11] пустые файлы (size === 0) синхронизируются —
                 // единообразие с zip-url/gdrive/webdav (спека §8: «zip-поведение
                 // во всех движках»). Старый skip `size > 0` давал фантомные
@@ -351,7 +426,8 @@ export class YandexSource implements SyncSource {
                         if (!Number.isNaN(ts)) entry.modified = ts;
                 }
                 entries.push(entry);
-                this.apiPaths.set(relPath, apiPath);
+                if (paths.has(relPath)) throw unstableInventory();
+                paths.set(relPath, apiPath);
         }
 
         // ── fetch: href-кэш и скачивание ──
@@ -426,7 +502,9 @@ export class YandexSource implements SyncSource {
                 } catch (err) {
                         // [6-review L2] 400 = некорректный public_key (фатальная конфигурация, §5.2)
                         if (err instanceof NetError && (err.status === 404 || err.status === 403 || err.status === 400)) {
-                                throw new Error(this.messages.linkInvalid());
+                                const root = apiPath === undefined;
+                                throw Object.assign(new SyncFault(root ? 'public-link-invalid' : 'inventory-unavailable',
+                                        root ? this.messages.linkInvalid() : 'Yandex subfolder is unavailable; inventory is incomplete', 'source'), { status: err.status });
                         }
                         throw err;
                 }

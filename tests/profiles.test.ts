@@ -112,3 +112,10 @@ test('clearing destination does not remove scope exclusion',()=>{
  const e=new PolicyEditor({localFiles:[],localFolders:[],remote:[],cache:new Map(),pluginDir:'',policy:{...empty(),folders:[{path:'private',include:'exclude',target:{kind:'move',localPath:'else'}}]}});
  e.setTarget('private',undefined);assert.equal(e.effectiveInclude('private/a.md'),'exclude');
 });
+test('remote profile enforces source despite global incoming and retains local recovery',async()=>{
+ const f=fixture([entry('a.md')]);f.files.set('a.md',ab('AUTHOR'));// Legacy persisted input can contain incoming although the current global dropdown excludes it.
+ (f.conflict as unknown as {setStrategy(value:string):void}).setStrategy('incoming');
+ f.coordinator.setSyncPolicy({...empty(),fileRules:[{scope:'vault',path:'',write:'remote',delete:'keep'}]});
+ const result=await f.coordinator.sync();assert.equal(result?.failed,0);assert.equal(str(f.files.get('a.md')!),'REMOTE');
+ assert([...f.files].some(([p,b])=>p.includes('.conflict-')&&str(b)==='AUTHOR'));
+});

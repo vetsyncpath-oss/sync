@@ -95,3 +95,7 @@ test('plugin connection form persists source selection atomically and rolls back
  click(modal,'Save library');for(let i=0;i<5;i++)await Promise.resolve();assert.equal(settings.vaultPolicy,initial);assert.equal(settings.vaultPolicy.defaultSource,'old');
  fail=false;click(modal,'Save library');for(let i=0;i<5;i++)await Promise.resolve();assert.equal(settings.vaultPolicy.defaultSource,'disk');assert.equal(saves,2);
 });
+test('Drive profile editor explains proposals without promising existing-ID overwrite',()=>{
+ const document=dom();const modal=new ProfileLibraryModal(new App(),[structuredClone(STANDARD_PROFILES.find(p=>p.id==='standard:drive-bidirectional')!)],[],async()=>{});modal.onOpen();click(modal.contentEl,'Customize copy');
+ const editor=document.body.lastElementChild as HTMLElement;assert(editor.textContent?.includes('local original stays in place'));assert(editor.textContent?.includes('retain both originals'));assert(!editor.textContent?.includes('Apply source; keep local copy'));
+});

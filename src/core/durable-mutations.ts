@@ -25,7 +25,7 @@ export class DurableMutations {
                 if (from) await assertLocal(this.vault, request.path, MISSING);
                 const recovery = request.before.kind === 'file' && (kind !== 'write' || !sameVersion(request.before, after))
                         ? await this.recovery.save(await this.vault.readBinary(from ?? request.path)) : undefined;
-                if (recovery && (recovery.sha256 !== (request.before.kind === 'file' ? request.before.sha256 : '') || recovery.size !== (request.before.kind === 'file' ? request.before.size : -1))) throw new Error('Local file changed during recovery');
+                if (recovery && (recovery.sha256 !== (request.before.kind === 'file' ? request.before.sha256 : '') || recovery.size !== (request.before.kind === 'file' ? request.before.size : -1))) throw new SyncFault('local-changed','Local file changed during recovery','file',true);
                 request.guard(); await this.vault.assertWritable?.(from??request.path);await this.vault.assertWritable?.(request.path); await assertLocal(this.vault, from ?? request.path, request.before);
                 if (from) await assertLocal(this.vault, request.path, MISSING);
                 const record: OperationRecord = { id: request.id, planId: request.planId, path: request.path, before: request.before,
@@ -96,9 +96,13 @@ export class DurableMutations {
                 guard();await this.store.finish(id,'not-applied');
         }
         async delete(namespace: string, request: MutationRequest, useTrash: boolean): Promise<void> {
+                // Resolve capability before recording an intent; requested trash never means remove.
+                const trash = this.vault.trash?.bind(this.vault);
+                if (useTrash && request.before.kind !== 'missing' && !trash)
+                        throw new SyncFault('trash-unavailable', 'Local trash is unavailable; original retained');
                 await this.commit(namespace, request, 'delete', MISSING, async () => {
                         if (request.before.kind === 'missing') return;
-                        if (useTrash && this.vault.trash) await this.vault.trash(request.path); else await this.vault.remove(request.path);
+                        if (useTrash) await trash!(request.path); else await this.vault.remove(request.path);
                 });
         }
         async move(namespace: string, request: MutationRequest, from: string): Promise<void> {

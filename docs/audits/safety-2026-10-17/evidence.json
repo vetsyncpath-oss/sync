@@ -1,0 +1,89 @@
+{
+  "candidateIdentity": "See ARCHIVE-INFO.json in delivered source; candidateCommit not self-referentially embedded",
+  "records": [
+    {
+      "id": "baseline-verify",
+      "requirementIds": [
+        "R13.1"
+      ],
+      "baselineCommit": "b691e56ab62ccc6e6e195b637ba07aa96ae59478",
+      "candidateCommit": null,
+      "command": "npm run verify",
+      "fixtureOrEnvironment": "Node 24.19.0 Linux; fake ports",
+      "expected": "575 tests and build pass",
+      "actual": "575/575; tsc/styles/build pass",
+      "status": "pass",
+      "artifactHash": "6d5a9571cfa61808cc81bb6c84b4f60d004383e0230418b6b984ffade4e26456",
+      "artifact": "baseline-verify.log",
+      "limitations": "Fake provider ports; no live Obsidian/Drive"
+    },
+    {
+      "id": "regression-before",
+      "requirementIds": [
+        "R10.6",
+        "R12.2",
+        "INV-18"
+      ],
+      "baselineCommit": "b691e56ab62ccc6e6e195b637ba07aa96ae59478",
+      "candidateCommit": null,
+      "command": "node /workspace/work/audit-safety.cjs",
+      "fixtureOrEnvironment": "Node 24.19.0 Linux; fake ports",
+      "expected": "11 regressions fail; 3 existing guarantees pass",
+      "actual": "11 fail; 3 pass",
+      "status": "pass",
+      "artifactHash": "4b2b7a358c8ff76f8710c78d994d63801610a8353176851b2307febc83e4015c",
+      "artifact": "red-before.log",
+      "limitations": "Tests ran against uploaded runtime; two assertions subsequently use ES2021 equivalent"
+    },
+    {
+      "id": "regression-after",
+      "requirementIds": [
+        "R10.6",
+        "R12.2",
+        "INV-18"
+      ],
+      "baselineCommit": "b691e56ab62ccc6e6e195b637ba07aa96ae59478",
+      "candidateCommit": null,
+      "command": "node /workspace/work/audit-safety.cjs",
+      "fixtureOrEnvironment": "Node 24.19.0 Linux; fake ports",
+      "expected": "14 tests pass",
+      "actual": "14/14",
+      "status": "pass",
+      "artifactHash": "0e7951faf5d38ccf11fcbcecc478b3f8eb2702e0f10bfc270e18777f4fd38b39",
+      "artifact": "green-after.log",
+      "limitations": "B13/B61 partial scope; B19 component and Coordinator ports"
+    },
+    {
+      "id": "candidate-verify",
+      "requirementIds": [
+        "R13.1"
+      ],
+      "baselineCommit": "b691e56ab62ccc6e6e195b637ba07aa96ae59478",
+      "candidateCommit": null,
+      "command": "npm run verify",
+      "fixtureOrEnvironment": "Node 24.19.0 Linux; fake ports",
+      "expected": "All tests and build pass",
+      "actual": "589/589; tsc/styles/build pass",
+      "status": "pass",
+      "artifactHash": "a11c1afa3a503b851b7193dbda4cda77e9bed733d7455ad030c9185afe825f88",
+      "artifact": "candidate-verify.log",
+      "limitations": "Does not establish live compatibility"
+    },
+    {
+      "id": "historical-cross-runner",
+      "requirementIds": [
+        "R13.1"
+      ],
+      "baselineCommit": "b691e56ab62ccc6e6e195b637ba07aa96ae59478",
+      "candidateCommit": null,
+      "command": "node docs/audits/reproduce-cross-audit-2026-10-15.mjs",
+      "fixtureOrEnvironment": "Node 24.19.0 Linux; fake ports",
+      "expected": "Complete results.json",
+      "actual": "exit 0 but results.json absent",
+      "status": "blocked",
+      "artifactHash": "4b501c2d1a550c8d5d77a8d0b3986885542f8e94fbef15743cf4d76b07214aea",
+      "artifact": "historical-runner-incomplete.log",
+      "limitations": "Incomplete runner, not conformance pass"
+    }
+  ]
+}

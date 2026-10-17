@@ -63,7 +63,7 @@ function parseCacheFile(raw: string, expectedSourceId: string): CacheEntries {
                         throw new Error(`manifest cache: invalid entry "${path}"`);
                 }
         }
-        return entries as CacheEntries;
+        return Object.assign(Object.create(null), entries) as CacheEntries;
 }
 
 /** Выделить id источника из имени файла кэша; null — если файл не кэш. */
@@ -90,7 +90,7 @@ function parseCacheFileId(name: string): string | null {
 export class ManifestCache {
         private readonly fs: FileSystem;
         private readonly sourceId: string;
-        private cache: CacheEntries = {};
+        private cache: CacheEntries = Object.create(null);
         private ioChain: Promise<void> = Promise.resolve();
 
         private serialize<T>(operation: () => Promise<T>): Promise<T> {
@@ -121,7 +121,7 @@ export class ManifestCache {
          */
         async load(): Promise<CacheEntries> {
                 const raw = await this.readPublished(this.finalPath);
-                this.cache=raw===null?{}:parseCacheFile(raw,this.sourceId);
+                this.cache=raw===null?Object.create(null):parseCacheFile(raw,this.sourceId);
                 return this.entries();
         }
 
@@ -170,7 +170,8 @@ export class ManifestCache {
         entries(): CacheEntries {
                 const copy: CacheEntries = {};
                 for (const path of Object.keys(this.cache)) {
-                        copy[path] = { ...this.cache[path] };
+                        // Preserve a normal snapshot object without invoking the __proto__ setter.
+                        Object.defineProperty(copy, path, { value: { ...this.cache[path] }, enumerable: true, writable: true, configurable: true });
                 }
                 return copy;
         }
@@ -195,7 +196,7 @@ export class ManifestCache {
                         const raw=await this.readPublished(this.finalPath);
                         if(raw!==null)await this.publish(this.bakPath,raw);
                         await this.publish(this.finalPath,JSON.stringify({version:CACHE_VERSION,sourceId:this.sourceId,generatedAt:Date.now(),entries:{}}));
-                        this.cache={};
+                        this.cache=Object.create(null);
                 });
         }
 

@@ -1,0 +1,1148 @@
+
+> @vetsyncpath/cloud-vault-sync@0.0.0 verify
+> npm test && npm run build
+
+
+> @vetsyncpath/cloud-vault-sync@0.0.0 test
+> node scripts/test.mjs
+
+✔ bootstrap forms a union, adopts identical bytes, and keeps both versions of an initial conflict (68.406373ms)
+✔ verified tracked deletions use trash in both directions; 404 never authorizes local deletion (8.841042ms)
+✔ delete versus edit preserves the edited survivor on both sides before trashing the original (8.42349ms)
+✔ a lost create response resumes by its reserved ID and never generates a second conflict copy (8.559677ms)
+✔ editing during upload preserves the newer local bytes and requests a follow-up (3.26248ms)
+✔ checkpoint failure stops the session before any remote publication or later file mutation (0.702752ms)
+✔ a transient file transfer failure queues retry and does not stop independent downloads (3.788816ms)
+✔ state corruption cannot reset a deletion baseline; checkpoints remain bounded (2.532678ms)
+✔ mount inversion retains exact names, source identity, and protects consumed siblings (1.264421ms)
+✔ three-way truth table refuses inferred tombstones and recognizes only actual divergent edits (0.226983ms)
+✔ preserve-ID policy publishes one reviewed copy without replacing the existing Drive object (11.947316ms)
+✔ a newer local edit after a partial conflict publication is replanned and retained, rather than replaying a stale write (11.235009ms)
+✔ unavailable atomic local replacement retains binary originals and an explicit recovery intent (8.89304ms)
+[VaultSync] Drive checkpoint cleanup deferred Error: Drive checkpoint cleanup must complete before adding another generation
+    at DriveStateStore.cleanup (/tmp/cloud-vault-sync-tests-VdVjau/drive-coordinator.test.cjs:1648:13)
+    at async DriveStateStore.publish (/tmp/cloud-vault-sync-tests-VdVjau/drive-coordinator.test.cjs:1630:7)
+[VaultSync] Drive checkpoint cleanup deferred Error: Drive checkpoint cleanup must complete before adding another generation
+    at DriveStateStore.cleanup (/tmp/cloud-vault-sync-tests-VdVjau/drive-coordinator.test.cjs:1648:13)
+    at async DriveStateStore.publish (/tmp/cloud-vault-sync-tests-VdVjau/drive-coordinator.test.cjs:1630:7)
+✔ failed checkpoint cleanup cannot accumulate unbounded generations and resumes after permission repair (2.624456ms)
+✔ repairing a conditional write capability resumes one conflict copy without reusing a finalized operation ID (7.612585ms)
+✔ keeping deletions restores a trashed tracked object without changing its file ID (3.861776ms)
+✔ Drive baseline identity ignores unrelated provider changes and behavior, while isolating account/root/mount changes (1.165762ms)
+✔ warm no-op uses item reads and publishes no Drive baseline checkpoints (105.428615ms)
+✔ prototype-key filenames survive mutation, adoption and checkpoint reload (6.312264ms)
+✔ a plain legacy directory dictionary cannot select an inherited reserved ID (0.482178ms)
+✔ a newer review on the same path counts one pending file (11.212645ms)
+✔ first, second, first proposals reuse one published copy ID per payload on an unchanged canonical base (12.984223ms)
+✔ proposal dedup is scoped to canonical ID, version, payload and kind, never to path alone (10.605349ms)
+✔ an unavailable published proposal is not recreated when identical local bytes are proposed again (6.470219ms)
+✔ canonical convergence closes only the matching proposal and preserves the other history and payload (13.525682ms)
+✔ a legacy reserved pending copy is fenced to the current schema before any resumed local or remote effect (6.513063ms)
+✔ proposal history admission is bounded while identical reuse and independent downloads still work at the limit (15.852709ms)
+✔ a changed keep-deletions profile blocks an old prepared trash while retaining its intent and finishing independent files (2.466387ms)
+✔ recovery of a copy without API checksums verifies actual SHA-256 bytes before replacing the primary (4.247239ms)
+✔ a remote edit during a conflict question invalidates consent without stopping independent files (2.536134ms)
+✔ a local edit during a conflict question remains intact (0.824786ms)
+✔ conflict questions use fresh metadata and reject unsupported choices per file (6.14034ms)
+✔ canonical 404 persists a stable inbox across local deletion and reload, with zero warm checkpoint writes (2.121626ms)
+✔ same-name replacement with identical bytes cannot silently adopt another remote ID (2.107705ms)
+✔ renaming a tracked ID preserves its binding and does not bootstrap-download a duplicate at the new path (1.789415ms)
+✔ tracked objects moved outside the selected root or changed to native objects remain durable blockers (3.44091ms)
+✔ restored access to the original ID clears unknown evidence only after a fresh read-only probe, without acknowledging new content (1.812779ms)
+✔ read-only probes never recover pending mutation effects or transfer independent files (1.679708ms)
+✔ settled deletion retains its canonical ID and payload; local recreation and original untrash require explicit decisions (2.767582ms)
+✔ both missing with explicit trash settles a tombstone, while subsequent 404 retains that lineage (1.45598ms)
+✔ explicit restore keeps the original Drive ID and leaves a completed tombstone receipt (4.773254ms)
+✔ restore of a recreated local file preserves its preimage before taking the approved remote content (4.124784ms)
+✔ stale local, remote, inbox revision or namespace restore decisions have no untrash or write effects (8.060543ms)
+✔ an untrash response lost after application resumes the same intent and never creates another remote object (3.815216ms)
+✔ changed local bytes after an interrupted untrash are retained along with the unresolved restore intent (2.985532ms)
+✔ a remote trash acknowledgement without the actual postcondition cannot erase tracking (5.786605ms)
+✔ a withdrawn remote deletion cannot trash the local file while a prepared intent is replayed (1.632597ms)
+✔ crashes between trash and tombstone acknowledgement recover lineage without a bootstrap upload (5.417867ms)
+✔ restore without a strong approved digest or with a dirty surviving editor is blocked before untrash (3.714344ms)
+✔ an initial unavailable identity persists without a baseline and cannot turn into a fresh-name upload after disappearing (1.263159ms)
+✔ a remote edit between the deletion plan and its last pre-PATCH inspection cannot be trashed (1.979121ms)
+✔ explicit restore checks fresh untrash/download capabilities before changing the remote object (10.323486ms)
+✔ object-specific 403 persists access evidence, while quota and shared authentication retain their distinct error paths (18.905092ms)
+✔ 404 or relocation during replay keeps the original pending copy IDs and payload in a durable canonical inbox (21.35975ms)
+✔ typed item IO failure does not stop an independent Drive download (1.877708ms)
+✔ unexpected Drive exception stops its job without pretending to be a path conflict (0.723083ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=23ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+✔ real plugin dispatch separates a bidirectional Drive route from a pull child and merges results (47.587228ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ a failed selected Git inventory leaves the independently owned Drive job working (7.903715ms)
+✔ profile validation rejects bidirectional inheritance into a Git child without an explicit pull profile (0.973301ms)
+✔ automatic completion verifies initial and repaired transfers, then leaves a no-op startup job completed (0.782923ms)
+✔ public synchronization state covers the Drive phase while the pull coordinator is idle (4.552941ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=6 duration=6ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=1, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=2 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ mixed manual pipeline applies independent files from both engines before presenting either source question (40.050979ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=1 parked=1 bytes=6 duration=5ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ a Drive observer failure neither stops Git nor transfers the failed source ownership or queue (7.451201ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ ready Git applies before a slow Drive observer resolves, while all external effects remain serial (9.171671ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ scope directories prevent a failed or delayed source from replacing a future child job parent with a file (10.914655ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=1 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=10ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ manual tracked pull deletion remains scoped and does not depend on a failed neighboring Drive inventory (11.417665ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=5ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ a retained Drive baseline blocks a new owner from bootstrap replacement while independent Git files finish (16.326054ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=1 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=1 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ finishing skips queued failures and transfers only eligible independent work, without asking questions (9.711417ms)
+✔ configuration changes and cancellation fence every queued job before file effects (2.162208ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ an existing local parent file alias blocks only its child group and keeps independent files working (8.289207ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=9ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ selected job updates preserve the unselected job last result and expose cloned public projections (12.828207ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ an unresolved historical file target holds its parents before another job can mkdir or stage a descendant (5.51821ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=1 parked=0 bytes=6 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=1 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ an owned interrupted write is accounted without repeating transfer, while an edited unresolved target leaves independent files working (17.723817ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=5ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ a source case-only rename cannot orphan-trash its accepted local alias while other files finish (9.249128ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ host admission blocks two writers of the same Drive root while an independent Git job finishes (7.260223ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+✔ host batch final persistence failure keeps completed transfers and error outcome (7.162955ms)
+✔ cancelled pull phase cannot fall through to Drive writes in the same job (1.912681ms)
+✔ Drive history shows original and replacement IDs as text and never probes or resolves merely by opening (20.383676ms)
+✔ a read-only probe is scoped by retained namespace and path, with duplicate actions disabled while pending (5.400282ms)
+✔ restore preview freezes the displayed evidence, requires an explicit click and retains failed decisions (4.796468ms)
+✔ quiet tombstone becomes a restore preview only after explicit fresh probing; missing permissions disable restore (4.209101ms)
+✔ history read failure preserves visible history and reports the failure; closing never acknowledges inbox entries (2.585718ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=5ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+✔ actual host dispatch delivers a proposal to another vault through an exact-name mount without changing the canonical ID (82.53692ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+✔ peer edits and removals are visible pending artifacts, preserve local bytes and never recursively publish or trash copies (25.24919ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ origin exclusions, protected control paths, legacy files and forged names cannot broaden artifact coverage (5.773125ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+✔ an artifact with a different parent or a digest claim that does not match its bytes is not downloaded as a proposal (13.564365ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ artifact copy-before-trash reaches a second vault after the tracked origin is explicitly trashed (23.541699ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ an artifact transfer error leaves independent canonical files working and retries through its origin named rule (9.401273ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+✔ loss or trash of a received remote artifact never deletes the peer copy or republishes a new object (12.238626ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+✔ an unavailable or out-of-root artifact origin never freezes independent files or authorizes a guessed local path (12.069481ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+✔ removing a received artifact marker preserves the peer bytes and records the lineage change (17.141045ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ source-side exact exclusions survive a named mount and block both origin and proposal effects (3.422031ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+✔ conflicting artifact IDs block their target group without stopping an independent canonical download (11.640322ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+✔ an artifact without an API SHA-256 still requires a matching downloaded payload digest (8.686438ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ moving the origin out of the selected root during an artifact download invalidates local publication (4.912219ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ exact file mappings preserve the actual origin name, parent and ID when case or NFC spelling differs (17.023929ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ unsafe ancestor names cannot impersonate the same joined path after a remote move during inventory (3.788306ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+✔ an explicitly excluded outgoing copy blocks publication and primary rollback while preserving its pending payload (8.754771ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ a surviving unsaved editor blocks remote trash of a missing local file without stopping independent transfers (7.307494ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+✔ actual host read-only probe skips pull files, peer artifact receipt and canonical download while preserving unknown identity (6.051596ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+✔ actual host action refuses inactive namespaces before transfer and restores only the approved known object (11.277403ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+✔ actual restore action does not fetch peer artifacts or independent canonical files (15.797946ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=1 parked=0 bytes=0 duration=0ms
+✔ automatic finishing leaves queued canonical and peer-copy retries to the retry schedule (3.633371ms)
+✔ identical or nested writable Drive roots are blocked across accounts, independently of connection names (1.401077ms)
+✔ verified sibling roots and separate account roots remain disjoint despite a common ancestor or differing clients (0.335197ms)
+✔ unselected/unavailable competing roots block Drive writers without attempting another account refresh (0.336919ms)
+✔ a quota failure on the active account keeps its retry classification, and cancellation cannot become a root claim (1.073893ms)
+✔ startup-only continues the same job after a transient failure and stops once reconciled (2.43497ms)
+✔ follow-up after editing during transfer is bounded and does not turn startup-only into a periodic job (0.459194ms)
+✔ pause cancels a scheduled retry without losing the pending startup job (0.362978ms)
+✔ an old running job cannot consume the startup task selected during its execution (0.37042ms)
+✔ startup-only schedules finishing at five seconds despite attention, then remains configured and completed after hot reload (1.228778ms)
+✔ one initial and at most four retries exhaust the automatic cycle, without resetting the finishing budget (0.517342ms)
+✔ a Retry-After beyond the startup retry window stays visible without installing a timer or retrying immediately (0.243438ms)
+✔ cancelled automatic work does not resurrect queued retry or finishing work (0.241134ms)
+✔ paused finishing work resumes at its recorded due point, and stale cancelled timers cannot run (0.307595ms)
+✔ two ready ticks coalesce behind a running job and do not create parallel effects (1.234085ms)
+✔ explicit re-enable creates one fresh activation, while no-op settings reload does not create another startup (0.384831ms)
+✔ an offline delayed startup retry beyond its window is not admitted after returning online (0.204619ms)
+✔ Drive v1 import preserves pending publication identity, offsets, directories and review history without writes (10.911431ms)
+✔ first current-schema publication verifies a retained v1 backup before retiring generations and fences a v1 reader (6.368776ms)
+✔ backup write failure leaves v1 active and prevents a current-schema checkpoint (1.646118ms)
+✔ a crash after verified backup resumes with one stable import and no duplicate proposal IDs (3.958392ms)
+✔ unsupported checkpoints and corrupt migration backups block effects or GC rather than resetting history (1.775433ms)
+✔ migration backups remain GC roots even without current checkpoint files (2.268428ms)
+✔ a legacy writer advancing after backup and before the current-schema fence cannot silently reuse an incomplete import backup (3.114978ms)
+✔ legacy review hashes protect existing recovery blobs even without a payload pointer or retained operation record (3.042588ms)
+✔ invalid locator types and missing mandatory proposal payloads are rejected at load before any runner can act (2.996268ms)
+✔ Drive v2 import preserves every proposal, receipt and pending reservation; v3 fencing pins a verified v2 backup (3.71879ms)
+✔ v2 backup failure and a legacy writer advancing after a pre-fence crash cannot reset or retire old state (3.113585ms)
+✔ v2-only migration backup remains a GC root and blocks empty active history; corrupt v2 backup blocks collection (2.297112ms)
+✔ a checkpoint version regression after a current-schema writer is rejected even without an earlier v2 backup (2.053319ms)
+✔ tombstone recovery payloads remain physical GC roots after pending intent and baseline are retired (3.806353ms)
+✔ corrupt lifecycle evidence cannot enable a restore or conflicting baseline (1.623343ms)
+✔ upload send budgets survive verified checkpoint publication and reopen (2.820984ms)
+✔ saving new rules retains config-only scope and leaves defaults untouched (1.374267ms)
+✔ save failure restores previous policy, cross-source save is rejected (0.596521ms)
+✔ saving source rules retains other sources and structure presets retain rules (0.902464ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ inheritance: folder, nested folder, exact file; axes independent and order stable (1.19752ms)
+✔ name filters refine scope, case aliases remain protected; equal specificity last wins (0.166401ms)
+✔ reject malformed rules instead of dropping protections (0.536271ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=18ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ remote repairs local edit without remote change and does not delete local-only files (19.755868ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=true
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ create seeds once, preserves existing contents and survives force resync (5.734406ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=true
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ preserve blocks downloads, force writes and mirror deletion (2.750948ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=2 failed=0 queue=0 parked=0 bytes=6 duration=6ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ update accepts unedited old version but skips edited and unowned existing contents (5.767587ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=1 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ tracked deletes owned orphans while preserving never-synced files under fetch (4.061919ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=1 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ file mirror rule scans under fetch; protected siblings survive (3.424185ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=1 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ folder mirror and nested preservation retain containing directory and data (4.279958ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ new rules do not bypass exclusions or script permissions (1.525175ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ background mirror stays deferred, nonimmutable inventory stays blocked (2.680691ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ invalid saved rule aborts before source fetch or mutation (1.560989ms)
+✔ tree editor preserves rules and exclusions across preset edits and returns independent copies (1.173043ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ absent rules retain legacy fetch local edits (1.93871ms)
+✔ case/Unicode-equivalent exact rules do not lose protection (0.165751ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ create-only detects a file created between preview and execution (2.544435ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ legacy mirror off and folder excludes remain stronger than new deletion rules (1.304181ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=1 failed=0 queue=0 parked=0 bytes=6 duration=8ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ explicit file override changes one setting without affecting siblings (8.014954ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ rules apply to mapped destination; preserved target is not replaced by a rename (2.140425ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=cancelled downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+✔ changing a rule after preview cancels the accepted operation (1.957518ms)
+✔ tree statuses reflect custom write and deletion policies (6.588117ms)
+✔ public Drive properties are requested, bounded and compared across repeated inventory observations (6.666225ms)
+✔ empty or missing generated IDs cannot authorize an upload without a stable reservation (1.29003ms)
+✔ Drive MD5 verification matches independent Node implementation including padding boundaries (1.407678ms)
+✔ raw inventory reads all pages; execution rejects ambiguous trees (2.320828ms)
+✔ identical repeated IDs across pages are one object; differing versions remain unstable (1.491775ms)
+✔ duplicate folders retain different children and unsafe names remain browsable (1.246464ms)
+✔ excluded Google-native duplicate does not collide with a supported execution file (0.561869ms)
+✔ a disposed Drive run cannot keep an indefinitely stale inventory (0.776854ms)
+✔ Drive normalizes checksum case before exposing metadata (0.415227ms)
+✔ checksum normalization preserves legacy opaque MD5 pull tokens (0.524433ms)
+✔ literal separators remain browsable without becoming executable vault paths (0.510983ms)
+✔ root cycles remain diagnostic browse data and block execution (0.631424ms)
+✔ few distinct IDs cannot hide an excessive repeated-observation tree (0.50962ms)
+✔ metadata reads and writes reject a different returned ID; My Drive alias resolves normally (0.535429ms)
+✔ resumable transfer follows a partial acknowledgement, not bytes sent (341.850111ms)
+✔ unknown completed upload is queried before replaying bytes (0.404322ms)
+✔ desktop callback ignores wrong state and exchanges the accepted code with PKCE (26.432217ms)
+✔ desktop cancellation after token response cannot return a grant (6.23319ms)
+✔ unreturned browser sign-in times out and releases its callback listener (504.788412ms)
+✔ token exchange timeout ends sign-in despite a noncancellable network request (28.613744ms)
+✔ cancelling browser sign-in releases the listener so a fresh attempt has a new state (4.918914ms)
+✔ Drive restore capabilities are requested as booleans and inconsistent repeat permissions invalidate a snapshot (1.618106ms)
+✔ persisted exhausted chunk budget permits a status probe but never replays bytes after restart (0.388097ms)
+✔ persisted exhausted status probe is not reset on restart (0.17862ms)
+✔ more than five advancing upload steps are valid and each is charged before dispatch (1.894292ms)
+✔ upload budget persistence failure prevents even the status probe (0.278991ms)
+✔ Drive folder navigation commits forward/back history only after successful loading (17.905751ms)
+✔ same-name Drive folders expose IDs and selecting the second keeps its identity (8.52263ms)
+✔ cancelling a loading picker discards late metadata and settles selection once (1.009485ms)
+✔ refresh requests coalesce and disconnected late responses never resurrect access (2.067985ms)
+✔ returned 401 refreshes once, without replaying a second 401 forever (1.918329ms)
+✔ desktop import rejects web-app clients rather than accepting a wrong OAuth flow (0.344681ms)
+✔ thrown 401 refreshes once and a second thrown 401 is an authentication failure (0.991548ms)
+✔ Google transport and body interruptions remain retryable and do not expose upload session credentials (0.636142ms)
+✔ refresh cannot rotate credentials or cache access for a different account (0.651275ms)
+✔ refresh timeout releases the shared request and ignores a late credential rotation (26.135799ms)
+✔ Google body cancellation completes even when the underlying response ignores abort (0.675781ms)
+✔ browser waiting offers a transferable URL, cancels without discarding the editor, and accepts a fresh attempt (15.384771ms)
+✔ callback progress clears the browser URL and only a completed grant authorizes the draft (4.108429ms)
+✔ sign-in timeout shows a persistent actionable error and enables another attempt (3.16296ms)
+✔ host Markdown adapter compares inside process and rejects a newer saved version (1.444994ms)
+✔ host adapter checks cancellation in process and leaves unsupported bytes untouched (0.729252ms)
+✔ plugin session ownership spans preparation and journal finalization (0.372032ms)
+✔ credential rotation rebuilds the real Git adapter without discarding the cache (10.892292ms)
+✔ configuration revision ignores runtime counters and captures policy and credential changes (0.406154ms)
+✔ failed profile migration restores previous settings for a safe retry (0.957527ms)
+✔ routing changes isolate caches and failed queues while token rotation keeps ownership (4.934258ms)
+✔ cache load failure never installs an empty replacement or bypasses the next load (0.924007ms)
+✔ vault migration keeps assignments stable when the legacy primary source changes (0.658265ms)
+✔ all-vault explicit source avoids loading an unused default source (1.346014ms)
+✔ an unconfigured required default cannot be silently omitted from a deletion-capable plan (1.834813ms)
+✔ fresh unconfigured settings do not invent a default connection (0.452854ms)
+✔ selected Yandex connection drives real listing and download instead of legacy Git (5.702769ms)
+✔ named git connection reaches inventory and file download through plugin routing (1.669162ms)
+✔ named gdrive connection reaches inventory and file download through plugin routing (1.512326ms)
+✔ named webdav connection reaches inventory and file download through plugin routing (4.881877ms)
+✔ named zip-url connection reaches inventory and file download through plugin routing (2.141056ms)
+✔ ambiguous paths and invalid metadata fail closed (2.029928ms)
+✔ all content digest algorithms accept valid bytes and reject corruption (5.072386ms)
+✔ zero-length entries still require exact length; ETags do not claim byte integrity (0.765006ms)
+✔ Windows device aliases with multiple extensions are rejected (0.516601ms)
+✔ journal persists blocked/deferred counts and loads legacy entries (1.352023ms)
+✔ concurrent cache flushes are serialized and retain the newer snapshot (1.090578ms)
+✔ a failed cache flush does not poison subsequent writes (0.226712ms)
+[VaultSync] job subscriber failed
+[VaultSync] job subscriber failed
+[VaultSync] job subscriber failed
+[VaultSync] job subscriber failed
+[VaultSync] job subscriber failed
+[VaultSync] job subscriber failed
+[VaultSync] job subscriber failed
+[VaultSync] job subscriber failed
+[VaultSync] job subscriber failed
+[VaultSync] job subscriber failed
+[VaultSync] job subscriber failed
+✔ batch observers are bounded, ready jobs apply independently, and effects never overlap (2.677546ms)
+✔ only shared integrity failures block queued writers; a provider/auth failure retains its job identity (2.787342ms)
+✔ job observers and projection listeners cannot turn a provider failure into foreign writes or stop healthy work (2.803157ms)
+✔ symbolic direction checking covers filtered descendants hidden by an exact-file override (1.659358ms)
+✔ inverse collisions are found before inventory, while disjoint exact-name mounts remain writable (1.617895ms)
+✔ plugin package ownership and required directory boundaries include future packages and absent files (0.533707ms)
+✔ mapped directory reservations apply to final local paths and protect case/NFC aliases without taking sibling scope (0.533947ms)
+✔ shared pending mutations reserve ancestors across namespaces, while disjoint targets remain writable (11.432618ms)
+✔ scoped recovery cannot close or fail another owner unresolved local effect (1.971149ms)
+✔ local directory proof catches file/dir case and NFC aliases without walking unrelated folders or reading bytes (0.866199ms)
+✔ indexed block snapshots do not share caller mutations and protect deep descendants without taking sibling directories (13.091475ms)
+✔ failed local directory metadata blocks its own group while readable siblings and root files retain usable proofs (0.492925ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ read observation deadlines settle a noncooperative source, release slots and ignore late data (11.344134ms)
+✔ cancellation releases both queued observers and inter-job metadata dependencies without applying late results (0.630423ms)
+✔ job retains confirmed progress when a later stage throws, and unrelated job finishes (0.312342ms)
+✔ explicit error without failed item counters cannot project success (0.186642ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=3ms
+✔ real coordinator checkpoint failure blocks another queued writer (5.044163ms)
+✔ restart publishes a durable report after journal write failure without running effects (4.641505ms)
+✔ lost acknowledgement replays publication idempotently (0.445964ms)
+✔ clear after failed acknowledgement cannot resurrect the recovered report (1.701691ms)
+✔ clear intent survives crash before acknowledgement (0.592545ms)
+✔ corrupt pending report blocks new publication instead of silently dropping it (0.620378ms)
+✔ append and clear share serialization, including async publication (0.346414ms)
+✔ unverified pending write cannot publish a report (0.237469ms)
+✔ format upgrade is read-only on load and preserves legacy bytes and applied state (13.627194ms)
+✔ interrupted migration at checkpoint-temp preserves the legacy original and resumes safely (5.183674ms)
+✔ interrupted migration at checkpoint-publish preserves the legacy original and resumes safely (4.514483ms)
+✔ interrupted migration at marker-temp preserves the legacy original and resumes safely (6.280902ms)
+✔ interrupted migration at marker-publish preserves the legacy original and resumes safely (3.358596ms)
+✔ corrupt latest legacy state cannot be upgraded into empty or older history (1.506126ms)
+✔ a missing event within the replay tail blocks loading (4.035079ms)
+✔ a valid checksum cannot hide a wrong predecessor or illegal state transition (3.858321ms)
+✔ a missing marker cannot fall back to legacy or an empty ledger (2.817838ms)
+✔ a missing checkpoint cannot fall back to legacy or an empty ledger (2.823146ms)
+✔ corrupt latest checkpoint never falls back to the retained previous checkpoint (2.369972ms)
+✔ checkpoint tip must agree with its retained anchor event (1.971189ms)
+✔ uncertain checkpoint publication before rename is recoverable without replaying vault writes (2.301618ms)
+✔ uncertain checkpoint publication after rename is recoverable without replaying vault writes (2.513439ms)
+✔ failed checkpoint preparation retains published deltas and permits a later retry (3.304834ms)
+✔ uncertain applied-event publication before rename recovers the commit without rewriting the file (5.636879ms)
+✔ uncertain applied-event publication after rename recovers the commit without rewriting the file (1.72733ms)
+[VaultSync] Journal cleanup deferred; retained metadata will be checked again: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at OperationStore.read (/tmp/cloud-vault-sync-tests-VdVjau/operation-storage.test.cjs:531:27)
+    at async OperationStore.readCheckpoint (/tmp/cloud-vault-sync-tests-VdVjau/operation-storage.test.cjs:536:20)
+    at async OperationStore.compactLocked (/tmp/cloud-vault-sync-tests-VdVjau/operation-storage.test.cjs:603:9)
+    at async /tmp/cloud-vault-sync-tests-VdVjau/operation-storage.test.cjs:455:7
+✔ an unverified previous checkpoint cannot authorize deleting metadata (5.364086ms)
+[VaultSync] Journal cleanup deferred; retained metadata will be checked again: Error: Journal cleanup blocked by an unexpected future generation
+    at OperationStore.compactLocked (/tmp/cloud-vault-sync-tests-VdVjau/operation-storage.test.cjs:596:193)
+    at async /tmp/cloud-vault-sync-tests-VdVjau/operation-storage.test.cjs:455:7
+✔ a future checkpoint filename cannot authorize deleting verified history (2.814774ms)
+[VaultSync] Journal cleanup deferred; retained metadata will be checked again: Error: cleanup interrupted
+    at f.memory.fs.remove (/tmp/cloud-vault-sync-tests-VdVjau/operation-storage.test.cjs:4234:30)
+    at OperationStore.compactLocked (/tmp/cloud-vault-sync-tests-VdVjau/operation-storage.test.cjs:605:192)
+    at async /tmp/cloud-vault-sync-tests-VdVjau/operation-storage.test.cjs:455:7
+✔ interrupted metadata cleanup can resume without removing recovery objects or history (5.762249ms)
+✔ compaction preserves incoming versions, applied baselines, deletion effects and recovery references (9.22364ms)
+✔ compaction cannot discard unresolved operations or recycle their IDs (8.157268ms)
+✔ adaptive checkpoints bound metadata IO rather than rewriting cumulative history per event (719.051786ms)
+✔ compaction preserves the history budget and cannot reuse finalized operation IDs (5.112106ms)
+✔ editing during automatic checkpoint publication invalidates the following intention (4.298706ms)
+✔ automatic checkpoint failure precedes a new intention and preserves the previous commit (1.5819ms)
+✔ real filesystem publication and compaction reopen with all applied baselines (29.995592ms)
+✔ default journal bounds event files during long sync and keeps full history in two snapshots (3175.098986ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ large existing event chain compacts on reopen without rewriting vault files (313.343404ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=2 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=12 duration=11ms
+✔ session finalization compacts small batches without waiting for a threshold (12.491538ms)
+✔ primary write durably distinguishes applied bytes from an incoming version (18.751788ms)
+✔ crash after write, before applied persist, reconciles cache without repeating the operation (4.450366ms)
+✔ crash after delete, before applied persist, reconciles cache without repeating the operation (2.843828ms)
+✔ crash after move, before applied persist, reconciles cache without repeating the operation (2.158733ms)
+✔ crash before mutation retires the old intent and requires fresh planning (1.764026ms)
+✔ unknown third version blocks recovery and never overwrites it (1.748924ms)
+✔ corrupt newest generation cannot roll back to an older valid ledger (2.063458ms)
+✔ unloaded or malformed state cannot masquerade as an empty operation history (0.407787ms)
+✔ an unpublished temporary generation is ignored and reserved IDs cannot mutate prototypes (1.98531ms)
+✔ failed WAL preparation never touches the original (0.99965ms)
+✔ cancel after intent persistence prevents the physical commit (2.087145ms)
+✔ an atomic stale rejection retires intent without blocking later recovery (2.795584ms)
+✔ corrupt recovery object blocks deletion even if its filename is correct (0.738365ms)
+✔ recovery budget exhaustion keeps original and does not reclaim earlier copies (1.082957ms)
+✔ concurrent store updates merge records and publish serialized generations (2.665418ms)
+✔ publication with an uncertain result poisons the old writer rather than reusing its sequence (1.579878ms)
+✔ plan compilation is immutable and snapshots all mutable inputs (0.795723ms)
+✔ move dependencies expect the source bytes at the subsequent write target (0.696593ms)
+✔ a cache projection after restart cannot import another namespace (1.862565ms)
+✔ an unresolved operation in another namespace protects the same physical target (1.422109ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+[VaultSync] download FAILED: "file0.md" (1048576B, hash=2131cd637100…): Failed to fetch
+[VaultSync] download FAILED: "file1.md" (1048576B, hash=2131cd637100…): Failed to fetch
+[VaultSync] download FAILED: "file2.md" (1048576B, hash=2131cd637100…): Failed to fetch
+[VaultSync] download FAILED: "file3.md" (1048576B, hash=2131cd637100…): Failed to fetch
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=4 queue=4 parked=0 bytes=0 duration=163ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+[VaultSync] download FAILED: "a0.md" (6B, hash=2131cd637100…): network offline
+[VaultSync] download FAILED: "a1.md" (6B, hash=2131cd637100…): network offline
+[VaultSync] download FAILED: "a2.md" (6B, hash=2131cd637100…): network offline
+✔ partial transfer is observable before any file finishes; repeated source failure defers untouched paths (165.73469ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=3 queue=3 parked=0 bytes=0 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=3 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=1, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=2 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ source cooldown survives a new automatic session and a targeted manual retry can probe again (9.206394ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=35 failed=0 queue=35 parked=35 bytes=0 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ historical failures remain pending but are not new errors (3.98993ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=1 conflicts=0 skipped=0 failed=0 queue=1 parked=1 bytes=6 duration=6ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ excluded failures do not block an unrelated verified deletion (6.033769ms)
+[VaultSync] verify FAILED: "a.md" (6B, hash=2131cd637100…): Source integrity mismatch: a.md
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=1 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=2ms
+✔ digest failure can be repaired at the same advertised version without Force (4.064082ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ global history capacity stops before payload fetch rather than producing one failure per file (3.168779ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ late final checkpoint error is the final result and is never preceded by success (1.231821ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=cancelled downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ Cancel resolves a pending conflict without an answer and preserves current bytes (1.722493ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=cancelled downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ Cancel resolves an unanswered preview before any fetch (1.881694ms)
+✔ sync probe handles synchronous errors while retaining the existing verdict (0.3507ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ missing-only restoration obtains one inventory and leaves existing local files alone (2.738128ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=1 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ plugins package verifies every changed payload before any member is written (1.842375ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=1 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ themes package verifies every changed payload before any member is written (1.405864ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=3 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=18 duration=8ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ a package and an unrelated file share the bounded staging budget without deadlock (8.733568ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=1 parked=1 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ parent file collision is detected before any fetch and never deletes the local file (1.268036ms)
+[VaultSync] apply FAILED: "a.md" (6B, hash=2131cd637100…): Save the editor first
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=1 parked=1 bytes=0 duration=2ms
+[VaultSync] journal: broken JSON; preserve before publication SyntaxError: Unexpected token 'B', "BROKEN" is not valid JSON
+    at JSON.parse (<anonymous>)
+    at FileJournal.readHistory (/tmp/cloud-vault-sync-tests-VdVjau/pipeline-overhaul.test.cjs:4411:21)
+    at async FileJournal.publish (/tmp/cloud-vault-sync-tests-VdVjau/pipeline-overhaul.test.cjs:4443:18)
+    at async /tmp/cloud-vault-sync-tests-VdVjau/pipeline-overhaul.test.cjs:4495:7
+[VaultSync] journal: read failed; existing file retained Error: permission denied
+    at Object.read (/tmp/cloud-vault-sync-tests-VdVjau/pipeline-overhaul.test.cjs:5114:11)
+    at FileJournal.readHistory (/tmp/cloud-vault-sync-tests-VdVjau/pipeline-overhaul.test.cjs:4402:27)
+    at FileJournal.publish (/tmp/cloud-vault-sync-tests-VdVjau/pipeline-overhaul.test.cjs:4443:29)
+    at /tmp/cloud-vault-sync-tests-VdVjau/pipeline-overhaul.test.cjs:4495:18
+✔ dirty editor guard prevents replacement even if the saved baseline still matches (2.442661ms)
+✔ cache fallback quarantines a corrupt final publication before republishing (0.395528ms)
+✔ corrupt diagnostic journal is backed up before publication, and unreadable history is retained (1.302208ms)
+✔ retention preserves current baselines and the newest effect while releasing old terminal history (4.577748ms)
+✔ retention cannot prune a committing or blocked operation (0.968584ms)
+✔ weighted buffer wait is cancelled without consuming its budget (0.331732ms)
+✔ startup-only pause/resume does not create another startup event (0.723944ms)
+✔ busy or offline tick remains pending and coalesces into one catch-up (0.21185ms)
+✔ long rate limit is deferred instead of exhausting multiple hour-long sleeps (0.607037ms)
+✔ diagnostic text removes signed queries, credentials and authorization values (0.187904ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ a retained prune event replays safely when checkpoint compaction was interrupted (5.112306ms)
+✔ resource limits can be raised without dropping retained history or recovery objects (0.291671ms)
+✔ inventory source context retains an underlying transient HTTP cause (0.136577ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=5 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+✔ manual questions wait until independent nonconflicting downloads have completed (4.121228ms)
+✔ panel shows active source, attempt, wait and buffered capability without claiming completed files (5.348523ms)
+✔ refresh retains last-session search and opened error details (3.317904ms)
+✔ targeted retry forwards the selected path instead of retrying the entire queue (1.64087ms)
+✔ conflict modal closes and returns defer when its session is cancelled (0.669472ms)
+✔ queued question cannot open after session cancellation (0.818657ms)
+✔ source editor persists independent automatic sync selection (4.077502ms)
+✔ plugin schedules only assigned sources and manual-only Yandex stays out of the inherited job (2.715924ms)
+✔ Yandex concurrency limit does not throttle independent Git source requests (2.162598ms)
+✔ a per-source startup-only schedule remains enabled and completed when the global interval is off (0.99236ms)
+✔ inheriting sources each keep their own scheduler and pause/resume does not erase a consumed startup (0.545184ms)
+✔ job cards preserve per-connection expanded details through status updates (1.48879ms)
+✔ journal reload retains bounded per-source outcomes and history renders without current automatic settings (9.100062ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=17ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ verified download updates the vault and baseline (18.776415ms)
+[VaultSync] apply FAILED: "a.md" (6B, hash=2131cd637100…): Local file changed after planning: a.md
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=1 parked=0 bytes=0 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ an edit after preview invalidates full replacement without changing the baseline (4.653953ms)
+[VaultSync] Failed to delete gone.md: Local file changed after planning: gone.md
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=0 parked=0 bytes=0 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ an edit after preview invalidates deletion and keeps ownership (2.393868ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=cancelled downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ configuration revision changed during preview cancels every planned commit (2.093594ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=cancelled downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ a source prepared under an old revision cannot fetch a new session inventory (1.453447ms)
+✔ missing-file scan rejects a configuration change and releases its session (1.158911ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ a preview cannot mutate the remote metadata used by the accepted plan (3.675454ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=5ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ full reconciles local drift even when remote and cached versions are unchanged (5.919996ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=1 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=1 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=1 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ weak remote versions use real applied bytes and incoming copies never advance that baseline (8.462388ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ applied state repairs a lost legacy checkpoint without redownloading (4.845834ms)
+[VaultSync] apply FAILED: "a.md" (6B, hash=2131cd637100…): Applied operation could not be acknowledged; recovery intent retained: crash after incoming
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ incoming commit recovered after a crash does not create another conflict copy (4.869258ms)
+[VaultSync] verify FAILED: "a.md" (6B, hash=2131cd637100…): Source integrity mismatch: a.md
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=1 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ invalid concurrency cannot silently skip downloads and permit deletions (1.553618ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=5ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ an unexpected worker error stops the session before deletion (4.644248ms)
+[VaultSync] verify FAILED: "a.md" (6B, hash=2131cd637100…): Source integrity mismatch: a.md
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=1 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ wrong bytes with the correct length cannot overwrite or authorize deletion (1.559827ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=0ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ ambiguous manifest aborts the entire session without mutation (0.863665ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=cancelled downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ cancel while a conflict question is pending leaves both vault and cache intact (1.99184ms)
+[VaultSync] apply FAILED: "a.md" (6B, hash=2131cd637100…): Local file changed after planning: a.md
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=1 parked=0 bytes=0 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ an edit saved while the question is open invalidates replacement and remains recoverable (4.417706ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=5ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ remote-wins preserves a recovery copy before replacement (5.02919ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ full preserves a recovery copy before replacement (3.562343ms)
+[VaultSync] apply FAILED: "a.md" (6B, hash=2131cd637100…): disk full
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ a recovery write failure preserves the original (2.3888ms)
+[VaultSync] apply FAILED: "a.md" (6B, hash=2131cd637100…): Local file changed after planning: a.md
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=1 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ an edit saved during the recovery write prevents replacement (1.93197ms)
+[VaultSync] apply FAILED: "a.md" (6B, hash=2131cd637100…): Local file changed after planning: a.md
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=1 parked=0 bytes=0 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ a host compare-and-write rejection does not fall back to unsafe replacement (3.696386ms)
+[VaultSync] apply FAILED: "a.md" (6B, hash=2131cd637100…): Local file changed after planning: a.md
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=1 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ identical bytes require no write, even if an edit arrives during hashing (1.851498ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=0 parked=0 bytes=0 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=1 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=1, forceAll=false
+✔ failed deletion keeps ownership and is retried with recovery on the next manual run (7.587997ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=1 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ forced retry does not discard unresolved orphan ownership (3.233136ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=cancelled downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ preview distinguishes retained orphans from planned removals in fetch (2.141827ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=cancelled downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=true
+✔ preview distinguishes retained orphans from planned removals in light (1.170749ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ force resync retains the last applied baseline (2.681803ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=1 parked=0 bytes=0 duration=1ms
+[VaultSync] retry cap (1) reached for "a.md": offline — attempts parked; use targeted Retry after fixing the cause
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ a no-op does not attribute a historical failure outside its inventory to this run (0.953792ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=1 parked=1 bytes=0 duration=1ms
+[VaultSync] retry cap (1) reached for "a.md": offline — attempts parked; use targeted Retry after fixing the cause
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ a parked download still prevents unrelated mirror deletion (1.206543ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=cancelled downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=1 parked=1 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ rejecting the preview does not discard a previous-version failure (2.218332ms)
+[VaultSync] rename FAILED old/a.md → new/a.md: permission denied
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=0 parked=0 bytes=0 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ failed approved rename cannot authorize downloads or deletions (3.485528ms)
+[VaultSync] Failed to delete gone.md: Local file changed before deletion
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] retry cap (1) reached for "a.md": offline — attempts parked; use targeted Retry after fixing the cause
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ edits during deletion recovery preserve the current file and baseline (1.486637ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=1 parked=0 bytes=0 duration=0ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=true
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] retry cap (1) reached for "a.md": offline — attempts parked; use targeted Retry after fixing the cause
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto respects retry backoff (3.700913ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=1 parked=1 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=true
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ auto respects parked entries (2.684867ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=cancelled downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ rejecting the preview cannot rename a file (1.239423ms)
+✔ matching content is insufficient provenance to rename an unrelated path (0.249497ms)
+✔ orphan planning protects disallowed scripts and the entire plugin runtime (0.194554ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ a mapping into a protected runtime directory aborts without mutation (1.907884ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ unverified inventories cannot authorize deletion even in a manual run (2.257702ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ auto never applies light deletions hidden inside a full policy (1.324111ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=1 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ full deletion only removes enumerated files and preserves a newly created child (2.609464ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=1 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ full scans a selected child under an excluded parent without deleting excluded siblings (2.869656ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ session ownership is retained until final persist finishes (0.999821ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ session ownership is retained until final dispose finishes (0.993512ms)
+✔ an immediate save waits for its snapshot and surfaces its own failure (1.612006ms)
+✔ existing profiles preserve creation, deletion and automatic conflict semantics (0.332403ms)
+✔ migration retains exact file identity and source locator across repeated conversion (2.402351ms)
+✔ bidirectional behavior is explicit and protected children still disable all mutations (0.446605ms)
+✔ assignment dialog selects plugin code, commits only to tree draft and cancels safely (8.028643ms)
+✔ removing a direct assignment does not silently re-add it (1.09824ms)
+✔ profile library preserves originals when canceled, custom profiles save via callback (6.183565ms)
+✔ tree reload preserves unsaved assignments even when inventory fails (1.252362ms)
+✔ remote tree selection assigns the final mapped vault path (1.340456ms)
+✔ connection library exposes and saves vault source, including assignments-only mode (1.920532ms)
+✔ plugin connection form persists source selection atomically and rolls back failed saves (1.716234ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ migration preserves legacy mode/conflict meanings and is idempotent (2.470002ms)
+✔ migration retains nested mode overrides, inline rules, mappings and exclusions (1.363841ms)
+✔ removing a vault assignment falls back to safe updates and no deletion (0.209978ms)
+✔ missing profiles and missing source connections fail closed (0.565595ms)
+✔ same-priority overlapping source rules conflict; child assignment explicitly overrides parent (0.197429ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=2 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=12 duration=18ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ Git and Yandex-like providers route exact bytes to disjoint paths in one session (20.284064ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ one failed inventory prevents all writes and deletions (1.741993ms)
+✔ unverified member prevents destructive authorization for the composite (0.207894ms)
+✔ same path in providers is assigned to one; absence never falls back to another source (0.257179ms)
+✔ routing follows final mapped paths, not raw source paths (0.382598ms)
+✔ stale locators and portable aliases are rejected (0.439454ms)
+✔ preview uses isolated instances; available unassigned paths are visible (0.290129ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ routing ownership changes namespace but writing mode changes do not (1.130639ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ migrated incoming conflict keeps local primary and saves incoming copy (4.889128ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+✔ background ask does not open a prompt and remains available for manual resolution (5.395223ms)
+✔ tree assigns profiles, resets inheritance and retains draft through snapshot recreation (0.844557ms)
+✔ clearing destination does not remove scope exclusion (0.243478ms)
+✔ WebDAV accepts equivalent prefixes, entities and unavailable optional properties (4.630047ms)
+✔ WebDAV malformed, partial, foreign namespace and failed responses are rejected (1.730735ms)
+✔ WebDAV confines decoded paths to the trusted origin and root boundary (0.604243ms)
+✔ WebDAV fetch uses the resolved href, strong If-Match and rejects redirects (1.798678ms)
+✔ an untrusted WebDAV collection href never receives an authenticated follow-up (0.832117ms)
+✔ WebDAV requires a successful self collection response (0.514707ms)
+✔ Drive incompleteSearch cannot become a partial authoritative manifest (0.998959ms)
+✔ Yandex lists valid files and rejects unknown item types rather than omitting them (1.419786ms)
+✔ a raw Git file resembling a JSON API envelope remains literal content (1.021924ms)
+✔ ZIP lease retains resources but cannot return a stale inventory on the next session (1.596052ms)
+✔ duplicate ZIP entries are rejected rather than silently collapsed (0.287164ms)
+✔ an already aborted transport request makes no network call (0.738276ms)
+✔ discard cancels the body and propagates the redirect restriction (18.049307ms)
+✔ Git resolves repository default, preserves explicit branches and rejects unsupported all (0.983617ms)
+✔ non-GitHub repository never silently reads a same-named GitHub repository (0.1716ms)
+✔ Drive rejects account-root browsing with an API key before network access (0.280905ms)
+✔ public WebDAV lists and downloads without an Authorization header (0.796784ms)
+✔ ZIP shared links preserve query parameters while changing the download path (0.478062ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manifest checkpoints, reset and restore work without rename-overwrite (2.696405ms)
+✔ cache recovers after interruption before write (0.689492ms)
+✔ cache recovers after interruption after write (0.318471ms)
+✔ cache recovers after interruption before remove (0.439554ms)
+✔ cache recovers after interruption after remove (0.613186ms)
+✔ cache recovers after interruption before rotate (0.332192ms)
+✔ cache recovers after interruption after rotate (0.29059ms)
+✔ cache recovers after interruption before publish (1.057007ms)
+✔ cache recovers after interruption after publish (0.306603ms)
+[VaultSync] checkpoint FAILED: Error: Destination file already exists!
+    at f.memory.fs.write (/tmp/cloud-vault-sync-tests-VdVjau/retry-recovery.test.cjs:10076:64)
+    at ManifestCache.publish (/tmp/cloud-vault-sync-tests-VdVjau/retry-recovery.test.cjs:114:19)
+    at /tmp/cloud-vault-sync-tests-VdVjau/retry-recovery.test.cjs:163:18
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=19ms
+✔ checkpoint failure is session failure, not a failed download of an applied file (21.137923ms)
+✔ internal headers timeout is diagnosed separately from session cancellation (18.894123ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=1, forceAll=false
+✔ internal body timeout is diagnosed separately from session cancellation (37.590578ms)
+✔ user cancellation makes one attempt and remains cancellation (0.484062ms)
+✔ transient retries spread out, respect server delay and stop at their budget (0.353094ms)
+✔ Retry-After HTTP-date survives rate-limit exhaustion as deferred retry metadata (0.481998ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=1 parked=0 bytes=0 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ automatic retry never opens manual confirmation or conflict dialogs (3.495953ms)
+✔ scheduler serializes automatic ticks and does not race a second retry session (0.795983ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual preserve protects expected missing local state (1.851298ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual preserve protects expected unknown local state (1.447828ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual preserve protects expected clean local state (1.354156ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual preserve protects expected edited local state (1.474768ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual create protects expected missing local state (4.024522ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual create protects expected unknown local state (1.558656ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual create protects expected clean local state (2.75886ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual create protects expected edited local state (1.273294ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual update protects expected missing local state (2.740972ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual update protects expected unknown local state (4.37374ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual update protects expected clean local state (4.100717ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual update protects expected edited local state (1.876786ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual remote protects expected missing local state (3.021667ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=7ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual remote protects expected unknown local state (6.516838ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual remote protects expected clean local state (3.445918ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual remote protects expected edited local state (4.248561ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual changes protects expected missing local state (3.386337ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=7ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual changes protects expected unknown local state (6.80241ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ manual changes protects expected clean local state (4.841818ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ manual changes protects expected edited local state (3.630868ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto preserve protects expected missing local state (1.229067ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto preserve protects expected unknown local state (1.148526ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto preserve protects expected clean local state (1.219603ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto preserve protects expected edited local state (1.100773ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto create protects expected missing local state (2.478656ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto create protects expected unknown local state (1.166813ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto create protects expected clean local state (2.189438ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto create protects expected edited local state (1.208867ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto update protects expected missing local state (2.345314ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto update protects expected unknown local state (1.378674ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto update protects expected clean local state (2.887614ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto update protects expected edited local state (3.526379ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto remote protects expected missing local state (2.539027ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto remote protects expected unknown local state (4.009429ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto remote protects expected clean local state (3.008107ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto remote protects expected edited local state (2.650937ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto changes protects expected missing local state (3.713281ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto changes protects expected unknown local state (3.115128ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+✔ auto changes protects expected clean local state (2.714322ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=1, forceAll=false
+✔ auto changes protects expected edited local state (3.937841ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=1, forceAll=false
+✔ manual retry can recover a blocked file after repair without force-overwrite (2.641893ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=1 parked=1 bytes=0 duration=1ms
+✔ manual retry of blocked files still respects preserve rules (1.270079ms)
+✔ Yandex renews an expired download link and routed execution preserves its concurrency cap (1.793861ms)
+✔ Yandex shared rate-limit cooldown blocks other requests and remains cancellable (0.418592ms)
+✔ transport retries and Google 401 replay spend one five-send budget (8.789333ms)
+✔ parallel requests cannot overdraw a shared step (4.091393ms)
+✔ persist failure spends conservatively and never dispatches, including a second caller (0.738837ms)
+✔ restart restores charged attempts; a different step has independent capacity (0.212051ms)
+✔ already cancelled request does not spend or dispatch (3.391845ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=cancelled downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=13ms
+✔ host records declined coordinator confirmation as cancellation, never successful sync (16.224429ms)
+✔ cancellation during preparation returns and records a cancelled result (0.420436ms)
+✔ prepare failure returns a diagnostic result instead of null (0.806049ms)
+✔ journal failure preserves confirmed counters and blocks automatic replay (0.341726ms)
+✔ settings failure retains progress and journal receives failure, not prior success (0.243178ms)
+✔ mandatory VAM cannot be bypassed by the legacy soft mode flag (0.194204ms)
+✔ VAM revocation aborts the session and both coordinator paths (0.250078ms)
+✔ actual automatic host path does not schedule retry or finishing after preparation cancellation (0.581078ms)
+✔ unrecovered report blocks execution before effects (0.270238ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=2 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=8 duration=20ms
+✔ two mounted sources with equal remote paths deliver different bytes to distinct vault folders (22.937244ms)
+✔ exact file binding fetches original source path and does not leak siblings (0.440395ms)
+✔ nested owner overrides consume remote paths without reverting to another source (0.863395ms)
+✔ source-only assignments inherit behaviour, and a profile cannot replace a direct source (0.543481ms)
+✔ one failed preview does not hide another, and failed refresh retains stale snapshot (0.364731ms)
+✔ superseded source responses and close-time responses never overwrite current snapshots (0.389789ms)
+✔ vault opens immediately with blocked default, then another source can load separately (29.447622ms)
+✔ local folder inspector assigns source path without creating a source-specific profile (10.754763ms)
+✔ remote placement creates a vault binding and same-name sources stay separate (12.756829ms)
+✔ source editor opens the migrated default and edits only a draft (9.75996ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ discard leaves settings unchanged and save failure leaves the draft open (6.534244ms)
+✔ basename-filtered bindings preserve other files and inheritance (0.675191ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+✔ background source fetch failure still prevents every write in the execution plan (1.891128ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ a source response does not reset partially edited assignment fields (7.994611ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=1 duration=4ms
+✔ explicit final destinations are not remapped a second time by legacy folder targets (4.932549ms)
+✔ bulk profile editing preserves direct source bindings (7.491712ms)
+✔ one plugin-path file opens in the actual workspace browse tree (13.668471ms)
+✔ same-name folder selection and expansion use IDs without merging children (9.857106ms)
+✔ source path picker shows both duplicate objects but cannot choose an arbitrary path match (1.762213ms)
+✔ raw browse refresh retains stale identities, while legacy invalid manifests remain rejected (0.709302ms)
+✔ malformed/cyclic browse graphs cannot bypass UI admission (0.637604ms)
+✔ Drive tree distinguishes proposal claims from legacy copies and exposes origin IDs without enabling a canonical binding (11.625249ms)
+✔ file results display all retained proposal copy paths and do not turn artifact-local-edited into an upload action (1.204791ms)
+✔ message never determines retry or collision: directory service unavailable (1.165121ms)
+✔ message never determines retry or collision: exchange rate changed (0.109115ms)
+✔ message never determines retry or collision: object exists (0.100201ms)
+✔ message never determines retry or collision: stale credential (0.077527ms)
+✔ message never determines retry or collision: обычная ошибка (0.181023ms)
+✔ typed stale precondition retains retry without inspecting its diagnostic text (0.19162ms)
+✔ typed cause survives wrapping and recursive cause does not loop (0.180212ms)
+✔ failed mkdir is not a fabricated path collision (0.385873ms)
+✔ desktop download does not use renderer fetch and reports chunks while a live stream exceeds its idle timeout (258.411564ms)
+✔ desktop cancellation before headers closes the request promptly (4.220508ms)
+✔ stalled body has a distinct inactivity timeout and is not user cancellation (23.518442ms)
+✔ redirect to a different origin drops credentials and enforces the redirect limit (6.555377ms)
+✔ announced and chunked oversize responses are stopped at the transport buffer cap (4.383905ms)
+✔ 429 response returns a retry deadline and releases its unread response body (2.787943ms)
+✔ native stream also resets its body inactivity timer on each chunk (180.884459ms)
+✔ buffered mobile cancel does not permit overlapping unabortable host downloads (1.014794ms)
+✔ mobile buffered transfer declares its capability and still enforces the platform cap (0.296769ms)
+✔ archive cancellation works before response headers too (3.79808ms)
+✔ standard ZIP DEFLATE works without a Node decompressor (4.739423ms)
+✔ forged ZIP output size fails during bounded inflation (13.368414ms)
+✔ ZIP extraction honors cancellation before inflating (0.427065ms)
+✔ entire-vault round trip preserves selection, mappings, assignments and exclusions (4.026946ms)
+✔ configuration preset with a legacy .obsidian mapping remains included (0.458824ms)
+✔ excluded scope can be included again without duplicate rules (0.524893ms)
+✔ including notes outside configuration changes the scope label (0.400976ms)
+✔ tree and execution agree about glob exclusions (46.637994ms)
+✔ unfinished inspector input survives navigation, source refresh and default changes and saves (28.010688ms)
+✔ unfinished inspector input participates in the close guard (5.361033ms)
+✔ refreshing a source keeps the local tree context (8.117668ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ filtered assignment is editable without broadening its selector (9.114155ms)
+✔ invalid endpoint stays in the editor with an inline error (2.006162ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=8ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ closing conflict modal defers rather than authorizing replacement (9.629884ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=2ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ skipped local update is not counted as applied; preview shows its condition (3.237473ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=1 conflicts=0 skipped=0 failed=0 queue=1 parked=0 bytes=6 duration=21ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=1 parked=0 bytes=6 duration=3ms
+✔ source-selected runs cannot read, write, delete or clear the other owner (25.705429ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ alternating selected sources uses the same configured routing namespace (2.187125ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=1 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=3ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=0 deleted=0 conflicts=0 skipped=1 failed=0 queue=0 parked=0 bytes=0 duration=1ms
+✔ recovery restoration creates a separate verified copy and protects it from future sync (6.432341ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ keeping current bytes after recovery review rejects stale observations and retains history (2.765499ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=4ms
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+✔ filtered mounts consume unselected siblings without downloading or deleting their original paths (3.926935ms)
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=9ms
+✔ legacy moved folders still publish and protect only their final destinations (10.066604ms)
+✔ adding a filtered assignment retains the all-files assignment and its editor after saving (11.351836ms)
+✔ a stale dirty inspector cannot silently replace an assignment made in another panel (15.372322ms)
+✔ connections used by unfinished assignments cannot be removed (7.415527ms)
+✔ run preparation can be cancelled while an authentication probe is still pending (0.656542ms)
+✔ the manual run panel opens during preparation and status clicks do not duplicate it (3.669356ms)
+✔ recovery copy names stay within a portable UTF-8 filename length (3.446338ms)
+✔ scope-only changes retain the configured route namespace and its applied baselines (0.996095ms)
+✔ legacy profile sources and layout opt-out migrate once without changing their meaning (1.049446ms)
+ℹ tests 575
+ℹ suites 0
+ℹ pass 575
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 10505.156696
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice
+
+> @vetsyncpath/cloud-vault-sync@0.0.0 build
+> npm run typecheck && npm run styles && node esbuild.config.mjs production
+
+
+> @vetsyncpath/cloud-vault-sync@0.0.0 typecheck
+> tsc --noEmit
+
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice
+
+> @vetsyncpath/cloud-vault-sync@0.0.0 styles
+> node scripts/styles.mjs
+
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice
+npm notice
+npm notice New major version of npm available! 11.9.0 -> 12.2.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.0
+npm notice To update run: npm install -g npm@12.2.0
+npm notice

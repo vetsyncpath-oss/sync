@@ -1,10 +1,12 @@
+Текущее уточнение поведения: [UI/профили/Drive, 2026-10-17](audits/ui-profiles-drive-2026-10-17/README.md).
+
 # Google Drive: пилотная интеграция
 
 Состояние на 2026-10-14, сборка `overhaul-jobs-startup-2026-10-14`. Текущая база ветки — `overhaul/2b1-recovered`, commit `3e03d69357e0273194aa43357ee0b41b90af221a`.
 
 Это проверяемая реализация первого этапа, предназначенная для испытаний на отдельном vault и отдельной папке Drive. OAuth, executor и интерфейс ещё не проверены в настоящем Obsidian с настоящим Google-аккаунтом. Установочного manifest в репозитории нет; этот checkout не является готовым релизом.
 
-Критическая [сверка Drive-аудита и Per-Source Jobs](audits/drive-jobs-cross-review.md) остаётся историческим baseline. Реализованы [S0a/S0b/S0c и переходные S1a/S2a](overhaul-vnext/implementation-status.md): ID-aware browse, own-key metadata, zero warm writes, fresh consent, несколько proposals и content dedup. Новая Drive-копия с проверенной portable lineage **получается другим vault** в bidirectional области исходного файла, включая named mapping. Legacy copies автоматически не импортируются. Canonical unknown/deletion inbox, read-only probe и same-ID restore реализованы; обычный запуск теперь разделён по jobs, а полный proposal/artifact inbox и физические per-job stores ещё не включены; точный [S0b runtime contract](overhaul-vnext/07-s0b-proposals.md) и [S0c lifecycle](overhaul-vnext/08-s0c-lifecycle.md) и [jobs/startup](overhaul-vnext/09-jobs-startup.md) отделены от target specification.
+Критическая [сверка Drive-аудита и Per-Source Jobs](audits/drive-jobs-cross-review.md) остаётся историческим baseline. Реализованы [S0a/S0b/S0c и переходные S1a/S2a](overhaul-vnext/implementation-status.md): ID-aware browse, own-key metadata, zero warm writes, fresh consent, несколько proposals и content dedup. Новая Drive-копия с проверенной portable lineage **получается другим vault** в bidirectional области исходного файла, включая named mapping. Legacy copies автоматически не импортируются. Canonical unknown/deletion inbox, read-only probe и same-ID restore реализованы; обычный запуск теперь разделён по jobs, предложения также видны отдельными строками истории; полный proposal/artifact decision inbox и физические per-job stores ещё не включены; точный [S0b runtime contract](overhaul-vnext/07-s0b-proposals.md) и [S0c lifecycle](overhaul-vnext/08-s0c-lifecycle.md) и [jobs/startup](overhaul-vnext/09-jobs-startup.md) отделены от target specification.
 
 ## Что реализовано
 
@@ -16,11 +18,11 @@
 | Совместимость | Старые профили и подключения сохраняют pull-поведение; bidirectional задаётся явно |
 | Новые файлы | Начальное объединение папок: новый локальный файл отправляется, новый удалённый скачивается; одинаковые байты принимаются без замены |
 | Изменённый удалённый файл | Проверка содержимого и версии после скачивания, затем условная локальная запись; локальные изменения защищены |
-| Изменённый существующий локальный файл | Временное ограничение по решению пользователя: локальная версия публикуется `.conflict-drive-local-*` на обеих сторонах; существующий удалённый объект сохраняет ID и содержимое; локальный основной файл получает удалённую версию при доступном guard; остаётся запись о необходимости проверки копии |
-| Настоящий конфликт | Различающиеся версии сохраняются обе: удалённая основная и локальная уникальная копия на обеих сторонах. Копии создаются без перезаписи прежних файлов |
+| Изменённый существующий локальный файл | Временное ограничение по решению пользователя: локальная версия публикуется `.conflict-drive-local-*` на обеих сторонах; существующий удалённый объект сохраняет ID и содержимое; локальный основной файл сохраняет авторскую версию; предложение требует решения, applied baseline не подменяется |
+| Настоящий конфликт | Обе основные версии сохраняются на своих сторонах; локальная версия также публикуется отдельной копией. Принятие удалённой версии требует ручного Ask с проверкой точных версий и recovery |
 | История предложений | Несколько proposals на path, immutable payloads и fixed copy IDs. Повтор той же версии на том же canonical base использует прежнюю копию; другие предложения не стираются |
 | Другой vault | Получает valid marked artifact через scope/profile исходного ID. Local/remote edit, deletion, 404 или lineage change оставляют pending issue; копии не upload/trash/overwrite автоматически |
-| Удаление | Только tracked после согласованного baseline, автоматически через корзину в обе стороны; delete/edit сначала сохраняет изменённую версию на обеих сторонах |
+| Удаление | Только tracked после согласованного baseline, автоматически через корзину в обе стороны; delete/edit сохраняет survivor и копии на обеих сторонах и остаётся pending, не удаляя survivor автоматически |
 | Повтор передачи | Зарезервированный ID нового объекта и неизменяемый recovery-payload записываются до публикации; resumable URL и подтверждённый сервером offset сохраняются в приватном состоянии |
 | Ошибки | Независимые файлы продолжаются после файловой ошибки; повреждение состояния/журнала, утрата корня или авторизации останавливают дальнейшие соответствующие записи |
 | Автозапуск | «Только при запуске» сохраняет этот режим в статусе; временная ошибка допускает ограниченные продолжения; после первого успешного прохода или завершившейся передачи назначается сверочный проход |

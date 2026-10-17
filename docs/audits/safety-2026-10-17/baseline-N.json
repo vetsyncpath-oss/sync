@@ -1,0 +1,98 @@
+[
+  {
+    "id": "N1-paths",
+    "result": [
+      {
+        "path": "Wait...md",
+        "safe": false,
+        "allowed": true
+      },
+      {
+        "path": "v1..2.md",
+        "safe": false,
+        "allowed": true
+      },
+      {
+        "path": "100%25.md",
+        "safe": true,
+        "allowed": true
+      },
+      {
+        "path": "%2e%2e.md",
+        "safe": false,
+        "allowed": true
+      },
+      {
+        "path": "a:b.md",
+        "safe": false,
+        "allowed": true
+      },
+      {
+        "path": "note:one.md",
+        "safe": true,
+        "allowed": true
+      },
+      {
+        "path": "a?.md",
+        "safe": true,
+        "allowed": true
+      },
+      {
+        "path": "CON.md",
+        "safe": false,
+        "allowed": true
+      },
+      {
+        "path": "a.md.",
+        "safe": true,
+        "allowed": true
+      },
+      {
+        "path": "a.md ",
+        "safe": true,
+        "allowed": true
+      }
+    ]
+  },
+  {
+    "id": "N2-configDir",
+    "result": false
+  },
+  {
+    "id": "N3-blockReason",
+    "result": [
+      {
+        "path": "a/b",
+        "reason": "reserved"
+      },
+      {
+        "path": "a//b",
+        "reason": null
+      },
+      {
+        "path": "/a/b",
+        "reason": null
+      }
+    ]
+  },
+  {
+    "id": "N4-conflict-name",
+    "result": {
+      "allowed": false
+    }
+  },
+  {
+    "id": "N5-trash-fallback",
+    "result": {
+      "trashAvailable": false,
+      "originalExists": false,
+      "operations": [
+        "write .obsidian/plugins/sync/recovery-v2/646c19373ac9e27e972c8e3bdf6554c4c10d23006c1abec3407cbff80c4ab71f.bin",
+        "delete a.md"
+      ],
+      "recoveryFiles": [
+        ".obsidian/plugins/sync/recovery-v2/646c19373ac9e27e972c8e3bdf6554c4c10d23006c1abec3407cbff80c4ab71f.bin"
+      ]
+    }
+  }
+]

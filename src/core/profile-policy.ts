@@ -31,5 +31,6 @@ export function effectiveBehavior(rule: Pick<ResolvedFileRule, 'write' | 'delete
     return { direction, createMissingLocal: true, createMissingRemote: false,
         updates: write === 'create' ? 'none' : write === 'remote' ? 'enforce-source' : 'on-source-change',
         deletions: deletion === 'mirror' ? 'all' : deletion,
-        conflict: write === 'update' ? { action: 'keep-local', keepOther: false } : conflict, protected: false };
+        conflict: write === 'update' ? { action: 'keep-local', keepOther: false }
+            : write === 'remote' ? { action: 'keep-remote', keepOther: true } : conflict, protected: false };
 }
