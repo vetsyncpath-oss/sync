@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 
 const directory = await mkdtemp(join(tmpdir(), 'cloud-vault-sync-tests-'));
 try {
-  const files = (await readdir('tests')).filter(name => name.endsWith('.test.ts')).sort();
+  const files = (await readdir('tests')).filter(name => /\.test\.(ts|mjs)$/.test(name)).sort();
   if (files.length === 0) throw new Error('No test files found');
   await build({
     entryPoints: files.map(name => join('tests', name)),
@@ -22,7 +22,7 @@ try {
   });
   const child = spawn(process.execPath, [
     ...(Number(process.versions.node.split('.')[0]) < 19 ? ['--experimental-global-webcrypto'] : []),
-    '--test', ...files.map(name => join(directory, name.replace(/\.ts$/, '.cjs'))),
+    '--test', ...files.map(name => join(directory, name.replace(/\.(ts|mjs)$/, '.cjs'))),
   ], { stdio: 'inherit' });
   const watchdog = setTimeout(() => { console.error('Tests exceeded 30 seconds'); child.kill('SIGKILL'); }, 30000);
   watchdog.unref();

@@ -1,0 +1,3 @@
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=auto, forced=0, forceAll=false
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=ok downloaded=1 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=6 duration=14ms
+Audit evidence directory: /tmp/sync-cross-audit-0JdyYI

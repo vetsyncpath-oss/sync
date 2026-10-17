@@ -20,7 +20,8 @@ import type { TransferObserver } from './types';
 // тексты ошибок инъектируются через messages (решение В5-1).
 // ============================================================
 
-import type { ArchiveDownloader, RandomAccessReader, RemoteEntry, SyncSource } from './types';
+import type { ArchiveDownloadProgress, ArchiveDownloader, RandomAccessReader, RemoteEntry, SyncSource } from './types';
+import { SyncFault } from '../core/sync-issue';
 import { readCentralDirectory, extractEntry, type ZipEntry } from '../core/archive';
 import { testZipConnection, runFullFallback, type TestConnectionResult, type ZipRangeTransport } from './zip-test-connection';
 
@@ -189,6 +190,8 @@ export interface ZipUrlSourceOptions {
          * мала, больше — tmp-файл «зависает» в системе, занимая диск.
          */
         sessionTtlMs?: number;
+        /** Deadline for each waiter; timed-out physical openings remain accounted until settled. */
+        sessionOpenTimeoutMs?: number;
         /**
          * [W6-T01] Инъекция таймеров для тестов: setTimeout/clearTimeout/now.
          * По умолчанию — глобальные. В тестах — FakeClock для детерминированности.
@@ -236,6 +239,9 @@ function toArrayBuffer(data: Uint8Array | ArrayBuffer): ArrayBuffer {
         return ab;
 }
 
+interface ArchiveSession { reader: RandomAccessReader; cache: Map<string, ZipEntry>; url: string; generation: number }
+interface ArchiveOpening { url: string; controller: AbortController; promise: Promise<ArchiveSession>; waiters: number; settled: boolean }
+
 // ── Источник ──
 
 export class ZipUrlSource implements SyncSource {
@@ -269,8 +275,18 @@ export class ZipUrlSource implements SyncSource {
          *  «reader disposed» под ногами у extractEntry. Инкремент — синхронно
          *  в продолжении ensureSession (микрозадача раньше любого макротаска). */
         private activeOps = 0;
+        private generation = 0;
+        private sessionUrl: string | null = null;
+        private opening: ArchiveOpening | null = null;
+        private manifestActive = false;
+        private readonly openTimeoutMs: number;
+        private readonly readersInUse = new Map<RandomAccessReader, number>();
+        private readonly retiredReaders = new Set<RandomAccessReader>();
+        private readonly cleanup = new Map<RandomAccessReader, Promise<void>>();
 
         constructor(opts: ZipUrlSourceOptions) {
+                this.openTimeoutMs = opts.sessionOpenTimeoutMs ?? 30 * 60000;
+                if (!Number.isSafeInteger(this.openTimeoutMs) || this.openTimeoutMs < 1 || this.openTimeoutMs > 2147483647) throw Error('Invalid archive opening deadline');
                 this.opts = opts;
                 this.messages = { ...DEFAULT_MESSAGES, ...(opts.messages ?? {}) };
                 this.sessionTtlMs = Math.max(0, Math.floor(opts.sessionTtlMs ?? 0));
@@ -281,28 +297,32 @@ export class ZipUrlSource implements SyncSource {
                 if (signal.aborted) {
                         throw abortedError();
                 }
-                this.manifestObserve=observe;
-                if (this.activeOps > 0) throw new Error('Archive snapshot is in use');
-                // A resource lease does not establish freshness for a new listing.
-                await this.forceDispose();
-                const { cache } = await this.ensureSession(signal);
-                const entries: RemoteEntry[] = [];
-                for (const e of cache.values()) {
-                        entries.push({
-                                path: e.name,
-                                hash: crc32Hex8(e.crc32),
-                                hashAlg: 'crc32',
-                                size: e.uncompressedSize,
-                        });
+                if (this.manifestActive || this.activeOps > 0 || this.opening) throw new SyncFault('observation-busy', 'Archive snapshot is already in use or opening', 'source');
+                this.manifestActive = true;
+                this.manifestObserve = observe;
+                try {
+                        // A retained reader is not proof of freshness for a new manifest.
+                        const release = this.forceDispose();
+                        const generation = this.generation;
+                        await release;
+                        if (generation !== this.generation) throw new SyncFault('source-changed', 'Archive observation was disposed before opening', 'source');
+                        const session = await this.ensureSession(signal);
+                        this.assertSession(session, signal);
+                        return [...session.cache.values()].map(e => ({ path: e.name, hash: crc32Hex8(e.crc32), hashAlg: 'crc32' as const, size: e.uncompressedSize }));
+                } finally {
+                        this.manifestActive = false;
+                        this.manifestObserve = undefined;
                 }
-                return entries;
         }
 
         async fetch(entry: RemoteEntry, signal: AbortSignal,observe?:TransferObserver): Promise<ArrayBuffer> {
                 if (signal.aborted) {
                         throw abortedError();
                 }
-                const { reader, cache } = await this.ensureSession(signal);
+                const session = await this.ensureSession(signal);
+                this.assertSession(session, signal);
+                const { reader, cache } = session;
+                this.readersInUse.set(reader, (this.readersInUse.get(reader) ?? 0) + 1);
                 // [overhaul S3/M-11] держим reader на всё время extractEntry.
                 this.activeOps++;
                 try {
@@ -310,6 +330,7 @@ export class ZipUrlSource implements SyncSource {
                         if (!zipEntry) {
                                 throw new Error(`entry not in archive: ${entry.path}`);
                         }
+                        if (entry.hashAlg !== 'crc32' || entry.hash.toLowerCase() !== crc32Hex8(zipEntry.crc32) || entry.size !== zipEntry.uncompressedSize) throw new SyncFault('source-changed', 'Archive entry no longer matches the requested manifest', 'file');
                         // Отмена могла прийти, пока архив докачивался заново.
                         if (signal.aborted) {
                                 throw abortedError();
@@ -322,9 +343,19 @@ export class ZipUrlSource implements SyncSource {
                                                 `(получено ${data.byteLength} байт, ожидалось ${entry.size})`,
                                 );
                         }
+                        this.assertSession(session, signal);
                         return toArrayBuffer(data);
                 } finally {
                         this.activeOps--;
+                        const remaining = this.readersInUse.get(reader)! - 1;
+                        if (remaining) this.readersInUse.set(reader, remaining);
+                        else {
+                                this.readersInUse.delete(reader);
+                                if (this.retiredReaders.has(reader)) {
+                                        try { await this.cleanupReader(reader); }
+                                        catch { this.opts.log?.('Retired archive cleanup failed; new openings remain blocked'); }
+                                }
+                        }
                 }
         }
 
@@ -346,7 +377,7 @@ export class ZipUrlSource implements SyncSource {
          * Идемпотентна: повторный dispose() продлевает аренду (повторный таймер).
          */
         async dispose(): Promise<void> {
-                if (this.sessionTtlMs <= 0) {
+                if (this.sessionTtlMs <= 0 || this.opening) {
                         await this.forceDispose();
                         return;
                 }
@@ -372,7 +403,7 @@ export class ZipUrlSource implements SyncSource {
                                 this.armTtl(RELEASE_GRACE_MS);
                                 return;
                         }
-                        void this.forceDispose();
+                        void this.forceDispose().catch(() => this.opts.log?.('Archive reader cleanup failed'));
                 }, ms);
         }
 
@@ -395,11 +426,26 @@ export class ZipUrlSource implements SyncSource {
          */
         async forceDispose(): Promise<void> {
                 this.clearTtlTimer();
+                this.generation++;
+                this.opening?.controller.abort();
                 const reader = this.reader;
                 // СИНХРОННО обнуляем кэш ДО await — иначе гонка с ensureSession.
                 this.reader = null;
                 this.zipEntries = null;
-                await reader?.dispose?.();
+                this.sessionUrl = null;
+                if (reader) this.retiredReaders.add(reader);
+                for (const retired of this.retiredReaders) if (!this.readersInUse.has(retired)) await this.cleanupReader(retired);
+        }
+
+        private cleanupReader(reader: RandomAccessReader): Promise<void> {
+                const existing = this.cleanup.get(reader);
+                if (existing) return existing;
+                this.retiredReaders.add(reader);
+                const work = Promise.resolve().then(() => reader.dispose?.()).then(() => {
+                        this.retiredReaders.delete(reader);
+                }).finally(() => { this.cleanup.delete(reader); });
+                this.cleanup.set(reader, work);
+                return work;
         }
 
         /** [W6-T01] Внутренняя: снять активный таймер аренды. */
@@ -473,41 +519,88 @@ export class ZipUrlSource implements SyncSource {
          * иначе скачивает архив заново (первый вызов или после dispose).
          * Возвращает ридер и кэш записей central directory.
          */
-        private async ensureSession(
-                signal: AbortSignal,
-        ): Promise<{ reader: RandomAccessReader; cache: Map<string, ZipEntry> }> {
+        private assertSession(session: ArchiveSession, signal: AbortSignal): void {
+                signal.throwIfAborted();
+                if (session.generation !== this.generation || session.reader !== this.reader || session.url !== this.opts.url())
+                        throw new SyncFault('source-changed', 'Archive snapshot changed or was disposed', 'source');
+        }
+
+        private async ensureSession(signal: AbortSignal): Promise<ArchiveSession> {
+                signal.throwIfAborted();
+                const url = this.opts.url();
+                if (this.retiredReaders.size) throw new SyncFault('observation-busy', 'A retired archive reader is still in use', 'source');
                 if (this.reader !== null && this.zipEntries !== null) {
-                        // [W6-T01] Сессия жива (или в аренде) — переиспользуем кэш.
-                        // Снимаем таймер аренды: ensureSession значит «сессия снова нужна».
+                        if (this.sessionUrl !== url) {
+                                await this.forceDispose();
+                                throw new SyncFault('source-changed', 'Archive URL changed; a fresh manifest is required', 'source');
+                        }
                         this.clearTtlTimer();
-                        return { reader: this.reader, cache: this.zipEntries };
+                        return { reader: this.reader, cache: this.zipEntries, url, generation: this.generation };
                 }
+                if (this.opening && this.opening.url !== url) {
+                        await this.forceDispose();
+                        throw new SyncFault('source-changed', 'Archive URL changed while opening', 'source');
+                }
+                if (this.opening?.controller.signal.aborted) throw new SyncFault('observation-busy', 'Cancelled physical archive opening has not settled', 'source');
+                if (!this.opening) {
+                        const controller = new AbortController();
+                        const opening: ArchiveOpening = { url, controller, promise: undefined!, waiters: 0, settled: false };
+                        this.opening = opening;
+                        opening.promise = this.openSession(url, this.generation, controller.signal).finally(() => {
+                                opening.settled = true;
+                                if (this.opening === opening) this.opening = null;
+                        });
+                }
+                return this.waitForOpening(this.opening, signal);
+        }
 
-                const rawUrl = this.opts.url();
-                const det = detectProvider(rawUrl);
-                const reader = await this.downloadAndValidate(det, rawUrl, signal);
+        private waitForOpening(opening: ArchiveOpening, signal: AbortSignal): Promise<ArchiveSession> {
+                opening.waiters++;
+                return new Promise((resolve, reject) => {
+                        let finished = false;
+                        const finish = (error?: unknown, session?: ArchiveSession) => {
+                                if (finished) return;
+                                finished = true;
+                                clearTimeout(deadline);
+                                signal.removeEventListener('abort', cancelled);
+                                opening.controller.signal.removeEventListener('abort', invalidated);
+                                opening.waiters--;
+                                if (!opening.waiters && !opening.settled) opening.controller.abort();
+                                if (session) resolve(session); else reject(error);
+                        };
+                        const cancelled = () => finish(signal.reason ?? abortedError());
+                        const invalidated = () => finish(abortedError());
+                        const deadline = setTimeout(() => finish(new SyncFault('archive-open-timeout', 'Archive opening exceeded its deadline; physical request may still be active', 'source')), this.openTimeoutMs);
+                        signal.addEventListener('abort', cancelled, { once: true });
+                        opening.controller.signal.addEventListener('abort', invalidated, { once: true });
+                        opening.promise.then(session => finish(undefined, session), error => finish(error));
+                        if (signal.aborted) cancelled(); else if (opening.controller.signal.aborted) invalidated();
+                });
+        }
 
-                let cache: Map<string, ZipEntry>;
+        private async openSession(url: string, generation: number, signal: AbortSignal): Promise<ArchiveSession> {
+                const reader = await this.downloadAndValidate(detectProvider(url), url, signal);
                 try {
+                        signal.throwIfAborted();
                         const entries = await readCentralDirectory(reader);
-                        cache = new Map<string, ZipEntry>();
+                        const cache = new Map<string, ZipEntry>();
                         for (const e of entries) {
+                                signal.throwIfAborted();
                                 if (!e.isDir) {
                                         if (cache.has(e.name)) throw new Error(`Archive path collision: ${e.name}`);
                                         cache.set(e.name, e);
                                 }
                         }
-                } catch (err) {
-                        // Битый central directory: ридер (tmp-файл) не должен остаться
-                        // «хвостом» (дух фикса Б-03) — в this.reader он ещё не записан,
-                        // так что dispose() сессии его уже не увидит.
-                        await reader.dispose?.();
-                        throw err;
+                        signal.throwIfAborted();
+                        if (generation !== this.generation || url !== this.opts.url()) throw new SyncFault('source-changed', 'Archive URL or generation changed before publication', 'source');
+                        this.reader = reader;
+                        this.zipEntries = cache;
+                        this.sessionUrl = url;
+                        return { reader, cache, url, generation };
+                } catch (error) {
+                        try { await this.cleanupReader(reader); } catch { this.opts.log?.('Unpublished archive reader cleanup failed'); }
+                        throw error;
                 }
-
-                this.reader = reader;
-                this.zipEntries = cache;
-                return { reader, cache };
         }
 
         /**
@@ -521,29 +614,35 @@ export class ZipUrlSource implements SyncSource {
                 signal: AbortSignal,
         ): Promise<RandomAccessReader> {
                 let url = det.downloadUrl;
-                let reader = await this.opts.downloader.download(url, { signal, onProgress:p=>{this.opts.onProgress?.(p);this.manifestObserve?.({stage:'manifest',bytes:p.bytesTransferred,totalBytes:p.totalBytes??undefined,capability:p.capability??'streaming'});} });
-                let kind = await this.classify(reader);
-
-                if (kind === 'html' && det.provider === 'gdrive' && !url.includes('confirm=t')) {
-                        // Максимум один повтор; URL, уже содержащий confirm=t, не ретраим.
-                        await reader.dispose?.();
-                        if (signal.aborted) {
-                                throw abortedError();
+                let reader: RandomAccessReader | undefined;
+                const generation = this.generation;
+                const progress = (p: ArchiveDownloadProgress) => {
+                        if (signal.aborted || generation !== this.generation || this.opts.url() !== rawUrl) return;
+                        this.opts.onProgress?.(p);
+                        this.manifestObserve?.({stage:'manifest',bytes:p.bytesTransferred,totalBytes:p.totalBytes??undefined,capability:p.capability??'streaming'});
+                };
+                try {
+                        reader = await this.opts.downloader.download(url, { signal, onProgress: progress });
+                        signal.throwIfAborted();
+                        let kind = await this.classify(reader);
+                        if (kind === 'html' && det.provider === 'gdrive' && !url.includes('confirm=t')) {
+                                const htmlReader = reader;
+                                reader = undefined;
+                                await this.cleanupReader(htmlReader);
+                                signal.throwIfAborted();
+                                url += '&confirm=t';
+                                reader = await this.opts.downloader.download(url, { signal, onProgress: progress });
+                                signal.throwIfAborted();
+                                kind = await this.classify(reader);
                         }
-                        url = url + '&confirm=t';
-                        reader = await this.opts.downloader.download(url, { signal, onProgress:p=>{this.opts.onProgress?.(p);this.manifestObserve?.({stage:'manifest',bytes:p.bytesTransferred,totalBytes:p.totalBytes??undefined,capability:p.capability??'streaming'});} });
-                        kind = await this.classify(reader);
+                        signal.throwIfAborted();
+                        if (kind === 'html') throw new Error(this.messages.htmlInsteadOfArchive(rawUrl));
+                        if (kind !== 'zip') throw new Error(this.messages.notAnArchive(rawUrl));
+                        return reader;
+                } catch (error) {
+                        try { if (reader) await this.cleanupReader(reader); } catch { this.opts.log?.('Downloaded archive reader cleanup failed'); }
+                        throw error;
                 }
-
-                if (kind === 'html') {
-                        await reader.dispose?.();
-                        throw new Error(this.messages.htmlInsteadOfArchive(rawUrl));
-                }
-                if (kind !== 'zip') {
-                        await reader.dispose?.();
-                        throw new Error(this.messages.notAnArchive(rawUrl));
-                }
-                return reader;
         }
 
         /**

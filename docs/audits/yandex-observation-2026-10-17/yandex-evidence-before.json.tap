@@ -1,0 +1,730 @@
+[VaultSync] session start: build=overhaul-vnext2-safety-audit-2026-10-17, trigger=manual, forced=0, forceAll=false
+TAP version 13
+# Subtest: B44 traversal rejects directory-only cycle (root path advertised=true)
+not ok 1 - B44 traversal rejects directory-only cycle (root path advertised=true)
+  ---
+  duration_ms: 8.097223
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9484:68'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.'
+  stack: |-
+    YandexSource.fetchListing (/tmp/yandex-audit-icZ7vO/tests.cjs:5485:15)
+    async YandexSource.getManifest (/tmp/yandex-audit-icZ7vO/tests.cjs:5303:25)
+    async waitForActual (node:assert:646:5)
+    async strict.rejects (node:assert:769:25)
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9486:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9486:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async startSubtestAfterBootstrap (node:internal/test_runner/harness:387:3)
+  ...
+# Subtest: B44 traversal rejects directory-only cycle (root path advertised=false)
+not ok 2 - B44 traversal rejects directory-only cycle (root path advertised=false)
+  ---
+  duration_ms: 1.888585
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9484:68'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.'
+  stack: |-
+    YandexSource.fetchListing (/tmp/yandex-audit-icZ7vO/tests.cjs:5485:15)
+    async YandexSource.getManifest (/tmp/yandex-audit-icZ7vO/tests.cjs:5303:25)
+    async waitForActual (node:assert:646:5)
+    async strict.rejects (node:assert:769:25)
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9486:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9486:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 root back-edge cannot be treated as an empty successful subtree
+not ok 3 - B44 root back-edge cannot be treated as an empty successful subtree
+  ---
+  duration_ms: 0.908173
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9489:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.'
+  stack: |-
+    YandexSource.fetchListing (/tmp/yandex-audit-icZ7vO/tests.cjs:5485:15)
+    async YandexSource.getManifest (/tmp/yandex-audit-icZ7vO/tests.cjs:5303:25)
+    async waitForActual (node:assert:646:5)
+    async strict.rejects (node:assert:769:25)
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9491:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9491:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 duplicate file identity is unstable, not first/last wins
+not ok 4 - B44 duplicate file identity is unstable, not first/last wins
+  ---
+  duration_ms: 0.451212
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9494:66'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9497:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 duplicate dir identity is unstable, not first/last wins
+not ok 5 - B44 duplicate dir identity is unstable, not first/last wins
+  ---
+  duration_ms: 0.342899
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9494:66'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9497:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 maxNodes counts root and directories before expansion
+not ok 6 - B44 maxNodes counts root and directories before expansion
+  ---
+  duration_ms: 0.348757
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9500:97'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9502:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 maxFolders counts root and directories before expansion
+not ok 7 - B44 maxFolders counts root and directories before expansion
+  ---
+  duration_ms: 0.269177
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9500:97'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9502:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 maxObservations counts root and directories before expansion
+not ok 8 - B44 maxObservations counts root and directories before expansion
+  ---
+  duration_ms: 0.221615
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9500:97'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9502:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 file-only root is bounded even when there is no folder queue
+not ok 9 - B44 file-only root is bounded even when there is no folder queue
+  ---
+  duration_ms: 0.336489
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9505:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9507:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 invalid inventory limit 0 is rejected before requests
+not ok 10 - B44 invalid inventory limit 0 is rejected before requests
+  ---
+  duration_ms: 0.308787
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9510:79'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'throws'
+  stack: |-
+    TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9511:26)
+    Test.runInAsyncScope (node:async_hooks:227:14)
+    Test.run (node:internal/test_runner/test:1382:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+    Test.postRun (node:internal/test_runner/test:1522:19)
+    Test.run (node:internal/test_runner/test:1447:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 invalid inventory limit -1 is rejected before requests
+not ok 11 - B44 invalid inventory limit -1 is rejected before requests
+  ---
+  duration_ms: 0.127432
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9510:79'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'throws'
+  stack: |-
+    TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9511:26)
+    Test.runInAsyncScope (node:async_hooks:227:14)
+    Test.run (node:internal/test_runner/test:1382:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+    Test.postRun (node:internal/test_runner/test:1522:19)
+    Test.run (node:internal/test_runner/test:1447:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 invalid inventory limit 1.5 is rejected before requests
+not ok 12 - B44 invalid inventory limit 1.5 is rejected before requests
+  ---
+  duration_ms: 0.091889
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9510:79'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'throws'
+  stack: |-
+    TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9511:26)
+    Test.runInAsyncScope (node:async_hooks:227:14)
+    Test.run (node:internal/test_runner/test:1382:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+    Test.postRun (node:internal/test_runner/test:1522:19)
+    Test.run (node:internal/test_runner/test:1447:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 invalid inventory limit Infinity is rejected before requests
+not ok 13 - B44 invalid inventory limit Infinity is rejected before requests
+  ---
+  duration_ms: 0.076436
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9510:79'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'throws'
+  stack: |-
+    TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9511:26)
+    Test.runInAsyncScope (node:async_hooks:227:14)
+    Test.run (node:internal/test_runner/test:1382:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+    Test.postRun (node:internal/test_runner/test:1522:19)
+    Test.run (node:internal/test_runner/test:1447:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 invalid inventory limit NaN is rejected before requests
+not ok 14 - B44 invalid inventory limit NaN is rejected before requests
+  ---
+  duration_ms: 0.06664
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9510:79'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected exception.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+  operator: 'throws'
+  stack: |-
+    TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9511:26)
+    Test.runInAsyncScope (node:async_hooks:227:14)
+    Test.run (node:internal/test_runner/test:1382:25)
+    Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+    Test.postRun (node:internal/test_runner/test:1522:19)
+    Test.run (node:internal/test_runner/test:1447:12)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 invalid pagination cannot produce a complete manifest: {"items":[],"total":1}
+not ok 15 - B44 invalid pagination cannot produce a complete manifest: {"items":[],"total":1}
+  ---
+  duration_ms: 1.407869
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9514:32'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.'
+  stack: |-
+    YandexSource.fetchListing (/tmp/yandex-audit-icZ7vO/tests.cjs:5485:15)
+    async YandexSource.consumeFolderPages (/tmp/yandex-audit-icZ7vO/tests.cjs:5408:15)
+    async YandexSource.getManifest (/tmp/yandex-audit-icZ7vO/tests.cjs:5297:5)
+    async waitForActual (node:assert:646:5)
+    async strict.rejects (node:assert:769:25)
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9516:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9516:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 invalid pagination cannot produce a complete manifest: {"items":[{"type":"file","path":"/a","name":"a","size":6,"sha256":"2131cd6371005fcc97970ed
+not ok 16 - B44 invalid pagination cannot produce a complete manifest: {"items":[{"type":"file","path":"/a","name":"a","size":6,"sha256":"2131cd6371005fcc97970ed
+  ---
+  duration_ms: 0.143136
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9514:32'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9516:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 invalid pagination cannot produce a complete manifest: {"items":[],"total":0.5}
+not ok 17 - B44 invalid pagination cannot produce a complete manifest: {"items":[],"total":0.5}
+  ---
+  duration_ms: 0.566797
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9514:32'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.'
+  stack: |-
+    YandexSource.fetchListing (/tmp/yandex-audit-icZ7vO/tests.cjs:5485:15)
+    async YandexSource.consumeFolderPages (/tmp/yandex-audit-icZ7vO/tests.cjs:5408:15)
+    async YandexSource.getManifest (/tmp/yandex-audit-icZ7vO/tests.cjs:5297:5)
+    async waitForActual (node:assert:646:5)
+    async strict.rejects (node:assert:769:25)
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9516:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9516:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 invalid pagination cannot produce a complete manifest: {"items":[],"total":null}
+not ok 18 - B44 invalid pagination cannot produce a complete manifest: {"items":[],"total":null}
+  ---
+  duration_ms: 0.207734
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9514:32'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Формат ответа Яндекс.Диска не соответствует ожидаемому (API изменился?).
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Формат ответа Яндекс.Диска не соответствует ожидаемому (API изменился?).'
+  stack: |-
+    YandexSource.consumeFolderPages (/tmp/yandex-audit-icZ7vO/tests.cjs:5383:15)
+    YandexSource.getManifest (/tmp/yandex-audit-icZ7vO/tests.cjs:5297:16)
+    async waitForActual (node:assert:646:5)
+    async strict.rejects (node:assert:769:25)
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9516:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9516:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 invalid pagination cannot produce a complete manifest: {"items":[{"type":"file","path":"/0","name":"0","size":6,"sha256":"2131cd6371005fcc97970ed
+not ok 19 - B44 invalid pagination cannot produce a complete manifest: {"items":[{"type":"file","path":"/0","name":"0","size":6,"sha256":"2131cd6371005fcc97970ed
+  ---
+  duration_ms: 0.381146
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9514:32'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9516:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 invalid pagination cannot produce a complete manifest: {"items":[],"total":0,"offset":200}
+not ok 20 - B44 invalid pagination cannot produce a complete manifest: {"items":[],"total":0,"offset":200}
+  ---
+  duration_ms: 0.125239
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9514:32'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9516:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 invalid pagination cannot produce a complete manifest: {"items":[],"total":0,"limit":1}
+not ok 21 - B44 invalid pagination cannot produce a complete manifest: {"items":[],"total":0,"limit":1}
+  ---
+  duration_ms: 0.116626
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9514:32'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9516:5)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 changed total across pages rejects the entire observation
+not ok 22 - B44 changed total across pages rejects the entire observation
+  ---
+  duration_ms: 1.114956
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9520:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9522:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 stable pagination and exact budgets preserve complete BFS inventory
+ok 23 - B44 stable pagination and exact budgets preserve complete BFS inventory
+  ---
+  duration_ms: 2.034175
+  type: 'test'
+  ...
+# Subtest: B44 failed refresh exposes neither previous nor partial provider path maps to fetch
+not ok 24 - B44 failed refresh exposes neither previous nor partial provider path maps to fetch
+  ---
+  duration_ms: 0.498734
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9532:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: entry not in manifest: old
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'entry not in manifest: old'
+  stack: |-
+    YandexSource.fetch (/tmp/yandex-audit-icZ7vO/tests.cjs:5320:13)
+    TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9544:49)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9544:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 access error preserves status and identifies root
+not ok 25 - B44 access error preserves status and identifies root
+  ---
+  duration_ms: 0.833581
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9548:66'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.'
+  stack: |-
+    YandexSource.fetchListing (/tmp/yandex-audit-icZ7vO/tests.cjs:5485:15)
+    async YandexSource.getManifest (/tmp/yandex-audit-icZ7vO/tests.cjs:5287:18)
+    async waitForActual (node:assert:646:5)
+    async strict.rejects (node:assert:769:25)
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9550:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9550:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 access error preserves status and identifies nested folder
+not ok 26 - B44 access error preserves status and identifies nested folder
+  ---
+  duration_ms: 0.214094
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9548:66'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.'
+  stack: |-
+    YandexSource.fetchListing (/tmp/yandex-audit-icZ7vO/tests.cjs:5485:15)
+    async YandexSource.getManifest (/tmp/yandex-audit-icZ7vO/tests.cjs:5303:25)
+    async waitForActual (node:assert:646:5)
+    async strict.rejects (node:assert:769:25)
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9550:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9550:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 concurrent manifest call is explicit and cannot reset first observation
+not ok 27 - B44 concurrent manifest call is explicit and cannot reset first observation
+  ---
+  duration_ms: 0.865138
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9555:30'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9565:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 cancellation observed while consuming a page prevents publication
+ok 28 - B44 cancellation observed while consuming a page prevents publication
+  ---
+  duration_ms: 0.256198
+  type: 'test'
+  ...
+session end (build=overhaul-vnext2-safety-audit-2026-10-17): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=0 queue=0 parked=0 bytes=0 duration=12ms
+# Subtest: B44 coordinator performs no local effects when provider inventory is cyclic
+not ok 29 - B44 coordinator performs no local effects when provider inventory is cyclic
+  ---
+  duration_ms: 16.942496
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9580:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    The expression evaluated to a falsy value:
+
+      (result?.problems?.some((issue) => issue.code === "inventory-unstable"))
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: '=='
+  stack: |-
+    TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9589:30)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 recovery after an invalid observation starts with a fresh traversal
+not ok 30 - B44 recovery after an invalid observation starts with a fresh traversal
+  ---
+  duration_ms: 1.161236
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9594:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    The validation function is expected to return "true". Received false
+
+    Caught error:
+
+    Error: Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  actual:
+  error: 'Публичная ссылка Яндекс.Диска недействительна или отозвана владельцем.'
+  stack: |-
+    YandexSource.fetchListing (/tmp/yandex-audit-icZ7vO/tests.cjs:5485:15)
+    async YandexSource.getManifest (/tmp/yandex-audit-icZ7vO/tests.cjs:5303:25)
+    async waitForActual (node:assert:646:5)
+    async strict.rejects (node:assert:769:25)
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9597:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9597:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 late observation cannot publish after dispose
+not ok 31 - B44 late observation cannot publish after dispose
+  ---
+  duration_ms: 0.273925
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9602:65'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9614:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 late observation cannot publish after forceDispose
+not ok 32 - B44 late observation cannot publish after forceDispose
+  ---
+  duration_ms: 0.190578
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9602:65'
+  failureType: 'testCodeFailure'
+  error: 'Missing expected rejection.'
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: [Function (anonymous)]
+  operator: 'rejects'
+  stack: |-
+    async TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9614:3)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+# Subtest: B44 new manifest clears prior download href even for the same local path
+not ok 33 - B44 new manifest clears prior download href even for the same local path
+  ---
+  duration_ms: 0.795513
+  type: 'test'
+  location: '/tmp/yandex-audit-icZ7vO/tests.cjs:9621:30'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    1 !== 2
+
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 2
+  actual: 1
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (/tmp/yandex-audit-icZ7vO/tests.cjs:9640:26)
+    async Test.run (node:internal/test_runner/test:1389:7)
+    async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+  ...
+1..33
+# tests 33
+# suites 0
+# pass 2
+# fail 31
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 48.896229

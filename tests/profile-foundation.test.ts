@@ -44,3 +44,6 @@ test('bidirectional behavior is explicit and protected children still disable al
     assert.equal(effectiveBehavior(resolveFileRule('secret.json',rules)).protected,true);
     assert.throws(()=>validateProfiles([{...p,delete:'mirror'}]),/Incompatible/);
 });
+test('remote profile ignores global incoming in its effective conflict behavior', () => {
+ assert.deepEqual(effectiveBehavior({write:'remote',delete:'keep'},'incoming').conflict,{action:'keep-remote',keepOther:true});
+});

@@ -1,3 +1,4 @@
+import { SendBudget, SendBudgetError, sendWithBudget } from '../core/send-budget';
 import type { NetRequest, NetResponse, NetTransport } from '../sources/types';
 import { SyncFault } from '../core/sync-issue';
 import { NetError } from '../core/net';
@@ -32,7 +33,7 @@ export async function withGoogleTimeout<T>(signal:AbortSignal,timeoutMs:number,e
 /** Transport errors are network failures, not local IO. Never copy a request URL or body into diagnostics. */
 function googleNetworkFailure(error:unknown,signal?:AbortSignal):unknown {
     signal?.throwIfAborted();
-    if(error instanceof SyncFault||error instanceof NetError||(error as {name?:string})?.name==='AbortError')return error;
+    if(error instanceof SendBudgetError||error instanceof SyncFault||error instanceof NetError||(error as {name?:string})?.name==='AbortError')return error;
     const status=(error as {status?:number})?.status,code=(error as {code?:string})?.code;
     if(status!==undefined&&Number.isInteger(status)&&status>=400&&status<=599)
         return Object.assign(new SyncFault(status===401?'auth-required':'google-api',`Google transport failed: HTTP ${status}`,'source',status===408||status===429||status>=500),{status});
@@ -161,16 +162,18 @@ function waitForToken(pending: Promise<string>, signal?: AbortSignal): Promise<s
 }
 
 export class GoogleAuthorizedTransport implements NetTransport {
+    readonly accountsSendBudget=true;
     constructor(private readonly transport: NetTransport, private readonly tokens: GoogleTokenManager) {}
     async fetch(url: string, options: NetRequest): Promise<NetResponse> {
         const parsed = new URL(url);
         if (parsed.origin !== 'https://www.googleapis.com' || parsed.username || parsed.password
             || !/^\/(?:upload\/)?drive\/v3\//.test(parsed.pathname)) throw new SyncFault('redirect-policy', 'Untrusted Google API endpoint', 'source');
         const generation = this.tokens.generation;
+        options={...options,sendBudget:options.sendBudget??new SendBudget()};
         for (let attempt = 0; attempt < 2; attempt++) {
             const token = await this.tokens.getToken(false, options.signal);
             let response:NetResponse;
-            try{response = await waitForGoogle(this.transport.fetch(url, { ...options, redirect: 'error',
+            try{response = await waitForGoogle(sendWithBudget(this.transport,url, { ...options, redirect: 'error',
                 headers: { ...options.headers, Authorization: `Bearer ${token}` } }),options.signal,response=>response.discard?.());}
             catch(error){
                 if(generation!==this.tokens.generation)throw new SyncFault('auth-required','Google account disconnected','source');

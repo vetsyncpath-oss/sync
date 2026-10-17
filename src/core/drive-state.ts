@@ -75,6 +75,7 @@ function validate(value:any):asserts value is ReadableState {
         if(p.copyLocal!==undefined&&!localVersion(p.copyLocal)||p.reviewRequired!==undefined&&typeof p.reviewRequired!=='boolean')throw Error('Invalid Drive recovery precondition');
         if(p.directories!==undefined&&(!object(p.directories)||Object.values(p.directories).some(id=>!text(id))))throw Error('Invalid Drive directory reservations');
         for(const upload of [p.upload,p.copyUpload])if(upload!==undefined&&(!object(upload)||!text(upload.url)||!text(upload.fileId)||!Number.isSafeInteger(upload.size)||upload.size<0||!Number.isSafeInteger(upload.offset)||upload.offset<0||upload.offset>upload.size))throw Error('Invalid Drive upload session');
+        for(const upload of [p.upload,p.copyUpload])if(upload?.sendAttempts!==undefined&&(!object(upload.sendAttempts)||Object.entries(upload.sendAttempts).some(([key,value])=>! /^(chunk:\d+:\d+|probe:\d+)$/.test(key)||!Number.isSafeInteger(value)||Number(value)<0||Number(value)>5)))throw Error('Invalid Drive upload attempt budget');
     }
     if(value.reviews!==undefined){if(!value.reviews||typeof value.reviews!=='object'||Array.isArray(value.reviews))throw Error('Invalid Drive review state');
         for(const r of Object.values(value.reviews) as DriveReview[])if(!object(r)||!text(r.copyPath)||!text(r.copyId)||!hex(r.hash))throw Error('Invalid Drive review entry');}
@@ -257,9 +258,9 @@ export async function driveRecoveryReferences(fs:FileSystem,recovery?:Pick<Recov
 }
 
 /** Read all retained namespaces; inactive bindings stay visible and cannot be resolved using another pair. */
-export async function driveLifecycleHistory(fs:FileSystem):Promise<{namespace:string;inbox:DriveInboxEntry[];tombstones:DriveTombstone[]}[]>{
+export async function driveLifecycleHistory(fs:FileSystem):Promise<{namespace:string;inbox:DriveInboxEntry[];tombstones:DriveTombstone[];proposals?:DriveProposal[]}[]>{
     const namespaces=new Set((await fs.list()).flatMap(name=>{const m=/^drive-state-([\w-]+)-(?:\d{16}|v[12]-backup)\.json$/.exec(name);return m?[m[1]]:[];}));
-    const histories=[];for(const namespace of namespaces){const store=new DriveStateStore(fs,namespace);await store.load();histories.push({namespace,inbox:store.inboxEntries(),tombstones:store.tombstones()});}return histories;
+    const histories=[];for(const namespace of namespaces){const store=new DriveStateStore(fs,namespace);await store.load();histories.push({namespace,inbox:store.inboxEntries(),tombstones:store.tombstones(),proposals:store.paths().flatMap(path=>store.proposals(path))});}return histories;
 }
 /** Discovery is read-only. Any unreadable retained namespace prevents guessing that its targets are free. */
 export async function discoverDriveStates(fs:FileSystem):Promise<DriveStateStore[]>{

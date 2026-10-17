@@ -90,12 +90,13 @@ export class PathPolicy {
                 // создания (в main.ts isPathAllowed читал живой this.settings).
                 this.opts = { ...opts, blockedTargets:reuseIndex?opts.blockedTargets:structuredClone(opts.blockedTargets??[]),protectedPaths: [...(opts.protectedPaths ?? [])], executionSources: opts.executionSources && structuredClone(opts.executionSources) };
             this.blockIndex=reuseIndex??{exact:new Map(),descendants:new Map()};
-            if(!reuseIndex)for(const block of this.opts.blockedTargets??[]){const root=block.path.normalize('NFC').toLowerCase();this.blockIndex.exact.set(root,block.reason);if(block.descendants)this.blockIndex.descendants.set(root,block.reason);
+            if(!reuseIndex)for(const block of this.opts.blockedTargets??[]){const root=this.blockKey(block.path);this.blockIndex.exact.set(root,block.reason);if(block.descendants)this.blockIndex.descendants.set(root,block.reason);
                 if(block.ancestors){const parts=root.split('/');for(let i=1;i<parts.length;i++)this.blockIndex.exact.set(parts.slice(0,i).join('/'),block.reason);}}
         }
         snapshot(): PathPolicy { return new PathPolicy(this.opts,this.blockIndex); }
         withBlockedTargets(blocks:readonly PathBlock[]):PathPolicy{return new PathPolicy({...this.opts,blockedTargets:[...this.opts.blockedTargets??[],...blocks]});}
-        blockReason(path:string):string|undefined{const key=path.normalize('NFC').toLowerCase(),exact=this.blockIndex.exact.get(key);if(exact)return exact;const parts=key.split('/');
+        private blockKey(path:string):string { return this.normalize(path.trim()).normalize('NFC').toLowerCase(); }
+        blockReason(path:string):string|undefined{const key=this.blockKey(path),exact=this.blockIndex.exact.get(key);if(exact)return exact;const parts=key.split('/');
                 for(let i=1;i<=parts.length;i++){const reason=this.blockIndex.descendants.get(parts.slice(0,i).join('/'));if(reason)return reason;}return undefined;}
 
         forSources(ids: readonly string[], defaultSource: string | undefined, rules: readonly FileRule[],folders:readonly FolderPolicy[]=[],directions?:('pull'|'bidirectional')[]): PathPolicy {

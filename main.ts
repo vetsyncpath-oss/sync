@@ -5,7 +5,7 @@ import { DriveCoordinator } from './src/core/drive-coordinator';
 import { DriveStateStore, driveRecoveryReferences, driveNamespace, driveLifecycleHistory, discoverDriveStates, type DriveResolution } from './src/core/drive-state';
 import { localDirectoryBlocks } from './src/core/local-job-authority';
 import { JobPolicy } from './src/core/job-policy';
-import { JobBatch, awaitJobObservation, emptyStats, mergeJobStats, sharedJobFailure, type JobRunResult, type JobProjection } from './src/core/job-runtime';
+import { JobBatch, awaitJobObservation, emptyStats, mergeJobStats, sharedJobFailure, accountedOutcome, type JobRunResult, type JobProjection } from './src/core/job-runtime';
 import { verifyDriveRootAuthority } from './src/core/drive-job-authority';
 import { validateManifest } from './src/core/source-validation';
 import { GoogleDriveRoot } from './src/sources/gdrive-root';
@@ -716,7 +716,7 @@ export default class GitSyncPlugin extends Plugin {
         // Публичное поле: vam-bridge читает его через структурный порт
         // VamPluginPort, SettingsTab — для чипа Диагностики.
         vam: VamGate | null = null;
-        // Legacy integration flag, session-only. No user-facing gesture enables it.
+        // Deprecated integration flag; ignored by access checks and UI.
         vamSoftMode = false;
         // [W5-T02] реестр подписчиков window.vaultSync. Создаётся в onload,
         // выставляется как window.vaultSync = { getState, onChanged },
@@ -1095,6 +1095,10 @@ export default class GitSyncPlugin extends Plugin {
                 // (adapter.read: null = файла нет — первый запуск, НЕ warn).
                 const journalPath = `${this.manifest.dir ? `${this.manifest.dir}/` : ''}vault-sync-journal.json`;
                 const journalIo: JournalIo = {
+                        pending:{
+                                read:async()=>await this.app.vault.adapter.exists(journalPath+'.pending')?this.app.vault.adapter.read(journalPath+'.pending'):null,
+                                write:async raw=>{await this.app.vault.adapter.write(journalPath+'.pending',raw);},
+                        },
                         read: async () => (await this.app.vault.adapter.exists(journalPath))?this.app.vault.adapter.read(journalPath):null,
                         quarantine:async raw=>{const path=journalPath+'.corrupt-'+crypto.randomUUID();await this.app.vault.adapter.write(path,raw);if(await this.app.vault.adapter.read(path)!==raw)throw Error('Diagnostic backup verification failed');},
                         write: async (s) => {
@@ -1659,7 +1663,7 @@ export default class GitSyncPlugin extends Plugin {
                 try {
                         if(nextCache!==this.cache) await nextCache.load();
                         this.sessionController?.signal.throwIfAborted();
-                        if(preparingRevision!==this.getConfigurationRevision()) throw new Error('Configuration changed while preparing sync');
+                        if(preparingRevision!==this.getConfigurationRevision()) throw new SyncFault('configuration-changed','Configuration changed while preparing sync','session',false,'job');
                 } catch(e) { await source.dispose(); throw e; }
                 await this.coordinator.setSource(source);
                 if (nextCache !== this.cache) {
@@ -1675,7 +1679,7 @@ export default class GitSyncPlugin extends Plugin {
                 this.conflictResolver.setStrategy(this.settings.conflictStrategy);
                 this.conflictResolver.setLightStrategy(this.settings.lightConflictStrategy ?? 'keep-local');
                 this.coordinator.setSyncPolicy(this.effectiveProfilePolicy(sourceId));
-                if (preparingRevision !== this.getConfigurationRevision()) throw new Error('Configuration changed while preparing sync');
+                if (preparingRevision !== this.getConfigurationRevision()) throw new SyncFault('configuration-changed','Configuration changed while preparing sync','session',false,'job');
                 await gcManifestCaches(this.fsAdapter,this.gcKeepSet(this.cache.namespace));
                 this.preparedConfigRevision=preparingRevision;
                 this.sessionController?.signal.throwIfAborted();
@@ -1896,8 +1900,8 @@ export default class GitSyncPlugin extends Plugin {
                                 const cached=new Map<string,string[]>();for(const path of Object.keys(this.cache.entries())){const key=path.normalize('NFC').toLowerCase(),paths=cached.get(key)??[];paths.push(path);cached.set(key,paths);}for(const target of targets)if(cached.get(target.normalize('NFC').toLowerCase())?.some(path=>path!==target))observation.localBlocks.push({path:target,reason:'cached-path-alias'});
                                 return observation;
                         }finally{observedSignals.get(job.id)?.complete();}
-                },async(job,observation)=>{
-                        guard();const member=byId.get(job.id)!,stats=emptyStats(),blockedRows=new Map<string,import('./src/sources/types').SyncFileResult>();
+                },async(job,observation,stats)=>{
+                        guard();const member=byId.get(job.id)!,blockedRows=new Map<string,import('./src/sources/types').SyncFileResult>();
                         // Probe owned effects before admitting directory creation. Unsettled targets remain reserved.
                         const namespaces=new Set([this.cache.namespace,...observation.state?[observation.state.namespace]:[]]);
                         for(const record of this.mutations.store.records().filter(record=>['committing','blocked'].includes(record.status)&&namespaces.has(record.namespace))){
@@ -1916,7 +1920,7 @@ export default class GitSyncPlugin extends Plugin {
                         try{const pull=mode==='retry'?await runner.retryFailed(autoRetry?'auto':'manual',paths,true):mode==='force'?await runner.forceResync(true):await runner.sync({trigger:mode==='auto'?'auto':'manual',missingOnly:mode==='scan',deferQuestions:true,finishing:automaticTrigger==='finishing'});
                                 if(pull){mergeJobStats(stats,pull);const asks=pull.results?.filter(row=>row.reason==='decision-required').map(row=>row.path)??[];if(asks.length)pullQuestions.push({id:job.id,runner,paths:asks});}
                         }finally{signal.removeEventListener('abort',cancel);this.activeJobRunner=undefined;}
-                        if(signal.aborted||stats.problems?.some(sharedJobFailure))return stats;
+                        if(signal.aborted||stats.outcome==='cancelled'||stats.problems?.some(sharedJobFailure))return stats;
                         if(member.source instanceof GDriveOAuthSource&&authority.bidirectionalOwners.has(job.id)){
                                 if(observation.remoteBlock||authority.writerBlocked(job.id)){
                                         const issue=observation.remoteBlock??{code:'binding-inverse',message:'Bidirectional mapping is ambiguous; Drive writes are blocked',scope:'source' as const,stage:'preparing' as const,retryable:false};
@@ -1964,10 +1968,11 @@ export default class GitSyncPlugin extends Plugin {
                         for(const result of results){result.stats.problems=result.stats.problems?.map(issue=>({...issue,jobId:'job:'+result.job.id,connectionId:result.job.id}));mergeJobStats(aggregate,result.stats);}
                         aggregate.pendingAfter=this.queue.all().filter(file=>members.some(member=>member.id===authority.owner(file.originPath??file.path))).length;aggregate.jobResults=batch.snapshot();
                         for(const job of aggregate.jobResults){const stats=statsById.get(job.connectionId)!;job.downloaded=stats.downloaded;job.uploaded=stats.uploaded??0;job.deleted=stats.deleted;job.failed=stats.failed;job.attention=(stats.deferredConflicts??0)+(stats.deferredDeletions??0);job.issues=stats.problems??[];job.pending=this.queue.all().filter(file=>authority.owner(file.originPath??file.path)===job.connectionId).length;
-                                if(job.outcome!=='blocked')job.outcome=stats.outcome==='cancelled'?'cancelled':stats.failed?(stats.downloaded||(stats.uploaded??0)||stats.deleted?'partial':'failed'):job.attention||job.pending?'needs-attention':'success';}
+                                if(job.outcome!=='blocked')job.outcome=accountedOutcome({...stats,pendingAfter:job.pending});}
                         this.publishJobs(aggregate.jobResults);aggregate.duration=Date.now()-started;
                         if(signal.aborted)aggregate.outcome='cancelled';else if(aggregate.problems?.length||aggregate.deferredDeletions)aggregate.outcome='error';
-                        await this.persistEngineState('session-end');this.statusBar.setState(aggregate.failed?'error':aggregate.deferredConflicts||aggregate.deferredDeletions?'conflicts':'idle');return aggregate;
+                        await this.finalizeEngineResult(aggregate);
+                        this.statusBar.setState(aggregate.outcome==='error'?'error':aggregate.deferredConflicts||aggregate.deferredDeletions?'conflicts':'idle');return aggregate;
                 }finally{this.activeJobRunner=undefined;try{await source.dispose();}catch(error){console.warn('[VaultSync] Job provider cleanup deferred:',diagnosticText(error));}}
         }
 
@@ -2043,7 +2048,7 @@ export default class GitSyncPlugin extends Plugin {
                 aggregate.pendingAfter=this.queue.all().filter(file=>(file.originPath?runPolicy.isArtifactPathAllowed(file.originPath,file.path):runPolicy.isPathAllowed(file.path))&&!effectiveBehavior(resolveFileRule(file.originPath??file.path,rules)).protected).length;
                 if(signal.aborted)aggregate.outcome='cancelled';
                 else if(!aggregate.failed&&!aggregate.pendingAfter&&!aggregate.notAttempted&&!aggregate.problems?.length)aggregate.outcome=aggregate.deferredDeletions?'error':'ok';
-                await this.persistEngineState('session-end');this.statusBar.setState(aggregate.outcome==='error'?'error':aggregate.deferredConflicts||aggregate.deferredDeletions?'conflicts':'idle');
+                await this.finalizeEngineResult(aggregate);this.statusBar.setState(aggregate.outcome==='error'?'error':aggregate.deferredConflicts||aggregate.deferredDeletions?'conflicts':'idle');
                 return aggregate;
         }
 
@@ -2176,8 +2181,7 @@ export default class GitSyncPlugin extends Plugin {
          *  осуществлял полный сетевой обмен (для zip-url на мобайле — скачивание
          *  всего архива). Та же пара гейтов в том же порядке (VAM → governance),
          *  теми же текстами Notice, что в runSession; false = отказ (Notice уже
-         *  показан: VAM — троттлинг 3с в vam-bridge, governance — 10с). Мягкий
-         *  режим (vamSoftMode) — то же исключение, что и для сессий. */
+         *  показан: VAM — троттлинг 3с в vam-bridge, governance — 10с). VAM обязателен для сессий и проверок подключения. */
         private assertNetworkAllowed(): boolean {
                 try {
                         assertVamAllowed(this);
@@ -2213,7 +2217,11 @@ export default class GitSyncPlugin extends Plugin {
                 catch (error) {
                         if(!this.sessionController.signal.aborted){this.lastBlockReason=diagnosticText(error);this.statusBar?.setState('error');new Notice(i18n.t.noticeSyncFailed(this.lastBlockReason),10000);}
                         else this.statusBar?.setState('idle');
-                        this.autoBlockedReason=this.lastBlockReason;try{await this.recordJournal(trigger, null, startedAt);}catch(journalError){console.error('[VaultSync] journal unavailable',diagnosticText(journalError));}return null;
+                        const stats=emptyStats();stats.duration=Date.now()-startedAt;
+                        if(this.sessionController.signal.aborted)stats.outcome='cancelled';
+                        else {const issue=syncIssue(error,'preparing');stats.outcome='error';stats.problem=issue.message;stats.problems=[issue];}
+                        this.autoBlockedReason=this.lastBlockReason;try{await this.recordJournal(trigger,stats,startedAt);}catch(journalError){const issue=syncIssue(journalError,'finalize');stats.problems!.push(issue);stats.problem=issue.message;stats.outcome='error';this.autoBlockedReason=issue.message;}
+                        return stats;
                 }
                 finally {
                         this.sessionOwned = false; this.sessionController = undefined;this.sessionProgress=undefined;this.combinedSession=false;this.wakeAutoSync();
@@ -2267,34 +2275,39 @@ export default class GitSyncPlugin extends Plugin {
                         return null;
                 }
                 const startedAt = Date.now();
-                let stats: import('./src/sources/types').SyncStats | null = null;let journalRecorded=false;
+                let stats: import('./src/sources/types').SyncStats | null = null;
                 try {
+                        await this.journal?.recover?.();
                         stats = await fn();
-                        journalRecorded=true;await this.recordJournal(trigger,stats,startedAt);
+                        // A cancellation during preparation must reach the scheduler as cancellation.
+                        if(this.sessionController?.signal.aborted){stats??=emptyStats();stats.outcome='cancelled';}
                         if(stats&&stats.outcome==='ok'&&!stats.failed&&!stats.deferredConflicts&&!stats.deferredDeletions&&!stats.pendingAfter){
                                 const previous={lastSyncTime:this.settings.lastSyncTime,totalSyncCount:this.settings.totalSyncCount};
                                 this.settings.lastSyncTime=this.proposedLastSync??Date.now();this.settings.totalSyncCount++;
                                 try{await this.saveSettingsImmediate();}catch{Object.assign(this.settings,previous);throw new SyncFault('settings-save','Successful sync state could not be saved','session');}
                                 this.statusBar.setLastSync(this.settings.lastSyncTime);
                         }
-                        return stats;
-                } catch (e) {
-                        if (this.sessionController?.signal.aborted) { this.statusBar.setState('idle'); return null; }
-                        // [overhaul S2/M-7] не-VAM ошибки сессии (дисковые ошибки
-                        // prepareSession/cache.reset, неожиданные исключения движков)
-                        // раньше уходили в unhandled rejection: команды и auto-тики
-                        // молча умирали без Notice. Журнал в finally сохраняет прежнюю
-                        // семантику (stats=null → записи нет — сессия не началась).
-                        console.error('[VaultSync] session error:', e);
-                        new Notice(i18n.t.noticeSyncFailed(e instanceof Error ? e.message : String(e)), 10000);
-                        this.lastBlockReason=diagnosticText(e);const issue=syncIssue(e,'preparing');if(!issue.retryable&&(issue.scope==='session'||issue.code==='auth-required'||issue.code==='io'))this.autoBlockedReason=this.lastBlockReason;this.statusBar.setState('error');
-                        return null;
-                } finally {
-                        if(!journalRecorded)await this.recordJournal(trigger, stats, startedAt);
-                        // [W5-T02] уведомляем подписчиков window.vaultSync: статус
-                        // мог смениться (syncing → idle/error), pendingCount обновился.
-                        this.notifyVaultSync();
+                } catch (error) {
+                        stats??=emptyStats();
+                        if(this.sessionController?.signal.aborted){stats.outcome='cancelled';this.statusBar.setState('idle');}
+                        else {
+                                const issue=syncIssue(error,'preparing');stats.outcome='error';stats.problem=issue.message;stats.problems=[...stats.problems??[],issue];
+                                this.lastBlockReason=issue.message;
+                                if(!issue.retryable&&(issue.scope==='session'||issue.code==='auth-required'||issue.code==='io'))this.autoBlockedReason=issue.message;
+                                this.statusBar.setState('error');new Notice(i18n.t.noticeSyncFailed(issue.message),10000);
+                        }
                 }
+                // Final reporting cannot erase confirmed transfers or replace the result with null.
+                if(stats)stats.duration=Date.now()-startedAt;
+                try {await this.recordJournal(trigger,stats,startedAt);}
+                catch(error){
+                        stats??=emptyStats();const issue=syncIssue(error,'finalize');
+                        stats.outcome='error';stats.problem=issue.message;stats.problems=[...stats.problems??[],issue];
+                        this.lastBlockReason=issue.message;this.autoBlockedReason=issue.message;
+                        this.statusBar.setState('error');new Notice(i18n.t.noticeSyncFailed(issue.message),10000);
+                }
+                this.notifyVaultSync();
+                return stats;
         }
 
         /** [W5-T01] Применить probe менеджера — обновляет this.governance и
@@ -2323,7 +2336,7 @@ export default class GitSyncPlugin extends Plugin {
         openVamStatusModal(): void {
                 const vamModal = new VamStatusModal(this.app, {
                         granted: vamAllowsWork(this),
-                        softMode: this.vamSoftMode === true,
+                        softMode: false,
                         reasonText: describeVamStatus(this.vam),
                 });
                 // [overhaul S4 / S3-review #2] модалка доступа тоже в реестре:
@@ -2342,11 +2355,10 @@ export default class GitSyncPlugin extends Plugin {
                 this.statusBar?.refresh();
         }
 
-        /** [VAM] Отзыв после granted (mid-session): внятный Notice с причиной.
-         *  Идущие сессии не прерываем (гейт читается на старте каждой новой —
-         *  двойная сверка §9.4), но все новые сессии будут отказаны до
-         *  повторного подтверждения доступа. */
+        /** Revocation cancels active work; in-flight effects still require normal recovery. */
         private onVamRevoked(reason: string | null): void {
+                this.sessionController?.abort(new DOMException('VAM access revoked','AbortError'));
+                this.coordinator?.cancel();this.activeJobRunner?.cancel();
                 const reasonText = reason ? describeVamReason(reason) : i18n.t.vam.reasonNoCode;
                 new Notice(i18n.t.vam.noticeRevoked(reasonText), 8000);
                 this.notifyVaultSync();this.wakeAutoSync();
@@ -2383,7 +2395,7 @@ export default class GitSyncPlugin extends Plugin {
                         vam: {
                                 status: this.vam?.status ?? 'blocked',
                                 reason: this.vam?.reason ?? null,
-                                softMode: this.vamSoftMode === true,
+                                softMode: false,
                         },
                 };
         }
@@ -2866,6 +2878,15 @@ export default class GitSyncPlugin extends Plugin {
         // [W3-T03] private stableHash удалён: реестр владеет собственной djb2
                 // (src/engines/registry.ts — байт-в-байт с прежней реализацией).
 
+        /** Preserve confirmed effects if the final shared queue/settings checkpoint fails. */
+        private async finalizeEngineResult(stats: import('./src/sources/types').SyncStats): Promise<void> {
+                try {await this.persistEngineState('session-end');}
+                catch(error){
+                        const issue=syncIssue(new SyncFault('settings-save',`Final sync state could not be saved: ${diagnosticText(error)}`,'session',false,'shared'),'checkpoint');
+                        stats.problems=[...stats.problems??[],issue];stats.problem=issue.message;stats.outcome='error';
+                }
+        }
+
         private async persistEngineState(kind: 'checkpoint' | 'session-end' | 'success-end'): Promise<void> {
                 this.settings.failedQueue = this.queue.all();
                 (this.settings.failedQueues ??= {})[this.cache.namespace] = this.queue.all();
@@ -3191,7 +3212,7 @@ class GitSyncSettingTab extends PluginSettingTab {
                 containerEl.createEl('h4', { text: t.vam.section });
                 {
                         const vamGate = this.plugin.vam;
-                        const softMode = this.plugin.vamSoftMode === true;
+                        const softMode = false;
                         const granted = vamAllowsWork(this.plugin);
                         const pending = !granted && vamGate?.status === 'pending';
                         const chipText = granted

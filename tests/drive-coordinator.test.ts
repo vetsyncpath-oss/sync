@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DriveCoordinator, type DriveExecutionPorts } from '../src/core/drive-coordinator';
-import { DriveStateStore,driveNamespace } from '../src/core/drive-state';
+import { DriveStateStore,driveNamespace,driveLifecycleHistory } from '../src/core/drive-state';
 import { GoogleDriveRoot } from '../src/sources/gdrive-root';
 import { GoogleDriveClient,DRIVE_FOLDER,type DriveFile,type DriveItem } from '../src/sources/gdrive-client';
 import { OperationStore } from '../src/core/operation-store';
@@ -51,9 +51,9 @@ class Fixture {
 test('bootstrap forms a union, adopts identical bytes, and keeps both versions of an initial conflict',async()=>{
     const f=new Fixture();f.local.set('same.md',bytes('same'));await f.addRemote('same.md','same');
     f.local.set('local.md',bytes('local'));await f.addRemote('remote.md','remote');f.local.set('conflict.md',bytes('mine'));await f.addRemote('conflict.md','theirs');
-    const stats=await f.run(true);assert.equal(stats.failed,0);assert.equal(stats.conflicts,1);assert.equal(f.text('remote.md'),'remote');assert.equal(f.text('conflict.md'),'theirs');
+    const stats=await f.run(true);assert.equal(stats.failed,0);assert.equal(stats.conflicts,1);assert.equal(f.text('remote.md'),'remote');assert.equal(f.text('conflict.md'),'mine');
     const copy=[...f.local.keys()].find(p=>p.includes('.conflict-drive-local-'))!;assert.equal(f.text(copy),'mine');assert(f.inventory().some(i=>i.path===copy));
-    assert(f.inventory().some(i=>i.path==='local.md'));assert.equal(Object.keys(f.state.snapshot().baseline).length,4);
+    assert(f.inventory().some(i=>i.path==='local.md'));assert.equal(Object.keys(f.state.snapshot().baseline).length,3);
 });
 test('verified tracked deletions use trash in both directions; 404 never authorizes local deletion',async()=>{
     const f=new Fixture();for(const n of ['local-delete.md','remote-delete.md','lost.md']){f.local.set(n,bytes('base'));await f.addRemote(n,'base');}await f.run();
@@ -62,16 +62,16 @@ test('verified tracked deletions use trash in both directions; 404 never authori
     assert.equal(stats.deleted,2);assert.equal(stats.deletedDrive,1);
     assert.equal(f.text('.trash/remote-delete.md'),'base');assert.equal(f.text('lost.md'),'base');assert.equal(stats.deferredDeletions,1);
 });
-test('delete versus edit preserves the edited survivor on both sides before trashing the original',async()=>{
+test('delete versus edit preserves the edited survivor on both sides pending a decision',async()=>{
     const f=new Fixture();f.local.set('a.md',bytes('base'));await f.addRemote('a.md','base');await f.run();
     f.local.set('a.md',bytes('edited'));f.remote.get('r-a.md')!.file.trashed=true;
-    const stats=await f.run(true);assert.equal(stats.failed,0);assert.equal(f.text('a.md'),undefined);
+    const stats=await f.run(true);assert.equal(stats.failed,0);assert.equal(f.text('a.md'),'edited');assert.equal(stats.deferredConflicts,1);
     const copy=[...f.local.keys()].find(p=>p.includes('.conflict-drive-local-'))!;assert.equal(f.text(copy),'edited');assert(f.inventory().some(i=>i.path===copy));
 });
 test('a lost create response resumes by its reserved ID and never generates a second conflict copy',async()=>{
     const f=new Fixture();f.local.set('a.md',bytes('mine'));await f.addRemote('a.md','theirs');f.unknownUpload=true;
     assert.equal((await f.run()).failed,1);assert.equal(Object.keys(f.state.snapshot().pending).length,1);
-    const result=await f.run();assert.equal(result.failed,0);assert.equal(f.text('a.md'),'theirs');assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,1);
+    const result=await f.run();assert.equal(result.failed,0);assert.equal(f.text('a.md'),'mine');assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,1);
 });
 test('editing during upload preserves the newer local bytes and requests a follow-up',async()=>{
     const f=new Fixture();f.local.set('a.md',bytes('snapshot'));f.afterUpload=()=>{f.local.set('a.md',bytes('new edit'));};
@@ -111,7 +111,7 @@ test('three-way truth table refuses inferred tombstones and recognizes only actu
 test('preserve-ID policy publishes one reviewed copy without replacing the existing Drive object',async()=>{
     const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();
     f.local.set('a.md',bytes('edited'));const result=await f.run(true);assert.equal(result.failed,0);assert.equal(result.deferredConflicts,1);
-    assert.equal(f.remote.get(id)!.file.name,'a.md');assert(!f.remote.get(id)!.file.trashed);assert.equal(f.text('a.md'),'base');
+    assert.equal(f.remote.get(id)!.file.name,'a.md');assert(!f.remote.get(id)!.file.trashed);assert.equal(f.text('a.md'),'edited');
     const review=f.state.snapshot().reviews!['a.md'];assert.equal(f.text(review.copyPath),'edited');assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,1);
     const second=await f.run(true);assert.equal(second.deferredConflicts,1);assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,1);
     const remote=f.remote.get(id)!;remote.data=bytes('edited');remote.file.sha256Checksum=await sha256Hex(remote.data);remote.file.size=String(remote.data.byteLength);remote.file.version='2';
@@ -120,12 +120,12 @@ test('preserve-ID policy publishes one reviewed copy without replacing the exist
 test('a newer local edit after a partial conflict publication is replanned and retained, rather than replaying a stale write',async()=>{
     const f=new Fixture();f.local.set('a.md',bytes('first'));await f.addRemote('a.md','remote');f.afterUpload=()=>{f.local.set('a.md',bytes('second'));};
     const first=await f.run();assert.equal(first.failed,1);assert.equal(f.text('a.md'),'second');f.afterUpload=undefined;
-    const retry=await f.run();assert.equal(retry.failed,0);assert.equal(f.text('a.md'),'remote');
+    const retry=await f.run();assert.equal(retry.failed,0);assert.equal(f.text('a.md'),'second');
     const copies=[...f.local.keys()].filter(p=>p.includes('.conflict-'));assert(copies.some(p=>f.text(p)==='first'));assert(copies.some(p=>f.text(p)==='second'));
 });
 test('unavailable atomic local replacement retains binary originals and an explicit recovery intent',async()=>{
     const f=new Fixture();f.vault.compareAndWrite=async()=>undefined;f.local.set('a.bin',bytes('mine'));await f.addRemote('a.bin','theirs');
-    const result=await f.run();assert.equal(result.failed,1);assert.equal(result.problems![0].code,'local-guard-unavailable');assert.equal(f.text('a.bin'),'mine');
+    const result=await asking(f,async()=>'keep-both').run(f.inventory());assert.equal(result.failed,1);assert.equal(result.problems![0].code,'local-guard-unavailable');assert.equal(f.text('a.bin'),'mine');
     assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,1);assert(f.state.snapshot().pending['a.bin']);
 });
 test('failed checkpoint cleanup cannot accumulate unbounded generations and resumes after permission repair',async()=>{
@@ -136,8 +136,10 @@ test('failed checkpoint cleanup cannot accumulate unbounded generations and resu
 });
 test('repairing a conditional write capability resumes one conflict copy without reusing a finalized operation ID',async()=>{
     const f=new Fixture(),write=f.vault.compareAndWrite;f.vault.compareAndWrite=async()=>undefined;f.local.set('a.md',bytes('mine'));await f.addRemote('a.md','theirs');
-    assert.equal((await f.run()).failed,1);f.vault.compareAndWrite=write;
-    const repaired=await f.run();assert.equal(repaired.failed,0);assert.equal(f.text('a.md'),'theirs');assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,1);
+    assert.equal((await asking(f,async()=>'keep-both').run(f.inventory())).failed,1);f.vault.compareAndWrite=write;
+    // Restart does not revive old consent; settle the retained proposal, then ask again.
+    await f.run();
+    const repaired=await asking(f,async()=>'keep-both').run(f.inventory());assert.equal(repaired.failed,0);assert.equal(f.text('a.md'),'theirs');assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,1);
 });
 test('keeping deletions restores a trashed tracked object without changing its file ID',async()=>{
     const f=new Fixture();f.deletions='keep';f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();f.remote.get(id)!.file.trashed=true;
@@ -184,7 +186,7 @@ test('first, second, first proposals reuse one published copy ID per payload on 
     const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();
     for(const content of ['first','second','first']){f.local.set('a.md',bytes(content));const result=await f.run(true);assert.equal(result.failed,0);assert.equal(result.deferredConflicts,1);}
     const proposals=f.state.proposals('a.md');assert.equal(proposals.length,2);assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,2);
-    assert.equal(f.text('a.md'),'base');assert.equal(f.remote.get(id)?.data&&new TextDecoder().decode(f.remote.get(id)!.data),'base');
+    assert.equal(f.text('a.md'),'first');assert.equal(f.remote.get(id)?.data&&new TextDecoder().decode(f.remote.get(id)!.data),'base');
     assert.equal((await f.run(true)).results?.find(r=>r.path==='a.md')?.proposalIds?.length,2);
     const references=await f.state.recoveryReferences();for(const p of proposals)assert(references.some(ref=>ref.sha256===p.hash));
 });
@@ -206,6 +208,7 @@ test('canonical convergence closes only the matching proposal and preserves the 
     const f=new Fixture();f.local.set('a.md',bytes('base'));await f.addRemote('a.md','base');await f.run();
     for(const content of ['first','second']){f.local.set('a.md',bytes(content));await f.run();}
     const remote=f.remote.get('r-a.md')!;remote.data=bytes('first');remote.file.sha256Checksum=await sha256Hex(remote.data);remote.file.size='5';remote.file.version='2';
+    f.local.set('a.md',bytes('first')); // Actual equality, not implicit primary replacement.
     await f.run();const result=await f.run();assert.equal(result.deferredConflicts,1);
     const proposals=f.state.proposals('a.md');assert.equal(proposals.find(p=>p.hash===remote.file.sha256Checksum)?.status,'converged');
     assert.equal(proposals.find(p=>p.hash!==remote.file.sha256Checksum)?.status,'published');assert.equal(result.results?.find(r=>r.path==='a.md')?.proposalIds?.length,1);
@@ -220,7 +223,7 @@ test('a legacy reserved pending copy is fenced to the current schema before any 
     const create=f.vault.createBinary!;let effects=0;f.vault.createBinary=async(path,data)=>{effects++;
         const latest=[...f.metadata.keys()].filter(n=>/^drive-state-test-\d{16}\.json$/.test(n)).sort().at(-1)!;
         assert.equal(JSON.parse(JSON.parse(f.metadata.get(latest)!).payload).version,3);await create(path,data);};
-    const result=await f.run();assert.equal(result.failed,0);assert(effects>0);assert.equal(f.text('a.md'),'theirs');
+    const result=await f.run();assert.equal(result.failed,0);assert(effects>0);assert.equal(f.text('a.md'),'mine');
     assert.equal(f.state.proposals('a.md')[0].copyId,copyId);assert.equal(f.state.proposals('a.md')[0].portable,false);assert(f.metadata.has('drive-state-test-v1-backup.json'));
 });
 
@@ -392,4 +395,49 @@ test('404 or relocation during replay keeps the original pending copy IDs and pa
         if(missing)f.remote.delete(id);else f.remote.get(id)!.file.name='renamed.md';await f.addRemote('other.md','ready');const result=await f.run();
         assert.equal(result.failed,0);assert.equal(f.state.inbox('a.md')!.reason,missing?'drive-unavailable':'drive-relocated');assert.equal(f.state.pending('a.md')!.id,prepared.id);assert.equal(f.state.pending('a.md')!.copyId,prepared.copyId);assert.equal(f.queue.size(),0,'durable unknown must not keep an overdue transient retry');
         assert.equal(f.text('a.md'),'edit');assert.equal(f.text('other.md'),'ready');assert.equal(f.counter,1);assert.equal(f.text('renamed.md'),undefined);assert.equal(new TextDecoder().decode(await f.mutations.recovery.read(prepared.copyBytes!)),'edit');}
+});
+
+test('typed item IO failure does not stop an independent Drive download',async()=>{
+ const f=new Fixture();await f.addRemote('a.md','A');await f.addRemote('b.md','B');const download=f.client.download.bind(f.client);
+ f.client.download=async(file,signal)=>{if(file.name==='a.md')throw new SyncFault('io','directory changed: diagnostic only','file');return download(file,signal);};
+ const stats=await f.run(true);assert.equal(stats.failed,1);assert.equal(f.text('b.md'),'B');assert.equal(f.text('a.md'),undefined);assert.equal(stats.problems?.[0].scope,'file');
+});
+test('unexpected Drive exception stops its job without pretending to be a path conflict',async()=>{
+ const f=new Fixture();await f.addRemote('a.md','A');await f.addRemote('b.md','B');
+ f.client.download=async()=>{throw Error('directory changed');};
+ const stats=await f.run(true);assert.equal(stats.failed,1);assert.equal(f.text('b.md'),undefined);assert.equal(stats.problems?.[0].code,'internal-error');assert.equal(stats.problems?.[0].domain,'job');
+});
+test('R10.7 gated edit retains primary and prior baseline across restart',async()=>{
+ const f=new Fixture();f.local.set('a.md',bytes('base'));await f.addRemote('a.md','base');await f.run();
+ const base=f.state.baseline('a.md');f.local.set('a.md',bytes('author edit'));
+ const first=await f.run(true);assert.equal(first.failed,0);assert.equal(f.text('a.md'),'author edit');assert.deepEqual(f.state.baseline('a.md'),base);assert.equal(first.downloaded,0);assert.equal(first.deferredConflicts,1);
+ const restarted=new DriveStateStore(f.fs,'test');await restarted.load();const second=await f.run(true,{state:restarted});assert.equal(second.failed,0);assert.equal(f.text('a.md'),'author edit');assert.equal(f.inventory().filter(i=>i.path.includes('.conflict-')).length,1);
+});
+test('R10.7 divergent bootstrap retains both canonical versions without invented baseline',async()=>{
+ const f=new Fixture();f.local.set('a.md',bytes('author'));const id=await f.addRemote('a.md','cloud');
+ const result=await f.run();assert.equal(result.failed,0);assert.equal(result.deferredConflicts,1);assert.equal(f.text('a.md'),'author');assert.equal(f.state.baseline('a.md'),undefined);assert.equal(new TextDecoder().decode(f.remote.get(id)!.data),'cloud');
+});
+test('R10.7 edited survivor remains primary after remote trash',async()=>{
+ const f=new Fixture();f.local.set('a.md',bytes('base'));await f.addRemote('a.md','base');await f.run();f.local.set('a.md',bytes('edit'));f.remote.get('r-a.md')!.file.trashed=true;
+ const result=await f.run(true);assert.equal(result.failed,0);assert.equal(result.deferredConflicts,1);assert.equal(f.text('a.md'),'edit');assert.equal(f.state.tombstone('a.md'),undefined);
+});
+
+test('proposal-only bootstrap retains original ID after rename and does not project a second canonical file',async()=>{
+ const f=new Fixture();f.local.set('a.md',bytes('local'));const id=await f.addRemote('a.md','remote');await f.run();
+ f.remote.get(id)!.file.name='renamed.md';f.remote.get(id)!.file.version='2';
+ await f.run();assert.equal(f.text('renamed.md'),undefined);assert.equal(f.text('a.md'),'local');assert.equal(f.state.inbox('a.md')?.originId,id);
+});
+test('manual Ask accepts exact remote version after a gated local edit and retains the proposal copy',async()=>{
+ const f=new Fixture();f.local.set('a.md',bytes('base'));await f.addRemote('a.md','base');await f.run();f.local.set('a.md',bytes('local edit'));
+ let calls=0;const result=await asking(f,async()=>{calls++;return 'keep-both';}).run(f.inventory());
+ assert.equal(calls,1);assert.equal(result.failed,0);assert.equal(result.deferredConflicts??0,0);assert.equal(f.text('a.md'),'base');assert.equal(f.state.proposals('a.md').length,1);
+ assert.equal(f.state.proposals('a.md')[0].needsReview,false);assert.equal(f.text(f.state.proposals('a.md')[0].copyPath),'local edit');
+});
+test('retained history exposes proposal-only paths without changing baseline or pending state',async()=>{
+ const f=new Fixture();f.local.set('a.md',bytes('local'));await f.addRemote('a.md','remote');await f.run();const before=f.state.snapshot();
+ const history=await driveLifecycleHistory(f.fs);assert.equal(history[0].proposals?.length,1);assert.equal(history[0].proposals?.[0].path,'a.md');assert.deepEqual(f.state.snapshot(),before);
+});
+test('R10.7 local deletion versus remote edit retains remote primary pending a decision',async()=>{
+ const f=new Fixture();f.local.set('a.md',bytes('base'));const id=await f.addRemote('a.md','base');await f.run();f.local.delete('a.md');await f.addRemote('a.md','remote edit',id);f.remote.get(id)!.file.version='2';
+ const result=await f.run(true);assert.equal(result.failed,0);assert.equal(result.deferredConflicts,1);assert.equal(f.remote.get(id)!.file.trashed,undefined);assert.equal(f.text('a.md'),undefined);assert.equal(f.state.tombstone('a.md'),undefined);
 });

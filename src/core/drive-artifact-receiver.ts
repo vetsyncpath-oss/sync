@@ -27,7 +27,7 @@ export async function receiveDriveArtifacts(p:DriveExecutionPorts,inventory:Driv
             conflictPath:receipt.path,proposalIds:[receipt.proposalId]});
     };
     const failed=(error:unknown,path:string,hash='drive-artifact',originPath?:string)=>{
-        const issue=syncIssue(error,'apply');if(issue.code==='io')issue.scope='session';
+        const issue=syncIssue(error,'apply');
         effects.stats.problems!.push(issue);effects.stats.failed++;effects.stats.problem=issue.message;effects.stats.outcome='error';
         (effects.stats.results??=[]).push({path,status:'error',reason:issue.code,issue});
         p.queue.add({path,hash,size:0,originPath},issue.message,Date.now(),issue.retryable?'transient':'blocked',Math.max(0,(issue.retryAt??0)-Date.now()),issue);

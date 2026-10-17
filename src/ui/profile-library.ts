@@ -15,7 +15,7 @@ export function profileName(profile: SyncProfile): string {
     const names: Record<string, string> = {
         'standard:preserve': writeLabel('preserve'), 'standard:seed': tr('Установить только отсутствующие', 'Install missing files only'),
         'standard:safe': writeLabel('update'), 'standard:source': tr('Версия источника без удалений', 'Match source without deletion'),
-        'standard:drive-bidirectional':tr('Google Drive ↔ vault — копии и корзина','Google Drive ↔ vault — copies and trash'),
+        'standard:drive-bidirectional':tr('Google Drive ↔ vault — предложения и корзина','Google Drive ↔ vault — proposals and trash'),
         'standard:conflicts': tr('Обновлять с сохранением конфликтной копии', 'Update with a conflict copy'),
     };
     return profile.builtin ? names[profile.id] ?? profile.name : profile.name;
@@ -104,7 +104,7 @@ class ProfileEditorModal extends DraftModal {
         field(box,tr('Направление','Direction'),selectInput([['pull',tr('Источник → vault','Source → vault')],['bidirectional','Google Drive ↔ vault']],p.direction??'pull',value=>{
             p.direction=value as SyncProfile['direction'];if(p.direction==='bidirectional'){p.write='changes';p.delete='tracked';this.deleteChoice='tracked';p.conflict='keep-both';}this.render();
         }));
-        if(p.direction==='bidirectional')box.append(element('p',tr('Только OAuth Drive. Изменения идут в обе стороны; подтверждённые удаления — через корзину. Drive file ID сохраняется. Локальные обновления существующих объектов пока публикуются в конфликтные копии.','OAuth Drive only. Changes travel both ways; confirmed deletions use trash. Drive file IDs are preserved. Local updates of existing objects currently publish conflict copies.')));
+        if(p.direction==='bidirectional')box.append(element('p',tr('Только OAuth Drive. Изменения идут в обе стороны; подтверждённые удаления — через корзину. Drive file ID сохраняется. Локальные обновления существующих объектов публикуются предложениями: локальный оригинал остаётся на месте, Drive ID и его содержимое сохраняются. Конфликт удаления и правки требует решения.','OAuth Drive only. Changes travel both ways; confirmed deletions use trash. Drive file IDs are preserved. Local updates of existing objects publish proposals: the local original stays in place, and the Drive ID and its content are retained. Delete/edit conflicts need a decision.')));
         field(box, tr('Запись', 'Write'), selectInput(((p.direction==='bidirectional'?['preserve','changes']:['preserve', 'create', 'update', 'remote', 'changes']) as WriteMode[]).map(mode => [mode, writeLabel(mode)]), p.write, value => {
             if(p.write!=='preserve')this.deleteChoice=p.delete;
             p.write = value as WriteMode;p.delete=p.write==='preserve'?'keep':this.deleteChoice;this.render();
@@ -113,7 +113,7 @@ class ProfileEditorModal extends DraftModal {
         else field(box, p.direction==='bidirectional'?tr('Удаления с любой стороны','Deletions on either side'):tr('Исчезновение из источника', 'When absent from source'), selectInput(((p.direction==='bidirectional'?['keep','tracked']:['keep', 'tracked', 'mirror']) as DeleteMode[]).map(mode => [mode, deleteLabel(mode)]), p.delete, value => p.delete = value as DeleteMode),
             p.direction==='bidirectional'?tr('Только ранее согласованные файлы. 404 и потеря доступа не считаются удалением.','Only previously reconciled files. 404 and lost access are not treated as deletions.'):tr('Фоновые удаления отложены. Для Яндекса, Drive и WebDAV удаления заблокированы до подтверждения полноты снимка.', 'Background deletions are deferred. Yandex, Drive and WebDAV deletions are blocked until inventory completeness is proven.'));
         if (p.write === 'changes') field(box, tr('Конфликт при обновлении', 'Conflict during update'), selectInput([
-            ['keep-both', tr('Источник на месте; локальная версия в копию', 'Apply source; keep local copy')],
+            ['keep-both', p.direction==='bidirectional'?tr('Предложить локальную версию; сохранить оба оригинала','Propose local version; retain both originals'):tr('Источник на месте; локальная версия в копию', 'Apply source; keep local copy')],
             ...(p.direction==='bidirectional'?[]:[['incoming', tr('Локальная на месте; входящая версия в копию', 'Keep local; save incoming copy')] as const]),
             ...(p.direction==='bidirectional'?[]:[['local-wins',tr('Оставить локальную; пропустить входящую', 'Keep local; skip incoming')] as const]),
             ['ask', tr('Спросить при ручном запуске', 'Ask during manual sync')],

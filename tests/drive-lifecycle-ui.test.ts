@@ -33,3 +33,9 @@ test('history read failure preserves visible history and reports the failure; cl
     setup();let fail=false,probes=0;const modal=new DriveLifecycleModal(new App(),{load:async()=>{if(fail)throw Error('corrupt checkpoint');return [{namespace:'pair',inbox:[entry()],tombstones:[]}];},probe:async()=>{probes++;},restore:async()=>{},isRunning:()=>false});modal.open();await tick();fail=true;
     find(modal.contentEl,/Refresh history|Обновить историю/).click();await tick();assert(modal.contentEl.textContent?.includes('corrupt checkpoint'));assert(modal.contentEl.textContent?.includes('original'));modal.close();assert.equal(probes,0);
 });
+test('proposal-only history displays retained original and copy IDs without implicit actions',async()=>{
+ setup();let actions=0;
+ const proposal={id:'p',proposalId:'p',originId:'origin-id',path:'a.md',remotePath:'a.md',copyPath:'<img src=x>.md',copyRemotePath:'copy.md',copyId:'copy-id',hash:sha('local'),baseHash:sha('remote'),baseVersion:'1',kind:'gated-upload' as const,portable:true,status:'published' as const,needsReview:true};
+ const modal=new DriveLifecycleModal(new App(),{load:async()=>[{namespace:'pair',inbox:[],tombstones:[],proposals:[proposal]}],probe:async()=>{actions++;},restore:async()=>{actions++;},isRunning:()=>false});
+ modal.open();await tick();assert(modal.contentEl.textContent?.includes('origin-id'));assert(modal.contentEl.textContent?.includes('copy-id'));assert(modal.contentEl.textContent?.includes(proposal.copyPath));assert.equal(modal.contentEl.querySelector('img'),null);assert.equal(actions,0);modal.close();assert.equal(actions,0);
+});

@@ -1,0 +1,28 @@
+✔ B13: absent prototype names are not cache entries before or after load/reset (1.917597ms)
+✔ B13: own-key set, snapshot, flush, reload, delete and backup roundtrip (2.069448ms)
+✔ B13: existing JSON with prototype names survives load and republish (2.024739ms)
+✔ B19: requested trash without capability preserves original and creates no intent (5.37382ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+[VaultSync] Failed to delete a.md: Local trash is unavailable; original retained
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=0 parked=0 bytes=0 duration=7ms
+✔ B19: coordinator preserves tracked original and reports unavailable trash (durable=true) (9.154144ms)
+[VaultSync] session start: build=overhaul-vnext2-w1-budget-report-2026-10-16, trigger=manual, forced=0, forceAll=false
+[VaultSync] Failed to delete a.md: Local trash is unavailable; original retained
+session end (build=overhaul-vnext2-w1-budget-report-2026-10-16): outcome=error downloaded=0 deleted=0 conflicts=0 skipped=0 failed=1 queue=0 parked=0 bytes=0 duration=1ms
+✔ B19: coordinator preserves tracked original and reports unavailable trash (durable=false) (1.296759ms)
+✔ B19: supported trash is called with its receiver and verified recovery already stored (5.20776ms)
+✔ B19: throwing trash retains uncertain intent and never falls back to remove (4.104653ms)
+✔ B19: missing target needs no trash capability and explicit remove keeps recovery (4.456104ms)
+✔ B61 reservation aliases: "a//b" (0.317209ms)
+✔ B61 reservation aliases: "/a/b" (0.116195ms)
+✔ B61 reservation aliases: "a\\b" (0.057748ms)
+✔ B61 reservation aliases: " A/B/ " (0.048033ms)
+✔ B61: block declarations, descendants and ancestors use the same alias key (0.156546ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 43.006911
