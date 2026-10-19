@@ -1,6 +1,0 @@
-[VaultSync] Drive checkpoint cleanup deferred Error: Drive checkpoint cleanup must complete before adding another generation
-    at DriveStateStore.cleanup (/tmp/zip-audit-uRlwz6/tests.cjs:10492:13)
-    at async DriveStateStore.publish (/tmp/zip-audit-uRlwz6/tests.cjs:10474:7)
-[VaultSync] Drive checkpoint cleanup deferred Error: Drive checkpoint cleanup must complete before adding another generation
-    at DriveStateStore.cleanup (/tmp/zip-audit-uRlwz6/tests.cjs:10492:13)
-    at async DriveStateStore.publish (/tmp/zip-audit-uRlwz6/tests.cjs:10474:7)

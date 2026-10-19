@@ -1,20 +1,25 @@
-name: Verify
+name: Sync Studio
 on:
   push:
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
   verify:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node: [18.18.0, 20, 22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: '22'
           cache: npm
       - run: npm ci --no-audit --no-fund
       - run: npm run verify
+      - name: Verify committed installation bundle
+        run: git diff --exit-code -- main.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sync-studio-0.1.0-alpha
+          path: dist/
+          if-no-files-found: error
