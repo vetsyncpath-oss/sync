@@ -1,8 +1,4 @@
 node_modules/
-/node_modules
 dist/
-coverage/
-*.tsbuildinfo
-
-/main.js
-/main.js.map
+*.zip
+*.log
