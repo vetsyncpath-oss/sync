@@ -1,0 +1,245 @@
+.sync-studio {
+  --ss-border: var(--background-modifier-border);
+  --ss-card: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 22px !important;
+}
+.sync-studio * {
+  box-sizing: border-box;
+}
+.sync-studio h1 {
+  font-size: 27px;
+  letter-spacing: -0.6px;
+  margin: 5px 0;
+}
+.sync-studio h2 {
+  font-size: 21px;
+  margin: 0 0 5px;
+}
+.sync-studio h3 {
+  font-size: 15px;
+  margin: 0 0 12px;
+}
+.sync-studio p {
+  margin: 8px 0;
+}
+.sync-studio small {
+  display: block;
+}
+.sync-studio .ss-muted {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.sync-studio .ss-kicker {
+  color: var(--text-accent);
+  font-size: 10px;
+  letter-spacing: 1.6px;
+}
+.sync-studio .ss-header,
+.sync-studio .ss-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 15px;
+  flex-wrap: wrap;
+}
+.sync-studio .ss-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.sync-studio .ss-badge {
+  display: inline-block;
+  border: 1px solid var(--ss-border);
+  border-radius: 18px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.sync-studio .ss-topnav {
+  display: flex;
+  gap: 12px;
+  margin: 22px 0;
+}
+.sync-studio button {
+  height: auto;
+  white-space: normal;
+  padding: 8px 12px;
+}
+.sync-studio .is-active {
+  background: var(--background-modifier-hover);
+  color: var(--text-accent);
+  box-shadow: inset 0 0 0 1px var(--interactive-accent);
+}
+.sync-studio .ss-layout {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  border: 1px solid var(--ss-border);
+  border-radius: 12px;
+  overflow: hidden;
+  min-height: 650px;
+}
+.sync-studio aside {
+  background: var(--ss-card);
+  padding: 20px 12px;
+  border-right: 1px solid var(--ss-border);
+}
+.sync-studio aside > button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin: 9px 0;
+}
+.sync-studio aside > button small {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.sync-studio main {
+  padding: 24px;
+  min-width: 0;
+}
+.sync-studio .ss-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--ss-border);
+  padding-bottom: 12px;
+  margin: 22px 0;
+  flex-wrap: wrap;
+}
+.sync-studio .ss-tabs button {
+  font-size: 12px;
+}
+.sync-studio fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.sync-studio .ss-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 18px 0;
+}
+.sync-studio .ss-card {
+  padding: 18px;
+  border: 1px solid var(--ss-border);
+  border-radius: 10px;
+  background: var(--ss-card);
+  margin-bottom: 12px;
+}
+.sync-studio .ss-grid .ss-card {
+  margin: 0;
+}
+.sync-studio .ss-field {
+  display: block;
+  margin: 14px 0;
+}
+.sync-studio .ss-field > span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.sync-studio input:not([type="checkbox"]),
+.sync-studio select,
+.sync-studio textarea {
+  width: 100%;
+  max-width: 100%;
+  font-size: 13px;
+  min-height: 34px;
+}
+.sync-studio textarea {
+  min-height: 120px;
+}
+.sync-studio .ss-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 12px 0;
+}
+.sync-studio .ss-check input {
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+.sync-studio .ss-check small {
+  margin-top: 3px;
+}
+.sync-studio .ss-banner {
+  border-left: 3px solid var(--interactive-accent);
+  background: var(--background-secondary);
+  padding: 12px 15px;
+  border-radius: 0 7px 7px 0;
+  font-size: 12px;
+  margin: 18px 0;
+}
+.sync-studio .ss-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--ss-border);
+}
+.sync-studio footer {
+  border-top: 1px solid var(--ss-border);
+  padding-top: 18px;
+  margin-top: 22px;
+}
+.sync-studio .ss-table-scroll {
+  max-height: 45vh;
+  overflow: auto;
+}
+.sync-studio table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.sync-studio td,
+.sync-studio th {
+  text-align: left;
+  padding: 10px;
+  border-bottom: 1px solid var(--ss-border);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.sync-studio th {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+.sync-studio code {
+  overflow-wrap: anywhere;
+}
+.modal:has(.sync-studio) {
+  width: min(1000px, 92vw);
+}
+@media (max-width: 900px) {
+  .sync-studio .ss-layout {
+    grid-template-columns: 170px 1fr;
+  }
+  .sync-studio .ss-grid {
+    grid-template-columns: 1fr;
+  }
+  .sync-studio main {
+    padding: 18px;
+  }
+}
+@media (max-width: 600px) {
+  .sync-studio .ss-layout {
+    grid-template-columns: 1fr;
+  }
+  .sync-studio aside {
+    border: 0;
+    border-bottom: 1px solid var(--ss-border);
+  }
+  .sync-studio .ss-topnav {
+    flex-wrap: wrap;
+  }
+  .sync-studio {
+    padding: 12px !important;
+  }
+}

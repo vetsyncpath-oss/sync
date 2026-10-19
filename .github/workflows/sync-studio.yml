@@ -1,0 +1,34 @@
+name: Sync Studio alpha
+on:
+  push:
+    paths:
+      - 'sync-studio/**'
+      - '.github/workflows/sync-studio.yml'
+  pull_request:
+    paths:
+      - 'sync-studio/**'
+      - '.github/workflows/sync-studio.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sync-studio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: sync-studio/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sync-studio-0.1.0-alpha
+          path: sync-studio/dist/
+          if-no-files-found: error
