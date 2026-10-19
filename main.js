@@ -97,8 +97,24 @@ function uniquePaths(paths) {
 function scanRules(profile, config) {
   return {
     file: (p) => selected(p, profile, config),
-    folder: (p) => !protectedPath(p, config) && !protectedPath(join(profile.localRoot, p), config) && !profile.excludePaths.some((x) => under(p, x)) && (profile.scope !== "folders" || profile.folders.some((x) => under(p, x) || under(x, p)))
+    folder: (p) => !protectedPath(p, config) && !protectedPath(join(profile.localRoot, p), config) && configurationFolderSelected(
+      join(profile.localRoot, p),
+      profile,
+      config
+    ) && !profile.excludePaths.some((x) => under(p, x)) && (profile.scope !== "folders" || profile.folders.some((x) => under(p, x) || under(x, p)))
   };
+}
+function configurationFolderSelected(p, profile, config) {
+  if (!under(p, config)) return true;
+  const enabled = new Set(profile.categories);
+  const plugins = enabled.has("plugin-code") || enabled.has("plugin-settings") && !profile.excludeData;
+  if (p === config)
+    return enabled.has("settings") || enabled.has("themes") || plugins;
+  const relative = p.slice(config.length + 1);
+  if (under(relative, "plugins")) return plugins;
+  if (under(relative, "themes") || under(relative, "snippets"))
+    return enabled.has("themes");
+  return enabled.has("settings");
 }
 function category(p, config) {
   if (under(p, config)) {
