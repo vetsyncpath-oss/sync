@@ -10,9 +10,23 @@ await build({
   target: "es2022",
   external: ["obsidian", "electron"],
   sourcemap: false,
-  banner: { js: "/* Sync Studio 0.1.0 — independent synchronization core. See THIRD_PARTY.md. */" },
+  banner: {
+    js: "/* Sync Studio 0.2.0 — independent synchronization core. See THIRD_PARTY.md. */",
+  },
 });
 await mkdir("dist/sync-studio/licenses", { recursive: true });
-for (const file of ["main.js", "manifest.json", "styles.css", "README.md", "THIRD_PARTY.md", "ARCHITECTURE.md"])
+for (const file of [
+  "main.js",
+  "manifest.json",
+  "styles.css",
+  "README.md",
+  "THIRD_PARTY.md",
+  "ARCHITECTURE.md",
+  "TROUBLESHOOTING.md",
+  "CHANGELOG.md",
+])
   await copyFile(file, `dist/sync-studio/${file}`);
-await copyFile("licenses/sync-engine-MIT.txt", "dist/sync-studio/licenses/sync-engine-MIT.txt");
+await copyFile(
+  "licenses/sync-engine-MIT.txt",
+  "dist/sync-studio/licenses/sync-engine-MIT.txt",
+);

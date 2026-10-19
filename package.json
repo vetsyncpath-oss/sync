@@ -1,16 +1,19 @@
 {
   "name": "obsidian-sync-studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "build": "tsc --noEmit && node build.mjs",
-    "test": "node --import tsx test/run.ts",
+    "test": "npm run test:core && npm run test:ui",
     "typecheck": "tsc --noEmit",
-    "verify": "npm test && npm run build"
+    "verify": "npm test && npm run build",
+    "test:core": "node --import tsx test/run.ts",
+    "test:ui": "node scripts/test-ui.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "esbuild": "^0.25.0",
+    "happy-dom": "^21.0.3",
     "obsidian": "latest",
     "prettier": "^3.9.10",
     "tsx": "^4.20.0",

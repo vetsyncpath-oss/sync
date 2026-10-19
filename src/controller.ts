@@ -28,11 +28,18 @@ import {
   protectedPath,
   under,
   validate,
+  scanRules,
+  PathCollision,
 } from "./core/paths";
 import { ExternalFolder } from "./adapters/external-folder";
 import { LocalStore, ensureDir, writeBackup } from "./adapters/local";
 import { Http, json } from "./adapters/http";
-import { DriveStore, GitHubStore, YandexStore } from "./sources/remotes";
+import {
+  DriveStore,
+  GitHubStore,
+  YandexStore,
+  driveRoot,
+} from "./sources/remotes";
 import {
   GoogleAuthorizedTransport,
   GoogleTokenManager,
@@ -63,6 +70,9 @@ export default class SyncStudio extends Plugin {
   private tokenManagers = new Map<string, GoogleTokenManager>();
   private status!: HTMLElement;
   private pendingPlans = new Map<string, Plan>();
+  private saveChain: Promise<void> = Promise.resolve();
+  lastError = "";
+  collision?: { profileId: string; paths: string[] };
   private stateFile!: StateFile<State>;
   async onload() {
     const saved = await this.loadData();
@@ -134,7 +144,136 @@ export default class SyncStudio extends Plugin {
       (l.view as StudioView).render();
   }
   async save() {
-    await this.saveData(this.data);
+    const snapshot = structuredClone(this.data);
+    const next = this.saveChain.then(() => this.saveData(snapshot));
+    this.saveChain = next.catch(() => {});
+    await next;
+  }
+  reportError(error: unknown) {
+    this.lastError = error instanceof Error ? error.message : String(error);
+    new Notice("Sync Studio: " + this.lastError, 15000);
+  }
+  private invalidateGoogle(id: string) {
+    for (const [key, manager] of this.tokenManagers)
+      if (key.startsWith(id + ":")) {
+        manager.disconnect();
+        this.tokenManagers.delete(key);
+      }
+  }
+  cancelGoogle() {
+    this.authController?.abort(new Error("Авторизация отменена"));
+  }
+  async saveConnection(c: Connection, secret?: string) {
+    if (this.busy) throw Error("Дождитесь завершения синхронизации");
+    if (!c.name.trim()) throw Error("Укажите название подключения");
+    if (secret !== undefined) this.setSecret(c, secret.trim());
+    if (c.provider !== "github" && !this.getSecret(c))
+      throw Error("Сначала подключите аккаунт или укажите ключ доступа");
+    const index = this.data.connections.findIndex((x) => x.id === c.id);
+    const previous = index < 0 ? undefined : this.data.connections[index];
+    if (index < 0) this.data.connections.push(structuredClone(c));
+    else this.data.connections[index] = structuredClone(c);
+    try {
+      await this.save();
+      if (
+        previous?.secretRef !== c.secretRef ||
+        previous?.clientId !== c.clientId
+      ) {
+        this.invalidateGoogle(c.id);
+      }
+    } catch (error) {
+      if (index < 0)
+        this.data.connections = this.data.connections.filter(
+          (x) => x.id !== c.id,
+        );
+      else this.data.connections[index] = previous!;
+      throw error;
+    }
+  }
+  async saveConnectionMetadata(c: Connection) {
+    const index = this.data.connections.findIndex((x) => x.id === c.id);
+    if (index < 0) throw Error("Подключение не сохранено");
+    this.data.connections[index] = structuredClone(c);
+    await this.save();
+  }
+  async testConnection(c: Connection, signal: AbortSignal): Promise<string> {
+    if (c.provider === "github") {
+      const token = this.getSecret(c);
+      const info = await json(
+        this.http,
+        "https://api.github.com/" + (token ? "user" : "rate_limit"),
+        {
+          signal,
+          headers: {
+            "User-Agent": "Obsidian-Sync-Studio",
+            ...(token ? { Authorization: "Bearer " + token } : {}),
+          },
+        },
+      );
+      if (c.root)
+        await this.checkRoot(
+          { ...newProfile(c.id), remoteRoot: c.root },
+          signal,
+          c,
+        );
+      return token ? "GitHub: " + info.login : "GitHub: публичный доступ";
+    }
+    const store = await this.remote(
+      {
+        ...newProfile(c.id),
+        remoteRoot: c.root || (c.provider === "yandex" ? "disk:/" : "root"),
+      },
+      c,
+      signal,
+    );
+    if (store instanceof DriveStore) {
+      const meta = await store.inspect(driveRoot(c.root || "root"), signal);
+      if (
+        meta.trashed ||
+        meta.mimeType !== "application/vnd.google-apps.folder"
+      )
+        throw Error("Выбранный объект Drive не является доступной папкой");
+      await store.children(meta.id, signal);
+      return "Доступ к папке: " + meta.name;
+    }
+    if (store instanceof YandexStore) {
+      await store.folders("", signal);
+      return "Яндекс Диск: доступ подтверждён";
+    }
+    throw Error("Неизвестный сервис");
+  }
+  async checkRoot(p: Profile, signal: AbortSignal, connection?: Connection) {
+    const store = await this.remote(p, connection, signal);
+    if (store instanceof DriveStore) {
+      const meta = await store.inspect(driveRoot(p.remoteRoot), signal);
+      if (
+        meta.trashed ||
+        meta.mimeType !== "application/vnd.google-apps.folder"
+      )
+        throw Error("Drive: укажите доступную папку");
+      await store.children(meta.id, signal);
+      return "Папка доступна: " + meta.name;
+    }
+    if (store instanceof YandexStore) {
+      await store.folders("", signal);
+      return "Папка Яндекс Диска доступна";
+    }
+    await store.scan(signal);
+    return "Репозиторий доступен";
+  }
+  async createProfile(c: Connection) {
+    const p = newProfile(c.id);
+    p.name = c.name;
+    p.remoteRoot =
+      c.root ||
+      (c.provider === "gdrive"
+        ? "root"
+        : c.provider === "yandex"
+          ? "disk:/"
+          : "");
+    this.data.profiles.push(p);
+    await this.save();
+    return p;
   }
   async saveState() {
     await this.stateFile.write(this.state);
@@ -156,7 +295,16 @@ export default class SyncStudio extends Plugin {
   async connectGoogle(c: Connection, clientJSON: string) {
     if (!Platform.isDesktopApp) throw Error("OAuth доступен только на desktop");
     if (this.authController) throw Error("Дождитесь текущей авторизации");
-    const client = parseGoogleClient(clientJSON);
+    const client = clientJSON.trim()
+      ? parseGoogleClient(clientJSON)
+      : c.clientId
+        ? {
+            clientId: c.clientId,
+            clientSecret: c.clientSecretRef
+              ? this.secrets().getSecret(c.clientSecretRef) || undefined
+              : undefined,
+          }
+        : parseGoogleClient(clientJSON);
     this.authController = new AbortController();
     try {
       const grant = await authorizeGoogleDesktop(
@@ -173,33 +321,37 @@ export default class SyncStudio extends Plugin {
         this.secrets().setSecret(c.clientSecretRef, client.clientSecret);
       this.setSecret(c, grant.refreshToken);
       c.subject = grant.subject;
-      this.tokenManagers.get(c.id)?.disconnect();
-      this.tokenManagers.delete(c.id);
-      await this.save();
-      new Notice("Google Drive подключён");
+      this.invalidateGoogle(c.id);
+      new Notice("Google Drive авторизован. Сохраните подключение.");
     } finally {
       this.authController = undefined;
     }
   }
   disconnect(c: Connection) {
     if (this.busy) throw Error("Сначала остановите запуск");
-    this.tokenManagers.get(c.id)?.disconnect();
-    this.tokenManagers.delete(c.id);
+    this.invalidateGoogle(c.id);
     this.setSecret(c, "");
     if (c.clientSecretRef) this.secrets().setSecret(c.clientSecretRef, "");
     for (const p of this.data.profiles)
-      if (p.connectionId === c.id) p.enabled = false;
+      if (p.connectionId === c.id || p.sourceConnectionId === c.id)
+        p.enabled = false;
     return this.save();
   }
-  async remote(p: Profile): Promise<Store> {
-    const c = this.data.connections.find((x) => x.id === p.connectionId);
+  async remote(
+    p: Profile,
+    connection?: Connection,
+    signal = this.controller?.signal,
+  ): Promise<Store> {
+    const c =
+      connection || this.data.connections.find((x) => x.id === p.connectionId);
     if (!c) throw Error("Подключение не найдено");
     const limit = p.maxMB * 1024 * 1024;
     const token = this.getSecret(c);
     if (c.provider === "gdrive") {
       if (!c.clientId || !token)
         throw Error("Подключите Google Drive через OAuth");
-      let manager = this.tokenManagers.get(c.id);
+      const managerKey = c.id + ":" + c.secretRef;
+      let manager = this.tokenManagers.get(managerKey);
       if (!manager) {
         const client: GoogleClient = {
           clientId: c.clientId,
@@ -215,7 +367,7 @@ export default class SyncStudio extends Plugin {
           Date.now,
           c.subject,
         );
-        this.tokenManagers.set(c.id, manager);
+        this.tokenManagers.set(managerKey, manager);
       }
       return new DriveStore(
         new GoogleAuthorizedTransport(this.http, manager),
@@ -223,11 +375,19 @@ export default class SyncStudio extends Plugin {
         limit,
         undefined,
         c.id + ":" + c.subject,
+        scanRules(p, this.app.vault.configDir),
       );
     }
     if (c.provider === "gdrive-public") {
       if (!token) throw Error("Укажите Google API key");
-      return new DriveStore(this.http, p.remoteRoot, limit, token, c.id);
+      return new DriveStore(
+        this.http,
+        p.remoteRoot,
+        limit,
+        token,
+        c.id,
+        scanRules(p, this.app.vault.configDir),
+      );
     }
     if (c.provider === "github")
       return new GitHubStore(
@@ -237,12 +397,19 @@ export default class SyncStudio extends Plugin {
         p.subpath,
         token,
         limit,
+        scanRules(p, this.app.vault.configDir),
       );
     if (!token) throw Error("Укажите OAuth-токен Яндекс Диска");
-    const store = new YandexStore(this.http, p.remoteRoot, token, limit);
+    const store = new YandexStore(
+      this.http,
+      p.remoteRoot,
+      token,
+      limit,
+      scanRules(p, this.app.vault.configDir),
+    );
     const disk = await json(this.http, "https://cloud-api.yandex.net/v1/disk", {
       headers: { Authorization: "OAuth " + token },
-      signal: this.controller?.signal,
+      signal,
     });
     if (!disk.user?.uid)
       throw Error("Яндекс Диск не вернул идентификатор аккаунта");
@@ -260,7 +427,12 @@ export default class SyncStudio extends Plugin {
         branch: p.sourceBranch || "main",
         subpath: p.sourceSubpath || "",
       });
-    return new LocalStore(this.app, p.localRoot, p.maxMB * 1024 * 1024);
+    return new LocalStore(
+      this.app,
+      p.localRoot,
+      p.maxMB * 1024 * 1024,
+      scanRules(p, this.app.vault.configDir),
+    );
   }
   private validateOverlap(p: Profile) {
     if (p.sourceKind) return;
@@ -278,9 +450,30 @@ export default class SyncStudio extends Plugin {
     }
   }
   async inspect(p: Profile): Promise<Plan> {
-    return this.exclusive("Проверка файлов", async (signal) =>
-      this.makePlan(p, signal),
-    );
+    try {
+      this.collision = undefined;
+      return await this.exclusive("Проверка файлов", async (signal) =>
+        this.makePlan(p, signal),
+      );
+    } catch (error) {
+      if (error instanceof PathCollision)
+        this.collision = { profileId: p.id, paths: error.paths };
+      this.data.history.unshift({
+        id: crypto.randomUUID(),
+        profileId: p.id,
+        name: p.name + " — проверка",
+        at: Date.now(),
+        status: "failed",
+        applied: 0,
+        conflicts: 0,
+        message: error instanceof Error ? error.message : String(error),
+        details: [],
+      });
+      this.data.history = this.data.history.slice(0, 100);
+      await this.save();
+      this.refresh();
+      throw error;
+    }
   }
   private async makePlan(p: Profile, signal: AbortSignal) {
     validate(p);
@@ -425,6 +618,7 @@ export default class SyncStudio extends Plugin {
           this.status.setText("Sync Studio · " + this.phase);
         },
       );
+      if (log.status !== "completed") this.lastError = log.message;
       this.data.history.unshift(log);
       this.data.history = this.data.history.slice(0, 100);
       await this.save();
@@ -438,12 +632,16 @@ export default class SyncStudio extends Plugin {
     fn: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
     if (this.busy) throw Error("Другой запуск уже выполняется");
+    this.lastError = "";
     this.busy = true;
     this.phase = phase;
     this.controller = new AbortController();
     this.refresh();
     try {
       return await fn(this.controller.signal);
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      throw error;
     } finally {
       this.busy = false;
       this.phase = "Готово";
@@ -455,7 +653,8 @@ export default class SyncStudio extends Plugin {
     return [...this.pendingPlans.values()];
   }
   private async tick() {
-    if (this.busy || this.paused || !navigator.onLine) return;
+    if (this.busy || this.authController || this.paused || !navigator.onLine)
+      return;
     const now = Date.now();
     for (const p of this.data.profiles) {
       if (!p.enabled || this.pendingPlans.has(p.id)) continue;

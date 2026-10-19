@@ -31,6 +31,7 @@ export async function execute(
 ): Promise<RunLog> {
   const state = structuredClone(plan.baseline),
     details: RunLog["details"] = [];
+  let currentOperation: Operation | undefined;
   let dirty = false;
   let applied = 0,
     conflicts = 0,
@@ -59,6 +60,7 @@ export async function execute(
         throw Error("Файл изменился после просмотра плана: " + op.path);
     }
     for (const op of plan.operations) {
+      currentOperation = op;
       signal.throwIfAborted();
       let l = op.local,
         r = op.remote;
@@ -163,6 +165,12 @@ export async function execute(
   } catch (e) {
     status = signal.aborted ? "cancelled" : applied ? "partial" : "failed";
     message = e instanceof Error ? e.message : "Ошибка выполнения";
+    if (currentOperation)
+      details.push({
+        path: currentOperation.path,
+        action: currentOperation.action,
+        status: "Ошибка: " + message,
+      });
   }
   return {
     id: plan.id,

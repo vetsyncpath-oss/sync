@@ -2,7 +2,14 @@ import { createHash } from "node:crypto";
 import type { FileInfo, Snapshot, Store, Profile } from "../core/model";
 import type { NetTransport, NetRequest } from "./types";
 import { json, bytes } from "../adapters/http";
-import { path, join, sha, uniquePaths, under } from "../core/paths";
+import {
+  path,
+  join,
+  sha,
+  uniquePaths,
+  under,
+  type ScanRules,
+} from "../core/paths";
 const hashCache = new Map<string, string>();
 const FOLDER = "application/vnd.google-apps.folder";
 const fields =
@@ -36,6 +43,7 @@ export class DriveStore implements Store {
     private limit: number,
     publicKey?: string,
     identityAccount = "",
+    private rules?: ScanRules,
   ) {
     this.root = driveRoot(root);
     this.key = publicKey;
@@ -162,17 +170,31 @@ export class DriveStore implements Store {
           throw Error("Недопустимый разделитель в имени удалённого файла");
         path(f.name);
         const p = join(base, f.name);
+        if (
+          f.mimeType === FOLDER
+            ? this.rules && !this.rules.folder(p)
+            : this.rules && !this.rules.file(p)
+        )
+          continue;
         all.push(p);
         if (f.mimeType === FOLDER) {
           this.folders.set(p, f.id);
           await walk(f.id, p, depth + 1);
         } else if (
           String(f.mimeType).startsWith("application/vnd.google-apps.")
-        )
-          throw Error(
-            "Google Docs или shortcut требуют отдельного экспорта: " + p,
+        ) {
+          warnings.push(
+            "Пропущен Google Docs / shortcut (нужен экспорт): " + p,
           );
-        else files[p] = await this.info(f, p, signal);
+          // Keep the path present but out of scope, so unsupported content is never a deletion.
+          files[p] = {
+            path: p,
+            size: Number.MAX_SAFE_INTEGER,
+            hash: "unsupported:" + f.mimeType,
+            version: String(f.version || ""),
+            id: f.id,
+          };
+        } else files[p] = await this.info(f, p, signal);
       }
     };
     await walk(this.root, "", 0);
@@ -277,6 +299,7 @@ export class DriveStore implements Store {
     path(p);
     const etag = await this.verifyExpected(p, expected, signal),
       parent = await this.parent(p, signal);
+    if (!expected) await this.verifyExpected(p, undefined, signal);
     const boundary = "sync_studio_" + crypto.randomUUID();
     const metadata = {
       name: p.split("/").at(-1),
@@ -341,6 +364,7 @@ export class GitHubStore implements Store {
     private prefix: string,
     private token: string,
     private limit: number,
+    private rules?: ScanRules,
   ) {
     const m = repo
       .replace(/^https:\/\/github.com\//, "")
@@ -389,6 +413,7 @@ export class GitHubStore implements Store {
         throw Error("Ссылки и submodules не поддерживаются: " + f.path);
       const p = this.prefix ? f.path.slice(this.prefix.length + 1) : f.path;
       path(p);
+      if (this.rules && !this.rules.file(p)) continue;
       if (!Number.isSafeInteger(f.size)) throw Error("GitHub не вернул размер");
       let hash = "oversize:" + f.size;
       if (f.size <= this.limit) {
@@ -455,6 +480,7 @@ export class YandexStore implements Store {
     root: string,
     private token: string,
     private limit: number,
+    private rules?: ScanRules,
   ) {
     this.root =
       "disk:/" +
@@ -476,7 +502,7 @@ export class YandexStore implements Store {
     };
   }
   private full(p: string) {
-    return this.root.replace(/\/$/, "") + (p ? "/" + path(p) : "");
+    return p ? this.root.replace(/\/$/, "") + "/" + path(p) : this.root;
   }
   private async meta(p: string, signal: AbortSignal) {
     return json(
@@ -484,6 +510,45 @@ export class YandexStore implements Store {
       this.url("/resources", { path: this.full(p), limit: "200" }),
       this.options(signal),
     );
+  }
+  async folders(
+    relative: string,
+    signal: AbortSignal,
+  ): Promise<{ id: string; name: string }[]> {
+    const out: { id: string; name: string }[] = [];
+    let offset = 0,
+      total: number | undefined;
+    do {
+      const d = await json(
+        this.http,
+        this.url("/resources", {
+          path: this.full(relative),
+          limit: "200",
+          offset: String(offset),
+        }),
+        this.options(signal),
+      );
+      const e = d._embedded;
+      if (
+        d.type !== "dir" ||
+        !e ||
+        !Array.isArray(e.items) ||
+        !Number.isSafeInteger(e.total) ||
+        e.offset !== offset ||
+        (total !== undefined && e.total !== total)
+      )
+        throw Error("Не удалось прочитать полный список папок Яндекс Диска");
+      total = e.total;
+      for (const f of e.items)
+        if (f.type === "dir") {
+          if (/[\\/]/.test(f.name)) throw Error("Недопустимое имя папки");
+          out.push({ id: join(relative, path(f.name)), name: f.name });
+        }
+      offset += e.items.length;
+      if (!e.items.length && offset < total!)
+        throw Error("Неполный список папок");
+    } while (offset < total!);
+    return out;
   }
   private info(f: any, p: string): FileInfo {
     if (
@@ -541,6 +606,12 @@ export class YandexStore implements Store {
             throw Error("Повтор файла при обходе Яндекс Диска");
           names.add(f.name);
           const rel = join(p, f.name);
+          if (
+            f.type === "dir"
+              ? this.rules && !this.rules.folder(rel)
+              : this.rules && !this.rules.file(rel)
+          )
+            continue;
           paths.push(rel);
           if (f.type === "dir") await walk(rel, depth + 1);
           else if (f.type === "file") files[rel] = this.info(f, rel);
@@ -586,6 +657,7 @@ export class YandexStore implements Store {
     return bytes(this.http, this.trusted(d.href), {
       signal,
       maxBytes: this.limit,
+      redirect: "follow",
     });
   }
   private async check(

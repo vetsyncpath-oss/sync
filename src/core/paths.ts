@@ -27,14 +27,46 @@ export function path(value: string, allowEmpty = false): string {
 export const join = (a: string, b: string) => (a ? a + "/" + b : b);
 export const under = (p: string, root: string) =>
   !root || p === root || p.startsWith(root + "/");
+export class PathCollision extends Error {
+  constructor(
+    message: string,
+    public paths: string[],
+  ) {
+    super(message);
+    this.name = "PathCollision";
+  }
+}
 export function uniquePaths(paths: string[]): void {
-  const seen = new Set<string>();
+  const seen = new Map<string, string>();
   for (const p of paths) {
     path(p);
     const key = p.normalize("NFC").toLowerCase();
-    if (seen.has(key)) throw Error("Коллизия имён или регистра: " + p);
-    seen.add(key);
+    if (seen.has(key)) {
+      const first = seen.get(key)!;
+      throw new PathCollision(
+        first === p
+          ? `Коллизия: несколько объектов имеют один путь «${p}». В Google Drive допустимы одинаковые имена, в vault — нет. Переименуйте дубль в Drive или исключите этот путь из профиля.`
+          : `Коллизия регистра/Unicode: «${first}» и «${p}». Переименуйте один из объектов или исключите путь из профиля.`,
+        [...new Set([first, p])],
+      );
+    }
+    seen.set(key, p);
   }
+}
+export interface ScanRules {
+  file(p: string): boolean;
+  folder(p: string): boolean;
+}
+export function scanRules(profile: Profile, config: string): ScanRules {
+  return {
+    file: (p) => selected(p, profile, config),
+    folder: (p) =>
+      !protectedPath(p, config) &&
+      !protectedPath(join(profile.localRoot, p), config) &&
+      !profile.excludePaths.some((x) => under(p, x)) &&
+      (profile.scope !== "folders" ||
+        profile.folders.some((x) => under(p, x) || under(x, p))),
+  };
 }
 export function category(p: string, config: string): Category {
   if (under(p, config)) {

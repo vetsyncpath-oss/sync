@@ -243,3 +243,9 @@
     padding: 12px !important;
   }
 }
+.sync-studio button[aria-busy="true"] { opacity: .6; cursor: progress; }
+.sync-studio [role="alert"] { border-left: 3px solid var(--text-error); white-space: pre-wrap; overflow-wrap: anywhere; }
+.sync-studio [role="status"] { border-left: 3px solid var(--interactive-accent); }
+.sync-studio .ss-card > button { margin: 8px 8px 0 0; }
+.sync-studio fieldset > button { margin: 8px 8px 0 0; }
+.sync-studio textarea { width: 100%; font-family: var(--font-monospace); }

@@ -7,6 +7,9 @@ export interface Connection {
   clientId?: string;
   clientSecretRef?: string;
   subject?: string;
+  root?: string;
+  checkedAt?: number;
+  accountLabel?: string;
 }
 export type Category =
   | "notes"
@@ -146,7 +149,7 @@ export function newProfile(connectionId = ""): Profile {
     connectionId,
     remoteRoot: "",
     localRoot: "",
-    branch: "main",
+    branch: "",
     subpath: "",
     direction: "pull",
     scope: "all",
