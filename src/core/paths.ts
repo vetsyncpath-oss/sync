@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Category, Profile } from "./model";
+import type { Category, Profile, Snapshot } from "./model";
 export const sha = (b: Uint8Array) =>
   createHash("sha256").update(b).digest("hex");
 export function path(value: string, allowEmpty = false): string {
@@ -57,6 +57,25 @@ export interface ScanRules {
   file(p: string): boolean;
   folder(p: string): boolean;
 }
+/** Check the combined namespace, including implicit and empty directories. */
+export function compatiblePaths(...snapshots: Snapshot[]): void {
+  const files = new Set(snapshots.flatMap((s) => Object.keys(s.files)));
+  const dirs = new Set(snapshots.flatMap((s) => s.directories || []));
+  for (const p of [...files, ...dirs]) {
+    const parts = p.split("/");
+    while (parts.length > 1) {
+      parts.pop();
+      dirs.add(parts.join("/"));
+    }
+  }
+  uniquePaths([...new Set([...files, ...dirs])]);
+  for (const p of files)
+    if (dirs.has(p))
+      throw new PathCollision(
+        `Коллизия файла и папки: «${p}». Переименуйте объект или исключите путь до синхронизации.`,
+        [p],
+      );
+}
 export function scanRules(profile: Profile, config: string): ScanRules {
   return {
     file: (p) => selected(p, profile, config),
@@ -78,6 +97,8 @@ function configurationFolderSelected(
   profile: Profile,
   config: string,
 ): boolean {
+  p = p.normalize("NFC").toLowerCase();
+  config = config.normalize("NFC").toLowerCase();
   if (!under(p, config)) return true;
   const enabled = new Set(profile.categories);
   const plugins =
@@ -92,6 +113,8 @@ function configurationFolderSelected(
   return enabled.has("settings");
 }
 export function category(p: string, config: string): Category {
+  p = p.normalize("NFC").toLowerCase();
+  config = config.normalize("NFC").toLowerCase();
   if (under(p, config)) {
     const rel = p.slice(config.length + 1);
     if (/^plugins\/[^/]+\/data\.json$/.test(rel)) return "plugin-settings";
@@ -102,6 +125,8 @@ export function category(p: string, config: string): Category {
   return /\.md$/i.test(p) ? "notes" : "attachments";
 }
 export function protectedPath(p: string, config: string): boolean {
+  p = p.normalize("NFC").toLowerCase();
+  config = config.normalize("NFC").toLowerCase();
   return (
     p
       .split("/")
@@ -121,11 +146,11 @@ export function selected(
   if (profile.scope === "folders" && !profile.folders.some((f) => under(p, f)))
     return false;
   if (profile.excludePaths.some((f) => under(p, f))) return false;
-  if (profile.excludeData && /\/plugins\/[^/]+\/data\.json$/.test("/" + local))
+  if (profile.excludeData && /\/plugins\/[^/]+\/data\.json$/i.test("/" + local))
     return false;
   if (
     profile.excludeWorkspace &&
-    /(^|\/)workspace(-mobile)?\.json$/.test(local)
+    /(^|\/)workspace(-mobile)?\.json$/i.test(local)
   )
     return false;
   if (size !== undefined && size > profile.maxMB * 1024 * 1024) return false;
@@ -139,6 +164,8 @@ export function validate(p: Profile): void {
     throw Error("Укажите название, подключение и корень источника.");
   if (!p.categories.length || (p.scope === "folders" && !p.folders.length))
     throw Error("Область файлов пуста.");
+  if (p.oneWayMode === "mirror" && p.direction === "both")
+    throw Error("Зеркало поддерживает только одно направление.");
   if (
     !Number.isFinite(p.maxMB) ||
     p.maxMB <= 0 ||

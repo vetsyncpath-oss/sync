@@ -11,7 +11,7 @@ await build({
   external: ["obsidian", "electron"],
   sourcemap: false,
   banner: {
-    js: "/* Sync Studio 0.2.1 — independent synchronization core. See THIRD_PARTY.md. */",
+    js: "/* Sync Studio 0.3.0 — independent synchronization core. See THIRD_PARTY.md. */",
   },
 });
 await mkdir("dist/sync-studio/licenses", { recursive: true });
@@ -24,6 +24,7 @@ for (const file of [
   "ARCHITECTURE.md",
   "TROUBLESHOOTING.md",
   "CHANGELOG.md",
+  "AUDIT.md",
 ])
   await copyFile(file, `dist/sync-studio/${file}`);
 await copyFile(

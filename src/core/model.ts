@@ -29,6 +29,8 @@ export interface Profile {
   branch: string;
   subpath: string;
   direction: Direction;
+  oneWayMode?: "tracked" | "mirror";
+  driveDuplicates?: "error" | "newest";
   scope: "all" | "folders" | "categories";
   folders: string[];
   categories: Category[];
@@ -61,6 +63,7 @@ export interface FileInfo {
 }
 export interface Snapshot {
   files: Record<string, FileInfo>;
+  directories?: string[];
   complete: boolean;
   warnings: string[];
   identity: string;

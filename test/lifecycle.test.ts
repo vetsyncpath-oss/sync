@@ -9,6 +9,7 @@ import { StudioView } from "../src/ui";
 import { vault } from "./fixture-vault";
 import { sha } from "../src/core/paths";
 import { newProfile } from "../src/core/model";
+import { policyKey } from "../src/core/planner";
 import type { NetRequest } from "../src/sources/types";
 
 function dom() {
@@ -110,7 +111,9 @@ class Cloud {
       if (u.pathname.endsWith("/files") && req.method === "POST") {
         const raw = Buffer.from(req.body as Uint8Array).toString();
         this.content = raw
-          .split("Content-Type: application/octet-stream\r\n\r\n")[1]
+          .split(
+            /Content-Type: (?:application\/octet-stream|text\/markdown)\r\n\r\n/,
+          )[1]
           .split("\r\n--")[0];
         this.version++;
         return response(this.meta());
@@ -135,7 +138,9 @@ class Cloud {
           }
           const raw = Buffer.from(req.body as Uint8Array).toString();
           this.content = raw
-            .split("Content-Type: application/octet-stream\r\n\r\n")[1]
+            .split(
+              /Content-Type: (?:application\/octet-stream|text\/markdown)\r\n\r\n/,
+            )[1]
             .split("\r\n--")[0];
           this.version++;
         }
@@ -262,6 +267,86 @@ async function harness() {
     },
   };
 }
+
+test("UI: opt-in mirror saves, previews first-run extra deletion and moves it to trash", async () => {
+  const h = await harness();
+  try {
+    const c = {
+      id: "ya",
+      name: "Disk",
+      provider: "yandex" as const,
+      secretRef: "ya",
+      root: "disk:/",
+    };
+    h.studio.setSecret(c, "yandex-token");
+    await h.studio.saveConnection(c);
+    await h.studio.createProfile(c);
+    await writeFile(join(h.v.root, "extra.md"), "keep in trash");
+    h.view.render();
+    await click("Изменить");
+    await click("Изменения");
+    input("Режим одного направления", "mirror");
+    assert.match(document.body.textContent!, /уже при первом запуске/);
+    input("Удаления в источнике", "trash");
+    await click("Сохранить");
+    const p = h.studio.data.profiles[0];
+    assert.equal(p.oneWayMode, "mirror");
+    const preview = await h.studio.inspect(p);
+    assert.equal(
+      preview.operations.find((o) => o.path === "extra.md")?.action,
+      "delete-local",
+    );
+    assert.equal((await h.studio.apply(preview)).status, "completed");
+    assert.equal(
+      await readFile(join(h.v.root, ".trash/extra.md"), "utf8"),
+      "keep in trash",
+    );
+    assert.equal(
+      await readFile(join(h.v.root, "note.md"), "utf8"),
+      "first note",
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("pending operation cannot be overwritten by old plan or recovered from a filtered-out path", async () => {
+  const h = await harness();
+  try {
+    const c = {
+      id: "ya",
+      name: "Disk",
+      provider: "yandex" as const,
+      secretRef: "ya",
+      root: "disk:/",
+    };
+    h.studio.setSecret(c, "yandex-token");
+    await h.studio.saveConnection(c);
+    const p = await h.studio.createProfile(c);
+    const preview = await h.studio.inspect(p);
+    h.studio.state.pending[p.id] = {
+      runId: preview.id,
+      identity: preview.identity,
+      direction: p.direction,
+      policyKey: policyKey(p),
+      operation: preview.operations[0],
+    };
+    await h.studio.saveState();
+    await assert.rejects(() => h.studio.apply(preview), /незавершённая/);
+    p.excludePaths = ["note.md"];
+    await assert.rejects(
+      () => h.studio.inspect(p),
+      /Незавершённая операция вне/,
+    );
+    assert.ok(h.studio.state.pending[p.id]);
+    p.excludePaths = [];
+    const next = await h.studio.inspect(p);
+    assert.equal(h.studio.state.pending[p.id], undefined);
+    assert.equal((await h.studio.apply(next)).status, "completed");
+  } finally {
+    await h.cleanup();
+  }
+});
 
 test("UI: Yandex setup, save, edit, profile, pull, update, delete-to-trash and recheck", async () => {
   const h = await harness();

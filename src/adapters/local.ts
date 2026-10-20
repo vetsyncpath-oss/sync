@@ -47,6 +47,7 @@ export class LocalStore implements Store {
   }
   async scan(signal: AbortSignal): Promise<Snapshot> {
     const files: Record<string, FileInfo> = Object.create(null),
+      directories: string[] = [],
       warnings: string[] = [];
     const adapter = this.app.vault.adapter;
     const walk = async (folder: string) => {
@@ -84,12 +85,21 @@ export class LocalStore implements Store {
           !protectedPath(f, this.app.vault.configDir) &&
           (!this.rules ||
             this.rules.folder(this.root ? f.slice(this.root.length + 1) : f))
-        )
-          await walk(this.root ? f.slice(this.root.length + 1) : f);
+        ) {
+          const rel = this.root ? f.slice(this.root.length + 1) : f;
+          directories.push(rel);
+          await walk(rel);
+        }
     };
     await walk("");
-    uniquePaths(Object.keys(files));
-    return { files, complete: true, warnings, identity: this.identity };
+    uniquePaths([...Object.keys(files), ...directories]);
+    return {
+      files,
+      directories,
+      complete: true,
+      warnings,
+      identity: this.identity,
+    };
   }
   async inspect(p: string, signal: AbortSignal): Promise<FileInfo> {
     signal.throwIfAborted();

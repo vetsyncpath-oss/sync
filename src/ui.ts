@@ -478,8 +478,16 @@ export class StudioView extends ItemView {
   ) {
     if (this.profileDrafts.get(p.id)?.value !== p) return;
     p[key] = value;
+    if (key === "direction" && value === "both") p.oneWayMode = "tracked";
+    if (key === "direction" && value !== "pull") p.driveDuplicates = "error";
     if (
-      ["scope", "connectionId", "sourceConnectionId", "direction"].includes(key)
+      [
+        "scope",
+        "connectionId",
+        "sourceConnectionId",
+        "direction",
+        "oneWayMode",
+      ].includes(key)
     )
       this.render();
   }
@@ -711,7 +719,7 @@ export class StudioView extends ItemView {
     );
     banner(
       at,
-      "Получение не записывает в источник. Отправка не изменяет локальный оригинал. Зеркалирование локальных неизвестных файлов в этой версии отсутствует.",
+      "Получение не записывает в источник. Отправка не изменяет локальный оригинал.",
     );
   }
   private behavior(at: HTMLElement, p: Profile) {
@@ -720,6 +728,45 @@ export class StudioView extends ItemView {
       "Что делать с изменениями",
       "Политика удаления не подменяется политикой конфликтов.",
     );
+    if (p.direction !== "both") {
+      select(
+        at,
+        "Режим одного направления",
+        p.oneWayMode || "tracked",
+        {
+          tracked: "Отслеживать изменения и подтверждённые удаления",
+          mirror: "Зеркало: источник имеет приоритет",
+        },
+        (v) => this.patch(p, "oneWayMode", v as Profile["oneWayMode"]),
+      );
+      if (p.oneWayMode === "mirror")
+        banner(
+          at,
+          "Зеркало заменяет отличающиеся файлы версией источника. При включённых удалениях лишние файлы назначения удаляются уже при первом запуске. Политики конфликтов ниже действуют только в режиме отслеживания.",
+        );
+    }
+    if (
+      p.direction === "pull" &&
+      this.studio.data.connections
+        .find((c) => c.id === p.connectionId)
+        ?.provider.startsWith("gdrive")
+    ) {
+      select(
+        at,
+        "Одноимённые файлы в Drive",
+        p.driveDuplicates || "error",
+        {
+          error: "Остановиться и показать коллизию",
+          newest: "Получать новейший дубль (по Sync Engine)",
+        },
+        (v) =>
+          this.patch(p, "driveDuplicates", v as Profile["driveDuplicates"]),
+      );
+      banner(
+        at,
+        "Выбор новейшего дубля действует только для получения файлов. Дубли папок и коллизии регистра требуют переименования или исключения. Другие копии в Drive остаются нетронутыми.",
+      );
+    }
     select(at, "Если версии различаются", p.conflict, policies, (v) =>
       this.patch(p, "conflict", v as Profile["conflict"]),
     );

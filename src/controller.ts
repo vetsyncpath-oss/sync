@@ -29,6 +29,7 @@ import {
   under,
   validate,
   scanRules,
+  selected,
   PathCollision,
 } from "./core/paths";
 import { ExternalFolder } from "./adapters/external-folder";
@@ -405,6 +406,7 @@ export default class SyncStudio extends Plugin {
         undefined,
         c.id + ":" + c.subject,
         scanRules(p, this.app.vault.configDir),
+        p.driveDuplicates || "error",
       );
     }
     if (c.provider === "gdrive-public") {
@@ -416,6 +418,7 @@ export default class SyncStudio extends Plugin {
         token,
         c.id,
         scanRules(p, this.app.vault.configDir),
+        p.driveDuplicates || "error",
       );
     }
     if (c.provider === "github")
@@ -447,7 +450,11 @@ export default class SyncStudio extends Plugin {
   }
   async local(p: Profile): Promise<Store> {
     if (p.sourceKind === "folder")
-      return new ExternalFolder(p.sourceRoot || "", p.maxMB * 1024 * 1024);
+      return new ExternalFolder(
+        p.sourceRoot || "",
+        p.maxMB * 1024 * 1024,
+        scanRules(p, this.app.vault.configDir),
+      );
     if (p.sourceKind === "connection")
       return this.remote({
         ...p,
@@ -517,7 +524,7 @@ export default class SyncStudio extends Plugin {
         a.provider.replace("-public", "") === b.provider.replace("-public", "")
       )
         throw Error(
-          "В 0.1 внешняя передача поддерживается между разными сервисами; это исключает перенос папки в саму себя",
+          "Внешняя передача поддерживается между разными сервисами; это исключает перенос папки в саму себя",
         );
     }
     if (
@@ -551,6 +558,14 @@ export default class SyncStudio extends Plugin {
       const op = pending.operation,
         a = Object.hasOwn(l.files, op.path) ? l.files[op.path] : undefined,
         b = Object.hasOwn(r.files, op.path) ? r.files[op.path] : undefined;
+      if (
+        !selected(op.path, p, this.app.vault.configDir, op.local?.size) ||
+        !selected(op.path, p, this.app.vault.configDir, op.remote?.size)
+      )
+        throw Error(
+          "Незавершённая операция вне текущей области. Верните прежнюю область/лимит профиля для восстановления: " +
+            op.path,
+        );
       const backupPath = join(".sync-conflicts", pending.runId + "/" + op.path);
       let backupVerified = false;
       if (
@@ -590,7 +605,7 @@ export default class SyncStudio extends Plugin {
       ) {
         op.action = "conflict";
         op.reason =
-          "Код плагина: требуется отдельная пакетная установка; автоматическая замена в 0.1 отключена";
+          "Код плагина: требуется отдельная пакетная установка; автоматическая замена отключена";
       }
     return result;
   }
@@ -605,6 +620,10 @@ export default class SyncStudio extends Plugin {
       )
         throw Error("Профиль изменился: постройте новый план");
       this.validateOverlap(current);
+      if (this.state.pending[current.id])
+        throw Error(
+          "Есть незавершённая операция. Перепроверьте файлы для восстановления перед повторным запуском.",
+        );
       const local = await this.local(current),
         remote = await this.remote(current);
       const log = await execute(
@@ -713,7 +732,11 @@ export default class SyncStudio extends Plugin {
           this.pendingPlans.set(p.id, result);
           new Notice("Sync Studio: требуется просмотр плана «" + p.name + "»");
           this.refresh();
-        } else await this.apply(result);
+        } else {
+          const log = await this.apply(result);
+          if (log.status !== "completed")
+            this.failures.set(p.id, (this.failures.get(p.id) || 0) + 1);
+        }
       } catch (e) {
         this.failures.set(p.id, (this.failures.get(p.id) || 0) + 1);
         new Notice("Sync Studio: " + (e as Error).message);

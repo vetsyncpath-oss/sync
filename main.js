@@ -1,4 +1,4 @@
-/* Sync Studio 0.2.1 — independent synchronization core. See THIRD_PARTY.md. */
+/* Sync Studio 0.3.0 — independent synchronization core. See THIRD_PARTY.md. */
 "use strict";
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -94,6 +94,24 @@ function uniquePaths(paths) {
     seen.set(key, p);
   }
 }
+function compatiblePaths(...snapshots) {
+  const files = new Set(snapshots.flatMap((s) => Object.keys(s.files)));
+  const dirs = new Set(snapshots.flatMap((s) => s.directories || []));
+  for (const p of [...files, ...dirs]) {
+    const parts = p.split("/");
+    while (parts.length > 1) {
+      parts.pop();
+      dirs.add(parts.join("/"));
+    }
+  }
+  uniquePaths([.../* @__PURE__ */ new Set([...files, ...dirs])]);
+  for (const p of files)
+    if (dirs.has(p))
+      throw new PathCollision(
+        `\u041A\u043E\u043B\u043B\u0438\u0437\u0438\u044F \u0444\u0430\u0439\u043B\u0430 \u0438 \u043F\u0430\u043F\u043A\u0438: \xAB${p}\xBB. \u041F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u0443\u0439\u0442\u0435 \u043E\u0431\u044A\u0435\u043A\u0442 \u0438\u043B\u0438 \u0438\u0441\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u043F\u0443\u0442\u044C \u0434\u043E \u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u0438.`,
+        [p]
+      );
+}
 function scanRules(profile, config) {
   return {
     file: (p) => selected(p, profile, config),
@@ -105,6 +123,8 @@ function scanRules(profile, config) {
   };
 }
 function configurationFolderSelected(p, profile, config) {
+  p = p.normalize("NFC").toLowerCase();
+  config = config.normalize("NFC").toLowerCase();
   if (!under(p, config)) return true;
   const enabled = new Set(profile.categories);
   const plugins = enabled.has("plugin-code") || enabled.has("plugin-settings") && !profile.excludeData;
@@ -117,6 +137,8 @@ function configurationFolderSelected(p, profile, config) {
   return enabled.has("settings");
 }
 function category(p, config) {
+  p = p.normalize("NFC").toLowerCase();
+  config = config.normalize("NFC").toLowerCase();
   if (under(p, config)) {
     const rel = p.slice(config.length + 1);
     if (/^plugins\/[^/]+\/data\.json$/.test(rel)) return "plugin-settings";
@@ -127,6 +149,8 @@ function category(p, config) {
   return /\.md$/i.test(p) ? "notes" : "attachments";
 }
 function protectedPath(p, config) {
+  p = p.normalize("NFC").toLowerCase();
+  config = config.normalize("NFC").toLowerCase();
   return p.split("/").some(
     (s) => [".git", ".trash", ".sync-studio", ".sync-conflicts"].includes(s)
   ) || under(p, config + "/plugins/sync-studio");
@@ -137,9 +161,9 @@ function selected(p, profile, config, size) {
   if (profile.scope === "folders" && !profile.folders.some((f) => under(p, f)))
     return false;
   if (profile.excludePaths.some((f) => under(p, f))) return false;
-  if (profile.excludeData && /\/plugins\/[^/]+\/data\.json$/.test("/" + local))
+  if (profile.excludeData && /\/plugins\/[^/]+\/data\.json$/i.test("/" + local))
     return false;
-  if (profile.excludeWorkspace && /(^|\/)workspace(-mobile)?\.json$/.test(local))
+  if (profile.excludeWorkspace && /(^|\/)workspace(-mobile)?\.json$/i.test(local))
     return false;
   if (size !== void 0 && size > profile.maxMB * 1024 * 1024) return false;
   return profile.categories.includes(category(local, config));
@@ -152,6 +176,8 @@ function validate(p) {
     throw Error("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435, \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0438 \u043A\u043E\u0440\u0435\u043D\u044C \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0430.");
   if (!p.categories.length || p.scope === "folders" && !p.folders.length)
     throw Error("\u041E\u0431\u043B\u0430\u0441\u0442\u044C \u0444\u0430\u0439\u043B\u043E\u0432 \u043F\u0443\u0441\u0442\u0430.");
+  if (p.oneWayMode === "mirror" && p.direction === "both")
+    throw Error("\u0417\u0435\u0440\u043A\u0430\u043B\u043E \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u043E\u0434\u043D\u043E \u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435.");
   if (!Number.isFinite(p.maxMB) || p.maxMB <= 0 || !Number.isFinite(p.intervalMinutes) || p.intervalMinutes < 1)
     throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0440\u0430\u0437\u043C\u0435\u0440 \u0438\u043B\u0438 \u0438\u043D\u0442\u0435\u0440\u0432\u0430\u043B.");
 }
@@ -162,7 +188,8 @@ var policyKey = (p) => JSON.stringify([
   p.conflict,
   p.conflictWhen,
   p.deletion,
-  p.deleteConflict
+  p.deleteConflict,
+  ...p.oneWayMode === "mirror" ? ["mirror"] : []
 ]);
 function plan(profile, local, remote, baseline, config = ".obsidian") {
   validate(profile);
@@ -170,6 +197,7 @@ function plan(profile, local, remote, baseline, config = ".obsidian") {
     throw Error(
       "\u041D\u0435\u043F\u043E\u043B\u043D\u044B\u0439 \u0441\u043F\u0438\u0441\u043E\u043A \u0444\u0430\u0439\u043B\u043E\u0432: \u043F\u043B\u0430\u043D \u043D\u0435 \u043F\u043E\u0441\u0442\u0440\u043E\u0435\u043D, \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F \u0437\u0430\u043F\u0440\u0435\u0449\u0435\u043D\u044B."
     );
+  compatiblePaths(local, remote);
   const identity = JSON.stringify([local.identity, remote.identity]);
   if (baseline.identity !== identity) baseline = { identity, files: {} };
   const operations = [];
@@ -192,6 +220,22 @@ function plan(profile, local, remote, baseline, config = ".obsidian") {
     if (!selected(p, profile, config, l?.size) || !selected(p, profile, config, r?.size))
       continue;
     const emit = (a, why) => add(p, a, why, l, r);
+    if (profile.oneWayMode === "mirror") {
+      const source = profile.direction === "pull" ? r : l;
+      const target = profile.direction === "pull" ? l : r;
+      if (!source && target)
+        emit(
+          profile.deletion === "ignore" ? "skip" : profile.direction === "pull" ? "delete-local" : "delete-remote",
+          "\u0417\u0435\u0440\u043A\u0430\u043B\u043E: \u0444\u0430\u0439\u043B \u043E\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u0435\u0442 \u0432 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0435"
+        );
+      else if (source && source.hash !== target?.hash)
+        emit(
+          profile.direction === "pull" ? "download" : "upload",
+          "\u0417\u0435\u0440\u043A\u0430\u043B\u043E: \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u043C\u043E\u0435 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0430 \u0438\u043C\u0435\u0435\u0442 \u043F\u0440\u0438\u043E\u0440\u0438\u0442\u0435\u0442"
+        );
+      else emit("adopt", "\u0417\u0435\u0440\u043A\u0430\u043B\u043E: \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u043C\u043E\u0435 \u0441\u043E\u0432\u043F\u0430\u0434\u0430\u0435\u0442");
+      continue;
+    }
     if (!l && !r) {
       emit("adopt", "\u041E\u0431\u0435 \u0432\u0435\u0440\u0441\u0438\u0438 \u043E\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u044E\u0442");
       continue;
@@ -290,6 +334,9 @@ function plan(profile, local, remote, baseline, config = ".obsidian") {
         "\u0412\u044B\u0438\u0433\u0440\u044B\u0432\u0430\u0435\u0442 \u0443\u0434\u0430\u043B\u0451\u043D\u043D\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F"
       );
   }
+  operations.sort(
+    (a, b) => Number(a.action.startsWith("delete-")) - Number(b.action.startsWith("delete-"))
+  );
   return {
     id: crypto.randomUUID(),
     created: Date.now(),
@@ -428,9 +475,12 @@ var StateFile = class {
 };
 
 // src/core/executor.ts
-var fingerprint = (f) => f ? JSON.stringify([f.id, f.version, f.hash]) : "";
+var fingerprint = (f) => f ? JSON.stringify([f.id, f.version, f.hash, f.size, f.mtime]) : "";
 async function execute(plan2, local, remote, ports, signal, onProgress) {
   const state = structuredClone(plan2.baseline), details = [];
+  const operations = [...plan2.operations].sort(
+    (a, b) => Number(a.action.startsWith("delete-")) - Number(b.action.startsWith("delete-"))
+  );
   let currentOperation;
   let dirty = false;
   let applied = 0, conflicts = 0, status = "completed", message = "\u0413\u043E\u0442\u043E\u0432\u043E";
@@ -438,7 +488,8 @@ async function execute(plan2, local, remote, ports, signal, onProgress) {
     const ls = await local.scan(signal), rs = await remote.scan(signal);
     if (!ls.complete || !rs.complete || JSON.stringify([ls.identity, rs.identity]) !== plan2.identity)
       throw Error("\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u0438\u043B\u0438 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F. \u041F\u043E\u0441\u0442\u0440\u043E\u0439\u0442\u0435 \u043D\u043E\u0432\u044B\u0439 \u043F\u043B\u0430\u043D.");
-    for (const op of plan2.operations) {
+    compatiblePaths(ls, rs);
+    for (const op of operations) {
       signal.throwIfAborted();
       if (fingerprint(
         Object.hasOwn(ls.files, op.path) ? ls.files[op.path] : void 0
@@ -447,7 +498,7 @@ async function execute(plan2, local, remote, ports, signal, onProgress) {
       ) !== fingerprint(op.remote))
         throw Error("\u0424\u0430\u0439\u043B \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F \u043F\u043E\u0441\u043B\u0435 \u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440\u0430 \u043F\u043B\u0430\u043D\u0430: " + op.path);
     }
-    for (const op of plan2.operations) {
+    for (const op of operations) {
       currentOperation = op;
       signal.throwIfAborted();
       let l = op.local, r = op.remote;
@@ -564,9 +615,10 @@ async function execute(plan2, local, remote, ports, signal, onProgress) {
 var import_promises2 = require("node:fs/promises");
 var import_node_path2 = require("node:path");
 var ExternalFolder = class {
-  constructor(root, limit) {
+  constructor(root, limit, rules) {
     this.root = root;
     this.limit = limit;
+    this.rules = rules;
     if (!(0, import_node_path2.isAbsolute)(root)) throw Error("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 \u0430\u0431\u0441\u043E\u043B\u044E\u0442\u043D\u044B\u0439 \u043F\u0443\u0442\u044C \u0432\u043D\u0435\u0448\u043D\u0435\u0439 \u043F\u0430\u043F\u043A\u0438");
     this.identity = "external-folder:" + root;
   }
@@ -586,7 +638,7 @@ var ExternalFolder = class {
     return current;
   }
   async scan(signal) {
-    const files = /* @__PURE__ */ Object.create(null), rootReal = await (0, import_promises2.realpath)(this.root);
+    const files = /* @__PURE__ */ Object.create(null), rootReal = await (0, import_promises2.realpath)(this.root), directories = [];
     this.identity = "external-folder:" + rootReal;
     const walk = async (base) => {
       signal.throwIfAborted();
@@ -594,11 +646,15 @@ var ExternalFolder = class {
       for (const item of await (0, import_promises2.readdir)(dir, { withFileTypes: true })) {
         const rel = join(base, item.name);
         if (protectedPath(rel, ".obsidian")) continue;
+        if (item.isDirectory() ? this.rules && !this.rules.folder(rel) : this.rules && !this.rules.file(rel))
+          continue;
         path(rel);
         if (item.isSymbolicLink())
           throw Error("\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u0442 \u0441\u0438\u043C\u0432\u043E\u043B\u0438\u0447\u0435\u0441\u043A\u0443\u044E \u0441\u0441\u044B\u043B\u043A\u0443: " + rel);
-        if (item.isDirectory()) await walk(rel);
-        else if (item.isFile()) {
+        if (item.isDirectory()) {
+          directories.push(rel);
+          await walk(rel);
+        } else if (item.isFile()) {
           const stat = await (0, import_promises2.lstat)(await this.safe(rel));
           if (stat.size > this.limit)
             files[rel] = {
@@ -624,8 +680,14 @@ var ExternalFolder = class {
       }
     };
     await walk("");
-    uniquePaths(Object.keys(files));
-    return { files, identity: this.identity, complete: true, warnings: [] };
+    uniquePaths([...Object.keys(files), ...directories]);
+    return {
+      files,
+      directories,
+      identity: this.identity,
+      complete: true,
+      warnings: []
+    };
   }
   async read(f, signal) {
     signal.throwIfAborted();
@@ -679,7 +741,7 @@ var LocalStore = class {
     }
   }
   async scan(signal) {
-    const files = /* @__PURE__ */ Object.create(null), warnings = [];
+    const files = /* @__PURE__ */ Object.create(null), directories = [], warnings = [];
     const adapter = this.app.vault.adapter;
     const walk = async (folder) => {
       signal.throwIfAborted();
@@ -709,12 +771,21 @@ var LocalStore = class {
         files[rel] = await this.inspect(rel, signal);
       }
       for (const f of list.folders)
-        if (!protectedPath(f, this.app.vault.configDir) && (!this.rules || this.rules.folder(this.root ? f.slice(this.root.length + 1) : f)))
-          await walk(this.root ? f.slice(this.root.length + 1) : f);
+        if (!protectedPath(f, this.app.vault.configDir) && (!this.rules || this.rules.folder(this.root ? f.slice(this.root.length + 1) : f))) {
+          const rel = this.root ? f.slice(this.root.length + 1) : f;
+          directories.push(rel);
+          await walk(rel);
+        }
     };
     await walk("");
-    uniquePaths(Object.keys(files));
-    return { files, complete: true, warnings, identity: this.identity };
+    uniquePaths([...Object.keys(files), ...directories]);
+    return {
+      files,
+      directories,
+      complete: true,
+      warnings,
+      identity: this.identity
+    };
   }
   async inspect(p, signal) {
     signal.throwIfAborted();
@@ -972,6 +1043,124 @@ async function bytes(http, url, opts = {}) {
 
 // src/sources/remotes.ts
 var import_node_crypto2 = require("node:crypto");
+var import_promises4 = require("node:timers/promises");
+
+// src/sources/drive-upload.ts
+var CHUNK = 8 * 1024 * 1024;
+function driveMime(p) {
+  const types = {
+    md: "text/markdown",
+    txt: "text/plain",
+    json: "application/json",
+    canvas: "application/json",
+    base: "application/json",
+    css: "text/css",
+    js: "text/javascript",
+    html: "text/html",
+    pdf: "application/pdf",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    svg: "image/svg+xml",
+    gif: "image/gif",
+    webp: "image/webp",
+    mp3: "audio/mpeg",
+    mp4: "video/mp4"
+  };
+  return types[p.split(".").at(-1).toLowerCase()] || "application/octet-stream";
+}
+function failure(r) {
+  throw Object.assign(Error("\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 Drive: HTTP " + r.status), {
+    status: r.status
+  });
+}
+function offset(r, total) {
+  if (!r.headers.range) return 0;
+  const m = /^bytes=0-(\d+)$/.exec(r.headers.range);
+  const n = m ? Number(m[1]) + 1 : NaN;
+  if (!Number.isSafeInteger(n) || n < 0 || n >= total)
+    throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u0438\u0435 \u0434\u0438\u0430\u043F\u0430\u0437\u043E\u043D\u0430 Drive");
+  return n;
+}
+async function driveUpload(http, url, method, metadata, data, options) {
+  const total = data.length;
+  const start = await http.fetch(url, {
+    ...options,
+    method,
+    body: JSON.stringify(metadata),
+    headers: {
+      ...options.headers,
+      "Content-Type": "application/json; charset=UTF-8",
+      "X-Upload-Content-Length": String(total),
+      "X-Upload-Content-Type": String(
+        metadata.mimeType || "application/octet-stream"
+      )
+    }
+  });
+  if (start.status < 200 || start.status >= 300) failure(start);
+  if (!start.headers.location)
+    throw Error("Drive \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0430\u0434\u0440\u0435\u0441 \u0441\u0435\u0441\u0441\u0438\u0438 \u0437\u0430\u0433\u0440\u0443\u0437\u043A\u0438");
+  const session = new URL(start.headers.location);
+  if (session.origin !== "https://www.googleapis.com" || session.username || session.password || !session.pathname.startsWith("/upload/drive/v3/files"))
+    throw Error("\u041D\u0435\u0434\u043E\u0432\u0435\u0440\u0435\u043D\u043D\u044B\u0439 \u0430\u0434\u0440\u0435\u0441 \u0441\u0435\u0441\u0441\u0438\u0438 Drive");
+  const send = (body, range) => http.fetch(session.href, {
+    ...options,
+    method: "PUT",
+    body,
+    redirect: "error",
+    headers: {
+      ...options.headers,
+      "Content-Type": "application/octet-stream",
+      "Content-Range": range
+    }
+  });
+  const query = async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      options.signal?.throwIfAborted();
+      try {
+        const r = await send(new Uint8Array(), `bytes */${total}`);
+        if (r.status < 500 && r.status !== 429) return r;
+      } catch (e) {
+        options.signal?.throwIfAborted();
+        if (attempt === 2) throw e;
+      }
+    }
+    throw Error(
+      "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u0441\u0435\u0441\u0441\u0438\u044E Drive. \u041F\u0435\u0440\u0435\u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u0430\u0439\u043B\u044B \u043F\u0435\u0440\u0435\u0434 \u043F\u043E\u0432\u0442\u043E\u0440\u043D\u044B\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u043E\u043C."
+    );
+  };
+  let at = 0, stalls = 0, interruptions = 0;
+  while (true) {
+    options.signal?.throwIfAborted();
+    const end = Math.min(at + CHUNK, total);
+    let r;
+    try {
+      r = await send(
+        data.subarray(at, end),
+        total ? `bytes ${at}-${end - 1}/${total}` : "bytes */0"
+      );
+      if (r.status >= 500 || r.status === 429) {
+        if (++interruptions > 3) failure(r);
+        r = await query();
+      }
+    } catch (e) {
+      options.signal?.throwIfAborted();
+      if (++interruptions > 3) throw e;
+      r = await query();
+    }
+    if (r.status === 200 || r.status === 201) return JSON.parse(await r.text());
+    if (r.status !== 308) failure(r);
+    const next = offset(r, total);
+    if (next < at || next > end)
+      throw Error("Drive \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u043B \u043D\u0435\u043E\u0436\u0438\u0434\u0430\u043D\u043D\u044B\u0439 \u0434\u0438\u0430\u043F\u0430\u0437\u043E\u043D \u0437\u0430\u0433\u0440\u0443\u0437\u043A\u0438");
+    if (next === at) {
+      if (++stalls > 3) throw Error("\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 Drive \u043D\u0435 \u043F\u0440\u043E\u0434\u0432\u0438\u0433\u0430\u0435\u0442\u0441\u044F");
+    } else stalls = 0;
+    at = next;
+  }
+}
+
+// src/sources/remotes.ts
 var hashCache = /* @__PURE__ */ new Map();
 var FOLDER = "application/vnd.google-apps.folder";
 var fields = "id,name,mimeType,size,modifiedTime,version,sha256Checksum,md5Checksum,trashed,capabilities(canEdit,canDownload,canAddChildren)";
@@ -990,15 +1179,16 @@ function driveRoot(value) {
   return id;
 }
 var DriveStore = class {
-  constructor(http, root, limit, publicKey, identityAccount = "", rules) {
+  constructor(http, root, limit, publicKey, identityAccount = "", rules, duplicates = "error") {
     this.http = http;
     this.limit = limit;
     this.rules = rules;
+    this.duplicates = duplicates;
     this.root = driveRoot(root);
     this.key = publicKey;
     this.resourceKey = root.startsWith("https:") ? new URL(root).searchParams.get("resourcekey") || void 0 : void 0;
-    this.writable = !publicKey;
-    this.trashSupported = !publicKey;
+    this.writable = !publicKey && duplicates === "error";
+    this.trashSupported = this.writable;
     this.identity = "drive:" + identityAccount + ":" + this.root;
   }
   identity;
@@ -1083,16 +1273,35 @@ var DriveStore = class {
       );
       if (d.incompleteSearch || !Array.isArray(d.files))
         throw Error("\u041D\u0435\u043F\u043E\u043B\u043D\u044B\u0439 \u043E\u0442\u0432\u0435\u0442 Drive");
+      if (d.nextPageToken !== void 0 && typeof d.nextPageToken !== "string")
+        throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430 Drive");
       out.push(...d.files);
       next = d.nextPageToken || "";
     } while (next);
     return out;
   }
+  choose(entries, p, warnings) {
+    if (entries.length <= 1) return entries[0];
+    if (this.duplicates !== "newest" || entries.some(
+      (f) => f.mimeType === FOLDER || f.name !== entries[0].name || !Number.isFinite(Date.parse(f.modifiedTime))
+    ))
+      throw new PathCollision(
+        "\u041A\u043E\u043B\u043B\u0438\u0437\u0438\u044F: \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u043E\u0431\u044A\u0435\u043A\u0442\u043E\u0432 Drive \u0438\u043C\u0435\u044E\u0442 \u043F\u0443\u0442\u044C \xAB" + p + "\xBB. \u041F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u0443\u0439\u0442\u0435 \u0434\u0443\u0431\u043B\u044C, \u0438\u0441\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u043F\u0443\u0442\u044C \u0438\u043B\u0438 \u0434\u043B\u044F \u0444\u0430\u0439\u043B\u043E\u0432 \u0432\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u0432\u044B\u0431\u043E\u0440 \u043D\u043E\u0432\u0435\u0439\u0448\u0435\u0433\u043E \u043F\u0440\u0438 \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0438.",
+        [p]
+      );
+    const sorted = [...entries].sort(
+      (a, b) => Date.parse(b.modifiedTime) - Date.parse(a.modifiedTime) || String(a.id).localeCompare(String(b.id))
+    );
+    warnings?.push(
+      `Drive: \u0438\u0437 ${entries.length} \u0444\u0430\u0439\u043B\u043E\u0432 \xAB${p}\xBB \u0432\u044B\u0431\u0440\u0430\u043D \u043D\u043E\u0432\u0435\u0439\u0448\u0438\u0439 (ID ${sorted[0].id}); \u043E\u0441\u0442\u0430\u043B\u044C\u043D\u044B\u0435 \u043E\u0441\u0442\u0430\u044E\u0442\u0441\u044F \u0432 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0435.`
+    );
+    return sorted[0];
+  }
   async scan(signal) {
     const root = await this.inspect(this.root, signal);
     if (root.trashed || root.mimeType !== FOLDER)
       throw Error("\u041F\u0430\u043F\u043A\u0430 Drive \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430");
-    const files = /* @__PURE__ */ Object.create(null), warnings = [], seen = /* @__PURE__ */ new Set(), all = [];
+    const files = /* @__PURE__ */ Object.create(null), directories = [], warnings = [], seen = /* @__PURE__ */ new Set(), all = [];
     this.folders = /* @__PURE__ */ new Map([["", this.root]]);
     const walk = async (id, base, depth) => {
       signal.throwIfAborted();
@@ -1100,6 +1309,7 @@ var DriveStore = class {
         throw Error("\u041F\u0440\u0435\u0432\u044B\u0448\u0435\u043D \u043F\u0440\u0435\u0434\u0435\u043B \u043E\u0431\u0445\u043E\u0434\u0430 Drive");
       if (seen.has(id)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 ID \u043F\u0430\u043F\u043A\u0438 Drive");
       seen.add(id);
+      const groups = /* @__PURE__ */ new Map();
       for (const f of await this.children(id, signal)) {
         if (/[\\/]/.test(f.name))
           throw Error("\u041D\u0435\u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043C\u044B\u0439 \u0440\u0430\u0437\u0434\u0435\u043B\u0438\u0442\u0435\u043B\u044C \u0432 \u0438\u043C\u0435\u043D\u0438 \u0443\u0434\u0430\u043B\u0451\u043D\u043D\u043E\u0433\u043E \u0444\u0430\u0439\u043B\u0430");
@@ -1107,8 +1317,16 @@ var DriveStore = class {
         const p = join(base, f.name);
         if (f.mimeType === FOLDER ? this.rules && !this.rules.folder(p) : this.rules && !this.rules.file(p))
           continue;
+        const group = groups.get(f.name) || [];
+        group.push(f);
+        groups.set(f.name, group);
+      }
+      for (const group of groups.values()) {
+        const p = join(base, group[0].name);
+        const f = this.choose(group, p, warnings);
         all.push(p);
         if (f.mimeType === FOLDER) {
+          directories.push(p);
           this.folders.set(p, f.id);
           await walk(f.id, p, depth + 1);
         } else if (String(f.mimeType).startsWith("application/vnd.google-apps.")) {
@@ -1127,7 +1345,13 @@ var DriveStore = class {
     };
     await walk(this.root, "", 0);
     uniquePaths(all);
-    return { files, complete: true, warnings, identity: this.identity };
+    return {
+      files,
+      directories,
+      complete: true,
+      warnings,
+      identity: this.identity
+    };
   }
   async download(f, signal) {
     const b = await bytes(
@@ -1150,7 +1374,32 @@ var DriveStore = class {
     const current = await this.inspect(f.id, signal);
     if (String(current.version) !== f.version || current.trashed)
       throw Error("\u0424\u0430\u0439\u043B Drive \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F");
+    await this.verifyPath(f.path, f.id, signal);
     return this.download(current, signal);
+  }
+  /** Sync Engine's fresh path-chain lookup, adapted to reject ambiguous names. */
+  async verifyPath(p, expectedId, signal) {
+    let id = this.root;
+    const parts = p.split("/");
+    for (let i = 0; i < parts.length; i++) {
+      const matches = (await this.children(id, signal)).filter(
+        (f2) => f2.name.normalize("NFC").toLowerCase() === parts[i].normalize("NFC").toLowerCase()
+      );
+      const f = this.choose(matches, p);
+      if (!f) {
+        if (expectedId)
+          throw Error("\u041F\u0443\u0442\u044C Drive \u0438\u0441\u0447\u0435\u0437 \u043F\u043E\u0441\u043B\u0435 \u043F\u043B\u0430\u043D\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F: " + p);
+        return;
+      }
+      if (i === parts.length - 1) {
+        if (!expectedId || f.id !== expectedId || f.name !== parts[i])
+          throw Error(
+            "\u041F\u0443\u0442\u044C Drive \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F \u0438\u043B\u0438 \u043F\u043E\u044F\u0432\u0438\u043B\u0441\u044F \u043F\u043E\u0441\u043B\u0435 \u043F\u043B\u0430\u043D\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F: " + p
+          );
+      } else if (f.mimeType !== FOLDER || f.name !== parts[i])
+        throw Error("\u041F\u0430\u043F\u043A\u0430 Drive \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0430\u0441\u044C \u043F\u043E\u0441\u043B\u0435 \u043F\u043B\u0430\u043D\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F: " + p);
+      id = f.id;
+    }
   }
   async verifyExpected(p, expected, signal) {
     if (expected) {
@@ -1164,28 +1413,29 @@ var DriveStore = class {
         throw Error("Drive-\u0444\u0430\u0439\u043B \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F");
       if (!r.headers.etag)
         throw Error("Drive \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B ETag; \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u0430\u044F \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0438\u0441\u044C \u0437\u0430\u043F\u0440\u0435\u0449\u0435\u043D\u0430");
+      await this.verifyPath(p, expected.id, signal);
       return r.headers.etag;
     }
-    const parent = p.split("/").slice(0, -1).join("/");
-    const id = this.folders.get(parent);
-    if (id && (await this.children(id, signal)).some(
-      (f) => f.name === p.split("/").at(-1)
-    ))
-      throw Error("Drive-\u0444\u0430\u0439\u043B \u043F\u043E\u044F\u0432\u0438\u043B\u0441\u044F \u043F\u043E\u0441\u043B\u0435 \u043F\u043B\u0430\u043D\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F");
+    await this.verifyPath(p, void 0, signal);
     return void 0;
   }
   async parent(p, signal) {
     let base = "", id = this.root;
     for (const name of p.split("/").slice(0, -1)) {
       base = join(base, name);
-      let next = this.folders.get(base);
-      if (!next) {
+      const cached = this.folders.get(base);
+      let next;
+      {
         const found = (await this.children(id, signal)).filter(
-          (f) => f.name === name
+          (f) => f.name.normalize("NFC").toLowerCase() === name.normalize("NFC").toLowerCase()
         );
-        if (found.length > 1 || found[0] && found[0].mimeType !== FOLDER)
+        if (found.length > 1 || found[0] && (found[0].mimeType !== FOLDER || found[0].name !== name))
           throw Error("\u041A\u043E\u043B\u043B\u0438\u0437\u0438\u044F \u043F\u0430\u043F\u043A\u0438 Drive");
         next = found[0]?.id;
+        if (cached && next !== cached)
+          throw Error(
+            "\u041F\u0430\u043F\u043A\u0430 Drive \u043F\u0435\u0440\u0435\u043C\u0435\u0449\u0435\u043D\u0430 \u0438\u043B\u0438 \u0437\u0430\u043C\u0435\u043D\u0435\u043D\u0430 \u043F\u043E\u0441\u043B\u0435 \u043F\u043B\u0430\u043D\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F: " + base
+          );
         if (!next) {
           const d = await json(
             this.http,
@@ -1197,6 +1447,8 @@ var DriveStore = class {
             })
           );
           next = d.id;
+          if (typeof next !== "string" || !next)
+            throw Error("Drive \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B ID \u0441\u043E\u0437\u0434\u0430\u043D\u043D\u043E\u0439 \u043F\u0430\u043F\u043A\u0438");
         }
         this.folders.set(base, next);
       }
@@ -1206,24 +1458,31 @@ var DriveStore = class {
   }
   async write(p, b, expected, mtime, signal) {
     if (!this.writable)
-      throw Error("\u041F\u0443\u0431\u043B\u0438\u0447\u043D\u0430\u044F \u043F\u0430\u043F\u043A\u0430 Drive \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430 \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u0447\u0442\u0435\u043D\u0438\u044F");
+      throw Error(
+        "Drive \u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u0447\u0442\u0435\u043D\u0438\u044F: \u043F\u0443\u0431\u043B\u0438\u0447\u043D\u044B\u0439 \u0434\u043E\u0441\u0442\u0443\u043F \u0438\u043B\u0438 \u0432\u044B\u0431\u043E\u0440 \u043D\u043E\u0432\u0435\u0439\u0448\u0435\u0433\u043E \u0434\u0443\u0431\u043B\u044F"
+      );
     path(p);
-    const etag = await this.verifyExpected(p, expected, signal), parent = await this.parent(p, signal);
+    const etag = await this.verifyExpected(p, expected, signal);
+    const root = await this.inspect(this.root, signal);
+    if (root.trashed || root.mimeType !== FOLDER)
+      throw Error("\u041A\u043E\u0440\u0435\u043D\u044C Drive \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u043F\u0435\u0440\u0435\u0434 \u0437\u0430\u043F\u0438\u0441\u044C\u044E");
+    const parent = await this.parent(p, signal);
     if (!expected) await this.verifyExpected(p, void 0, signal);
     const boundary = "sync_studio_" + crypto.randomUUID();
     const metadata = {
       name: p.split("/").at(-1),
+      mimeType: driveMime(p),
       ...!expected ? { parents: [parent] } : {},
       ...mtime ? { modifiedTime: new Date(mtime).toISOString() } : {}
     };
-    const body = Buffer.concat([
+    const body = b.length > 5 * 1024 * 1024 ? void 0 : Buffer.concat([
       Buffer.from(
         `--${boundary}\r
 Content-Type: application/json; charset=UTF-8\r
 \r
 ${JSON.stringify(metadata)}\r
 --${boundary}\r
-Content-Type: application/octet-stream\r
+Content-Type: ${driveMime(p)}\r
 \r
 `
       ),
@@ -1232,7 +1491,18 @@ Content-Type: application/octet-stream\r
 --${boundary}--\r
 `)
     ]);
-    const f = await json(
+    const f = b.length > 5 * 1024 * 1024 ? await driveUpload(
+      this.http,
+      this.url(
+        expected ? "files/" + encodeURIComponent(expected.id) : "files",
+        { uploadType: "resumable", fields },
+        true
+      ),
+      expected ? "PATCH" : "POST",
+      metadata,
+      b,
+      this.opts(signal, { headers: etag ? { "If-Match": etag } : {} })
+    ) : await json(
       this.http,
       this.url(
         expected ? "files/" + encodeURIComponent(expected.id) : "files",
@@ -1255,6 +1525,9 @@ Content-Type: application/octet-stream\r
   async delete(f, trash, signal) {
     if (!this.writable) throw Error("\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u0447\u0442\u0435\u043D\u0438\u044F");
     const etag = await this.verifyExpected(f.path, f, signal);
+    const root = await this.inspect(this.root, signal);
+    if (root.trashed || root.mimeType !== FOLDER)
+      throw Error("\u041A\u043E\u0440\u0435\u043D\u044C Drive \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u043F\u0435\u0440\u0435\u0434 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u0435\u043C");
     const r = await this.http.fetch(
       this.url(
         "files/" + encodeURIComponent(f.id),
@@ -1316,14 +1589,20 @@ var GitHubStore = class {
     if (this.prefix && !tree.tree.some((f) => f.type === "tree" && f.path === this.prefix))
       throw Error("\u041A\u0430\u0442\u0430\u043B\u043E\u0433 GitHub \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D");
     const files = /* @__PURE__ */ Object.create(null);
+    const directories = [];
     for (const f of tree.tree) {
-      if (f.type === "tree" || !under(f.path, this.prefix)) continue;
+      if (!under(f.path, this.prefix) || f.path === this.prefix) continue;
+      const p = this.prefix ? f.path.slice(this.prefix.length + 1) : f.path;
+      if (f.type === "tree") {
+        if (!this.rules || this.rules.folder(p)) directories.push(path(p));
+        continue;
+      }
+      if (this.rules && !this.rules.file(p)) continue;
+      path(p);
       if (f.type !== "blob" || !["100644", "100755"].includes(f.mode))
         throw Error("\u0421\u0441\u044B\u043B\u043A\u0438 \u0438 submodules \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u044E\u0442\u0441\u044F: " + f.path);
-      const p = this.prefix ? f.path.slice(this.prefix.length + 1) : f.path;
-      path(p);
-      if (this.rules && !this.rules.file(p)) continue;
-      if (!Number.isSafeInteger(f.size)) throw Error("GitHub \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0440\u0430\u0437\u043C\u0435\u0440");
+      if (!Number.isSafeInteger(f.size) || f.size < 0)
+        throw Error("GitHub \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0440\u0430\u0437\u043C\u0435\u0440");
       let hash = "oversize:" + f.size;
       if (f.size <= this.limit) {
         hash = hashCache.get("git:" + f.sha) || sha(await this.blob(f.sha, signal));
@@ -1332,9 +1611,10 @@ var GitHubStore = class {
       }
       files[p] = { path: p, hash, size: f.size, version: f.sha, id: f.sha };
     }
-    uniquePaths(Object.keys(files));
+    uniquePaths([...Object.keys(files), ...directories]);
     return {
       files,
+      directories,
       identity: this.identity,
       complete: true,
       warnings: [
@@ -1405,19 +1685,19 @@ var YandexStore = class {
   }
   async folders(relative, signal) {
     const out = [];
-    let offset = 0, total;
+    let offset2 = 0, total;
     do {
       const d = await json(
         this.http,
         this.url("/resources", {
           path: this.full(relative),
           limit: "200",
-          offset: String(offset)
+          offset: String(offset2)
         }),
         this.options(signal)
       );
       const e = d._embedded;
-      if (d.type !== "dir" || !e || !Array.isArray(e.items) || !Number.isSafeInteger(e.total) || e.offset !== offset || total !== void 0 && e.total !== total)
+      if (d.type !== "dir" || !e || !Array.isArray(e.items) || !Number.isSafeInteger(e.total) || e.offset !== offset2 || total !== void 0 && e.total !== total)
         throw Error("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u0440\u043E\u0447\u0438\u0442\u0430\u0442\u044C \u043F\u043E\u043B\u043D\u044B\u0439 \u0441\u043F\u0438\u0441\u043E\u043A \u043F\u0430\u043F\u043E\u043A \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
       total = e.total;
       for (const f of e.items)
@@ -1425,10 +1705,10 @@ var YandexStore = class {
           if (/[\\/]/.test(f.name)) throw Error("\u041D\u0435\u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043C\u043E\u0435 \u0438\u043C\u044F \u043F\u0430\u043F\u043A\u0438");
           out.push({ id: join(relative, path(f.name)), name: f.name });
         }
-      offset += e.items.length;
-      if (!e.items.length && offset < total)
+      offset2 += e.items.length;
+      if (!e.items.length && offset2 < total)
         throw Error("\u041D\u0435\u043F\u043E\u043B\u043D\u044B\u0439 \u0441\u043F\u0438\u0441\u043E\u043A \u043F\u0430\u043F\u043E\u043A");
-    } while (offset < total);
+    } while (offset2 < total);
     return out;
   }
   info(f, p) {
@@ -1444,12 +1724,12 @@ var YandexStore = class {
     };
   }
   async scan(signal) {
-    const files = /* @__PURE__ */ Object.create(null), paths = [];
+    const files = /* @__PURE__ */ Object.create(null), directories = [], paths = [];
     let count = 0;
     const walk = async (p, depth) => {
       if (depth > 60 || ++count > 1e5)
         throw Error("\u041F\u0440\u0435\u0432\u044B\u0448\u0435\u043D \u043F\u0440\u0435\u0434\u0435\u043B \u043E\u0431\u0445\u043E\u0434\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
-      let offset = 0, total;
+      let offset2 = 0, total;
       const names = /* @__PURE__ */ new Set();
       do {
         signal.throwIfAborted();
@@ -1458,12 +1738,12 @@ var YandexStore = class {
           this.url("/resources", {
             path: this.full(p),
             limit: "200",
-            offset: String(offset)
+            offset: String(offset2)
           }),
           this.options(signal)
         );
         const e = d._embedded;
-        if (d.type !== "dir" || !e || !Array.isArray(e.items) || !Number.isSafeInteger(e.total) || e.offset !== offset || total !== void 0 && e.total !== total)
+        if (d.type !== "dir" || !e || !Array.isArray(e.items) || !Number.isSafeInteger(e.total) || e.offset !== offset2 || total !== void 0 && e.total !== total)
           throw Error("\u041D\u0435\u043F\u043E\u043B\u043D\u044B\u0439 \u0438\u043B\u0438 \u0438\u0437\u043C\u0435\u043D\u0438\u0432\u0448\u0438\u0439\u0441\u044F \u0441\u043F\u0438\u0441\u043E\u043A \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
         total = e.total;
         for (const f of e.items) {
@@ -1477,19 +1757,22 @@ var YandexStore = class {
           if (f.type === "dir" ? this.rules && !this.rules.folder(rel) : this.rules && !this.rules.file(rel))
             continue;
           paths.push(rel);
-          if (f.type === "dir") await walk(rel, depth + 1);
-          else if (f.type === "file") files[rel] = this.info(f, rel);
+          if (f.type === "dir") {
+            directories.push(rel);
+            await walk(rel, depth + 1);
+          } else if (f.type === "file") files[rel] = this.info(f, rel);
           else throw Error("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0442\u0438\u043F \u0444\u0430\u0439\u043B\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
         }
-        offset += e.items.length;
-        if (!e.items.length && offset < total)
+        offset2 += e.items.length;
+        if (!e.items.length && offset2 < total)
           throw Error("\u041F\u0443\u0441\u0442\u0430\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
-      } while (offset < total);
+      } while (offset2 < total);
     };
     await walk("", 0);
     uniquePaths(paths);
     return {
       files,
+      directories,
       identity: this.identity,
       complete: true,
       warnings: [
@@ -1562,10 +1845,21 @@ var YandexStore = class {
     });
     if (r.status < 200 || r.status >= 300)
       throw Error("\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430: HTTP " + r.status);
-    const f = this.info(await this.meta(p, signal), p);
-    if (f.hash !== sha(b))
-      throw Error("\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0437\u0430\u043F\u0438\u0441\u0438 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 \u043D\u0435 \u043F\u0440\u043E\u0448\u043B\u0430");
-    return f;
+    const attempts = r.status === 202 ? 20 : 1;
+    const expectedHash = sha(b);
+    for (let i = 0; i < attempts; i++) {
+      signal.throwIfAborted();
+      try {
+        const f = this.info(await this.meta(p, signal), p);
+        if (f.hash === expectedHash) return f;
+      } catch (e) {
+        if (e.status !== 404) throw e;
+      }
+      if (i + 1 < attempts) await (0, import_promises4.setTimeout)(500, void 0, { signal });
+    }
+    throw Error(
+      "\u0417\u0430\u043F\u0438\u0441\u044C \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 \u0435\u0449\u0451 \u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u0430 \u043E\u0436\u0438\u0434\u0430\u0435\u043C\u043E\u0439 checksum. \u041F\u0435\u0440\u0435\u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u0430\u0439\u043B\u044B; \u043D\u0435\u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043D\u043D\u0430\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0430."
+    );
   }
   async delete(f, trash, signal) {
     await this.check(f.path, f, signal);
@@ -1712,13 +2006,13 @@ async function googleResponse(response, signal) {
     const reason = typeof candidate === "string" && /^[\w.-]{1,80}$/.test(candidate) ? candidate : void 0;
     const retryable = response.status === 408 || response.status === 429 || response.status >= 500 || ["rateLimitExceeded", "userRateLimitExceeded"].includes(reason ?? "");
     const retry = response.headers["retry-after"];
-    const delay = retry && /^\d+$/.test(retry) ? Number(retry) * 1e3 : retry ? Math.max(0, Date.parse(retry) - Date.now()) : 0;
+    const delay2 = retry && /^\d+$/.test(retry) ? Number(retry) * 1e3 : retry ? Math.max(0, Date.parse(retry) - Date.now()) : 0;
     throw Object.assign(new SyncFault(
       reason === "invalid_grant" || response.status === 401 ? "auth-required" : reason ?? "google-api",
       `Google request failed: HTTP ${response.status}${reason ? ` (${reason})` : ""}`,
       "source",
       retryable
-    ), { status: response.status, retryAt: retryable && Number.isFinite(delay) && delay > 0 ? Date.now() + delay : void 0 });
+    ), { status: response.status, retryAt: retryable && Number.isFinite(delay2) && delay2 > 0 ? Date.now() + delay2 : void 0 });
   }
   if (!data || typeof data !== "object") throw new SyncFault("response-format", "Invalid Google response", "source");
   return data;
@@ -2435,7 +2729,15 @@ var StudioView = class extends import_obsidian.ItemView {
   patch(p, key, value) {
     if (this.profileDrafts.get(p.id)?.value !== p) return;
     p[key] = value;
-    if (["scope", "connectionId", "sourceConnectionId", "direction"].includes(key))
+    if (key === "direction" && value === "both") p.oneWayMode = "tracked";
+    if (key === "direction" && value !== "pull") p.driveDuplicates = "error";
+    if ([
+      "scope",
+      "connectionId",
+      "sourceConnectionId",
+      "direction",
+      "oneWayMode"
+    ].includes(key))
       this.render();
   }
   scopePanel(at, p) {
@@ -2665,7 +2967,7 @@ var StudioView = class extends import_obsidian.ItemView {
     );
     banner(
       at,
-      "\u041F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435 \u043D\u0435 \u0437\u0430\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442 \u0432 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A. \u041E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 \u043D\u0435 \u0438\u0437\u043C\u0435\u043D\u044F\u0435\u0442 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u043E\u0440\u0438\u0433\u0438\u043D\u0430\u043B. \u0417\u0435\u0440\u043A\u0430\u043B\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u0435 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0445 \u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0445 \u0444\u0430\u0439\u043B\u043E\u0432 \u0432 \u044D\u0442\u043E\u0439 \u0432\u0435\u0440\u0441\u0438\u0438 \u043E\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u0435\u0442."
+      "\u041F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435 \u043D\u0435 \u0437\u0430\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442 \u0432 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A. \u041E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 \u043D\u0435 \u0438\u0437\u043C\u0435\u043D\u044F\u0435\u0442 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u043E\u0440\u0438\u0433\u0438\u043D\u0430\u043B."
     );
   }
   behavior(at, p) {
@@ -2674,6 +2976,39 @@ var StudioView = class extends import_obsidian.ItemView {
       "\u0427\u0442\u043E \u0434\u0435\u043B\u0430\u0442\u044C \u0441 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F\u043C\u0438",
       "\u041F\u043E\u043B\u0438\u0442\u0438\u043A\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F \u043D\u0435 \u043F\u043E\u0434\u043C\u0435\u043D\u044F\u0435\u0442\u0441\u044F \u043F\u043E\u043B\u0438\u0442\u0438\u043A\u043E\u0439 \u043A\u043E\u043D\u0444\u043B\u0438\u043A\u0442\u043E\u0432."
     );
+    if (p.direction !== "both") {
+      select(
+        at,
+        "\u0420\u0435\u0436\u0438\u043C \u043E\u0434\u043D\u043E\u0433\u043E \u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F",
+        p.oneWayMode || "tracked",
+        {
+          tracked: "\u041E\u0442\u0441\u043B\u0435\u0436\u0438\u0432\u0430\u0442\u044C \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u0438 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D\u043D\u044B\u0435 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F",
+          mirror: "\u0417\u0435\u0440\u043A\u0430\u043B\u043E: \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A \u0438\u043C\u0435\u0435\u0442 \u043F\u0440\u0438\u043E\u0440\u0438\u0442\u0435\u0442"
+        },
+        (v) => this.patch(p, "oneWayMode", v)
+      );
+      if (p.oneWayMode === "mirror")
+        banner(
+          at,
+          "\u0417\u0435\u0440\u043A\u0430\u043B\u043E \u0437\u0430\u043C\u0435\u043D\u044F\u0435\u0442 \u043E\u0442\u043B\u0438\u0447\u0430\u044E\u0449\u0438\u0435\u0441\u044F \u0444\u0430\u0439\u043B\u044B \u0432\u0435\u0440\u0441\u0438\u0435\u0439 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0430. \u041F\u0440\u0438 \u0432\u043A\u043B\u044E\u0447\u0451\u043D\u043D\u044B\u0445 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F\u0445 \u043B\u0438\u0448\u043D\u0438\u0435 \u0444\u0430\u0439\u043B\u044B \u043D\u0430\u0437\u043D\u0430\u0447\u0435\u043D\u0438\u044F \u0443\u0434\u0430\u043B\u044F\u044E\u0442\u0441\u044F \u0443\u0436\u0435 \u043F\u0440\u0438 \u043F\u0435\u0440\u0432\u043E\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u0435. \u041F\u043E\u043B\u0438\u0442\u0438\u043A\u0438 \u043A\u043E\u043D\u0444\u043B\u0438\u043A\u0442\u043E\u0432 \u043D\u0438\u0436\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0443\u044E\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0432 \u0440\u0435\u0436\u0438\u043C\u0435 \u043E\u0442\u0441\u043B\u0435\u0436\u0438\u0432\u0430\u043D\u0438\u044F."
+        );
+    }
+    if (p.direction === "pull" && this.studio.data.connections.find((c) => c.id === p.connectionId)?.provider.startsWith("gdrive")) {
+      select(
+        at,
+        "\u041E\u0434\u043D\u043E\u0438\u043C\u0451\u043D\u043D\u044B\u0435 \u0444\u0430\u0439\u043B\u044B \u0432 Drive",
+        p.driveDuplicates || "error",
+        {
+          error: "\u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C\u0441\u044F \u0438 \u043F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u043A\u043E\u043B\u043B\u0438\u0437\u0438\u044E",
+          newest: "\u041F\u043E\u043B\u0443\u0447\u0430\u0442\u044C \u043D\u043E\u0432\u0435\u0439\u0448\u0438\u0439 \u0434\u0443\u0431\u043B\u044C (\u043F\u043E Sync Engine)"
+        },
+        (v) => this.patch(p, "driveDuplicates", v)
+      );
+      banner(
+        at,
+        "\u0412\u044B\u0431\u043E\u0440 \u043D\u043E\u0432\u0435\u0439\u0448\u0435\u0433\u043E \u0434\u0443\u0431\u043B\u044F \u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u044F \u0444\u0430\u0439\u043B\u043E\u0432. \u0414\u0443\u0431\u043B\u0438 \u043F\u0430\u043F\u043E\u043A \u0438 \u043A\u043E\u043B\u043B\u0438\u0437\u0438\u0438 \u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0430 \u0442\u0440\u0435\u0431\u0443\u044E\u0442 \u043F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u044F \u0438\u043B\u0438 \u0438\u0441\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F. \u0414\u0440\u0443\u0433\u0438\u0435 \u043A\u043E\u043F\u0438\u0438 \u0432 Drive \u043E\u0441\u0442\u0430\u044E\u0442\u0441\u044F \u043D\u0435\u0442\u0440\u043E\u043D\u0443\u0442\u044B\u043C\u0438."
+      );
+    }
     select(
       at,
       "\u0415\u0441\u043B\u0438 \u0432\u0435\u0440\u0441\u0438\u0438 \u0440\u0430\u0437\u043B\u0438\u0447\u0430\u044E\u0442\u0441\u044F",
@@ -3839,7 +4174,8 @@ var SyncStudio = class extends import_obsidian2.Plugin {
         limit,
         void 0,
         c.id + ":" + c.subject,
-        scanRules(p, this.app.vault.configDir)
+        scanRules(p, this.app.vault.configDir),
+        p.driveDuplicates || "error"
       );
     }
     if (c.provider === "gdrive-public") {
@@ -3850,7 +4186,8 @@ var SyncStudio = class extends import_obsidian2.Plugin {
         limit,
         token,
         c.id,
-        scanRules(p, this.app.vault.configDir)
+        scanRules(p, this.app.vault.configDir),
+        p.driveDuplicates || "error"
       );
     }
     if (c.provider === "github")
@@ -3882,7 +4219,11 @@ var SyncStudio = class extends import_obsidian2.Plugin {
   }
   async local(p) {
     if (p.sourceKind === "folder")
-      return new ExternalFolder(p.sourceRoot || "", p.maxMB * 1024 * 1024);
+      return new ExternalFolder(
+        p.sourceRoot || "",
+        p.maxMB * 1024 * 1024,
+        scanRules(p, this.app.vault.configDir)
+      );
     if (p.sourceKind === "connection")
       return this.remote({
         ...p,
@@ -3945,7 +4286,7 @@ var SyncStudio = class extends import_obsidian2.Plugin {
       if (!a || !b) throw Error("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043E\u0431\u0430 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F");
       if (a.provider.replace("-public", "") === b.provider.replace("-public", ""))
         throw Error(
-          "\u0412 0.1 \u0432\u043D\u0435\u0448\u043D\u044F\u044F \u043F\u0435\u0440\u0435\u0434\u0430\u0447\u0430 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u043C\u0435\u0436\u0434\u0443 \u0440\u0430\u0437\u043D\u044B\u043C\u0438 \u0441\u0435\u0440\u0432\u0438\u0441\u0430\u043C\u0438; \u044D\u0442\u043E \u0438\u0441\u043A\u043B\u044E\u0447\u0430\u0435\u0442 \u043F\u0435\u0440\u0435\u043D\u043E\u0441 \u043F\u0430\u043F\u043A\u0438 \u0432 \u0441\u0430\u043C\u0443 \u0441\u0435\u0431\u044F"
+          "\u0412\u043D\u0435\u0448\u043D\u044F\u044F \u043F\u0435\u0440\u0435\u0434\u0430\u0447\u0430 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u043C\u0435\u0436\u0434\u0443 \u0440\u0430\u0437\u043D\u044B\u043C\u0438 \u0441\u0435\u0440\u0432\u0438\u0441\u0430\u043C\u0438; \u044D\u0442\u043E \u0438\u0441\u043A\u043B\u044E\u0447\u0430\u0435\u0442 \u043F\u0435\u0440\u0435\u043D\u043E\u0441 \u043F\u0430\u043F\u043A\u0438 \u0432 \u0441\u0430\u043C\u0443 \u0441\u0435\u0431\u044F"
         );
     }
     if (!p.sourceKind && p.localRoot && Object.keys(this.state.baselines[p.id]?.files || {}).length && !await this.app.vault.adapter.exists(p.localRoot))
@@ -3967,6 +4308,10 @@ var SyncStudio = class extends import_obsidian2.Plugin {
     const pending = this.state.pending[p.id];
     if (pending) {
       const op = pending.operation, a = Object.hasOwn(l.files, op.path) ? l.files[op.path] : void 0, b = Object.hasOwn(r.files, op.path) ? r.files[op.path] : void 0;
+      if (!selected(op.path, p, this.app.vault.configDir, op.local?.size) || !selected(op.path, p, this.app.vault.configDir, op.remote?.size))
+        throw Error(
+          "\u041D\u0435\u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043D\u043D\u0430\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u0432\u043D\u0435 \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u043E\u0431\u043B\u0430\u0441\u0442\u0438. \u0412\u0435\u0440\u043D\u0438\u0442\u0435 \u043F\u0440\u0435\u0436\u043D\u044E\u044E \u043E\u0431\u043B\u0430\u0441\u0442\u044C/\u043B\u0438\u043C\u0438\u0442 \u043F\u0440\u043E\u0444\u0438\u043B\u044F \u0434\u043B\u044F \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F: " + op.path
+        );
       const backupPath = join(".sync-conflicts", pending.runId + "/" + op.path);
       let backupVerified = false;
       if (op.action === "keep-both" && await this.app.vault.adapter.exists(backupPath)) {
@@ -3995,7 +4340,7 @@ var SyncStudio = class extends import_obsidian2.Plugin {
     for (const op of result.operations)
       if (category(join(p.localRoot, op.path), this.app.vault.configDir) === "plugin-code" && !["adopt", "skip"].includes(op.action)) {
         op.action = "conflict";
-        op.reason = "\u041A\u043E\u0434 \u043F\u043B\u0430\u0433\u0438\u043D\u0430: \u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u0430\u044F \u043F\u0430\u043A\u0435\u0442\u043D\u0430\u044F \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430; \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0437\u0430\u043C\u0435\u043D\u0430 \u0432 0.1 \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u0430";
+        op.reason = "\u041A\u043E\u0434 \u043F\u043B\u0430\u0433\u0438\u043D\u0430: \u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u0430\u044F \u043F\u0430\u043A\u0435\u0442\u043D\u0430\u044F \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430; \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0437\u0430\u043C\u0435\u043D\u0430 \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u0430";
       }
     return result;
   }
@@ -4007,6 +4352,10 @@ var SyncStudio = class extends import_obsidian2.Plugin {
       if (!current || JSON.stringify(current) !== JSON.stringify(reviewed.profile))
         throw Error("\u041F\u0440\u043E\u0444\u0438\u043B\u044C \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F: \u043F\u043E\u0441\u0442\u0440\u043E\u0439\u0442\u0435 \u043D\u043E\u0432\u044B\u0439 \u043F\u043B\u0430\u043D");
       this.validateOverlap(current);
+      if (this.state.pending[current.id])
+        throw Error(
+          "\u0415\u0441\u0442\u044C \u043D\u0435\u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043D\u043D\u0430\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F. \u041F\u0435\u0440\u0435\u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u0430\u0439\u043B\u044B \u0434\u043B\u044F \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u043F\u0435\u0440\u0435\u0434 \u043F\u043E\u0432\u0442\u043E\u0440\u043D\u044B\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u043E\u043C."
+        );
       const local = await this.local(current), remote = await this.remote(current);
       const log = await execute(
         reviewed,
@@ -4102,7 +4451,11 @@ var SyncStudio = class extends import_obsidian2.Plugin {
           this.pendingPlans.set(p.id, result);
           new import_obsidian2.Notice("Sync Studio: \u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440 \u043F\u043B\u0430\u043D\u0430 \xAB" + p.name + "\xBB");
           this.refresh();
-        } else await this.apply(result);
+        } else {
+          const log = await this.apply(result);
+          if (log.status !== "completed")
+            this.failures.set(p.id, (this.failures.get(p.id) || 0) + 1);
+        }
       } catch (e) {
         this.failures.set(p.id, (this.failures.get(p.id) || 0) + 1);
         new import_obsidian2.Notice("Sync Studio: " + e.message);
