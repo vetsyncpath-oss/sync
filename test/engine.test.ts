@@ -10,7 +10,7 @@ import {
   type Store,
   type Profile,
 } from "../src/core/model";
-import { sha, selected, path } from "../src/core/paths";
+import { sha, selected, path, scanRules } from "../src/core/paths";
 const signal = () => new AbortController().signal;
 const bytes = (s: string) => new TextEncoder().encode(s);
 function f(path: string, content: string, mtime = 100): FileInfo {
@@ -418,4 +418,23 @@ test("prototype-like filename is preserved without prototype mutation", async ()
   const result = await run(profile(), l, r, { identity, files: {} });
   assert.equal(result.result.status, "completed");
   assert.ok(Object.hasOwn(result.state.files, "__proto__"));
+});
+
+test("scope scanner prunes disabled configuration categories before inspecting duplicate folders", () => {
+  const p = newProfile("drive");
+  assert.equal(scanRules(p, ".obsidian").folder(".obsidian"), false);
+  p.categories = ["plugin-settings"];
+  p.excludeData = false;
+  assert.equal(
+    scanRules(p, ".obsidian").folder(".obsidian/plugins/example"),
+    true,
+  );
+  assert.equal(scanRules(p, ".obsidian").folder(".obsidian/themes"), false);
+  p.excludeData = true;
+  assert.equal(
+    scanRules(p, ".obsidian").folder(".obsidian/plugins/example"),
+    false,
+  );
+  p.categories = ["themes"];
+  assert.equal(scanRules(p, ".obsidian").folder(".obsidian/themes"), true);
 });

@@ -1,9 +1,16 @@
 import type { App } from "obsidian";
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, rename } from "node:fs/promises";
 import { join as fsJoin } from "node:path";
 import { syncDirectory } from "./state-file";
 import type { FileInfo, Snapshot, Store } from "../core/model";
-import { path, join, sha, protectedPath, uniquePaths } from "../core/paths";
+import {
+  path,
+  join,
+  sha,
+  protectedPath,
+  uniquePaths,
+  type ScanRules,
+} from "../core/paths";
 export class LocalStore implements Store {
   writable = true;
   trashSupported = true;
@@ -12,7 +19,7 @@ export class LocalStore implements Store {
     private app: App,
     private root: string,
     private limit: number,
-    private external = false,
+    private rules?: ScanRules,
   ) {
     path(root, true);
     this.identity = "vault:" + app.vault.getName() + ":" + root;
@@ -40,6 +47,7 @@ export class LocalStore implements Store {
   }
   async scan(signal: AbortSignal): Promise<Snapshot> {
     const files: Record<string, FileInfo> = Object.create(null),
+      directories: string[] = [],
       warnings: string[] = [];
     const adapter = this.app.vault.adapter;
     const walk = async (folder: string) => {
@@ -53,7 +61,11 @@ export class LocalStore implements Store {
       const list = await adapter.list(full);
       for (const f of list.files) {
         const rel = this.root ? f.slice(this.root.length + 1) : f;
-        if (protectedPath(f, this.app.vault.configDir)) continue;
+        if (
+          protectedPath(f, this.app.vault.configDir) ||
+          (this.rules && !this.rules.file(rel))
+        )
+          continue;
         path(rel);
         const stat = await adapter.stat(f);
         if (!stat || stat.type !== "file") throw Error("Файл исчез при обходе");
@@ -69,12 +81,25 @@ export class LocalStore implements Store {
         files[rel] = await this.inspect(rel, signal);
       }
       for (const f of list.folders)
-        if (!protectedPath(f, this.app.vault.configDir))
-          await walk(this.root ? f.slice(this.root.length + 1) : f);
+        if (
+          !protectedPath(f, this.app.vault.configDir) &&
+          (!this.rules ||
+            this.rules.folder(this.root ? f.slice(this.root.length + 1) : f))
+        ) {
+          const rel = this.root ? f.slice(this.root.length + 1) : f;
+          directories.push(rel);
+          await walk(rel);
+        }
     };
     await walk("");
-    uniquePaths(Object.keys(files));
-    return { files, complete: true, warnings, identity: this.identity };
+    uniquePaths([...Object.keys(files), ...directories]);
+    return {
+      files,
+      directories,
+      complete: true,
+      warnings,
+      identity: this.identity,
+    };
   }
   async inspect(p: string, signal: AbortSignal): Promise<FileInfo> {
     signal.throwIfAborted();
@@ -157,7 +182,10 @@ export class LocalStore implements Store {
       }
       await this.check(p, expected, signal);
       signal.throwIfAborted();
-      await this.app.vault.adapter.rename(temp, full);
+      // DataAdapter.rename is a move API and may reject an existing target.
+      // Replace atomically on the same filesystem; Obsidian's filesystem watcher
+      // observes the final path, including hidden configuration files.
+      await rename(fsJoin(vaultRoot, temp), fsJoin(vaultRoot, full));
       await syncDirectory(
         fsJoin(vaultRoot, full.split("/").slice(0, -1).join("/")),
       );

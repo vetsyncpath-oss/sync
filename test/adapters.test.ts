@@ -249,3 +249,81 @@ test("Google bearer token never goes to an arbitrary host", async () => {
   );
   assert.equal(h.calls.length, 0);
 });
+
+test("Drive ignores duplicates in paths excluded by the profile before collision detection", async () => {
+  const h = new Mock((u) =>
+    u.includes("/files/root?")
+      ? { id: "root", mimeType: "application/vnd.google-apps.folder" }
+      : { files: [file, { ...file, id: "f2" }] },
+  );
+  const result = await new DriveStore(h, "root", 1024, undefined, "account", {
+    file: () => false,
+    folder: () => true,
+  }).scan(signal());
+  assert.deepEqual(Object.keys(result.files), []);
+});
+test("Drive does not descend into unrelated folders outside the scope", async () => {
+  const h = new Mock((u) => {
+    if (u.includes("/files/root?"))
+      return { id: "root", mimeType: "application/vnd.google-apps.folder" };
+    assert.ok(new URL(u).searchParams.get("q")?.includes("'root'"));
+    return {
+      files: [
+        {
+          id: "ignored",
+          name: "Other",
+          mimeType: "application/vnd.google-apps.folder",
+        },
+      ],
+    };
+  });
+  const result = await new DriveStore(h, "root", 1024, undefined, "account", {
+    file: () => true,
+    folder: () => false,
+  }).scan(signal());
+  assert.deepEqual(Object.keys(result.files), []);
+  assert.equal(h.calls.length, 2);
+});
+test("Google native documents remain present but ineligible and do not block ordinary files", async () => {
+  const h = new Mock((u) =>
+    u.includes("/files/root?")
+      ? { id: "root", mimeType: "application/vnd.google-apps.folder" }
+      : {
+          files: [
+            file,
+            {
+              id: "doc",
+              name: "Document",
+              mimeType: "application/vnd.google-apps.document",
+            },
+          ],
+        },
+  );
+  const result = await new DriveStore(h, "root", 1024).scan(signal());
+  assert.equal(result.files["note.md"].hash, sha(data));
+  assert.equal(result.files.Document.size, Number.MAX_SAFE_INTEGER);
+  assert.match(result.warnings[0], /Document/);
+});
+test("Yandex root path is disk:/ and folder picker follows pagination", async () => {
+  const h = new Mock((u) => {
+    const params = new URL(u).searchParams;
+    assert.equal(params.get("path"), "disk:/");
+    const offset = Number(params.get("offset"));
+    return {
+      type: "dir",
+      _embedded: {
+        offset,
+        total: 2,
+        items: [{ type: "dir", name: offset ? "B" : "A" }],
+      },
+    };
+  });
+  const folders = await new YandexStore(h, "disk:/", "token", 1024).folders(
+    "",
+    signal(),
+  );
+  assert.deepEqual(folders, [
+    { id: "A", name: "A" },
+    { id: "B", name: "B" },
+  ]);
+});

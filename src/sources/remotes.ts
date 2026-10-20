@@ -1,8 +1,18 @@
 import { createHash } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { FileInfo, Snapshot, Store, Profile } from "../core/model";
 import type { NetTransport, NetRequest } from "./types";
 import { json, bytes } from "../adapters/http";
-import { path, join, sha, uniquePaths, under } from "../core/paths";
+import { driveUpload, driveMime } from "./drive-upload";
+import {
+  path,
+  join,
+  sha,
+  uniquePaths,
+  under,
+  type ScanRules,
+  PathCollision,
+} from "../core/paths";
 const hashCache = new Map<string, string>();
 const FOLDER = "application/vnd.google-apps.folder";
 const fields =
@@ -36,14 +46,16 @@ export class DriveStore implements Store {
     private limit: number,
     publicKey?: string,
     identityAccount = "",
+    private rules?: ScanRules,
+    private duplicates: "error" | "newest" = "error",
   ) {
     this.root = driveRoot(root);
     this.key = publicKey;
     this.resourceKey = root.startsWith("https:")
       ? new URL(root).searchParams.get("resourcekey") || undefined
       : undefined;
-    this.writable = !publicKey;
-    this.trashSupported = !publicKey;
+    this.writable = !publicKey && duplicates === "error";
+    this.trashSupported = this.writable;
     this.identity = "drive:" + identityAccount + ":" + this.root;
   }
   private url(
@@ -137,16 +149,48 @@ export class DriveStore implements Store {
       );
       if (d.incompleteSearch || !Array.isArray(d.files))
         throw Error("Неполный ответ Drive");
+      if (d.nextPageToken !== undefined && typeof d.nextPageToken !== "string")
+        throw Error("Некорректная страница Drive");
       out.push(...d.files);
       next = d.nextPageToken || "";
     } while (next);
     return out;
+  }
+  private choose(entries: any[], p: string, warnings?: string[]): any {
+    if (entries.length <= 1) return entries[0];
+    // Sync Engine picks the latest duplicate file. Make this explicit/read-only;
+    // never choose a folder or collapse names that only match by case/Unicode.
+    if (
+      this.duplicates !== "newest" ||
+      entries.some(
+        (f) =>
+          f.mimeType === FOLDER ||
+          f.name !== entries[0].name ||
+          !Number.isFinite(Date.parse(f.modifiedTime)),
+      )
+    )
+      throw new PathCollision(
+        "Коллизия: несколько объектов Drive имеют путь «" +
+          p +
+          "». Переименуйте дубль, исключите путь или для файлов включите выбор новейшего при получении.",
+        [p],
+      );
+    const sorted = [...entries].sort(
+      (a, b) =>
+        Date.parse(b.modifiedTime) - Date.parse(a.modifiedTime) ||
+        String(a.id).localeCompare(String(b.id)),
+    );
+    warnings?.push(
+      `Drive: из ${entries.length} файлов «${p}» выбран новейший (ID ${sorted[0].id}); остальные остаются в источнике.`,
+    );
+    return sorted[0];
   }
   async scan(signal: AbortSignal): Promise<Snapshot> {
     const root = await this.inspect(this.root, signal);
     if (root.trashed || root.mimeType !== FOLDER)
       throw Error("Папка Drive недоступна");
     const files: Record<string, FileInfo> = Object.create(null),
+      directories: string[] = [],
       warnings: string[] = [],
       seen = new Set<string>(),
       all: string[] = [];
@@ -157,27 +201,56 @@ export class DriveStore implements Store {
         throw Error("Превышен предел обхода Drive");
       if (seen.has(id)) throw Error("Повтор ID папки Drive");
       seen.add(id);
+      const groups = new Map<string, any[]>();
       for (const f of await this.children(id, signal)) {
         if (/[\\/]/.test(f.name))
           throw Error("Недопустимый разделитель в имени удалённого файла");
         path(f.name);
         const p = join(base, f.name);
+        if (
+          f.mimeType === FOLDER
+            ? this.rules && !this.rules.folder(p)
+            : this.rules && !this.rules.file(p)
+        )
+          continue;
+        const group = groups.get(f.name) || [];
+        group.push(f);
+        groups.set(f.name, group);
+      }
+      for (const group of groups.values()) {
+        const p = join(base, group[0].name);
+        const f = this.choose(group, p, warnings);
         all.push(p);
         if (f.mimeType === FOLDER) {
+          directories.push(p);
           this.folders.set(p, f.id);
           await walk(f.id, p, depth + 1);
         } else if (
           String(f.mimeType).startsWith("application/vnd.google-apps.")
-        )
-          throw Error(
-            "Google Docs или shortcut требуют отдельного экспорта: " + p,
+        ) {
+          warnings.push(
+            "Пропущен Google Docs / shortcut (нужен экспорт): " + p,
           );
-        else files[p] = await this.info(f, p, signal);
+          // Keep the path present but out of scope, so unsupported content is never a deletion.
+          files[p] = {
+            path: p,
+            size: Number.MAX_SAFE_INTEGER,
+            hash: "unsupported:" + f.mimeType,
+            version: String(f.version || ""),
+            id: f.id,
+          };
+        } else files[p] = await this.info(f, p, signal);
       }
     };
     await walk(this.root, "", 0);
     uniquePaths(all);
-    return { files, complete: true, warnings, identity: this.identity };
+    return {
+      files,
+      directories,
+      complete: true,
+      warnings,
+      identity: this.identity,
+    };
   }
   private async download(f: any, signal: AbortSignal) {
     const b = await bytes(
@@ -203,7 +276,38 @@ export class DriveStore implements Store {
     const current = await this.inspect(f.id!, signal);
     if (String(current.version) !== f.version || current.trashed)
       throw Error("Файл Drive изменился");
+    await this.verifyPath(f.path, f.id, signal);
     return this.download(current, signal);
+  }
+  /** Sync Engine's fresh path-chain lookup, adapted to reject ambiguous names. */
+  private async verifyPath(
+    p: string,
+    expectedId: string | undefined,
+    signal: AbortSignal,
+  ) {
+    let id = this.root;
+    const parts = p.split("/");
+    for (let i = 0; i < parts.length; i++) {
+      const matches = (await this.children(id, signal)).filter(
+        (f) =>
+          f.name.normalize("NFC").toLowerCase() ===
+          parts[i].normalize("NFC").toLowerCase(),
+      );
+      const f = this.choose(matches, p);
+      if (!f) {
+        if (expectedId)
+          throw Error("Путь Drive исчез после планирования: " + p);
+        return;
+      }
+      if (i === parts.length - 1) {
+        if (!expectedId || f.id !== expectedId || f.name !== parts[i])
+          throw Error(
+            "Путь Drive изменился или появился после планирования: " + p,
+          );
+      } else if (f.mimeType !== FOLDER || f.name !== parts[i])
+        throw Error("Папка Drive изменилась после планирования: " + p);
+      id = f.id;
+    }
   }
   private async verifyExpected(
     p: string,
@@ -221,17 +325,10 @@ export class DriveStore implements Store {
         throw Error("Drive-файл изменился");
       if (!r.headers.etag)
         throw Error("Drive не вернул ETag; безопасная перезапись запрещена");
+      await this.verifyPath(p, expected.id, signal);
       return r.headers.etag;
     }
-    const parent = p.split("/").slice(0, -1).join("/");
-    const id = this.folders.get(parent);
-    if (
-      id &&
-      (await this.children(id, signal)).some(
-        (f) => f.name === p.split("/").at(-1),
-      )
-    )
-      throw Error("Drive-файл появился после планирования");
+    await this.verifyPath(p, undefined, signal);
     return undefined;
   }
   private async parent(p: string, signal: AbortSignal) {
@@ -239,14 +336,24 @@ export class DriveStore implements Store {
       id = this.root;
     for (const name of p.split("/").slice(0, -1)) {
       base = join(base, name);
-      let next = this.folders.get(base);
-      if (!next) {
+      const cached = this.folders.get(base);
+      let next: string | undefined;
+      {
         const found = (await this.children(id, signal)).filter(
-          (f) => f.name === name,
+          (f) =>
+            f.name.normalize("NFC").toLowerCase() ===
+            name.normalize("NFC").toLowerCase(),
         );
-        if (found.length > 1 || (found[0] && found[0].mimeType !== FOLDER))
+        if (
+          found.length > 1 ||
+          (found[0] && (found[0].mimeType !== FOLDER || found[0].name !== name))
+        )
           throw Error("Коллизия папки Drive");
         next = found[0]?.id;
+        if (cached && next !== cached)
+          throw Error(
+            "Папка Drive перемещена или заменена после планирования: " + base,
+          );
         if (!next) {
           const d = await json(
             this.http,
@@ -258,6 +365,8 @@ export class DriveStore implements Store {
             }),
           );
           next = d.id;
+          if (typeof next !== "string" || !next)
+            throw Error("Drive не вернул ID созданной папки");
         }
         this.folders.set(base, next!);
       }
@@ -273,39 +382,63 @@ export class DriveStore implements Store {
     signal: AbortSignal,
   ) {
     if (!this.writable)
-      throw Error("Публичная папка Drive доступна только для чтения");
+      throw Error(
+        "Drive доступен только для чтения: публичный доступ или выбор новейшего дубля",
+      );
     path(p);
-    const etag = await this.verifyExpected(p, expected, signal),
-      parent = await this.parent(p, signal);
+    const etag = await this.verifyExpected(p, expected, signal);
+    const root = await this.inspect(this.root, signal);
+    if (root.trashed || root.mimeType !== FOLDER)
+      throw Error("Корень Drive недоступен перед записью");
+    const parent = await this.parent(p, signal);
+    if (!expected) await this.verifyExpected(p, undefined, signal);
     const boundary = "sync_studio_" + crypto.randomUUID();
     const metadata = {
       name: p.split("/").at(-1),
+      mimeType: driveMime(p),
       ...(!expected ? { parents: [parent] } : {}),
       ...(mtime ? { modifiedTime: new Date(mtime).toISOString() } : {}),
     };
-    const body = Buffer.concat([
-      Buffer.from(
-        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: application/octet-stream\r\n\r\n`,
-      ),
-      Buffer.from(b),
-      Buffer.from(`\r\n--${boundary}--\r\n`),
-    ]);
-    const f = await json(
-      this.http,
-      this.url(
-        expected ? "files/" + encodeURIComponent(expected.id!) : "files",
-        { uploadType: "multipart", fields },
-        true,
-      ),
-      this.opts(signal, {
-        method: expected ? "PATCH" : "POST",
-        headers: {
-          "Content-Type": "multipart/related; boundary=" + boundary,
-          ...(etag ? { "If-Match": etag } : {}),
-        },
-        body,
-      }),
-    );
+    const body =
+      b.length > 5 * 1024 * 1024
+        ? undefined
+        : Buffer.concat([
+            Buffer.from(
+              `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${driveMime(p)}\r\n\r\n`,
+            ),
+            Buffer.from(b),
+            Buffer.from(`\r\n--${boundary}--\r\n`),
+          ]);
+    const f =
+      b.length > 5 * 1024 * 1024
+        ? await driveUpload(
+            this.http,
+            this.url(
+              expected ? "files/" + encodeURIComponent(expected.id!) : "files",
+              { uploadType: "resumable", fields },
+              true,
+            ),
+            expected ? "PATCH" : "POST",
+            metadata,
+            b,
+            this.opts(signal, { headers: etag ? { "If-Match": etag } : {} }),
+          )
+        : await json(
+            this.http,
+            this.url(
+              expected ? "files/" + encodeURIComponent(expected.id!) : "files",
+              { uploadType: "multipart", fields },
+              true,
+            ),
+            this.opts(signal, {
+              method: expected ? "PATCH" : "POST",
+              headers: {
+                "Content-Type": "multipart/related; boundary=" + boundary,
+                ...(etag ? { "If-Match": etag } : {}),
+              },
+              body,
+            }),
+          );
     const result = await this.info(f, p, signal);
     if (result.hash !== sha(b)) throw Error("Проверка записи Drive не прошла");
     return result;
@@ -313,6 +446,9 @@ export class DriveStore implements Store {
   async delete(f: FileInfo, trash: boolean, signal: AbortSignal) {
     if (!this.writable) throw Error("Источник только для чтения");
     const etag = await this.verifyExpected(f.path, f, signal);
+    const root = await this.inspect(this.root, signal);
+    if (root.trashed || root.mimeType !== FOLDER)
+      throw Error("Корень Drive недоступен перед удалением");
     const r = await this.http.fetch(
       this.url(
         "files/" + encodeURIComponent(f.id!),
@@ -341,6 +477,7 @@ export class GitHubStore implements Store {
     private prefix: string,
     private token: string,
     private limit: number,
+    private rules?: ScanRules,
   ) {
     const m = repo
       .replace(/^https:\/\/github.com\//, "")
@@ -383,13 +520,20 @@ export class GitHubStore implements Store {
     )
       throw Error("Каталог GitHub не найден");
     const files: Record<string, FileInfo> = Object.create(null);
+    const directories: string[] = [];
     for (const f of tree.tree) {
-      if (f.type === "tree" || !under(f.path, this.prefix)) continue;
+      if (!under(f.path, this.prefix) || f.path === this.prefix) continue;
+      const p = this.prefix ? f.path.slice(this.prefix.length + 1) : f.path;
+      if (f.type === "tree") {
+        if (!this.rules || this.rules.folder(p)) directories.push(path(p));
+        continue;
+      }
+      if (this.rules && !this.rules.file(p)) continue;
+      path(p);
       if (f.type !== "blob" || !["100644", "100755"].includes(f.mode))
         throw Error("Ссылки и submodules не поддерживаются: " + f.path);
-      const p = this.prefix ? f.path.slice(this.prefix.length + 1) : f.path;
-      path(p);
-      if (!Number.isSafeInteger(f.size)) throw Error("GitHub не вернул размер");
+      if (!Number.isSafeInteger(f.size) || f.size < 0)
+        throw Error("GitHub не вернул размер");
       let hash = "oversize:" + f.size;
       if (f.size <= this.limit) {
         hash =
@@ -399,9 +543,10 @@ export class GitHubStore implements Store {
       }
       files[p] = { path: p, hash, size: f.size, version: f.sha, id: f.sha };
     }
-    uniquePaths(Object.keys(files));
+    uniquePaths([...Object.keys(files), ...directories]);
     return {
       files,
+      directories,
       identity: this.identity,
       complete: true,
       warnings: [
@@ -455,6 +600,7 @@ export class YandexStore implements Store {
     root: string,
     private token: string,
     private limit: number,
+    private rules?: ScanRules,
   ) {
     this.root =
       "disk:/" +
@@ -476,7 +622,7 @@ export class YandexStore implements Store {
     };
   }
   private full(p: string) {
-    return this.root.replace(/\/$/, "") + (p ? "/" + path(p) : "");
+    return p ? this.root.replace(/\/$/, "") + "/" + path(p) : this.root;
   }
   private async meta(p: string, signal: AbortSignal) {
     return json(
@@ -484,6 +630,45 @@ export class YandexStore implements Store {
       this.url("/resources", { path: this.full(p), limit: "200" }),
       this.options(signal),
     );
+  }
+  async folders(
+    relative: string,
+    signal: AbortSignal,
+  ): Promise<{ id: string; name: string }[]> {
+    const out: { id: string; name: string }[] = [];
+    let offset = 0,
+      total: number | undefined;
+    do {
+      const d = await json(
+        this.http,
+        this.url("/resources", {
+          path: this.full(relative),
+          limit: "200",
+          offset: String(offset),
+        }),
+        this.options(signal),
+      );
+      const e = d._embedded;
+      if (
+        d.type !== "dir" ||
+        !e ||
+        !Array.isArray(e.items) ||
+        !Number.isSafeInteger(e.total) ||
+        e.offset !== offset ||
+        (total !== undefined && e.total !== total)
+      )
+        throw Error("Не удалось прочитать полный список папок Яндекс Диска");
+      total = e.total;
+      for (const f of e.items)
+        if (f.type === "dir") {
+          if (/[\\/]/.test(f.name)) throw Error("Недопустимое имя папки");
+          out.push({ id: join(relative, path(f.name)), name: f.name });
+        }
+      offset += e.items.length;
+      if (!e.items.length && offset < total!)
+        throw Error("Неполный список папок");
+    } while (offset < total!);
+    return out;
   }
   private info(f: any, p: string): FileInfo {
     if (
@@ -503,6 +688,7 @@ export class YandexStore implements Store {
   }
   async scan(signal: AbortSignal): Promise<Snapshot> {
     const files: Record<string, FileInfo> = Object.create(null),
+      directories: string[] = [],
       paths: string[] = [];
     let count = 0;
     const walk = async (p: string, depth: number) => {
@@ -541,9 +727,17 @@ export class YandexStore implements Store {
             throw Error("Повтор файла при обходе Яндекс Диска");
           names.add(f.name);
           const rel = join(p, f.name);
+          if (
+            f.type === "dir"
+              ? this.rules && !this.rules.folder(rel)
+              : this.rules && !this.rules.file(rel)
+          )
+            continue;
           paths.push(rel);
-          if (f.type === "dir") await walk(rel, depth + 1);
-          else if (f.type === "file") files[rel] = this.info(f, rel);
+          if (f.type === "dir") {
+            directories.push(rel);
+            await walk(rel, depth + 1);
+          } else if (f.type === "file") files[rel] = this.info(f, rel);
           else throw Error("Неизвестный тип файла Яндекс Диска");
         }
         offset += e.items.length;
@@ -555,6 +749,7 @@ export class YandexStore implements Store {
     uniquePaths(paths);
     return {
       files,
+      directories,
       identity: this.identity,
       complete: true,
       warnings: [
@@ -586,6 +781,7 @@ export class YandexStore implements Store {
     return bytes(this.http, this.trusted(d.href), {
       signal,
       maxBytes: this.limit,
+      redirect: "follow",
     });
   }
   private async check(
@@ -641,10 +837,21 @@ export class YandexStore implements Store {
     });
     if (r.status < 200 || r.status >= 300)
       throw Error("Загрузка Яндекс Диска: HTTP " + r.status);
-    const f = this.info(await this.meta(p, signal), p);
-    if (f.hash !== sha(b))
-      throw Error("Проверка записи Яндекс Диска не прошла");
-    return f;
+    const attempts = r.status === 202 ? 20 : 1;
+    const expectedHash = sha(b);
+    for (let i = 0; i < attempts; i++) {
+      signal.throwIfAborted();
+      try {
+        const f = this.info(await this.meta(p, signal), p);
+        if (f.hash === expectedHash) return f;
+      } catch (e) {
+        if ((e as { status?: number }).status !== 404) throw e;
+      }
+      if (i + 1 < attempts) await delay(500, undefined, { signal });
+    }
+    throw Error(
+      "Запись Яндекс Диска ещё не подтверждена ожидаемой checksum. Перепроверьте файлы; незавершённая операция сохранена.",
+    );
   }
   async delete(f: FileInfo, trash: boolean, signal: AbortSignal) {
     await this.check(f.path, f, signal);

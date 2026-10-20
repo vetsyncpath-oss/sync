@@ -8,7 +8,7 @@ import type {
   Operation,
 } from "./core/model";
 import { newProfile } from "./core/model";
-import { DriveStore } from "./sources/remotes";
+import { DriveStore, YandexStore, driveRoot } from "./sources/remotes";
 import { category, join, path } from "./core/paths";
 export const VIEW_TYPE = "sync-studio-workspace";
 const providers = {
@@ -17,6 +17,13 @@ const providers = {
   yandex: "Яндекс Диск",
   github: "GitHub",
 };
+function rootLabel(c?: Connection) {
+  return c?.provider === "yandex"
+    ? "Папка Яндекс Диска"
+    : c?.provider === "github"
+      ? "Репозиторий owner/repo"
+      : "Ссылка или ID папки Google Drive";
+}
 const directions = {
   pull: "Получать обновления",
   push: "Отправлять обновления",
@@ -62,10 +69,26 @@ function button(
   primary = false,
 ) {
   const b = el(at, "button", text, primary ? "mod-cta" : "");
-  b.onclick = () => {
-    void Promise.resolve()
-      .then(fn)
-      .catch((e) => new Notice((e as Error).message));
+  b.onclick = async () => {
+    if (b.disabled) return;
+    b.disabled = true;
+    b.setAttribute("aria-busy", "true");
+    try {
+      await fn();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      new Notice(message, 15000);
+      const target =
+        b.closest(".modal-content") || b.closest(".sync-studio") || at;
+      let error = target.querySelector<HTMLElement>(".ss-action-error");
+      if (!error)
+        error = el(target as HTMLElement, "p", "", "ss-banner ss-action-error");
+      error.setAttribute("role", "alert");
+      error.textContent = message;
+    } finally {
+      b.disabled = false;
+      b.removeAttribute("aria-busy");
+    }
   };
   return b;
 }
@@ -92,7 +115,7 @@ function text(
   const i = el(wrap, "input");
   i.type = type;
   i.value = value;
-  i.onchange = () => fn(i.value);
+  i.oninput = () => fn(i.value);
   return i;
 }
 function select(
@@ -157,9 +180,49 @@ class Dialog extends Modal {
   }
 }
 export class StudioView extends ItemView {
-  private page: "profiles" | "operations" | "import" = "profiles";
+  private page: "profiles" | "connections" | "operations" | "import" =
+    "profiles";
   private active = "";
   private tab = "scope";
+  private importDraft?: Profile;
+  private profileDrafts = new Map<
+    string,
+    { value: Profile; original: Profile; error?: string }
+  >();
+  private startEditing(p: Profile) {
+    this.profileDrafts.set(p.id, {
+      value: structuredClone(p),
+      original: structuredClone(p),
+    });
+    this.render();
+  }
+  private async saveEdits(id: string) {
+    const draft = this.profileDrafts.get(id);
+    if (!draft) return;
+    draft.error = undefined;
+    try {
+      await this.studio.saveProfile(draft.value, draft.original);
+      this.profileDrafts.delete(id);
+      new Notice("Профиль сохранён");
+    } catch (error) {
+      draft.error = error instanceof Error ? error.message : String(error);
+    }
+    this.render();
+  }
+  private editActions(at: HTMLElement, p: Profile) {
+    if (this.profileDrafts.has(p.id)) {
+      button(at, "Сохранить", () => this.saveEdits(p.id), true).disabled =
+        this.studio.busy;
+      button(at, "Отмена", () => {
+        if (this.studio.lastError === this.profileDrafts.get(p.id)?.error)
+          this.studio.lastError = "";
+        this.profileDrafts.delete(p.id);
+        this.render();
+      }).disabled = this.studio.busy;
+    } else
+      button(at, "Изменить", () => this.startEditing(p), true).disabled =
+        this.studio.busy;
+  }
   constructor(
     leaf: WorkspaceLeaf,
     private studio: SyncStudio,
@@ -197,15 +260,16 @@ export class StudioView extends ItemView {
     el(b, "small", "OBSIDIAN / SYNC STUDIO", "ss-kicker");
     el(b, "h1", "Ваши файлы. Ваши правила.");
     const actions = el(header, "div", "", "ss-actions");
-    badge(actions, "0.1 · Desktop alpha");
+    badge(actions, this.studio.manifest.version + " · Desktop alpha");
     if (this.studio.busy)
       button(actions, "Остановить", () => this.studio.controller?.abort());
     else badge(actions, this.studio.phase);
     const nav = el(root, "nav", "", "ss-topnav");
     for (const [key, value] of Object.entries({
       profiles: "01 / Профили",
-      operations: "02 / Центр операций",
-      import: "03 / Импорт",
+      connections: "02 / Подключения",
+      operations: "03 / Центр операций",
+      import: "04 / Импорт",
     })) {
       const b = button(nav, value, () => {
         this.page = key as typeof this.page;
@@ -215,8 +279,59 @@ export class StudioView extends ItemView {
     }
     if (this.studio.busy)
       banner(root, this.studio.phase + "… Настройки временно заблокированы.");
+    if (this.studio.lastError) {
+      const e = banner(root, this.studio.lastError);
+      e.setAttribute("role", "alert");
+      const collision = this.studio.collision;
+      if (collision)
+        button(e, "Исключить конфликтующие пути из профиля", async () => {
+          const p = this.studio.data.profiles.find(
+            (p) => p.id === collision.profileId,
+          );
+          if (!p) throw Error("Профиль удалён");
+          p.excludePaths = [
+            ...new Set([...p.excludePaths, ...collision.paths]),
+          ];
+          this.studio.collision = undefined;
+          this.studio.lastError = "";
+          await this.studio.save();
+          this.active = p.id;
+          this.page = "profiles";
+          this.tab = "scope";
+          this.render();
+          new Notice(
+            "Пути исключены. Их файлы остаются нетронутыми. Повторите проверку изменений.",
+          );
+        }).disabled = this.studio.busy;
+      button(e, "Скопировать диагностику", async () => {
+        await navigator.clipboard.writeText(
+          JSON.stringify(
+            {
+              version: this.studio.manifest.version,
+              phase: this.studio.phase,
+              error: this.studio.lastError,
+              collision: this.studio.collision?.paths,
+              recent: this.studio.data.history.slice(0, 5).map((r) => ({
+                at: r.at,
+                status: r.status,
+                applied: r.applied,
+                message: r.message,
+              })),
+            },
+            null,
+            2,
+          ),
+        );
+        new Notice("Диагностика скопирована. Токены и ключи не включены.");
+      });
+      button(e, "Скрыть", () => {
+        this.studio.lastError = "";
+        this.render();
+      });
+    }
     const content = el(root, "div");
     if (this.page === "profiles") this.profilePage(content);
+    else if (this.page === "connections") this.connectionPage(content);
     else if (this.page === "operations") this.operations(content);
     else this.importPage(content);
   }
@@ -241,16 +356,24 @@ export class StudioView extends ItemView {
       );
     }
     button(side, "＋ Новый профиль", async () => {
-      const p = newProfile(this.studio.data.connections[0]?.id);
-      this.studio.data.profiles.push(p);
+      const c = this.studio.data.connections[0];
+      if (!c) {
+        this.connections();
+        return;
+      }
+      const p = await this.studio.createProfile(c);
       this.active = p.id;
       this.tab = "route";
-      await this.save();
+      this.startEditing(p);
     }).disabled = this.studio.busy;
     el(side, "hr");
     button(side, "◎ Подключения", () => this.connections());
     button(side, "▧ Возможности", () => this.capabilities());
-    const p = this.selected();
+    const savedProfile = this.selected();
+    const edit = savedProfile
+      ? this.profileDrafts.get(savedProfile.id)
+      : undefined;
+    const p = edit?.value || savedProfile;
     if (!p) {
       title(
         main,
@@ -272,6 +395,7 @@ export class StudioView extends ItemView {
       `${directions[p.direction]} · ${p.localRoot || "Корень vault"}`,
     );
     const actions = el(head, "div", "", "ss-actions");
+    this.editActions(actions, p);
     button(actions, "Дублировать", async () => {
       const next = structuredClone(p);
       next.id = crypto.randomUUID();
@@ -280,13 +404,19 @@ export class StudioView extends ItemView {
       this.studio.data.profiles.push(next);
       this.active = next.id;
       await this.save();
-    }).disabled = this.studio.busy;
+    }).disabled = this.studio.busy || !!edit;
     button(
       actions,
       "Проверить изменения",
       async () => this.preview(await this.studio.inspect(p)),
       true,
-    ).disabled = this.studio.busy;
+    ).disabled = this.studio.busy || !!edit;
+    if (edit)
+      banner(
+        main,
+        "Редактирование профиля. Изменения применятся только после нажатия «Сохранить». Можно переключать вкладки — черновик останется.",
+      );
+    if (edit?.error) banner(main, edit.error).setAttribute("role", "alert");
     const nav = el(main, "nav", "", "ss-tabs");
     for (const [key, value] of Object.entries({
       scope: "Что переносить",
@@ -302,17 +432,20 @@ export class StudioView extends ItemView {
       b.toggleClass("is-active", this.tab === key);
     }
     const body = el(main, "fieldset");
-    body.disabled = this.studio.busy;
+    body.disabled = this.studio.busy || (!edit && this.tab !== "history");
     if (this.tab === "scope") this.scopePanel(body, p);
     else if (this.tab === "route") this.route(body, p);
     else if (this.tab === "behavior") this.behavior(body, p);
     else if (this.tab === "schedule") this.schedule(body, p);
     else this.history(body, p.id);
-    const footer = el(main, "footer", "", "ss-between");
+    const footer = el(main, "footer", "", "ss-between ss-profile-save");
+    this.editActions(el(footer, "div", "", "ss-actions"), p);
     el(
       footer,
       "small",
-      "Изменения сохраняются после завершения редактирования поля.",
+      edit
+        ? "Черновик не используется синхронизацией до сохранения."
+        : "Чтобы изменить настройки профиля, нажмите «Изменить».",
       "ss-muted",
     );
     button(footer, "Удалить профиль", () =>
@@ -336,15 +469,27 @@ export class StudioView extends ItemView {
           m.close();
         });
       }).open(),
-    ).disabled = this.studio.busy;
+    ).disabled = this.studio.busy || !!edit;
   }
   private patch<K extends keyof Profile>(
     p: Profile,
     key: K,
     value: Profile[K],
   ) {
+    if (this.profileDrafts.get(p.id)?.value !== p) return;
     p[key] = value;
-    void this.save().catch((e) => new Notice((e as Error).message));
+    if (key === "direction" && value === "both") p.oneWayMode = "tracked";
+    if (key === "direction" && value !== "pull") p.driveDuplicates = "error";
+    if (
+      [
+        "scope",
+        "connectionId",
+        "sourceConnectionId",
+        "direction",
+        "oneWayMode",
+      ].includes(key)
+    )
+      this.render();
   }
   private scopePanel(at: HTMLElement, p: Profile) {
     title(
@@ -438,11 +583,11 @@ export class StudioView extends ItemView {
     );
     if (p.sourceKind) {
       const source = card(at);
-      el(source, "h3", "Внешний источник");
-      text(source, "Папка / корень источника", p.sourceRoot || "", (v) =>
-        this.patch(p, "sourceRoot", v),
+      const connection = this.studio.data.connections.find(
+        (c) => c.id === p.sourceConnectionId,
       );
-      if (p.sourceKind === "connection") {
+      el(source, "h3", "Внешний источник");
+      if (p.sourceKind === "connection")
         select(
           source,
           "Подключение источника",
@@ -450,14 +595,38 @@ export class StudioView extends ItemView {
           Object.fromEntries(
             this.studio.data.connections.map((c) => [c.id, c.name]),
           ),
-          (v) => this.patch(p, "sourceConnectionId", v),
+          (v) => {
+            const c = this.studio.data.connections.find((c) => c.id === v);
+            p.sourceRoot = c?.root || "";
+            this.patch(p, "sourceConnectionId", v);
+          },
         );
-        text(source, "Ветка GitHub", p.sourceBranch || "main", (v) =>
-          this.patch(p, "sourceBranch", v),
-        );
-        text(source, "Подкаталог GitHub", p.sourceSubpath || "", (v) =>
-          this.patch(p, "sourceSubpath", v),
-        );
+      text(
+        source,
+        p.sourceKind === "folder"
+          ? "Абсолютный путь папки"
+          : rootLabel(connection),
+        p.sourceRoot || "",
+        (v) => this.patch(p, "sourceRoot", v),
+      );
+      if (p.sourceKind === "connection" && connection) {
+        if (connection.provider === "github") {
+          text(
+            source,
+            "Ветка GitHub (пусто = по умолчанию)",
+            p.sourceBranch || "",
+            (v) => this.patch(p, "sourceBranch", v),
+          );
+          text(source, "Подкаталог GitHub", p.sourceSubpath || "", (v) =>
+            this.patch(p, "sourceSubpath", v),
+          );
+        } else
+          button(source, "Выбрать папку источника", () =>
+            this.pickFolder(connection, p.sourceRoot || "", async (root) => {
+              this.patch(p, "sourceRoot", root);
+              this.render();
+            }),
+          );
       }
     }
     text(at, "Название профиля", p.name, (v) => this.patch(p, "name", v));
@@ -473,7 +642,22 @@ export class StudioView extends ItemView {
         ["", "Выберите подключение"],
         ...this.studio.data.connections.map((c) => [c.id, c.name]),
       ]),
-      (v) => this.patch(p, "connectionId", v),
+      (v) => {
+        const connection = this.studio.data.connections.find((c) => c.id === v);
+        p.remoteRoot =
+          connection?.root ||
+          (connection?.provider === "gdrive"
+            ? "root"
+            : connection?.provider === "yandex"
+              ? "disk:/"
+              : "");
+        if (
+          connection?.provider === "github" ||
+          connection?.provider === "gdrive-public"
+        )
+          p.direction = "pull";
+        this.patch(p, "connectionId", v);
+      },
     );
     const c = this.studio.data.connections.find((c) => c.id === p.connectionId);
     text(
@@ -486,10 +670,29 @@ export class StudioView extends ItemView {
       p.remoteRoot,
       (v) => this.patch(p, "remoteRoot", v),
     );
-    if (c?.provider === "gdrive" || c?.provider === "gdrive-public")
-      button(remote, "Выбрать папку Drive", () => this.pickDrive(p));
+    if (c) {
+      button(remote, "Редактировать подключение", () => this.editConnection(c));
+      if (c.provider !== "github")
+        button(remote, "Выбрать папку", () =>
+          this.pickFolder(c, p.remoteRoot, async (root) => {
+            this.patch(p, "remoteRoot", root);
+            this.render();
+          }),
+        );
+      button(remote, "Проверить доступ к папке", async () => {
+        const result = await this.studio.exclusive(
+          "Проверка доступа",
+          (signal) => this.studio.checkRoot(p, signal),
+        );
+        new Dialog(this.app, (at) =>
+          title(at, "Доступ подтверждён", result),
+        ).open();
+      });
+    }
     if (c?.provider === "github") {
-      text(remote, "Ветка / тег", p.branch, (v) => this.patch(p, "branch", v));
+      text(remote, "Ветка / тег (пусто = ветка по умолчанию)", p.branch, (v) =>
+        this.patch(p, "branch", v),
+      );
       text(remote, "Подкаталог репозитория", p.subpath, (v) =>
         this.patch(p, "subpath", v),
       );
@@ -516,7 +719,7 @@ export class StudioView extends ItemView {
     );
     banner(
       at,
-      "Получение не записывает в источник. Отправка не изменяет локальный оригинал. Зеркалирование локальных неизвестных файлов в этой версии отсутствует.",
+      "Получение не записывает в источник. Отправка не изменяет локальный оригинал.",
     );
   }
   private behavior(at: HTMLElement, p: Profile) {
@@ -525,6 +728,45 @@ export class StudioView extends ItemView {
       "Что делать с изменениями",
       "Политика удаления не подменяется политикой конфликтов.",
     );
+    if (p.direction !== "both") {
+      select(
+        at,
+        "Режим одного направления",
+        p.oneWayMode || "tracked",
+        {
+          tracked: "Отслеживать изменения и подтверждённые удаления",
+          mirror: "Зеркало: источник имеет приоритет",
+        },
+        (v) => this.patch(p, "oneWayMode", v as Profile["oneWayMode"]),
+      );
+      if (p.oneWayMode === "mirror")
+        banner(
+          at,
+          "Зеркало заменяет отличающиеся файлы версией источника. При включённых удалениях лишние файлы назначения удаляются уже при первом запуске. Политики конфликтов ниже действуют только в режиме отслеживания.",
+        );
+    }
+    if (
+      p.direction === "pull" &&
+      this.studio.data.connections
+        .find((c) => c.id === p.connectionId)
+        ?.provider.startsWith("gdrive")
+    ) {
+      select(
+        at,
+        "Одноимённые файлы в Drive",
+        p.driveDuplicates || "error",
+        {
+          error: "Остановиться и показать коллизию",
+          newest: "Получать новейший дубль (по Sync Engine)",
+        },
+        (v) =>
+          this.patch(p, "driveDuplicates", v as Profile["driveDuplicates"]),
+      );
+      banner(
+        at,
+        "Выбор новейшего дубля действует только для получения файлов. Дубли папок и коллизии регистра требуют переименования или исключения. Другие копии в Drive остаются нетронутыми.",
+      );
+    }
     select(at, "Если версии различаются", p.conflict, policies, (v) =>
       this.patch(p, "conflict", v as Profile["conflict"]),
     );
@@ -686,12 +928,14 @@ export class StudioView extends ItemView {
       "Соедините нужные папки",
       "Импорт идёт через это устройство. Промежуточные файлы не добавляются в vault.",
     );
-    const draft = newProfile();
-    draft.name = "Импорт внешних материалов";
-    draft.direction = "push";
-    draft.sourceKind = "folder";
-    draft.sourceRoot = "";
-    draft.sourceBranch = "main";
+    const draft = (this.importDraft ||= {
+      ...newProfile(),
+      name: "Импорт внешних материалов",
+      direction: "push",
+      sourceKind: "folder",
+      sourceRoot: "",
+      sourceBranch: "",
+    });
     const g = grid(main),
       left = card(g),
       right = card(g);
@@ -699,7 +943,9 @@ export class StudioView extends ItemView {
     select(
       left,
       "Источник",
-      "folder",
+      draft.sourceKind === "folder"
+        ? "folder"
+        : draft.sourceConnectionId || "folder",
       Object.fromEntries([
         ["folder", "Папка на компьютере"],
         ...this.studio.data.connections.map((c) => [c.id, c.name]),
@@ -707,26 +953,49 @@ export class StudioView extends ItemView {
       (v) => {
         draft.sourceKind = v === "folder" ? "folder" : "connection";
         draft.sourceConnectionId = v === "folder" ? undefined : v;
+        draft.sourceRoot =
+          this.studio.data.connections.find((c) => c.id === v)?.root || "";
+        this.render();
       },
     );
+    const sourceConnection = this.studio.data.connections.find(
+      (c) => c.id === draft.sourceConnectionId,
+    );
     text(
       left,
-      "Абсолютный путь / ID папки / owner/repo",
-      "",
+      draft.sourceKind === "folder"
+        ? "Абсолютный путь папки"
+        : rootLabel(sourceConnection),
+      draft.sourceRoot || "",
       (v) => (draft.sourceRoot = v),
     );
-    text(
-      left,
-      "Ветка GitHub (если применимо)",
-      "main",
-      (v) => (draft.sourceBranch = v),
-    );
-    text(
-      left,
-      "Подкаталог GitHub (необязательно)",
-      "",
-      (v) => (draft.sourceSubpath = v),
-    );
+    if (
+      sourceConnection?.provider === "github" &&
+      draft.sourceKind === "connection"
+    ) {
+      text(
+        left,
+        "Ветка GitHub (пусто = по умолчанию)",
+        draft.sourceBranch || "",
+        (v) => (draft.sourceBranch = v),
+      );
+      text(
+        left,
+        "Подкаталог GitHub",
+        draft.sourceSubpath || "",
+        (v) => (draft.sourceSubpath = v),
+      );
+    } else if (sourceConnection && draft.sourceKind === "connection")
+      button(left, "Выбрать папку источника", () =>
+        this.pickFolder(
+          sourceConnection,
+          draft.sourceRoot || "",
+          async (root) => {
+            draft.sourceRoot = root;
+            this.render();
+          },
+        ),
+      );
     el(
       left,
       "p",
@@ -737,20 +1006,32 @@ export class StudioView extends ItemView {
     const targets = this.studio.data.connections.filter(
       (c) => c.provider === "gdrive" || c.provider === "yandex",
     );
-    draft.connectionId = targets[0]?.id || "";
+    draft.connectionId ||= targets[0]?.id || "";
     select(
       right,
       "Подключение назначения",
       draft.connectionId,
       Object.fromEntries(targets.map((c) => [c.id, c.name])),
-      (v) => (draft.connectionId = v),
+      (v) => {
+        draft.connectionId = v;
+        draft.remoteRoot = targets.find((c) => c.id === v)?.root || "";
+        this.render();
+      },
     );
     text(
       right,
-      "Существующая папка Drive / путь Яндекс Диска",
-      "",
+      rootLabel(targets.find((c) => c.id === draft.connectionId)),
+      draft.remoteRoot,
       (v) => (draft.remoteRoot = v),
     );
+    const targetConnection = targets.find((c) => c.id === draft.connectionId);
+    if (targetConnection)
+      button(right, "Выбрать папку назначения", () =>
+        this.pickFolder(targetConnection, draft.remoteRoot, async (root) => {
+          draft.remoteRoot = root;
+          this.render();
+        }),
+      );
     text(right, "Название профиля", draft.name, (v) => (draft.name = v));
     select(
       right,
@@ -771,7 +1052,9 @@ export class StudioView extends ItemView {
       async () => {
         if (!draft.sourceRoot || !draft.remoteRoot || !draft.connectionId)
           throw Error("Заполните источник и назначение");
-        this.studio.data.profiles.push(draft);
+        if (!this.studio.data.profiles.some((p) => p.id === draft.id))
+          this.studio.data.profiles.push(draft);
+        this.importDraft = undefined;
         this.active = draft.id;
         this.page = "profiles";
         this.tab = "route";
@@ -806,129 +1089,316 @@ export class StudioView extends ItemView {
     }).open();
   }
   private connections() {
-    new Dialog(this.app, (at, m) => {
-      title(
-        at,
-        "Подключения",
-        "Аккаунты независимы от профилей. Секреты хранятся через Obsidian Secret Storage.",
+    this.page = "connections";
+    this.render();
+  }
+  private connectionPage(at: HTMLElement) {
+    title(
+      at,
+      "Подключения",
+      "Сначала подключите сервис и проверьте папку, затем создайте профиль. Любое подключение можно открыть повторно.",
+    );
+    for (const c of this.studio.data.connections) {
+      const box = card(at);
+      title(box, c.name, providers[c.provider]);
+      el(box, "p", c.root || "Папка выбирается в профиле");
+      el(
+        box,
+        "small",
+        c.checkedAt
+          ? `Проверено ${new Date(c.checkedAt).toLocaleString()}: ${c.accountLabel || "доступ подтверждён"}`
+          : "Доступ ещё не проверен",
+        "ss-muted",
       );
-      for (const c of this.studio.data.connections) {
-        const r = row(at, c.name, providers[c.provider]);
-        button(r, "Настроить", () => {
-          m.close();
-          this.editConnection(c);
-        }).disabled = this.studio.busy;
-      }
-      button(at, "＋ Добавить", () => {
-        m.close();
+      button(box, "Редактировать", () => this.editConnection(c)).disabled =
+        this.studio.busy;
+      button(box, "Создать профиль", () => this.profileFor(c)).disabled =
+        this.studio.busy;
+      button(box, "Проверить подключение", async () => {
+        c.accountLabel = await this.studio.exclusive(
+          "Проверка подключения",
+          (signal) => this.studio.testConnection(c, signal),
+        );
+        c.checkedAt = Date.now();
+        await this.save();
+      }).disabled = this.studio.busy;
+    }
+    button(
+      at,
+      "＋ Добавить подключение",
+      () => {
         const id = crypto.randomUUID();
         this.editConnection(
           {
             id,
-            name: "Новое подключение",
+            name: "Google Drive",
             provider: "gdrive",
             secretRef: "sync-studio-" + id,
+            root: "root",
           },
           true,
         );
-      }).disabled = this.studio.busy;
-    }).open();
+      },
+      true,
+    ).disabled = this.studio.busy;
+  }
+  private async profileFor(c: Connection) {
+    const p = await this.studio.createProfile(c);
+    this.active = p.id;
+    this.page = "profiles";
+    this.tab = "route";
+    this.render();
   }
   private editConnection(original: Connection, isNew = false) {
     const c = structuredClone(original);
-    new Dialog(this.app, (at, m) => {
-      title(at, "Подключение");
-      text(at, "Название", c.name, (v) => (c.name = v));
-      const provider = select(
-        at,
-        "Сервис",
-        c.provider,
-        providers,
-        (v) => (c.provider = v as Connection["provider"]),
-      );
-      provider.disabled = !isNew;
-      let value = "";
-      text(
-        at,
-        "Токен / API key (кроме Google OAuth)",
-        value,
-        (v) => (value = v),
-        "password",
-      );
-      el(
-        at,
-        "p",
-        "Для Google OAuth импортируйте JSON клиента типа Desktop app из Google Cloud. У существующего подключения пустое поле токена сохраняет прежний секрет.",
-        "ss-muted",
-      );
-      const label = el(at, "label", "", "ss-field");
-      el(label, "span", "Google Desktop OAuth client JSON");
-      const json = el(label, "textarea");
-      json.rows = 5;
-      json.placeholder = '{"installed": {"client_id": "…"}}';
-      const file = el(label, "input");
-      file.type = "file";
-      file.accept = ".json,application/json";
-      file.onchange = () => {
-        const f = file.files?.[0];
-        if (f)
-          void f.text().then((s) => {
-            json.value = s;
-          });
-      };
-      const persist = async () => {
-        if (!c.name.trim()) throw Error("Укажите название");
-        if (isNew) {
-          if (!this.studio.data.connections.some((x) => x.id === c.id))
-            this.studio.data.connections.push(c);
-        } else Object.assign(original, c);
-        await this.studio.save();
-      };
-      button(
-        at,
-        "Подключить Google OAuth",
-        async () => {
-          if (c.provider !== "gdrive")
-            throw Error("Выберите Google Drive OAuth");
-          await this.studio.connectGoogle(c, json.value);
-          await persist();
-          m.close();
-          this.render();
-        },
-        true,
-      );
-      button(at, "Сохранить", async () => {
-        if (c.provider === "gdrive" && !c.clientId)
-          throw Error("Сначала выполните Google OAuth");
-        if (value) this.studio.setSecret(c, value);
-        if (
-          c.provider !== "github" &&
-          c.provider !== "gdrive" &&
-          !this.studio.getSecret(c)
-        )
-          throw Error("Требуется токен / API key");
-        await persist();
-        m.close();
-        this.render();
-      });
-      if (!isNew)
-        button(at, "Отключить на этом устройстве", async () => {
-          await this.studio.disconnect(original);
-          m.close();
-          this.render();
+    let saved = !isNew,
+      value = "",
+      oauthJSON = "",
+      status = "",
+      running = false;
+    let secretDraft = false;
+    const isolateSecret = () => {
+      if (secretDraft) return;
+      const old = this.studio.getSecret(c);
+      c.secretRef = "sync-studio-" + crypto.randomUUID();
+      if (old) this.studio.setSecret(c, old);
+      secretDraft = true;
+    };
+    let task: AbortController | undefined;
+    const modal = new Dialog(this.app, (at, m) => {
+      const draw = () => {
+        at.empty();
+        title(
+          at,
+          saved ? "Редактирование подключения" : "Новое подключение",
+          "1. Доступ → 2. Папка и проверка → 3. Сохранение и профиль",
+        );
+        const form = el(at, "fieldset");
+        form.disabled = running;
+        text(form, "Название", c.name, (v) => (c.name = v));
+        const provider = select(form, "Сервис", c.provider, providers, (v) => {
+          c.provider = v as Connection["provider"];
+          c.secretRef = "sync-studio-" + crypto.randomUUID();
+          secretDraft = true;
+          c.clientId = undefined;
+          c.clientSecretRef = undefined;
+          c.subject = undefined;
+          c.checkedAt = undefined;
+          c.accountLabel = undefined;
+          c.name = providers[c.provider];
+          c.root =
+            c.provider === "gdrive"
+              ? "root"
+              : c.provider === "yandex"
+                ? "disk:/"
+                : "";
+          value = "";
+          status = "";
+          draw();
         });
-      banner(
-        at,
-        "Выбор папки ограничивает работу профиля, но не OAuth-права аккаунта. Google OAuth запрашивает drive для существующих файлов. Отозвать доступ полностью можно в настройках Google-аккаунта.",
-      );
-    }).open();
+        provider.disabled = saved;
+        if (c.provider === "gdrive") {
+          el(
+            form,
+            "p",
+            c.clientId && this.studio.getSecret(c)
+              ? "Google авторизован. Можно проверить папку, сохранить или войти заново."
+              : "Загрузите JSON клиента Desktop app из Google Cloud, затем войдите в браузере.",
+          );
+          const label = el(form, "label", "", "ss-field");
+          el(label, "span", "Google Desktop OAuth client JSON");
+          const input = el(label, "textarea");
+          input.rows = 4;
+          input.value = oauthJSON;
+          input.oninput = () => (oauthJSON = input.value);
+          const file = el(label, "input");
+          file.type = "file";
+          file.accept = ".json,application/json";
+          file.onchange = async () => {
+            try {
+              if (file.files?.[0]) {
+                oauthJSON = await file.files[0].text();
+                input.value = oauthJSON;
+              }
+            } catch (e) {
+              status = String(e);
+              draw();
+            }
+          };
+          button(
+            form,
+            c.clientId ? "Войти заново в Google" : "Войти в Google",
+            () =>
+              run(async () => {
+                isolateSecret();
+                await this.studio.connectGoogle(c, oauthJSON);
+                status =
+                  "Google авторизован. Выберите папку и сохраните подключение.";
+              }),
+            true,
+          );
+        } else {
+          const labels = {
+            yandex: "OAuth-токен Яндекс Диска",
+            github: "GitHub token (необязательно для публичных репозиториев)",
+            "gdrive-public": "Google Drive API key",
+          };
+          const hints = {
+            yandex:
+              "Нужен OAuth-токен Яндекса с доступом к Диску. Для отправки нужны права записи. Это не Google OAuth.",
+            github:
+              "Для приватного репозитория нужен token с Contents: read. Публичный репозиторий можно читать без токена.",
+            "gdrive-public":
+              "Папка должна быть доступна по ссылке. API key — из проекта Google Cloud с включённым Drive API. Только чтение.",
+          };
+          text(form, labels[c.provider], value, (v) => (value = v), "password");
+          el(form, "p", hints[c.provider], "ss-muted");
+          if (saved) el(form, "small", "Пустое поле сохраняет прежний секрет.");
+        }
+        text(
+          form,
+          c.provider === "yandex"
+            ? "Папка Яндекс Диска (disk:/ = весь диск)"
+            : c.provider === "github"
+              ? "Репозиторий owner/repo"
+              : "Ссылка или ID папки Google Drive",
+          c.root || "",
+          (v) => {
+            c.root = v.trim();
+            c.checkedAt = undefined;
+            c.accountLabel = undefined;
+          },
+        );
+        el(
+          form,
+          "small",
+          "Папка подключения используется для новых профилей. Папку существующего профиля меняйте на вкладке «Подключение».",
+          "ss-muted",
+        );
+        const stageSecret = () => {
+          if (value.trim() && value.trim() !== this.studio.getSecret(c)) {
+            isolateSecret();
+            this.studio.setSecret(c, value.trim());
+            c.checkedAt = undefined;
+            c.accountLabel = undefined;
+          }
+        };
+        if (c.provider !== "github")
+          button(form, "Выбрать папку", async () => {
+            stageSecret();
+            await this.pickFolder(c, c.root || "", async (root) => {
+              c.root = root;
+              draw();
+            });
+          });
+        button(form, "Проверить подключение и папку", () =>
+          run(async () => {
+            stageSecret();
+            task = new AbortController();
+            c.accountLabel = await this.studio.exclusive(
+              "Проверка подключения",
+              (signal) => {
+                task!.signal.addEventListener(
+                  "abort",
+                  () => this.studio.controller?.abort(),
+                  { once: true },
+                );
+                return this.studio.testConnection(c, signal);
+              },
+            );
+            c.checkedAt = Date.now();
+            status = c.accountLabel + ". Теперь сохраните подключение.";
+          }),
+        );
+        const persist = async () => {
+          stageSecret();
+          await this.studio.saveConnection(c);
+          saved = true;
+          secretDraft = false;
+          value = "";
+          this.render();
+        };
+        button(
+          form,
+          "Сохранить подключение",
+          () =>
+            run(async () => {
+              await persist();
+              status =
+                "Подключение сохранено. Создайте профиль или нажмите «Готово».";
+            }),
+          true,
+        );
+        button(
+          form,
+          "Сохранить и создать профиль",
+          () =>
+            run(async () => {
+              await persist();
+              await this.profileFor(c);
+              m.close();
+            }),
+          true,
+        );
+        if (saved)
+          button(form, "Отключить аккаунт", () =>
+            run(async () => {
+              await this.studio.disconnect(c);
+              c.checkedAt = undefined;
+              status =
+                "Аккаунт отключён. Профили приостановлены. Можно подключиться заново.";
+              await this.studio.saveConnectionMetadata(c);
+              this.render();
+            }),
+          );
+        if (status) {
+          const note = banner(at, status);
+          note.setAttribute("role", "status");
+        }
+        if (running) {
+          banner(
+            at,
+            "Выполняется… Для Google завершите вход в браузере и вернитесь сюда.",
+          );
+          button(at, "Отменить операцию", () => {
+            task?.abort(new Error("Отменено"));
+            this.studio.cancelGoogle();
+          });
+        }
+        button(at, "Готово / закрыть", () => m.close()).disabled = running;
+      };
+      const run = async (fn: () => Promise<void>) => {
+        if (running) return;
+        running = true;
+        status = "";
+        draw();
+        try {
+          await fn();
+        } catch (e) {
+          status = e instanceof Error ? e.message : String(e);
+        } finally {
+          running = false;
+          task = undefined;
+          if (at.isConnected) draw();
+        }
+      };
+      draw();
+    });
+    const close = modal.onClose.bind(modal);
+    modal.onClose = () => {
+      task?.abort();
+      if (running) this.studio.cancelGoogle();
+      close();
+    };
+    modal.open();
   }
   private async folderScope(p: Profile) {
     await this.studio.exclusive("Получение дерева папок", async (signal) => {
+      const browse = { ...p, scope: "all" as const, folders: [] };
       const source =
         p.direction === "push"
-          ? await this.studio.local(p)
-          : await this.studio.remote(p);
+          ? await this.studio.local(browse)
+          : await this.studio.remote(browse);
       const snap = await source.scan(signal);
       if (!snap.complete) throw Error("Дерево неполно");
       const dirs = new Set<string>();
@@ -969,7 +1439,7 @@ export class StudioView extends ItemView {
             if (!chosen.size) throw Error("Выберите хотя бы одну папку");
             p.scope = "folders";
             p.folders = [...chosen];
-            await this.save();
+            this.render();
             m.close();
           },
           true,
@@ -977,58 +1447,90 @@ export class StudioView extends ItemView {
       }).open();
     });
   }
-  private async pickDrive(p: Profile) {
-    await this.studio.exclusive("Чтение папок Drive", async (signal) => {
-      const temp = { ...p, remoteRoot: p.remoteRoot || "root" };
-      const store = await this.studio.remote(temp);
-      if (!(store instanceof DriveStore)) throw Error("Выберите Google Drive");
-      const stack: { id: string; name: string }[] = [
-        { id: p.remoteRoot ? "root" : "root", name: "Начальная папка" },
-      ];
-      const { driveRoot } = await import("./sources/remotes");
-      stack[0].id = driveRoot(temp.remoteRoot);
-      const navigate = async (id: string, name: string) => {
-        const folders = (await store.children(id, signal)).filter(
-          (f) => f.mimeType === "application/vnd.google-apps.folder",
-        );
-        new Dialog(this.app, (at, m) => {
-          title(
-            at,
-            name,
-            "Выберите существующую папку; файлы других приложений не скрываются.",
-          );
-          for (const f of folders) {
-            const r = row(at, f.name);
-            button(r, "Открыть", async () => {
-              m.close();
-              await this.pickDrive({ ...p, remoteRoot: f.id });
+  private async pickFolder(
+    c: Connection,
+    root: string,
+    chosen: (root: string) => Promise<void>,
+  ) {
+    const signal = new AbortController();
+    const base = c.provider === "yandex" ? "disk:/" : root || "root";
+    const p = { ...newProfile(c.id), remoteRoot: base };
+    const store = await this.studio.remote(p, c, signal.signal);
+    const stack = [
+      {
+        id:
+          c.provider === "yandex"
+            ? root
+                .replace(/^disk:\//, "")
+                .replace(/^\//, "")
+                .replace(/\/$/, "")
+            : driveRoot(base),
+        name: root || "Корень",
+      },
+    ];
+    const modal = new Dialog(this.app, (at, m) => {
+      const draw = async () => {
+        at.empty();
+        const current = stack[stack.length - 1];
+        title(at, "Выбор папки", current.name);
+        const status = el(at, "p", "Загрузка папок…");
+        try {
+          const folders =
+            store instanceof DriveStore
+              ? (await store.children(current.id, signal.signal)).filter(
+                  (f) => f.mimeType === "application/vnd.google-apps.folder",
+                )
+              : store instanceof YandexStore
+                ? await store.folders(current.id, signal.signal)
+                : [];
+          if (!at.isConnected || signal.signal.aborted) return;
+          status.textContent = folders.length
+            ? "Откройте папку или выберите текущую."
+            : "Вложенных папок нет. Можно выбрать текущую.";
+          if (stack.length > 1)
+            button(at, "← Назад", async () => {
+              stack.pop();
+              await draw();
             });
-            button(r, "Выбрать", async () => {
-              const target = this.studio.data.profiles.find(
-                (x) => x.id === p.id,
-              )!;
-              target.remoteRoot = f.id;
-              await this.save();
-              m.close();
+          if (c.provider !== "gdrive-public")
+            button(at, "В корень диска", async () => {
+              stack.splice(0, stack.length, {
+                id: c.provider === "yandex" ? "" : "root",
+                name: "Корень диска",
+              });
+              await draw();
             });
-          }
+          for (const f of folders)
+            button(at, "📁 " + f.name, async () => {
+              stack.push({ id: f.id, name: f.name });
+              await draw();
+            });
           button(
             at,
-            "Использовать текущую папку",
+            "Выбрать текущую папку",
             async () => {
-              const target = this.studio.data.profiles.find(
-                (x) => x.id === p.id,
-              )!;
-              target.remoteRoot = id;
-              await this.save();
+              await chosen(
+                c.provider === "yandex" ? "disk:/" + current.id : current.id,
+              );
               m.close();
             },
             true,
           );
-        }).open();
+        } catch (e) {
+          if (!signal.signal.aborted) {
+            status.textContent = e instanceof Error ? e.message : String(e);
+            button(at, "Повторить", draw);
+          }
+        }
       };
-      await navigate(stack[0].id, p.remoteRoot || "Мой диск");
+      void draw();
     });
+    const close = modal.onClose.bind(modal);
+    modal.onClose = () => {
+      signal.abort();
+      close();
+    };
+    modal.open();
   }
   private preview(plan: Plan) {
     new Dialog(this.app, (at, m) => {
@@ -1084,8 +1586,21 @@ export class StudioView extends ItemView {
         actions,
         "Выполнить этот план",
         async () => {
-          m.close();
           const log = await this.studio.apply(plan);
+          if (log.status === "failed" || log.status === "partial") {
+            banner(at, log.message);
+            button(at, "Перепроверить файлы", async () => {
+              const current = this.studio.data.profiles.find(
+                (p) => p.id === plan.profile.id,
+              );
+              if (!current) throw Error("Профиль удалён");
+              const next = await this.studio.inspect(current);
+              m.close();
+              this.preview(next);
+            });
+            return;
+          }
+          m.close();
           new Notice(log.message);
           this.page = "operations";
           this.render();

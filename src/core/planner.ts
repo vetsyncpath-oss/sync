@@ -7,7 +7,7 @@ import type {
   Snapshot,
   Action,
 } from "./model";
-import { selected, validate } from "./paths";
+import { selected, validate, compatiblePaths } from "./paths";
 export const policyKey = (p: Profile) =>
   JSON.stringify([
     p.direction,
@@ -15,6 +15,7 @@ export const policyKey = (p: Profile) =>
     p.conflictWhen,
     p.deletion,
     p.deleteConflict,
+    ...(p.oneWayMode === "mirror" ? ["mirror"] : []),
   ]);
 export function plan(
   profile: Profile,
@@ -28,6 +29,7 @@ export function plan(
     throw Error(
       "Неполный список файлов: план не построен, удаления запрещены.",
     );
+  compatiblePaths(local, remote);
   const identity = JSON.stringify([local.identity, remote.identity]);
   if (baseline.identity !== identity) baseline = { identity, files: {} };
   const operations: Operation[] = [];
@@ -62,6 +64,28 @@ export function plan(
     )
       continue;
     const emit = (a: Action, why: string) => add(p, a, why, l, r);
+    // Mirror is source-authoritative, including the first run. It is opt-in;
+    // existing profiles keep the database-based, tracked-deletion semantics.
+    if (profile.oneWayMode === "mirror") {
+      const source = profile.direction === "pull" ? r : l;
+      const target = profile.direction === "pull" ? l : r;
+      if (!source && target)
+        emit(
+          profile.deletion === "ignore"
+            ? "skip"
+            : profile.direction === "pull"
+              ? "delete-local"
+              : "delete-remote",
+          "Зеркало: файл отсутствует в источнике",
+        );
+      else if (source && source.hash !== target?.hash)
+        emit(
+          profile.direction === "pull" ? "download" : "upload",
+          "Зеркало: содержимое источника имеет приоритет",
+        );
+      else emit("adopt", "Зеркало: содержимое совпадает");
+      continue;
+    }
     if (!l && !r) {
       emit("adopt", "Обе версии отсутствуют");
       continue;
@@ -171,6 +195,13 @@ export function plan(
         "Выигрывает удалённая версия",
       );
   }
+  // Copy the replacement before deleting the old path (rename fallback).
+  // A failed transfer must not erase the receiving side's only existing copy.
+  operations.sort(
+    (a, b) =>
+      Number(a.action.startsWith("delete-")) -
+      Number(b.action.startsWith("delete-")),
+  );
   return {
     id: crypto.randomUUID(),
     created: Date.now(),

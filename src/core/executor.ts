@@ -7,7 +7,7 @@ import type {
   RunLog,
   Store,
 } from "./model";
-import { sha } from "./paths";
+import { sha, compatiblePaths } from "./paths";
 import { policyKey } from "./planner";
 export interface ExecutorPorts {
   checkpoint(baseline: Baseline): Promise<void>;
@@ -20,7 +20,7 @@ export interface ExecutorPorts {
   ): Promise<void>;
 }
 const fingerprint = (f: FileInfo | undefined) =>
-  f ? JSON.stringify([f.id, f.version, f.hash]) : "";
+  f ? JSON.stringify([f.id, f.version, f.hash, f.size, f.mtime]) : "";
 export async function execute(
   plan: Plan,
   local: Store,
@@ -31,6 +31,12 @@ export async function execute(
 ): Promise<RunLog> {
   const state = structuredClone(plan.baseline),
     details: RunLog["details"] = [];
+  const operations = [...plan.operations].sort(
+    (a, b) =>
+      Number(a.action.startsWith("delete-")) -
+      Number(b.action.startsWith("delete-")),
+  );
+  let currentOperation: Operation | undefined;
   let dirty = false;
   let applied = 0,
     conflicts = 0,
@@ -46,7 +52,8 @@ export async function execute(
       JSON.stringify([ls.identity, rs.identity]) !== plan.identity
     )
       throw Error("Источник недоступен или изменился. Постройте новый план.");
-    for (const op of plan.operations) {
+    compatiblePaths(ls, rs);
+    for (const op of operations) {
       signal.throwIfAborted();
       if (
         fingerprint(
@@ -58,7 +65,8 @@ export async function execute(
       )
         throw Error("Файл изменился после просмотра плана: " + op.path);
     }
-    for (const op of plan.operations) {
+    for (const op of operations) {
+      currentOperation = op;
       signal.throwIfAborted();
       let l = op.local,
         r = op.remote;
@@ -163,6 +171,12 @@ export async function execute(
   } catch (e) {
     status = signal.aborted ? "cancelled" : applied ? "partial" : "failed";
     message = e instanceof Error ? e.message : "Ошибка выполнения";
+    if (currentOperation)
+      details.push({
+        path: currentOperation.path,
+        action: currentOperation.action,
+        status: "Ошибка: " + message,
+      });
   }
   return {
     id: plan.id,

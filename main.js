@@ -1,12 +1,9 @@
-/* Sync Studio 0.1.0 — independent synchronization core. See THIRD_PARTY.md. */
+/* Sync Studio 0.3.0 — independent synchronization core. See THIRD_PARTY.md. */
 "use strict";
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
-var __esm = (fn, res) => function __init() {
-  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -21,7 +18,49 @@ var __copyProps = (to, from, except, desc) => {
 };
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
+// main.ts
+var main_exports = {};
+__export(main_exports, {
+  default: () => SyncStudio
+});
+module.exports = __toCommonJS(main_exports);
+
+// src/controller.ts
+var import_obsidian2 = require("obsidian");
+
+// src/core/model.ts
+function newProfile(connectionId = "") {
+  return {
+    id: crypto.randomUUID(),
+    name: "\u041D\u043E\u0432\u044B\u0439 \u043F\u0440\u043E\u0444\u0438\u043B\u044C",
+    connectionId,
+    remoteRoot: "",
+    localRoot: "",
+    branch: "",
+    subpath: "",
+    direction: "pull",
+    scope: "all",
+    folders: [],
+    categories: ["notes", "attachments"],
+    excludePaths: [],
+    excludeData: true,
+    excludeWorkspace: true,
+    maxMB: 50,
+    conflict: "both",
+    conflictWhen: "both-changed",
+    deletion: "ignore",
+    deleteConflict: "ask",
+    intervalMinutes: 15,
+    startup: false,
+    onChange: false,
+    enabled: false,
+    confirmDeletes: true
+  };
+}
+
 // src/core/paths.ts
+var import_node_crypto = require("node:crypto");
+var sha = (b) => (0, import_node_crypto.createHash)("sha256").update(b).digest("hex");
 function path(value, allowEmpty = false) {
   const v = value.replace(/\/$/, "");
   if (!v && allowEmpty) return "";
@@ -31,16 +70,75 @@ function path(value, allowEmpty = false) {
     throw Error("\u041D\u0435\u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043C\u044B\u0439 \u043E\u0442\u043D\u043E\u0441\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0439 \u043F\u0443\u0442\u044C: " + value);
   return v;
 }
+var join = (a, b) => a ? a + "/" + b : b;
+var under = (p, root) => !root || p === root || p.startsWith(root + "/");
+var PathCollision = class extends Error {
+  constructor(message, paths) {
+    super(message);
+    this.paths = paths;
+    this.name = "PathCollision";
+  }
+};
 function uniquePaths(paths) {
-  const seen = /* @__PURE__ */ new Set();
+  const seen = /* @__PURE__ */ new Map();
   for (const p of paths) {
     path(p);
     const key = p.normalize("NFC").toLowerCase();
-    if (seen.has(key)) throw Error("\u041A\u043E\u043B\u043B\u0438\u0437\u0438\u044F \u0438\u043C\u0451\u043D \u0438\u043B\u0438 \u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0430: " + p);
-    seen.add(key);
+    if (seen.has(key)) {
+      const first = seen.get(key);
+      throw new PathCollision(
+        first === p ? `\u041A\u043E\u043B\u043B\u0438\u0437\u0438\u044F: \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u043E\u0431\u044A\u0435\u043A\u0442\u043E\u0432 \u0438\u043C\u0435\u044E\u0442 \u043E\u0434\u0438\u043D \u043F\u0443\u0442\u044C \xAB${p}\xBB. \u0412 Google Drive \u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043C\u044B \u043E\u0434\u0438\u043D\u0430\u043A\u043E\u0432\u044B\u0435 \u0438\u043C\u0435\u043D\u0430, \u0432 vault \u2014 \u043D\u0435\u0442. \u041F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u0443\u0439\u0442\u0435 \u0434\u0443\u0431\u043B\u044C \u0432 Drive \u0438\u043B\u0438 \u0438\u0441\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u044D\u0442\u043E\u0442 \u043F\u0443\u0442\u044C \u0438\u0437 \u043F\u0440\u043E\u0444\u0438\u043B\u044F.` : `\u041A\u043E\u043B\u043B\u0438\u0437\u0438\u044F \u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0430/Unicode: \xAB${first}\xBB \u0438 \xAB${p}\xBB. \u041F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u0443\u0439\u0442\u0435 \u043E\u0434\u0438\u043D \u0438\u0437 \u043E\u0431\u044A\u0435\u043A\u0442\u043E\u0432 \u0438\u043B\u0438 \u0438\u0441\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u043F\u0443\u0442\u044C \u0438\u0437 \u043F\u0440\u043E\u0444\u0438\u043B\u044F.`,
+        [.../* @__PURE__ */ new Set([first, p])]
+      );
+    }
+    seen.set(key, p);
   }
 }
+function compatiblePaths(...snapshots) {
+  const files = new Set(snapshots.flatMap((s) => Object.keys(s.files)));
+  const dirs = new Set(snapshots.flatMap((s) => s.directories || []));
+  for (const p of [...files, ...dirs]) {
+    const parts = p.split("/");
+    while (parts.length > 1) {
+      parts.pop();
+      dirs.add(parts.join("/"));
+    }
+  }
+  uniquePaths([.../* @__PURE__ */ new Set([...files, ...dirs])]);
+  for (const p of files)
+    if (dirs.has(p))
+      throw new PathCollision(
+        `\u041A\u043E\u043B\u043B\u0438\u0437\u0438\u044F \u0444\u0430\u0439\u043B\u0430 \u0438 \u043F\u0430\u043F\u043A\u0438: \xAB${p}\xBB. \u041F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u0443\u0439\u0442\u0435 \u043E\u0431\u044A\u0435\u043A\u0442 \u0438\u043B\u0438 \u0438\u0441\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u043F\u0443\u0442\u044C \u0434\u043E \u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u0438.`,
+        [p]
+      );
+}
+function scanRules(profile, config) {
+  return {
+    file: (p) => selected(p, profile, config),
+    folder: (p) => !protectedPath(p, config) && !protectedPath(join(profile.localRoot, p), config) && configurationFolderSelected(
+      join(profile.localRoot, p),
+      profile,
+      config
+    ) && !profile.excludePaths.some((x) => under(p, x)) && (profile.scope !== "folders" || profile.folders.some((x) => under(p, x) || under(x, p)))
+  };
+}
+function configurationFolderSelected(p, profile, config) {
+  p = p.normalize("NFC").toLowerCase();
+  config = config.normalize("NFC").toLowerCase();
+  if (!under(p, config)) return true;
+  const enabled = new Set(profile.categories);
+  const plugins = enabled.has("plugin-code") || enabled.has("plugin-settings") && !profile.excludeData;
+  if (p === config)
+    return enabled.has("settings") || enabled.has("themes") || plugins;
+  const relative = p.slice(config.length + 1);
+  if (under(relative, "plugins")) return plugins;
+  if (under(relative, "themes") || under(relative, "snippets"))
+    return enabled.has("themes");
+  return enabled.has("settings");
+}
 function category(p, config) {
+  p = p.normalize("NFC").toLowerCase();
+  config = config.normalize("NFC").toLowerCase();
   if (under(p, config)) {
     const rel = p.slice(config.length + 1);
     if (/^plugins\/[^/]+\/data\.json$/.test(rel)) return "plugin-settings";
@@ -51,6 +149,8 @@ function category(p, config) {
   return /\.md$/i.test(p) ? "notes" : "attachments";
 }
 function protectedPath(p, config) {
+  p = p.normalize("NFC").toLowerCase();
+  config = config.normalize("NFC").toLowerCase();
   return p.split("/").some(
     (s) => [".git", ".trash", ".sync-studio", ".sync-conflicts"].includes(s)
   ) || under(p, config + "/plugins/sync-studio");
@@ -61,9 +161,9 @@ function selected(p, profile, config, size) {
   if (profile.scope === "folders" && !profile.folders.some((f) => under(p, f)))
     return false;
   if (profile.excludePaths.some((f) => under(p, f))) return false;
-  if (profile.excludeData && /\/plugins\/[^/]+\/data\.json$/.test("/" + local))
+  if (profile.excludeData && /\/plugins\/[^/]+\/data\.json$/i.test("/" + local))
     return false;
-  if (profile.excludeWorkspace && /(^|\/)workspace(-mobile)?\.json$/.test(local))
+  if (profile.excludeWorkspace && /(^|\/)workspace(-mobile)?\.json$/i.test(local))
     return false;
   if (size !== void 0 && size > profile.maxMB * 1024 * 1024) return false;
   return profile.categories.includes(category(local, config));
@@ -76,727 +176,20 @@ function validate(p) {
     throw Error("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435, \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0438 \u043A\u043E\u0440\u0435\u043D\u044C \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0430.");
   if (!p.categories.length || p.scope === "folders" && !p.folders.length)
     throw Error("\u041E\u0431\u043B\u0430\u0441\u0442\u044C \u0444\u0430\u0439\u043B\u043E\u0432 \u043F\u0443\u0441\u0442\u0430.");
+  if (p.oneWayMode === "mirror" && p.direction === "both")
+    throw Error("\u0417\u0435\u0440\u043A\u0430\u043B\u043E \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u043E\u0434\u043D\u043E \u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435.");
   if (!Number.isFinite(p.maxMB) || p.maxMB <= 0 || !Number.isFinite(p.intervalMinutes) || p.intervalMinutes < 1)
     throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 \u0440\u0430\u0437\u043C\u0435\u0440 \u0438\u043B\u0438 \u0438\u043D\u0442\u0435\u0440\u0432\u0430\u043B.");
 }
-var import_node_crypto, sha, join, under;
-var init_paths = __esm({
-  "src/core/paths.ts"() {
-    "use strict";
-    import_node_crypto = require("node:crypto");
-    sha = (b) => (0, import_node_crypto.createHash)("sha256").update(b).digest("hex");
-    join = (a, b) => a ? a + "/" + b : b;
-    under = (p, root) => !root || p === root || p.startsWith(root + "/");
-  }
-});
-
-// src/adapters/http.ts
-async function json(http, url, opts = {}) {
-  const r = await http.fetch(url, opts);
-  if (r.status < 200 || r.status >= 300)
-    throw Object.assign(
-      Error(
-        `API \u0432\u0435\u0440\u043D\u0443\u043B HTTP ${r.status}. \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0434\u043E\u0441\u0442\u0443\u043F \u0438 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u0437\u0430\u043F\u0443\u0441\u043A.`
-      ),
-      { status: r.status }
-    );
-  try {
-    return JSON.parse(await r.text());
-  } catch {
-    throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 JSON API");
-  }
-}
-async function bytes(http, url, opts = {}) {
-  const r = await http.fetch(url, opts);
-  if (r.status !== 200)
-    throw Object.assign(Error("\u0421\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435: HTTP " + r.status), {
-      status: r.status
-    });
-  return new Uint8Array(await r.arrayBuffer());
-}
-var import_node_https, Http;
-var init_http = __esm({
-  "src/adapters/http.ts"() {
-    "use strict";
-    import_node_https = require("node:https");
-    Http = class {
-      async fetch(url, opts = {}) {
-        opts.signal?.throwIfAborted();
-        const u = new URL(url);
-        if (u.protocol !== "https:" || u.username || u.password)
-          throw Error("\u041D\u0435\u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u044B\u0439 \u0441\u0435\u0442\u0435\u0432\u043E\u0439 \u0430\u0434\u0440\u0435\u0441");
-        const body = opts.body === void 0 ? void 0 : typeof opts.body === "string" ? Buffer.from(opts.body, "utf8") : Buffer.from(
-          opts.body instanceof ArrayBuffer ? new Uint8Array(opts.body) : opts.body
-        );
-        const headers = { ...opts.headers };
-        if (body !== void 0 && !Object.keys(headers).some((k) => k.toLowerCase() === "content-length"))
-          headers["Content-Length"] = String(body.byteLength);
-        return new Promise((resolve, reject) => {
-          const req = (0, import_node_https.request)(
-            u,
-            {
-              method: opts.method || "GET",
-              headers,
-              signal: opts.signal
-            },
-            (res) => {
-              const chunks = [];
-              let size = 0;
-              res.on("data", (chunk) => {
-                size += chunk.length;
-                if (size > (opts.maxBytes ?? 4 * 1024 * 1024)) {
-                  req.destroy(new Error("\u041E\u0442\u0432\u0435\u0442 \u043F\u0440\u0435\u0432\u044B\u0448\u0430\u0435\u0442 \u0440\u0430\u0437\u0440\u0435\u0448\u0451\u043D\u043D\u044B\u0439 \u0440\u0430\u0437\u043C\u0435\u0440"));
-                  return;
-                }
-                chunks.push(chunk);
-              });
-              res.on("error", reject);
-              res.on("end", () => {
-                const bytes2 = Buffer.concat(chunks);
-                const headers2 = {};
-                for (const [k, v] of Object.entries(res.headers))
-                  if (v !== void 0)
-                    headers2[k] = Array.isArray(v) ? v.join(",") : v;
-                resolve({
-                  status: res.statusCode || 0,
-                  headers: headers2,
-                  text: async () => bytes2.toString("utf8"),
-                  arrayBuffer: async () => Uint8Array.from(bytes2).buffer
-                });
-              });
-            }
-          );
-          req.on(
-            "error",
-            (e) => reject(
-              opts.signal?.aborted ? opts.signal.reason : new Error(
-                e.message.includes("\u0440\u0430\u0437\u043C\u0435\u0440") ? e.message : "\u0421\u0435\u0442\u0435\u0432\u043E\u0439 \u0437\u0430\u043F\u0440\u043E\u0441 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D"
-              )
-            )
-          );
-          req.setTimeout(6e4, () => req.destroy(new Error("\u0422\u0430\u0439\u043C-\u0430\u0443\u0442")));
-          if (body !== void 0) req.write(body);
-          req.end();
-        });
-      }
-    };
-  }
-});
-
-// src/sources/remotes.ts
-var remotes_exports = {};
-__export(remotes_exports, {
-  DriveStore: () => DriveStore,
-  GitHubStore: () => GitHubStore,
-  YandexStore: () => YandexStore,
-  driveRoot: () => driveRoot
-});
-function driveRoot(value) {
-  const v = value.trim();
-  if (!v.startsWith("https://")) {
-    if (!/^[\w-]+$/.test(v))
-      throw Error("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 ID \u043F\u0430\u043F\u043A\u0438 Google Drive \u0438\u043B\u0438 \u0441\u0441\u044B\u043B\u043A\u0443");
-    return v;
-  }
-  const u = new URL(v);
-  if (u.hostname !== "drive.google.com")
-    throw Error("\u041E\u0436\u0438\u0434\u0430\u0435\u0442\u0441\u044F \u0441\u0441\u044B\u043B\u043A\u0430 drive.google.com");
-  const id = u.pathname.match(/\/folders\/([\w-]+)/)?.[1] || u.searchParams.get("id");
-  if (!id || !/^[\w-]+$/.test(id)) throw Error("\u0421\u0441\u044B\u043B\u043A\u0430 \u043D\u0435 \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u0442 folder ID");
-  return id;
-}
-var import_node_crypto2, hashCache, FOLDER, fields, DriveStore, GitHubStore, YandexStore;
-var init_remotes = __esm({
-  "src/sources/remotes.ts"() {
-    "use strict";
-    import_node_crypto2 = require("node:crypto");
-    init_http();
-    init_paths();
-    hashCache = /* @__PURE__ */ new Map();
-    FOLDER = "application/vnd.google-apps.folder";
-    fields = "id,name,mimeType,size,modifiedTime,version,sha256Checksum,md5Checksum,trashed,capabilities(canEdit,canDownload,canAddChildren)";
-    DriveStore = class {
-      constructor(http, root, limit, publicKey, identityAccount = "") {
-        this.http = http;
-        this.limit = limit;
-        this.root = driveRoot(root);
-        this.key = publicKey;
-        this.resourceKey = root.startsWith("https:") ? new URL(root).searchParams.get("resourcekey") || void 0 : void 0;
-        this.writable = !publicKey;
-        this.trashSupported = !publicKey;
-        this.identity = "drive:" + identityAccount + ":" + this.root;
-      }
-      identity;
-      writable;
-      trashSupported;
-      root;
-      folders = /* @__PURE__ */ new Map();
-      key;
-      resourceKey;
-      url(suffix, query = {}, upload = false) {
-        const u = new URL(
-          "https://www.googleapis.com/" + (upload ? "upload/" : "") + "drive/v3/" + suffix
-        );
-        for (const [k, v] of Object.entries({
-          ...query,
-          supportsAllDrives: "true",
-          ...this.key ? { key: this.key } : {}
-        }))
-          u.searchParams.set(k, v);
-        return u.href;
-      }
-      opts(signal, extra = {}) {
-        return {
-          ...extra,
-          signal,
-          headers: {
-            ...this.resourceKey ? { "X-Goog-Drive-Resource-Keys": `${this.root}/${this.resourceKey}` } : {},
-            ...extra.headers
-          }
-        };
-      }
-      async inspect(id, signal) {
-        return json(
-          this.http,
-          this.url("files/" + encodeURIComponent(id), { fields }),
-          this.opts(signal)
-        );
-      }
-      async info(f, p, signal) {
-        if (typeof f.id !== "string" || typeof f.version !== "string" && typeof f.version !== "number")
-          throw Error("Drive \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0432\u0435\u0440\u0441\u0438\u044E \u0444\u0430\u0439\u043B\u0430");
-        const size = Number(f.size);
-        if (!Number.isSafeInteger(size) || size < 0)
-          throw Error("Drive \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0440\u0430\u0437\u043C\u0435\u0440 \u0444\u0430\u0439\u043B\u0430");
-        let hash = f.sha256Checksum;
-        if (size > this.limit) hash = "oversize:" + size;
-        else if (typeof hash !== "string" || !/^[a-f\d]{64}$/i.test(hash)) {
-          const key = f.id + ":" + f.version;
-          hash = hashCache.get(key);
-          if (!hash) {
-            hash = sha(await this.download(f, signal));
-            if (hashCache.size > 1e5) hashCache.clear();
-            hashCache.set(key, hash);
-          }
-        }
-        return {
-          path: p,
-          hash: String(hash).toLowerCase(),
-          size,
-          mtime: Date.parse(f.modifiedTime) || void 0,
-          id: f.id,
-          version: String(f.version)
-        };
-      }
-      async children(id, signal) {
-        const out = [];
-        let next = "";
-        const pages = /* @__PURE__ */ new Set();
-        do {
-          if (pages.has(next)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u044B Drive");
-          pages.add(next);
-          const d = await json(
-            this.http,
-            this.url("files", {
-              q: `'${id.replace(/'/g, "\\'")}' in parents and trashed=false`,
-              fields: `files(${fields}),nextPageToken,incompleteSearch`,
-              pageSize: "1000",
-              includeItemsFromAllDrives: "true",
-              ...next ? { pageToken: next } : {}
-            }),
-            this.opts(signal)
-          );
-          if (d.incompleteSearch || !Array.isArray(d.files))
-            throw Error("\u041D\u0435\u043F\u043E\u043B\u043D\u044B\u0439 \u043E\u0442\u0432\u0435\u0442 Drive");
-          out.push(...d.files);
-          next = d.nextPageToken || "";
-        } while (next);
-        return out;
-      }
-      async scan(signal) {
-        const root = await this.inspect(this.root, signal);
-        if (root.trashed || root.mimeType !== FOLDER)
-          throw Error("\u041F\u0430\u043F\u043A\u0430 Drive \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430");
-        const files = /* @__PURE__ */ Object.create(null), warnings = [], seen = /* @__PURE__ */ new Set(), all = [];
-        this.folders = /* @__PURE__ */ new Map([["", this.root]]);
-        const walk = async (id, base, depth) => {
-          signal.throwIfAborted();
-          if (depth > 60 || seen.size > 1e5)
-            throw Error("\u041F\u0440\u0435\u0432\u044B\u0448\u0435\u043D \u043F\u0440\u0435\u0434\u0435\u043B \u043E\u0431\u0445\u043E\u0434\u0430 Drive");
-          if (seen.has(id)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 ID \u043F\u0430\u043F\u043A\u0438 Drive");
-          seen.add(id);
-          for (const f of await this.children(id, signal)) {
-            if (/[\\/]/.test(f.name))
-              throw Error("\u041D\u0435\u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043C\u044B\u0439 \u0440\u0430\u0437\u0434\u0435\u043B\u0438\u0442\u0435\u043B\u044C \u0432 \u0438\u043C\u0435\u043D\u0438 \u0443\u0434\u0430\u043B\u0451\u043D\u043D\u043E\u0433\u043E \u0444\u0430\u0439\u043B\u0430");
-            path(f.name);
-            const p = join(base, f.name);
-            all.push(p);
-            if (f.mimeType === FOLDER) {
-              this.folders.set(p, f.id);
-              await walk(f.id, p, depth + 1);
-            } else if (String(f.mimeType).startsWith("application/vnd.google-apps."))
-              throw Error(
-                "Google Docs \u0438\u043B\u0438 shortcut \u0442\u0440\u0435\u0431\u0443\u044E\u0442 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E\u0433\u043E \u044D\u043A\u0441\u043F\u043E\u0440\u0442\u0430: " + p
-              );
-            else files[p] = await this.info(f, p, signal);
-          }
-        };
-        await walk(this.root, "", 0);
-        uniquePaths(all);
-        return { files, complete: true, warnings, identity: this.identity };
-      }
-      async download(f, signal) {
-        const b = await bytes(
-          this.http,
-          this.url("files/" + encodeURIComponent(f.id), { alt: "media" }),
-          this.opts(signal, { maxBytes: this.limit })
-        );
-        if (b.length !== Number(f.size))
-          throw Error("\u0420\u0430\u0437\u043C\u0435\u0440 Drive-\u0444\u0430\u0439\u043B\u0430 \u043D\u0435 \u0441\u043E\u0432\u043F\u0430\u043B");
-        if (f.sha256Checksum && sha(b) !== f.sha256Checksum.toLowerCase())
-          throw Error("SHA-256 Drive \u043D\u0435 \u0441\u043E\u0432\u043F\u0430\u043B");
-        if (f.md5Checksum && (0, import_node_crypto2.createHash)("md5").update(b).digest("hex") !== f.md5Checksum.toLowerCase())
-          throw Error("MD5 Drive \u043D\u0435 \u0441\u043E\u0432\u043F\u0430\u043B");
-        const after = await this.inspect(f.id, signal);
-        if (String(after.version) !== String(f.version) || after.trashed)
-          throw Error("\u0424\u0430\u0439\u043B Drive \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u044F");
-        return b;
-      }
-      async read(f, signal) {
-        const current = await this.inspect(f.id, signal);
-        if (String(current.version) !== f.version || current.trashed)
-          throw Error("\u0424\u0430\u0439\u043B Drive \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F");
-        return this.download(current, signal);
-      }
-      async verifyExpected(p, expected, signal) {
-        if (expected) {
-          const r = await this.http.fetch(
-            this.url("files/" + encodeURIComponent(expected.id), { fields }),
-            this.opts(signal)
-          );
-          if (r.status !== 200) throw Error("Drive-\u0444\u0430\u0439\u043B \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
-          const f = JSON.parse(await r.text());
-          if (f.trashed || String(f.version) !== expected.version)
-            throw Error("Drive-\u0444\u0430\u0439\u043B \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F");
-          if (!r.headers.etag)
-            throw Error("Drive \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B ETag; \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u0430\u044F \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0438\u0441\u044C \u0437\u0430\u043F\u0440\u0435\u0449\u0435\u043D\u0430");
-          return r.headers.etag;
-        }
-        const parent = p.split("/").slice(0, -1).join("/");
-        const id = this.folders.get(parent);
-        if (id && (await this.children(id, signal)).some(
-          (f) => f.name === p.split("/").at(-1)
-        ))
-          throw Error("Drive-\u0444\u0430\u0439\u043B \u043F\u043E\u044F\u0432\u0438\u043B\u0441\u044F \u043F\u043E\u0441\u043B\u0435 \u043F\u043B\u0430\u043D\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F");
-        return void 0;
-      }
-      async parent(p, signal) {
-        let base = "", id = this.root;
-        for (const name of p.split("/").slice(0, -1)) {
-          base = join(base, name);
-          let next = this.folders.get(base);
-          if (!next) {
-            const found = (await this.children(id, signal)).filter(
-              (f) => f.name === name
-            );
-            if (found.length > 1 || found[0] && found[0].mimeType !== FOLDER)
-              throw Error("\u041A\u043E\u043B\u043B\u0438\u0437\u0438\u044F \u043F\u0430\u043F\u043A\u0438 Drive");
-            next = found[0]?.id;
-            if (!next) {
-              const d = await json(
-                this.http,
-                this.url("files", { fields: "id" }),
-                this.opts(signal, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ name, mimeType: FOLDER, parents: [id] })
-                })
-              );
-              next = d.id;
-            }
-            this.folders.set(base, next);
-          }
-          id = next;
-        }
-        return id;
-      }
-      async write(p, b, expected, mtime, signal) {
-        if (!this.writable)
-          throw Error("\u041F\u0443\u0431\u043B\u0438\u0447\u043D\u0430\u044F \u043F\u0430\u043F\u043A\u0430 Drive \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430 \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u0447\u0442\u0435\u043D\u0438\u044F");
-        path(p);
-        const etag = await this.verifyExpected(p, expected, signal), parent = await this.parent(p, signal);
-        const boundary = "sync_studio_" + crypto.randomUUID();
-        const metadata = {
-          name: p.split("/").at(-1),
-          ...!expected ? { parents: [parent] } : {},
-          ...mtime ? { modifiedTime: new Date(mtime).toISOString() } : {}
-        };
-        const body = Buffer.concat([
-          Buffer.from(
-            `--${boundary}\r
-Content-Type: application/json; charset=UTF-8\r
-\r
-${JSON.stringify(metadata)}\r
---${boundary}\r
-Content-Type: application/octet-stream\r
-\r
-`
-          ),
-          Buffer.from(b),
-          Buffer.from(`\r
---${boundary}--\r
-`)
-        ]);
-        const f = await json(
-          this.http,
-          this.url(
-            expected ? "files/" + encodeURIComponent(expected.id) : "files",
-            { uploadType: "multipart", fields },
-            true
-          ),
-          this.opts(signal, {
-            method: expected ? "PATCH" : "POST",
-            headers: {
-              "Content-Type": "multipart/related; boundary=" + boundary,
-              ...etag ? { "If-Match": etag } : {}
-            },
-            body
-          })
-        );
-        const result = await this.info(f, p, signal);
-        if (result.hash !== sha(b)) throw Error("\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0437\u0430\u043F\u0438\u0441\u0438 Drive \u043D\u0435 \u043F\u0440\u043E\u0448\u043B\u0430");
-        return result;
-      }
-      async delete(f, trash, signal) {
-        if (!this.writable) throw Error("\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u0447\u0442\u0435\u043D\u0438\u044F");
-        const etag = await this.verifyExpected(f.path, f, signal);
-        const r = await this.http.fetch(
-          this.url(
-            "files/" + encodeURIComponent(f.id),
-            trash ? { fields: "id" } : {}
-          ),
-          this.opts(signal, {
-            method: trash ? "PATCH" : "DELETE",
-            headers: { "If-Match": etag, "Content-Type": "application/json" },
-            ...trash ? { body: '{"trashed":true}' } : {}
-          })
-        );
-        if (r.status < 200 || r.status >= 300)
-          throw Error("\u0423\u0434\u0430\u043B\u0435\u043D\u0438\u0435 Drive: HTTP " + r.status);
-      }
-    };
-    GitHubStore = class {
-      constructor(http, repo, ref, prefix, token, limit) {
-        this.http = http;
-        this.ref = ref;
-        this.prefix = prefix;
-        this.token = token;
-        this.limit = limit;
-        const m = repo.replace(/^https:\/\/github.com\//, "").replace(/\.git$/, "").replace(/\/$/, "").match(/^([\w.-]+)\/([\w.-]+)$/);
-        if (!m) throw Error("\u0420\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0439: owner/repo");
-        path(prefix, true);
-        this.base = `https://api.github.com/repos/${m[1]}/${m[2]}`;
-        this.identity = `github:${m[1]}/${m[2]}:${ref}:${prefix}`;
-      }
-      identity;
-      writable = false;
-      trashSupported = false;
-      base;
-      options(signal) {
-        return {
-          signal,
-          maxBytes: 16 * 1024 * 1024,
-          headers: {
-            Accept: "application/vnd.github+json",
-            "User-Agent": "Obsidian-Sync-Studio",
-            ...this.token ? { Authorization: "Bearer " + this.token } : {}
-          }
-        };
-      }
-      async scan(signal) {
-        const c = await json(
-          this.http,
-          this.base + "/commits/" + encodeURIComponent(this.ref || "HEAD"),
-          this.options(signal)
-        );
-        if (!c.commit?.tree?.sha) throw Error("GitHub \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0434\u0435\u0440\u0435\u0432\u043E \u043A\u043E\u043C\u043C\u0438\u0442\u0430");
-        const tree = await json(
-          this.http,
-          this.base + "/git/trees/" + c.commit.tree.sha + "?recursive=1",
-          this.options(signal)
-        );
-        if (tree.truncated || !Array.isArray(tree.tree))
-          throw Error("\u041D\u0435\u043F\u043E\u043B\u043D\u043E\u0435 \u0434\u0435\u0440\u0435\u0432\u043E GitHub: \u0437\u0430\u043F\u0443\u0441\u043A \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D");
-        if (this.prefix && !tree.tree.some((f) => f.type === "tree" && f.path === this.prefix))
-          throw Error("\u041A\u0430\u0442\u0430\u043B\u043E\u0433 GitHub \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D");
-        const files = /* @__PURE__ */ Object.create(null);
-        for (const f of tree.tree) {
-          if (f.type === "tree" || !under(f.path, this.prefix)) continue;
-          if (f.type !== "blob" || !["100644", "100755"].includes(f.mode))
-            throw Error("\u0421\u0441\u044B\u043B\u043A\u0438 \u0438 submodules \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u044E\u0442\u0441\u044F: " + f.path);
-          const p = this.prefix ? f.path.slice(this.prefix.length + 1) : f.path;
-          path(p);
-          if (!Number.isSafeInteger(f.size)) throw Error("GitHub \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0440\u0430\u0437\u043C\u0435\u0440");
-          let hash = "oversize:" + f.size;
-          if (f.size <= this.limit) {
-            hash = hashCache.get("git:" + f.sha) || sha(await this.blob(f.sha, signal));
-            if (hashCache.size > 1e5) hashCache.clear();
-            hashCache.set("git:" + f.sha, hash);
-          }
-          files[p] = { path: p, hash, size: f.size, version: f.sha, id: f.sha };
-        }
-        uniquePaths(Object.keys(files));
-        return {
-          files,
-          identity: this.identity,
-          complete: true,
-          warnings: [
-            "GitHub: \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435; \u0444\u0430\u0439\u043B\u043E\u0432\u043E\u0435 \u0432\u0440\u0435\u043C\u044F \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E."
-          ]
-        };
-      }
-      async blob(id, signal) {
-        const r = await json(this.http, this.base + "/git/blobs/" + id, {
-          ...this.options(signal),
-          maxBytes: Math.ceil(this.limit * 1.5) + 1024
-        });
-        if (r.encoding !== "base64" || typeof r.content !== "string")
-          throw Error("\u041D\u0435\u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u043C\u044B\u0439 \u043E\u0442\u0432\u0435\u0442 GitHub");
-        const b = Buffer.from(r.content, "base64");
-        if (b.length > this.limit) throw Error("\u041F\u0440\u0435\u0432\u044B\u0448\u0435\u043D \u0440\u0430\u0437\u043C\u0435\u0440 \u0444\u0430\u0439\u043B\u0430");
-        const hash = (0, import_node_crypto2.createHash)("sha1").update(Buffer.from(`blob ${b.length}\0`)).update(b).digest("hex");
-        if (hash !== id) throw Error("GitHub blob checksum mismatch");
-        if (b.subarray(0, 80).toString().startsWith("version https://git-lfs.github.com/spec"))
-          throw Error("Git LFS \u0442\u0440\u0435\u0431\u0443\u0435\u0442 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E\u0433\u043E \u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u044F");
-        return b;
-      }
-      async read(f, signal) {
-        signal.throwIfAborted();
-        return this.blob(f.id, signal);
-      }
-      async write() {
-        throw Error("GitHub \u0432 \u044D\u0442\u043E\u0439 \u0432\u0435\u0440\u0441\u0438\u0438 \u2014 \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435");
-      }
-      async delete() {
-        throw Error("GitHub \u0432 \u044D\u0442\u043E\u0439 \u0432\u0435\u0440\u0441\u0438\u0438 \u2014 \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435");
-      }
-    };
-    YandexStore = class {
-      constructor(http, root, token, limit) {
-        this.http = http;
-        this.token = token;
-        this.limit = limit;
-        this.root = "disk:/" + root.replace(/^disk:\//, "").replace(/^\//, "").replace(/\/$/, "");
-        path(this.root.slice(6), true);
-        this.identity = "yandex:" + this.root;
-      }
-      identity;
-      writable = true;
-      trashSupported = true;
-      base = "https://cloud-api.yandex.net/v1/disk";
-      root;
-      url(endpoint, params) {
-        return this.base + endpoint + "?" + new URLSearchParams(params);
-      }
-      options(signal, extra = {}) {
-        return {
-          ...extra,
-          signal,
-          headers: { Authorization: "OAuth " + this.token, ...extra.headers }
-        };
-      }
-      full(p) {
-        return this.root.replace(/\/$/, "") + (p ? "/" + path(p) : "");
-      }
-      async meta(p, signal) {
-        return json(
-          this.http,
-          this.url("/resources", { path: this.full(p), limit: "200" }),
-          this.options(signal)
-        );
-      }
-      info(f, p) {
-        if (!Number.isSafeInteger(f.size) || typeof f.sha256 !== "string" || !/^[a-f\d]{64}$/i.test(f.sha256))
-          throw Error("\u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B checksum/\u0440\u0430\u0437\u043C\u0435\u0440: " + p);
-        return {
-          path: p,
-          hash: f.sha256.toLowerCase(),
-          size: f.size,
-          mtime: Date.parse(f.modified) || void 0,
-          version: f.sha256.toLowerCase(),
-          id: f.path
-        };
-      }
-      async scan(signal) {
-        const files = /* @__PURE__ */ Object.create(null), paths = [];
-        let count = 0;
-        const walk = async (p, depth) => {
-          if (depth > 60 || ++count > 1e5)
-            throw Error("\u041F\u0440\u0435\u0432\u044B\u0448\u0435\u043D \u043F\u0440\u0435\u0434\u0435\u043B \u043E\u0431\u0445\u043E\u0434\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
-          let offset = 0, total;
-          const names = /* @__PURE__ */ new Set();
-          do {
-            signal.throwIfAborted();
-            const d = await json(
-              this.http,
-              this.url("/resources", {
-                path: this.full(p),
-                limit: "200",
-                offset: String(offset)
-              }),
-              this.options(signal)
-            );
-            const e = d._embedded;
-            if (d.type !== "dir" || !e || !Array.isArray(e.items) || !Number.isSafeInteger(e.total) || e.offset !== offset || total !== void 0 && e.total !== total)
-              throw Error("\u041D\u0435\u043F\u043E\u043B\u043D\u044B\u0439 \u0438\u043B\u0438 \u0438\u0437\u043C\u0435\u043D\u0438\u0432\u0448\u0438\u0439\u0441\u044F \u0441\u043F\u0438\u0441\u043E\u043A \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
-            total = e.total;
-            for (const f of e.items) {
-              if (/[\\/]/.test(f.name))
-                throw Error("\u041D\u0435\u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043C\u044B\u0439 \u0440\u0430\u0437\u0434\u0435\u043B\u0438\u0442\u0435\u043B\u044C \u0432 \u0438\u043C\u0435\u043D\u0438 \u0443\u0434\u0430\u043B\u0451\u043D\u043D\u043E\u0433\u043E \u0444\u0430\u0439\u043B\u0430");
-              path(f.name);
-              if (names.has(f.name))
-                throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 \u0444\u0430\u0439\u043B\u0430 \u043F\u0440\u0438 \u043E\u0431\u0445\u043E\u0434\u0435 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
-              names.add(f.name);
-              const rel = join(p, f.name);
-              paths.push(rel);
-              if (f.type === "dir") await walk(rel, depth + 1);
-              else if (f.type === "file") files[rel] = this.info(f, rel);
-              else throw Error("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0442\u0438\u043F \u0444\u0430\u0439\u043B\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
-            }
-            offset += e.items.length;
-            if (!e.items.length && offset < total)
-              throw Error("\u041F\u0443\u0441\u0442\u0430\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
-          } while (offset < total);
-        };
-        await walk("", 0);
-        uniquePaths(paths);
-        return {
-          files,
-          identity: this.identity,
-          complete: true,
-          warnings: [
-            "\u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A \u043D\u0435 \u043F\u0440\u0435\u0434\u043E\u0441\u0442\u0430\u0432\u043B\u044F\u0435\u0442 \u0430\u0442\u043E\u043C\u0430\u0440\u043D\u0443\u044E \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443 \u0432\u0435\u0440\u0441\u0438\u0438 \u043F\u0440\u0438 \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0438\u0441\u0438: \u043D\u0435 \u0438\u0437\u043C\u0435\u043D\u044F\u0439\u0442\u0435 \u0444\u0430\u0439\u043B\u044B \u0434\u0440\u0443\u0433\u0438\u043C \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u043C \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u0438."
-          ]
-        };
-      }
-      trusted(href) {
-        const u = new URL(href);
-        if (u.protocol !== "https:" || u.username || u.password || !["yandex.net", "yandex.ru", "yandex.com"].some(
-          (d) => u.hostname === d || u.hostname.endsWith("." + d)
-        ))
-          throw Error("\u041D\u0435\u043E\u0436\u0438\u0434\u0430\u043D\u043D\u044B\u0439 \u0430\u0434\u0440\u0435\u0441 \u043F\u0435\u0440\u0435\u0434\u0430\u0447\u0438 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
-        return href;
-      }
-      async read(f, signal) {
-        if ((await this.meta(f.path, signal)).sha256.toLowerCase() !== f.hash)
-          throw Error("\u0424\u0430\u0439\u043B \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F");
-        const d = await json(
-          this.http,
-          this.url("/resources/download", { path: this.full(f.path) }),
-          this.options(signal)
-        );
-        return bytes(this.http, this.trusted(d.href), {
-          signal,
-          maxBytes: this.limit
-        });
-      }
-      async check(p, expected, signal) {
-        try {
-          const f = await this.meta(p, signal);
-          if (!expected || f.sha256?.toLowerCase() !== expected.hash)
-            throw Error("\u0424\u0430\u0439\u043B \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F \u0438\u043B\u0438 \u043F\u043E\u044F\u0432\u0438\u043B\u0441\u044F");
-        } catch (e) {
-          if (e.status === 404 && !expected) return;
-          throw e;
-        }
-      }
-      async mkdirs(p, signal) {
-        let at = "";
-        for (const x of p.split("/").slice(0, -1)) {
-          at = join(at, x);
-          const r = await this.http.fetch(
-            this.url("/resources", { path: this.full(at) }),
-            this.options(signal, { method: "PUT" })
-          );
-          if (r.status === 409) {
-            const f = await this.meta(at, signal);
-            if (f.type !== "dir") throw Error("\u0424\u0430\u0439\u043B \u0431\u043B\u043E\u043A\u0438\u0440\u0443\u0435\u0442 \u0441\u043E\u0437\u0434\u0430\u043D\u0438\u0435 \u043F\u0430\u043F\u043A\u0438");
-          } else if (r.status !== 201)
-            throw Error("\u0421\u043E\u0437\u0434\u0430\u043D\u0438\u0435 \u043F\u0430\u043F\u043A\u0438 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430: HTTP " + r.status);
-        }
-      }
-      async write(p, b, expected, _mtime, signal) {
-        await this.mkdirs(p, signal);
-        await this.check(p, expected, signal);
-        const d = await json(
-          this.http,
-          this.url("/resources/upload", {
-            path: this.full(p),
-            overwrite: expected ? "true" : "false"
-          }),
-          this.options(signal)
-        );
-        const r = await this.http.fetch(this.trusted(d.href), {
-          method: "PUT",
-          signal,
-          body: b
-        });
-        if (r.status < 200 || r.status >= 300)
-          throw Error("\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430: HTTP " + r.status);
-        const f = this.info(await this.meta(p, signal), p);
-        if (f.hash !== sha(b))
-          throw Error("\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0437\u0430\u043F\u0438\u0441\u0438 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 \u043D\u0435 \u043F\u0440\u043E\u0448\u043B\u0430");
-        return f;
-      }
-      async delete(f, trash, signal) {
-        await this.check(f.path, f, signal);
-        const r = await this.http.fetch(
-          this.url("/resources", {
-            path: this.full(f.path),
-            permanently: String(!trash)
-          }),
-          this.options(signal, { method: "DELETE" })
-        );
-        if (r.status === 202) {
-          const d = JSON.parse(await r.text());
-          const url = new URL(this.trusted(d.href));
-          if (url.origin !== "https://cloud-api.yandex.net")
-            throw Error("\u041D\u0435\u043E\u0436\u0438\u0434\u0430\u043D\u043D\u044B\u0439 \u0430\u0434\u0440\u0435\u0441 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438");
-          for (let i = 0; i < 30; i++) {
-            signal.throwIfAborted();
-            const op = await json(this.http, url.href, this.options(signal));
-            if (op.status === "success") return;
-            if (op.status === "failed")
-              throw Error("\u0423\u0434\u0430\u043B\u0435\u043D\u0438\u0435 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E");
-            await new Promise((r2) => setTimeout(r2, 1e3));
-          }
-          throw Error("\u0423\u0434\u0430\u043B\u0435\u043D\u0438\u0435 \u0435\u0449\u0451 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443 \u043F\u043E\u0437\u0436\u0435.");
-        }
-        if (r.status !== 204)
-          throw Error("\u0423\u0434\u0430\u043B\u0435\u043D\u0438\u0435 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430: HTTP " + r.status);
-      }
-    };
-  }
-});
-
-// main.ts
-var main_exports = {};
-__export(main_exports, {
-  default: () => SyncStudio
-});
-module.exports = __toCommonJS(main_exports);
-
-// src/controller.ts
-var import_obsidian2 = require("obsidian");
 
 // src/core/planner.ts
-init_paths();
 var policyKey = (p) => JSON.stringify([
   p.direction,
   p.conflict,
   p.conflictWhen,
   p.deletion,
-  p.deleteConflict
+  p.deleteConflict,
+  ...p.oneWayMode === "mirror" ? ["mirror"] : []
 ]);
 function plan(profile, local, remote, baseline, config = ".obsidian") {
   validate(profile);
@@ -804,6 +197,7 @@ function plan(profile, local, remote, baseline, config = ".obsidian") {
     throw Error(
       "\u041D\u0435\u043F\u043E\u043B\u043D\u044B\u0439 \u0441\u043F\u0438\u0441\u043E\u043A \u0444\u0430\u0439\u043B\u043E\u0432: \u043F\u043B\u0430\u043D \u043D\u0435 \u043F\u043E\u0441\u0442\u0440\u043E\u0435\u043D, \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F \u0437\u0430\u043F\u0440\u0435\u0449\u0435\u043D\u044B."
     );
+  compatiblePaths(local, remote);
   const identity = JSON.stringify([local.identity, remote.identity]);
   if (baseline.identity !== identity) baseline = { identity, files: {} };
   const operations = [];
@@ -826,6 +220,22 @@ function plan(profile, local, remote, baseline, config = ".obsidian") {
     if (!selected(p, profile, config, l?.size) || !selected(p, profile, config, r?.size))
       continue;
     const emit = (a, why) => add(p, a, why, l, r);
+    if (profile.oneWayMode === "mirror") {
+      const source = profile.direction === "pull" ? r : l;
+      const target = profile.direction === "pull" ? l : r;
+      if (!source && target)
+        emit(
+          profile.deletion === "ignore" ? "skip" : profile.direction === "pull" ? "delete-local" : "delete-remote",
+          "\u0417\u0435\u0440\u043A\u0430\u043B\u043E: \u0444\u0430\u0439\u043B \u043E\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u0435\u0442 \u0432 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0435"
+        );
+      else if (source && source.hash !== target?.hash)
+        emit(
+          profile.direction === "pull" ? "download" : "upload",
+          "\u0417\u0435\u0440\u043A\u0430\u043B\u043E: \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u043C\u043E\u0435 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0430 \u0438\u043C\u0435\u0435\u0442 \u043F\u0440\u0438\u043E\u0440\u0438\u0442\u0435\u0442"
+        );
+      else emit("adopt", "\u0417\u0435\u0440\u043A\u0430\u043B\u043E: \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u043C\u043E\u0435 \u0441\u043E\u0432\u043F\u0430\u0434\u0430\u0435\u0442");
+      continue;
+    }
     if (!l && !r) {
       emit("adopt", "\u041E\u0431\u0435 \u0432\u0435\u0440\u0441\u0438\u0438 \u043E\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u044E\u0442");
       continue;
@@ -924,6 +334,9 @@ function plan(profile, local, remote, baseline, config = ".obsidian") {
         "\u0412\u044B\u0438\u0433\u0440\u044B\u0432\u0430\u0435\u0442 \u0443\u0434\u0430\u043B\u0451\u043D\u043D\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F"
       );
   }
+  operations.sort(
+    (a, b) => Number(a.action.startsWith("delete-")) - Number(b.action.startsWith("delete-"))
+  );
   return {
     id: crypto.randomUUID(),
     created: Date.now(),
@@ -982,7 +395,6 @@ function recover(pending, identity, local, remote, backupVerified) {
 // src/adapters/state-file.ts
 var import_promises = require("node:fs/promises");
 var import_node_path = require("node:path");
-init_paths();
 async function syncDirectory(dir) {
   try {
     const handle = await (0, import_promises.open)(dir, "r");
@@ -1063,17 +475,21 @@ var StateFile = class {
 };
 
 // src/core/executor.ts
-init_paths();
-var fingerprint = (f) => f ? JSON.stringify([f.id, f.version, f.hash]) : "";
+var fingerprint = (f) => f ? JSON.stringify([f.id, f.version, f.hash, f.size, f.mtime]) : "";
 async function execute(plan2, local, remote, ports, signal, onProgress) {
   const state = structuredClone(plan2.baseline), details = [];
+  const operations = [...plan2.operations].sort(
+    (a, b) => Number(a.action.startsWith("delete-")) - Number(b.action.startsWith("delete-"))
+  );
+  let currentOperation;
   let dirty = false;
   let applied = 0, conflicts = 0, status = "completed", message = "\u0413\u043E\u0442\u043E\u0432\u043E";
   try {
     const ls = await local.scan(signal), rs = await remote.scan(signal);
     if (!ls.complete || !rs.complete || JSON.stringify([ls.identity, rs.identity]) !== plan2.identity)
       throw Error("\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u0438\u043B\u0438 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F. \u041F\u043E\u0441\u0442\u0440\u043E\u0439\u0442\u0435 \u043D\u043E\u0432\u044B\u0439 \u043F\u043B\u0430\u043D.");
-    for (const op of plan2.operations) {
+    compatiblePaths(ls, rs);
+    for (const op of operations) {
       signal.throwIfAborted();
       if (fingerprint(
         Object.hasOwn(ls.files, op.path) ? ls.files[op.path] : void 0
@@ -1082,7 +498,8 @@ async function execute(plan2, local, remote, ports, signal, onProgress) {
       ) !== fingerprint(op.remote))
         throw Error("\u0424\u0430\u0439\u043B \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F \u043F\u043E\u0441\u043B\u0435 \u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440\u0430 \u043F\u043B\u0430\u043D\u0430: " + op.path);
     }
-    for (const op of plan2.operations) {
+    for (const op of operations) {
+      currentOperation = op;
       signal.throwIfAborted();
       let l = op.local, r = op.remote;
       if (op.action === "skip") {
@@ -1174,6 +591,12 @@ async function execute(plan2, local, remote, ports, signal, onProgress) {
   } catch (e) {
     status = signal.aborted ? "cancelled" : applied ? "partial" : "failed";
     message = e instanceof Error ? e.message : "\u041E\u0448\u0438\u0431\u043A\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u0438\u044F";
+    if (currentOperation)
+      details.push({
+        path: currentOperation.path,
+        action: currentOperation.action,
+        status: "\u041E\u0448\u0438\u0431\u043A\u0430: " + message
+      });
   }
   return {
     id: plan2.id,
@@ -1188,17 +611,14 @@ async function execute(plan2, local, remote, ports, signal, onProgress) {
   };
 }
 
-// src/controller.ts
-init_paths();
-
 // src/adapters/external-folder.ts
 var import_promises2 = require("node:fs/promises");
 var import_node_path2 = require("node:path");
-init_paths();
 var ExternalFolder = class {
-  constructor(root, limit) {
+  constructor(root, limit, rules) {
     this.root = root;
     this.limit = limit;
+    this.rules = rules;
     if (!(0, import_node_path2.isAbsolute)(root)) throw Error("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 \u0430\u0431\u0441\u043E\u043B\u044E\u0442\u043D\u044B\u0439 \u043F\u0443\u0442\u044C \u0432\u043D\u0435\u0448\u043D\u0435\u0439 \u043F\u0430\u043F\u043A\u0438");
     this.identity = "external-folder:" + root;
   }
@@ -1218,7 +638,7 @@ var ExternalFolder = class {
     return current;
   }
   async scan(signal) {
-    const files = /* @__PURE__ */ Object.create(null), rootReal = await (0, import_promises2.realpath)(this.root);
+    const files = /* @__PURE__ */ Object.create(null), rootReal = await (0, import_promises2.realpath)(this.root), directories = [];
     this.identity = "external-folder:" + rootReal;
     const walk = async (base) => {
       signal.throwIfAborted();
@@ -1226,11 +646,15 @@ var ExternalFolder = class {
       for (const item of await (0, import_promises2.readdir)(dir, { withFileTypes: true })) {
         const rel = join(base, item.name);
         if (protectedPath(rel, ".obsidian")) continue;
+        if (item.isDirectory() ? this.rules && !this.rules.folder(rel) : this.rules && !this.rules.file(rel))
+          continue;
         path(rel);
         if (item.isSymbolicLink())
           throw Error("\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u0442 \u0441\u0438\u043C\u0432\u043E\u043B\u0438\u0447\u0435\u0441\u043A\u0443\u044E \u0441\u0441\u044B\u043B\u043A\u0443: " + rel);
-        if (item.isDirectory()) await walk(rel);
-        else if (item.isFile()) {
+        if (item.isDirectory()) {
+          directories.push(rel);
+          await walk(rel);
+        } else if (item.isFile()) {
           const stat = await (0, import_promises2.lstat)(await this.safe(rel));
           if (stat.size > this.limit)
             files[rel] = {
@@ -1256,8 +680,14 @@ var ExternalFolder = class {
       }
     };
     await walk("");
-    uniquePaths(Object.keys(files));
-    return { files, identity: this.identity, complete: true, warnings: [] };
+    uniquePaths([...Object.keys(files), ...directories]);
+    return {
+      files,
+      directories,
+      identity: this.identity,
+      complete: true,
+      warnings: []
+    };
   }
   async read(f, signal) {
     signal.throwIfAborted();
@@ -1279,13 +709,12 @@ var ExternalFolder = class {
 // src/adapters/local.ts
 var import_promises3 = require("node:fs/promises");
 var import_node_path3 = require("node:path");
-init_paths();
 var LocalStore = class {
-  constructor(app, root, limit, external = false) {
+  constructor(app, root, limit, rules) {
     this.app = app;
     this.root = root;
     this.limit = limit;
-    this.external = external;
+    this.rules = rules;
     path(root, true);
     this.identity = "vault:" + app.vault.getName() + ":" + root;
   }
@@ -1312,7 +741,7 @@ var LocalStore = class {
     }
   }
   async scan(signal) {
-    const files = /* @__PURE__ */ Object.create(null), warnings = [];
+    const files = /* @__PURE__ */ Object.create(null), directories = [], warnings = [];
     const adapter = this.app.vault.adapter;
     const walk = async (folder) => {
       signal.throwIfAborted();
@@ -1325,7 +754,8 @@ var LocalStore = class {
       const list = await adapter.list(full);
       for (const f of list.files) {
         const rel = this.root ? f.slice(this.root.length + 1) : f;
-        if (protectedPath(f, this.app.vault.configDir)) continue;
+        if (protectedPath(f, this.app.vault.configDir) || this.rules && !this.rules.file(rel))
+          continue;
         path(rel);
         const stat = await adapter.stat(f);
         if (!stat || stat.type !== "file") throw Error("\u0424\u0430\u0439\u043B \u0438\u0441\u0447\u0435\u0437 \u043F\u0440\u0438 \u043E\u0431\u0445\u043E\u0434\u0435");
@@ -1341,12 +771,21 @@ var LocalStore = class {
         files[rel] = await this.inspect(rel, signal);
       }
       for (const f of list.folders)
-        if (!protectedPath(f, this.app.vault.configDir))
-          await walk(this.root ? f.slice(this.root.length + 1) : f);
+        if (!protectedPath(f, this.app.vault.configDir) && (!this.rules || this.rules.folder(this.root ? f.slice(this.root.length + 1) : f))) {
+          const rel = this.root ? f.slice(this.root.length + 1) : f;
+          directories.push(rel);
+          await walk(rel);
+        }
     };
     await walk("");
-    uniquePaths(Object.keys(files));
-    return { files, complete: true, warnings, identity: this.identity };
+    uniquePaths([...Object.keys(files), ...directories]);
+    return {
+      files,
+      directories,
+      complete: true,
+      warnings,
+      identity: this.identity
+    };
   }
   async inspect(p, signal) {
     signal.throwIfAborted();
@@ -1411,7 +850,7 @@ var LocalStore = class {
       }
       await this.check(p, expected, signal);
       signal.throwIfAborted();
-      await this.app.vault.adapter.rename(temp, full);
+      await (0, import_promises3.rename)((0, import_node_path3.join)(vaultRoot, temp), (0, import_node_path3.join)(vaultRoot, full));
       await syncDirectory(
         (0, import_node_path3.join)(vaultRoot, full.split("/").slice(0, -1).join("/"))
       );
@@ -1476,9 +915,980 @@ async function writeBackup(app, destination, bytes2) {
   );
 }
 
-// src/controller.ts
-init_http();
-init_remotes();
+// src/adapters/http.ts
+var import_node_https = require("node:https");
+var Http = class {
+  async fetch(url, opts = {}) {
+    let current = url;
+    let request = { ...opts };
+    for (let i = 0; i <= 5; i++) {
+      const response = await this.once(current, request);
+      if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+      if (opts.redirect !== "follow") return response;
+      if ((request.method || "GET") !== "GET" || !response.headers.location || i === 5)
+        throw Error("\u041D\u0435\u0432\u043E\u0437\u043C\u043E\u0436\u043D\u043E \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u044C \u043F\u0435\u0440\u0435\u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u044F");
+      const next = new URL(response.headers.location, current);
+      const previous = new URL(current);
+      const yandex = (host) => ["yandex.net", "yandex.ru", "yandex.com"].some(
+        (d) => host === d || host.endsWith("." + d)
+      );
+      if (next.protocol !== "https:" || next.username || next.password || next.origin !== previous.origin && !(yandex(next.hostname) && yandex(previous.hostname)))
+        throw Error("\u041D\u0435\u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u044B\u0439 \u0430\u0434\u0440\u0435\u0441 \u043F\u0435\u0440\u0435\u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F");
+      request = {
+        ...request,
+        headers: Object.fromEntries(
+          Object.entries(request.headers || {}).filter(
+            ([key]) => !["authorization", "cookie", "host"].includes(key.toLowerCase())
+          )
+        )
+      };
+      current = next.href;
+    }
+    throw Error("\u0421\u043B\u0438\u0448\u043A\u043E\u043C \u043C\u043D\u043E\u0433\u043E \u043F\u0435\u0440\u0435\u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0439");
+  }
+  async once(url, opts = {}) {
+    opts.signal?.throwIfAborted();
+    const u = new URL(url);
+    if (u.protocol !== "https:" || u.username || u.password)
+      throw Error("\u041D\u0435\u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u044B\u0439 \u0441\u0435\u0442\u0435\u0432\u043E\u0439 \u0430\u0434\u0440\u0435\u0441");
+    const body = opts.body === void 0 ? void 0 : typeof opts.body === "string" ? Buffer.from(opts.body, "utf8") : Buffer.from(
+      opts.body instanceof ArrayBuffer ? new Uint8Array(opts.body) : opts.body
+    );
+    const headers = { ...opts.headers };
+    if (body !== void 0 && !Object.keys(headers).some((k) => k.toLowerCase() === "content-length"))
+      headers["Content-Length"] = String(body.byteLength);
+    return new Promise((resolve, reject) => {
+      const req = (0, import_node_https.request)(
+        u,
+        {
+          method: opts.method || "GET",
+          headers,
+          signal: opts.signal
+        },
+        (res) => {
+          const chunks = [];
+          let size = 0;
+          res.on("data", (chunk) => {
+            size += chunk.length;
+            if (size > (opts.maxBytes ?? 4 * 1024 * 1024)) {
+              req.destroy(new Error("\u041E\u0442\u0432\u0435\u0442 \u043F\u0440\u0435\u0432\u044B\u0448\u0430\u0435\u0442 \u0440\u0430\u0437\u0440\u0435\u0448\u0451\u043D\u043D\u044B\u0439 \u0440\u0430\u0437\u043C\u0435\u0440"));
+              return;
+            }
+            chunks.push(chunk);
+          });
+          res.on("error", reject);
+          res.on("end", () => {
+            const bytes2 = Buffer.concat(chunks);
+            const headers2 = {};
+            for (const [k, v] of Object.entries(res.headers))
+              if (v !== void 0)
+                headers2[k] = Array.isArray(v) ? v.join(",") : v;
+            resolve({
+              status: res.statusCode || 0,
+              headers: headers2,
+              text: async () => bytes2.toString("utf8"),
+              arrayBuffer: async () => Uint8Array.from(bytes2).buffer
+            });
+          });
+        }
+      );
+      req.on(
+        "error",
+        (e) => reject(
+          opts.signal?.aborted ? opts.signal.reason : Object.assign(
+            new Error(
+              e.message.includes("\u0440\u0430\u0437\u043C\u0435\u0440") || e.message === "\u0422\u0430\u0439\u043C-\u0430\u0443\u0442" ? e.message : "\u0421\u0435\u0442\u0435\u0432\u043E\u0439 \u0437\u0430\u043F\u0440\u043E\u0441 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D" + (e.code ? " (" + e.code + ")" : "")
+            ),
+            { code: e.code }
+          )
+        )
+      );
+      req.setTimeout(6e4, () => req.destroy(new Error("\u0422\u0430\u0439\u043C-\u0430\u0443\u0442")));
+      if (body !== void 0) req.write(body);
+      req.end();
+    });
+  }
+};
+async function json(http, url, opts = {}) {
+  const r = await http.fetch(url, opts);
+  if (r.status < 200 || r.status >= 300) {
+    let reason = "";
+    try {
+      const body = JSON.parse(await r.text());
+      const candidate = typeof body.error === "string" ? body.error : body.error?.errors?.[0]?.reason || body.error?.status;
+      if (typeof candidate === "string" && /^[a-zA-Z0-9_.-]{1,100}$/.test(candidate))
+        reason = " (" + candidate + ")";
+    } catch {
+    }
+    const hint = r.status === 401 ? " \u041F\u0435\u0440\u0435\u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u0430\u043A\u043A\u0430\u0443\u043D\u0442: \u0442\u043E\u043A\u0435\u043D \u043D\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043B\u0435\u043D." : r.status === 403 ? " \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u0440\u0430\u0432\u0430 \u0434\u043E\u0441\u0442\u0443\u043F\u0430 \u0438 \u0432\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 API \u0441\u0435\u0440\u0432\u0438\u0441\u0430." : r.status === 404 ? " \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u0443\u0442\u044C/ID \u043F\u0430\u043F\u043A\u0438 \u0438 \u0434\u043E\u0441\u0442\u0443\u043F \u0430\u043A\u043A\u0430\u0443\u043D\u0442\u0430." : r.status === 429 ? " \u041B\u0438\u043C\u0438\u0442 \u0437\u0430\u043F\u0440\u043E\u0441\u043E\u0432 \u0441\u0435\u0440\u0432\u0438\u0441\u0430. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u043E\u0437\u0436\u0435." : " \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F.";
+    throw Object.assign(
+      Error(new URL(url).hostname + ": HTTP " + r.status + reason + hint),
+      { status: r.status }
+    );
+  }
+  try {
+    return JSON.parse(await r.text());
+  } catch {
+    throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 JSON API");
+  }
+}
+async function bytes(http, url, opts = {}) {
+  const r = await http.fetch(url, opts);
+  if (r.status !== 200)
+    throw Object.assign(Error("\u0421\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435: HTTP " + r.status), {
+      status: r.status
+    });
+  return new Uint8Array(await r.arrayBuffer());
+}
+
+// src/sources/remotes.ts
+var import_node_crypto2 = require("node:crypto");
+var import_promises4 = require("node:timers/promises");
+
+// src/sources/drive-upload.ts
+var CHUNK = 8 * 1024 * 1024;
+function driveMime(p) {
+  const types = {
+    md: "text/markdown",
+    txt: "text/plain",
+    json: "application/json",
+    canvas: "application/json",
+    base: "application/json",
+    css: "text/css",
+    js: "text/javascript",
+    html: "text/html",
+    pdf: "application/pdf",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    svg: "image/svg+xml",
+    gif: "image/gif",
+    webp: "image/webp",
+    mp3: "audio/mpeg",
+    mp4: "video/mp4"
+  };
+  return types[p.split(".").at(-1).toLowerCase()] || "application/octet-stream";
+}
+function failure(r) {
+  throw Object.assign(Error("\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 Drive: HTTP " + r.status), {
+    status: r.status
+  });
+}
+function offset(r, total) {
+  if (!r.headers.range) return 0;
+  const m = /^bytes=0-(\d+)$/.exec(r.headers.range);
+  const n = m ? Number(m[1]) + 1 : NaN;
+  if (!Number.isSafeInteger(n) || n < 0 || n >= total)
+    throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u043E\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u0438\u0435 \u0434\u0438\u0430\u043F\u0430\u0437\u043E\u043D\u0430 Drive");
+  return n;
+}
+async function driveUpload(http, url, method, metadata, data, options) {
+  const total = data.length;
+  const start = await http.fetch(url, {
+    ...options,
+    method,
+    body: JSON.stringify(metadata),
+    headers: {
+      ...options.headers,
+      "Content-Type": "application/json; charset=UTF-8",
+      "X-Upload-Content-Length": String(total),
+      "X-Upload-Content-Type": String(
+        metadata.mimeType || "application/octet-stream"
+      )
+    }
+  });
+  if (start.status < 200 || start.status >= 300) failure(start);
+  if (!start.headers.location)
+    throw Error("Drive \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0430\u0434\u0440\u0435\u0441 \u0441\u0435\u0441\u0441\u0438\u0438 \u0437\u0430\u0433\u0440\u0443\u0437\u043A\u0438");
+  const session = new URL(start.headers.location);
+  if (session.origin !== "https://www.googleapis.com" || session.username || session.password || !session.pathname.startsWith("/upload/drive/v3/files"))
+    throw Error("\u041D\u0435\u0434\u043E\u0432\u0435\u0440\u0435\u043D\u043D\u044B\u0439 \u0430\u0434\u0440\u0435\u0441 \u0441\u0435\u0441\u0441\u0438\u0438 Drive");
+  const send = (body, range) => http.fetch(session.href, {
+    ...options,
+    method: "PUT",
+    body,
+    redirect: "error",
+    headers: {
+      ...options.headers,
+      "Content-Type": "application/octet-stream",
+      "Content-Range": range
+    }
+  });
+  const query = async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      options.signal?.throwIfAborted();
+      try {
+        const r = await send(new Uint8Array(), `bytes */${total}`);
+        if (r.status < 500 && r.status !== 429) return r;
+      } catch (e) {
+        options.signal?.throwIfAborted();
+        if (attempt === 2) throw e;
+      }
+    }
+    throw Error(
+      "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u0441\u0435\u0441\u0441\u0438\u044E Drive. \u041F\u0435\u0440\u0435\u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u0430\u0439\u043B\u044B \u043F\u0435\u0440\u0435\u0434 \u043F\u043E\u0432\u0442\u043E\u0440\u043D\u044B\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u043E\u043C."
+    );
+  };
+  let at = 0, stalls = 0, interruptions = 0;
+  while (true) {
+    options.signal?.throwIfAborted();
+    const end = Math.min(at + CHUNK, total);
+    let r;
+    try {
+      r = await send(
+        data.subarray(at, end),
+        total ? `bytes ${at}-${end - 1}/${total}` : "bytes */0"
+      );
+      if (r.status >= 500 || r.status === 429) {
+        if (++interruptions > 3) failure(r);
+        r = await query();
+      }
+    } catch (e) {
+      options.signal?.throwIfAborted();
+      if (++interruptions > 3) throw e;
+      r = await query();
+    }
+    if (r.status === 200 || r.status === 201) return JSON.parse(await r.text());
+    if (r.status !== 308) failure(r);
+    const next = offset(r, total);
+    if (next < at || next > end)
+      throw Error("Drive \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u043B \u043D\u0435\u043E\u0436\u0438\u0434\u0430\u043D\u043D\u044B\u0439 \u0434\u0438\u0430\u043F\u0430\u0437\u043E\u043D \u0437\u0430\u0433\u0440\u0443\u0437\u043A\u0438");
+    if (next === at) {
+      if (++stalls > 3) throw Error("\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 Drive \u043D\u0435 \u043F\u0440\u043E\u0434\u0432\u0438\u0433\u0430\u0435\u0442\u0441\u044F");
+    } else stalls = 0;
+    at = next;
+  }
+}
+
+// src/sources/remotes.ts
+var hashCache = /* @__PURE__ */ new Map();
+var FOLDER = "application/vnd.google-apps.folder";
+var fields = "id,name,mimeType,size,modifiedTime,version,sha256Checksum,md5Checksum,trashed,capabilities(canEdit,canDownload,canAddChildren)";
+function driveRoot(value) {
+  const v = value.trim();
+  if (!v.startsWith("https://")) {
+    if (!/^[\w-]+$/.test(v))
+      throw Error("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 ID \u043F\u0430\u043F\u043A\u0438 Google Drive \u0438\u043B\u0438 \u0441\u0441\u044B\u043B\u043A\u0443");
+    return v;
+  }
+  const u = new URL(v);
+  if (u.hostname !== "drive.google.com")
+    throw Error("\u041E\u0436\u0438\u0434\u0430\u0435\u0442\u0441\u044F \u0441\u0441\u044B\u043B\u043A\u0430 drive.google.com");
+  const id = u.pathname.match(/\/folders\/([\w-]+)/)?.[1] || u.searchParams.get("id");
+  if (!id || !/^[\w-]+$/.test(id)) throw Error("\u0421\u0441\u044B\u043B\u043A\u0430 \u043D\u0435 \u0441\u043E\u0434\u0435\u0440\u0436\u0438\u0442 folder ID");
+  return id;
+}
+var DriveStore = class {
+  constructor(http, root, limit, publicKey, identityAccount = "", rules, duplicates = "error") {
+    this.http = http;
+    this.limit = limit;
+    this.rules = rules;
+    this.duplicates = duplicates;
+    this.root = driveRoot(root);
+    this.key = publicKey;
+    this.resourceKey = root.startsWith("https:") ? new URL(root).searchParams.get("resourcekey") || void 0 : void 0;
+    this.writable = !publicKey && duplicates === "error";
+    this.trashSupported = this.writable;
+    this.identity = "drive:" + identityAccount + ":" + this.root;
+  }
+  identity;
+  writable;
+  trashSupported;
+  root;
+  folders = /* @__PURE__ */ new Map();
+  key;
+  resourceKey;
+  url(suffix, query = {}, upload = false) {
+    const u = new URL(
+      "https://www.googleapis.com/" + (upload ? "upload/" : "") + "drive/v3/" + suffix
+    );
+    for (const [k, v] of Object.entries({
+      ...query,
+      supportsAllDrives: "true",
+      ...this.key ? { key: this.key } : {}
+    }))
+      u.searchParams.set(k, v);
+    return u.href;
+  }
+  opts(signal, extra = {}) {
+    return {
+      ...extra,
+      signal,
+      headers: {
+        ...this.resourceKey ? { "X-Goog-Drive-Resource-Keys": `${this.root}/${this.resourceKey}` } : {},
+        ...extra.headers
+      }
+    };
+  }
+  async inspect(id, signal) {
+    return json(
+      this.http,
+      this.url("files/" + encodeURIComponent(id), { fields }),
+      this.opts(signal)
+    );
+  }
+  async info(f, p, signal) {
+    if (typeof f.id !== "string" || typeof f.version !== "string" && typeof f.version !== "number")
+      throw Error("Drive \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0432\u0435\u0440\u0441\u0438\u044E \u0444\u0430\u0439\u043B\u0430");
+    const size = Number(f.size);
+    if (!Number.isSafeInteger(size) || size < 0)
+      throw Error("Drive \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0440\u0430\u0437\u043C\u0435\u0440 \u0444\u0430\u0439\u043B\u0430");
+    let hash = f.sha256Checksum;
+    if (size > this.limit) hash = "oversize:" + size;
+    else if (typeof hash !== "string" || !/^[a-f\d]{64}$/i.test(hash)) {
+      const key = f.id + ":" + f.version;
+      hash = hashCache.get(key);
+      if (!hash) {
+        hash = sha(await this.download(f, signal));
+        if (hashCache.size > 1e5) hashCache.clear();
+        hashCache.set(key, hash);
+      }
+    }
+    return {
+      path: p,
+      hash: String(hash).toLowerCase(),
+      size,
+      mtime: Date.parse(f.modifiedTime) || void 0,
+      id: f.id,
+      version: String(f.version)
+    };
+  }
+  async children(id, signal) {
+    const out = [];
+    let next = "";
+    const pages = /* @__PURE__ */ new Set();
+    do {
+      if (pages.has(next)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u044B Drive");
+      pages.add(next);
+      const d = await json(
+        this.http,
+        this.url("files", {
+          q: `'${id.replace(/'/g, "\\'")}' in parents and trashed=false`,
+          fields: `files(${fields}),nextPageToken,incompleteSearch`,
+          pageSize: "1000",
+          includeItemsFromAllDrives: "true",
+          ...next ? { pageToken: next } : {}
+        }),
+        this.opts(signal)
+      );
+      if (d.incompleteSearch || !Array.isArray(d.files))
+        throw Error("\u041D\u0435\u043F\u043E\u043B\u043D\u044B\u0439 \u043E\u0442\u0432\u0435\u0442 Drive");
+      if (d.nextPageToken !== void 0 && typeof d.nextPageToken !== "string")
+        throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430 Drive");
+      out.push(...d.files);
+      next = d.nextPageToken || "";
+    } while (next);
+    return out;
+  }
+  choose(entries, p, warnings) {
+    if (entries.length <= 1) return entries[0];
+    if (this.duplicates !== "newest" || entries.some(
+      (f) => f.mimeType === FOLDER || f.name !== entries[0].name || !Number.isFinite(Date.parse(f.modifiedTime))
+    ))
+      throw new PathCollision(
+        "\u041A\u043E\u043B\u043B\u0438\u0437\u0438\u044F: \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u043E\u0431\u044A\u0435\u043A\u0442\u043E\u0432 Drive \u0438\u043C\u0435\u044E\u0442 \u043F\u0443\u0442\u044C \xAB" + p + "\xBB. \u041F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u0443\u0439\u0442\u0435 \u0434\u0443\u0431\u043B\u044C, \u0438\u0441\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u043F\u0443\u0442\u044C \u0438\u043B\u0438 \u0434\u043B\u044F \u0444\u0430\u0439\u043B\u043E\u0432 \u0432\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u0432\u044B\u0431\u043E\u0440 \u043D\u043E\u0432\u0435\u0439\u0448\u0435\u0433\u043E \u043F\u0440\u0438 \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0438.",
+        [p]
+      );
+    const sorted = [...entries].sort(
+      (a, b) => Date.parse(b.modifiedTime) - Date.parse(a.modifiedTime) || String(a.id).localeCompare(String(b.id))
+    );
+    warnings?.push(
+      `Drive: \u0438\u0437 ${entries.length} \u0444\u0430\u0439\u043B\u043E\u0432 \xAB${p}\xBB \u0432\u044B\u0431\u0440\u0430\u043D \u043D\u043E\u0432\u0435\u0439\u0448\u0438\u0439 (ID ${sorted[0].id}); \u043E\u0441\u0442\u0430\u043B\u044C\u043D\u044B\u0435 \u043E\u0441\u0442\u0430\u044E\u0442\u0441\u044F \u0432 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0435.`
+    );
+    return sorted[0];
+  }
+  async scan(signal) {
+    const root = await this.inspect(this.root, signal);
+    if (root.trashed || root.mimeType !== FOLDER)
+      throw Error("\u041F\u0430\u043F\u043A\u0430 Drive \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430");
+    const files = /* @__PURE__ */ Object.create(null), directories = [], warnings = [], seen = /* @__PURE__ */ new Set(), all = [];
+    this.folders = /* @__PURE__ */ new Map([["", this.root]]);
+    const walk = async (id, base, depth) => {
+      signal.throwIfAborted();
+      if (depth > 60 || seen.size > 1e5)
+        throw Error("\u041F\u0440\u0435\u0432\u044B\u0448\u0435\u043D \u043F\u0440\u0435\u0434\u0435\u043B \u043E\u0431\u0445\u043E\u0434\u0430 Drive");
+      if (seen.has(id)) throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 ID \u043F\u0430\u043F\u043A\u0438 Drive");
+      seen.add(id);
+      const groups = /* @__PURE__ */ new Map();
+      for (const f of await this.children(id, signal)) {
+        if (/[\\/]/.test(f.name))
+          throw Error("\u041D\u0435\u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043C\u044B\u0439 \u0440\u0430\u0437\u0434\u0435\u043B\u0438\u0442\u0435\u043B\u044C \u0432 \u0438\u043C\u0435\u043D\u0438 \u0443\u0434\u0430\u043B\u0451\u043D\u043D\u043E\u0433\u043E \u0444\u0430\u0439\u043B\u0430");
+        path(f.name);
+        const p = join(base, f.name);
+        if (f.mimeType === FOLDER ? this.rules && !this.rules.folder(p) : this.rules && !this.rules.file(p))
+          continue;
+        const group = groups.get(f.name) || [];
+        group.push(f);
+        groups.set(f.name, group);
+      }
+      for (const group of groups.values()) {
+        const p = join(base, group[0].name);
+        const f = this.choose(group, p, warnings);
+        all.push(p);
+        if (f.mimeType === FOLDER) {
+          directories.push(p);
+          this.folders.set(p, f.id);
+          await walk(f.id, p, depth + 1);
+        } else if (String(f.mimeType).startsWith("application/vnd.google-apps.")) {
+          warnings.push(
+            "\u041F\u0440\u043E\u043F\u0443\u0449\u0435\u043D Google Docs / shortcut (\u043D\u0443\u0436\u0435\u043D \u044D\u043A\u0441\u043F\u043E\u0440\u0442): " + p
+          );
+          files[p] = {
+            path: p,
+            size: Number.MAX_SAFE_INTEGER,
+            hash: "unsupported:" + f.mimeType,
+            version: String(f.version || ""),
+            id: f.id
+          };
+        } else files[p] = await this.info(f, p, signal);
+      }
+    };
+    await walk(this.root, "", 0);
+    uniquePaths(all);
+    return {
+      files,
+      directories,
+      complete: true,
+      warnings,
+      identity: this.identity
+    };
+  }
+  async download(f, signal) {
+    const b = await bytes(
+      this.http,
+      this.url("files/" + encodeURIComponent(f.id), { alt: "media" }),
+      this.opts(signal, { maxBytes: this.limit })
+    );
+    if (b.length !== Number(f.size))
+      throw Error("\u0420\u0430\u0437\u043C\u0435\u0440 Drive-\u0444\u0430\u0439\u043B\u0430 \u043D\u0435 \u0441\u043E\u0432\u043F\u0430\u043B");
+    if (f.sha256Checksum && sha(b) !== f.sha256Checksum.toLowerCase())
+      throw Error("SHA-256 Drive \u043D\u0435 \u0441\u043E\u0432\u043F\u0430\u043B");
+    if (f.md5Checksum && (0, import_node_crypto2.createHash)("md5").update(b).digest("hex") !== f.md5Checksum.toLowerCase())
+      throw Error("MD5 Drive \u043D\u0435 \u0441\u043E\u0432\u043F\u0430\u043B");
+    const after = await this.inspect(f.id, signal);
+    if (String(after.version) !== String(f.version) || after.trashed)
+      throw Error("\u0424\u0430\u0439\u043B Drive \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u044F");
+    return b;
+  }
+  async read(f, signal) {
+    const current = await this.inspect(f.id, signal);
+    if (String(current.version) !== f.version || current.trashed)
+      throw Error("\u0424\u0430\u0439\u043B Drive \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F");
+    await this.verifyPath(f.path, f.id, signal);
+    return this.download(current, signal);
+  }
+  /** Sync Engine's fresh path-chain lookup, adapted to reject ambiguous names. */
+  async verifyPath(p, expectedId, signal) {
+    let id = this.root;
+    const parts = p.split("/");
+    for (let i = 0; i < parts.length; i++) {
+      const matches = (await this.children(id, signal)).filter(
+        (f2) => f2.name.normalize("NFC").toLowerCase() === parts[i].normalize("NFC").toLowerCase()
+      );
+      const f = this.choose(matches, p);
+      if (!f) {
+        if (expectedId)
+          throw Error("\u041F\u0443\u0442\u044C Drive \u0438\u0441\u0447\u0435\u0437 \u043F\u043E\u0441\u043B\u0435 \u043F\u043B\u0430\u043D\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F: " + p);
+        return;
+      }
+      if (i === parts.length - 1) {
+        if (!expectedId || f.id !== expectedId || f.name !== parts[i])
+          throw Error(
+            "\u041F\u0443\u0442\u044C Drive \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F \u0438\u043B\u0438 \u043F\u043E\u044F\u0432\u0438\u043B\u0441\u044F \u043F\u043E\u0441\u043B\u0435 \u043F\u043B\u0430\u043D\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F: " + p
+          );
+      } else if (f.mimeType !== FOLDER || f.name !== parts[i])
+        throw Error("\u041F\u0430\u043F\u043A\u0430 Drive \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0430\u0441\u044C \u043F\u043E\u0441\u043B\u0435 \u043F\u043B\u0430\u043D\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F: " + p);
+      id = f.id;
+    }
+  }
+  async verifyExpected(p, expected, signal) {
+    if (expected) {
+      const r = await this.http.fetch(
+        this.url("files/" + encodeURIComponent(expected.id), { fields }),
+        this.opts(signal)
+      );
+      if (r.status !== 200) throw Error("Drive-\u0444\u0430\u0439\u043B \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
+      const f = JSON.parse(await r.text());
+      if (f.trashed || String(f.version) !== expected.version)
+        throw Error("Drive-\u0444\u0430\u0439\u043B \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F");
+      if (!r.headers.etag)
+        throw Error("Drive \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B ETag; \u0431\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u0430\u044F \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0438\u0441\u044C \u0437\u0430\u043F\u0440\u0435\u0449\u0435\u043D\u0430");
+      await this.verifyPath(p, expected.id, signal);
+      return r.headers.etag;
+    }
+    await this.verifyPath(p, void 0, signal);
+    return void 0;
+  }
+  async parent(p, signal) {
+    let base = "", id = this.root;
+    for (const name of p.split("/").slice(0, -1)) {
+      base = join(base, name);
+      const cached = this.folders.get(base);
+      let next;
+      {
+        const found = (await this.children(id, signal)).filter(
+          (f) => f.name.normalize("NFC").toLowerCase() === name.normalize("NFC").toLowerCase()
+        );
+        if (found.length > 1 || found[0] && (found[0].mimeType !== FOLDER || found[0].name !== name))
+          throw Error("\u041A\u043E\u043B\u043B\u0438\u0437\u0438\u044F \u043F\u0430\u043F\u043A\u0438 Drive");
+        next = found[0]?.id;
+        if (cached && next !== cached)
+          throw Error(
+            "\u041F\u0430\u043F\u043A\u0430 Drive \u043F\u0435\u0440\u0435\u043C\u0435\u0449\u0435\u043D\u0430 \u0438\u043B\u0438 \u0437\u0430\u043C\u0435\u043D\u0435\u043D\u0430 \u043F\u043E\u0441\u043B\u0435 \u043F\u043B\u0430\u043D\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F: " + base
+          );
+        if (!next) {
+          const d = await json(
+            this.http,
+            this.url("files", { fields: "id" }),
+            this.opts(signal, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ name, mimeType: FOLDER, parents: [id] })
+            })
+          );
+          next = d.id;
+          if (typeof next !== "string" || !next)
+            throw Error("Drive \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B ID \u0441\u043E\u0437\u0434\u0430\u043D\u043D\u043E\u0439 \u043F\u0430\u043F\u043A\u0438");
+        }
+        this.folders.set(base, next);
+      }
+      id = next;
+    }
+    return id;
+  }
+  async write(p, b, expected, mtime, signal) {
+    if (!this.writable)
+      throw Error(
+        "Drive \u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u0447\u0442\u0435\u043D\u0438\u044F: \u043F\u0443\u0431\u043B\u0438\u0447\u043D\u044B\u0439 \u0434\u043E\u0441\u0442\u0443\u043F \u0438\u043B\u0438 \u0432\u044B\u0431\u043E\u0440 \u043D\u043E\u0432\u0435\u0439\u0448\u0435\u0433\u043E \u0434\u0443\u0431\u043B\u044F"
+      );
+    path(p);
+    const etag = await this.verifyExpected(p, expected, signal);
+    const root = await this.inspect(this.root, signal);
+    if (root.trashed || root.mimeType !== FOLDER)
+      throw Error("\u041A\u043E\u0440\u0435\u043D\u044C Drive \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u043F\u0435\u0440\u0435\u0434 \u0437\u0430\u043F\u0438\u0441\u044C\u044E");
+    const parent = await this.parent(p, signal);
+    if (!expected) await this.verifyExpected(p, void 0, signal);
+    const boundary = "sync_studio_" + crypto.randomUUID();
+    const metadata = {
+      name: p.split("/").at(-1),
+      mimeType: driveMime(p),
+      ...!expected ? { parents: [parent] } : {},
+      ...mtime ? { modifiedTime: new Date(mtime).toISOString() } : {}
+    };
+    const body = b.length > 5 * 1024 * 1024 ? void 0 : Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r
+Content-Type: application/json; charset=UTF-8\r
+\r
+${JSON.stringify(metadata)}\r
+--${boundary}\r
+Content-Type: ${driveMime(p)}\r
+\r
+`
+      ),
+      Buffer.from(b),
+      Buffer.from(`\r
+--${boundary}--\r
+`)
+    ]);
+    const f = b.length > 5 * 1024 * 1024 ? await driveUpload(
+      this.http,
+      this.url(
+        expected ? "files/" + encodeURIComponent(expected.id) : "files",
+        { uploadType: "resumable", fields },
+        true
+      ),
+      expected ? "PATCH" : "POST",
+      metadata,
+      b,
+      this.opts(signal, { headers: etag ? { "If-Match": etag } : {} })
+    ) : await json(
+      this.http,
+      this.url(
+        expected ? "files/" + encodeURIComponent(expected.id) : "files",
+        { uploadType: "multipart", fields },
+        true
+      ),
+      this.opts(signal, {
+        method: expected ? "PATCH" : "POST",
+        headers: {
+          "Content-Type": "multipart/related; boundary=" + boundary,
+          ...etag ? { "If-Match": etag } : {}
+        },
+        body
+      })
+    );
+    const result = await this.info(f, p, signal);
+    if (result.hash !== sha(b)) throw Error("\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0437\u0430\u043F\u0438\u0441\u0438 Drive \u043D\u0435 \u043F\u0440\u043E\u0448\u043B\u0430");
+    return result;
+  }
+  async delete(f, trash, signal) {
+    if (!this.writable) throw Error("\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u0447\u0442\u0435\u043D\u0438\u044F");
+    const etag = await this.verifyExpected(f.path, f, signal);
+    const root = await this.inspect(this.root, signal);
+    if (root.trashed || root.mimeType !== FOLDER)
+      throw Error("\u041A\u043E\u0440\u0435\u043D\u044C Drive \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u043F\u0435\u0440\u0435\u0434 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u0435\u043C");
+    const r = await this.http.fetch(
+      this.url(
+        "files/" + encodeURIComponent(f.id),
+        trash ? { fields: "id" } : {}
+      ),
+      this.opts(signal, {
+        method: trash ? "PATCH" : "DELETE",
+        headers: { "If-Match": etag, "Content-Type": "application/json" },
+        ...trash ? { body: '{"trashed":true}' } : {}
+      })
+    );
+    if (r.status < 200 || r.status >= 300)
+      throw Error("\u0423\u0434\u0430\u043B\u0435\u043D\u0438\u0435 Drive: HTTP " + r.status);
+  }
+};
+var GitHubStore = class {
+  constructor(http, repo, ref, prefix, token, limit, rules) {
+    this.http = http;
+    this.ref = ref;
+    this.prefix = prefix;
+    this.token = token;
+    this.limit = limit;
+    this.rules = rules;
+    const m = repo.replace(/^https:\/\/github.com\//, "").replace(/\.git$/, "").replace(/\/$/, "").match(/^([\w.-]+)\/([\w.-]+)$/);
+    if (!m) throw Error("\u0420\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0439: owner/repo");
+    path(prefix, true);
+    this.base = `https://api.github.com/repos/${m[1]}/${m[2]}`;
+    this.identity = `github:${m[1]}/${m[2]}:${ref}:${prefix}`;
+  }
+  identity;
+  writable = false;
+  trashSupported = false;
+  base;
+  options(signal) {
+    return {
+      signal,
+      maxBytes: 16 * 1024 * 1024,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "Obsidian-Sync-Studio",
+        ...this.token ? { Authorization: "Bearer " + this.token } : {}
+      }
+    };
+  }
+  async scan(signal) {
+    const c = await json(
+      this.http,
+      this.base + "/commits/" + encodeURIComponent(this.ref || "HEAD"),
+      this.options(signal)
+    );
+    if (!c.commit?.tree?.sha) throw Error("GitHub \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0434\u0435\u0440\u0435\u0432\u043E \u043A\u043E\u043C\u043C\u0438\u0442\u0430");
+    const tree = await json(
+      this.http,
+      this.base + "/git/trees/" + c.commit.tree.sha + "?recursive=1",
+      this.options(signal)
+    );
+    if (tree.truncated || !Array.isArray(tree.tree))
+      throw Error("\u041D\u0435\u043F\u043E\u043B\u043D\u043E\u0435 \u0434\u0435\u0440\u0435\u0432\u043E GitHub: \u0437\u0430\u043F\u0443\u0441\u043A \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D");
+    if (this.prefix && !tree.tree.some((f) => f.type === "tree" && f.path === this.prefix))
+      throw Error("\u041A\u0430\u0442\u0430\u043B\u043E\u0433 GitHub \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D");
+    const files = /* @__PURE__ */ Object.create(null);
+    const directories = [];
+    for (const f of tree.tree) {
+      if (!under(f.path, this.prefix) || f.path === this.prefix) continue;
+      const p = this.prefix ? f.path.slice(this.prefix.length + 1) : f.path;
+      if (f.type === "tree") {
+        if (!this.rules || this.rules.folder(p)) directories.push(path(p));
+        continue;
+      }
+      if (this.rules && !this.rules.file(p)) continue;
+      path(p);
+      if (f.type !== "blob" || !["100644", "100755"].includes(f.mode))
+        throw Error("\u0421\u0441\u044B\u043B\u043A\u0438 \u0438 submodules \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u044E\u0442\u0441\u044F: " + f.path);
+      if (!Number.isSafeInteger(f.size) || f.size < 0)
+        throw Error("GitHub \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0440\u0430\u0437\u043C\u0435\u0440");
+      let hash = "oversize:" + f.size;
+      if (f.size <= this.limit) {
+        hash = hashCache.get("git:" + f.sha) || sha(await this.blob(f.sha, signal));
+        if (hashCache.size > 1e5) hashCache.clear();
+        hashCache.set("git:" + f.sha, hash);
+      }
+      files[p] = { path: p, hash, size: f.size, version: f.sha, id: f.sha };
+    }
+    uniquePaths([...Object.keys(files), ...directories]);
+    return {
+      files,
+      directories,
+      identity: this.identity,
+      complete: true,
+      warnings: [
+        "GitHub: \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435; \u0444\u0430\u0439\u043B\u043E\u0432\u043E\u0435 \u0432\u0440\u0435\u043C\u044F \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E."
+      ]
+    };
+  }
+  async blob(id, signal) {
+    const r = await json(this.http, this.base + "/git/blobs/" + id, {
+      ...this.options(signal),
+      maxBytes: Math.ceil(this.limit * 1.5) + 1024
+    });
+    if (r.encoding !== "base64" || typeof r.content !== "string")
+      throw Error("\u041D\u0435\u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u043C\u044B\u0439 \u043E\u0442\u0432\u0435\u0442 GitHub");
+    const b = Buffer.from(r.content, "base64");
+    if (b.length > this.limit) throw Error("\u041F\u0440\u0435\u0432\u044B\u0448\u0435\u043D \u0440\u0430\u0437\u043C\u0435\u0440 \u0444\u0430\u0439\u043B\u0430");
+    const hash = (0, import_node_crypto2.createHash)("sha1").update(Buffer.from(`blob ${b.length}\0`)).update(b).digest("hex");
+    if (hash !== id) throw Error("GitHub blob checksum mismatch");
+    if (b.subarray(0, 80).toString().startsWith("version https://git-lfs.github.com/spec"))
+      throw Error("Git LFS \u0442\u0440\u0435\u0431\u0443\u0435\u0442 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E\u0433\u043E \u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u044F");
+    return b;
+  }
+  async read(f, signal) {
+    signal.throwIfAborted();
+    return this.blob(f.id, signal);
+  }
+  async write() {
+    throw Error("GitHub \u0432 \u044D\u0442\u043E\u0439 \u0432\u0435\u0440\u0441\u0438\u0438 \u2014 \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435");
+  }
+  async delete() {
+    throw Error("GitHub \u0432 \u044D\u0442\u043E\u0439 \u0432\u0435\u0440\u0441\u0438\u0438 \u2014 \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435");
+  }
+};
+var YandexStore = class {
+  constructor(http, root, token, limit, rules) {
+    this.http = http;
+    this.token = token;
+    this.limit = limit;
+    this.rules = rules;
+    this.root = "disk:/" + root.replace(/^disk:\//, "").replace(/^\//, "").replace(/\/$/, "");
+    path(this.root.slice(6), true);
+    this.identity = "yandex:" + this.root;
+  }
+  identity;
+  writable = true;
+  trashSupported = true;
+  base = "https://cloud-api.yandex.net/v1/disk";
+  root;
+  url(endpoint, params) {
+    return this.base + endpoint + "?" + new URLSearchParams(params);
+  }
+  options(signal, extra = {}) {
+    return {
+      ...extra,
+      signal,
+      headers: { Authorization: "OAuth " + this.token, ...extra.headers }
+    };
+  }
+  full(p) {
+    return p ? this.root.replace(/\/$/, "") + "/" + path(p) : this.root;
+  }
+  async meta(p, signal) {
+    return json(
+      this.http,
+      this.url("/resources", { path: this.full(p), limit: "200" }),
+      this.options(signal)
+    );
+  }
+  async folders(relative, signal) {
+    const out = [];
+    let offset2 = 0, total;
+    do {
+      const d = await json(
+        this.http,
+        this.url("/resources", {
+          path: this.full(relative),
+          limit: "200",
+          offset: String(offset2)
+        }),
+        this.options(signal)
+      );
+      const e = d._embedded;
+      if (d.type !== "dir" || !e || !Array.isArray(e.items) || !Number.isSafeInteger(e.total) || e.offset !== offset2 || total !== void 0 && e.total !== total)
+        throw Error("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u0440\u043E\u0447\u0438\u0442\u0430\u0442\u044C \u043F\u043E\u043B\u043D\u044B\u0439 \u0441\u043F\u0438\u0441\u043E\u043A \u043F\u0430\u043F\u043E\u043A \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
+      total = e.total;
+      for (const f of e.items)
+        if (f.type === "dir") {
+          if (/[\\/]/.test(f.name)) throw Error("\u041D\u0435\u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043C\u043E\u0435 \u0438\u043C\u044F \u043F\u0430\u043F\u043A\u0438");
+          out.push({ id: join(relative, path(f.name)), name: f.name });
+        }
+      offset2 += e.items.length;
+      if (!e.items.length && offset2 < total)
+        throw Error("\u041D\u0435\u043F\u043E\u043B\u043D\u044B\u0439 \u0441\u043F\u0438\u0441\u043E\u043A \u043F\u0430\u043F\u043E\u043A");
+    } while (offset2 < total);
+    return out;
+  }
+  info(f, p) {
+    if (!Number.isSafeInteger(f.size) || typeof f.sha256 !== "string" || !/^[a-f\d]{64}$/i.test(f.sha256))
+      throw Error("\u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B checksum/\u0440\u0430\u0437\u043C\u0435\u0440: " + p);
+    return {
+      path: p,
+      hash: f.sha256.toLowerCase(),
+      size: f.size,
+      mtime: Date.parse(f.modified) || void 0,
+      version: f.sha256.toLowerCase(),
+      id: f.path
+    };
+  }
+  async scan(signal) {
+    const files = /* @__PURE__ */ Object.create(null), directories = [], paths = [];
+    let count = 0;
+    const walk = async (p, depth) => {
+      if (depth > 60 || ++count > 1e5)
+        throw Error("\u041F\u0440\u0435\u0432\u044B\u0448\u0435\u043D \u043F\u0440\u0435\u0434\u0435\u043B \u043E\u0431\u0445\u043E\u0434\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
+      let offset2 = 0, total;
+      const names = /* @__PURE__ */ new Set();
+      do {
+        signal.throwIfAborted();
+        const d = await json(
+          this.http,
+          this.url("/resources", {
+            path: this.full(p),
+            limit: "200",
+            offset: String(offset2)
+          }),
+          this.options(signal)
+        );
+        const e = d._embedded;
+        if (d.type !== "dir" || !e || !Array.isArray(e.items) || !Number.isSafeInteger(e.total) || e.offset !== offset2 || total !== void 0 && e.total !== total)
+          throw Error("\u041D\u0435\u043F\u043E\u043B\u043D\u044B\u0439 \u0438\u043B\u0438 \u0438\u0437\u043C\u0435\u043D\u0438\u0432\u0448\u0438\u0439\u0441\u044F \u0441\u043F\u0438\u0441\u043E\u043A \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
+        total = e.total;
+        for (const f of e.items) {
+          if (/[\\/]/.test(f.name))
+            throw Error("\u041D\u0435\u0434\u043E\u043F\u0443\u0441\u0442\u0438\u043C\u044B\u0439 \u0440\u0430\u0437\u0434\u0435\u043B\u0438\u0442\u0435\u043B\u044C \u0432 \u0438\u043C\u0435\u043D\u0438 \u0443\u0434\u0430\u043B\u0451\u043D\u043D\u043E\u0433\u043E \u0444\u0430\u0439\u043B\u0430");
+          path(f.name);
+          if (names.has(f.name))
+            throw Error("\u041F\u043E\u0432\u0442\u043E\u0440 \u0444\u0430\u0439\u043B\u0430 \u043F\u0440\u0438 \u043E\u0431\u0445\u043E\u0434\u0435 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
+          names.add(f.name);
+          const rel = join(p, f.name);
+          if (f.type === "dir" ? this.rules && !this.rules.folder(rel) : this.rules && !this.rules.file(rel))
+            continue;
+          paths.push(rel);
+          if (f.type === "dir") {
+            directories.push(rel);
+            await walk(rel, depth + 1);
+          } else if (f.type === "file") files[rel] = this.info(f, rel);
+          else throw Error("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0442\u0438\u043F \u0444\u0430\u0439\u043B\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
+        }
+        offset2 += e.items.length;
+        if (!e.items.length && offset2 < total)
+          throw Error("\u041F\u0443\u0441\u0442\u0430\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
+      } while (offset2 < total);
+    };
+    await walk("", 0);
+    uniquePaths(paths);
+    return {
+      files,
+      directories,
+      identity: this.identity,
+      complete: true,
+      warnings: [
+        "\u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A \u043D\u0435 \u043F\u0440\u0435\u0434\u043E\u0441\u0442\u0430\u0432\u043B\u044F\u0435\u0442 \u0430\u0442\u043E\u043C\u0430\u0440\u043D\u0443\u044E \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443 \u0432\u0435\u0440\u0441\u0438\u0438 \u043F\u0440\u0438 \u043F\u0435\u0440\u0435\u0437\u0430\u043F\u0438\u0441\u0438: \u043D\u0435 \u0438\u0437\u043C\u0435\u043D\u044F\u0439\u0442\u0435 \u0444\u0430\u0439\u043B\u044B \u0434\u0440\u0443\u0433\u0438\u043C \u043A\u043B\u0438\u0435\u043D\u0442\u043E\u043C \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u0438."
+      ]
+    };
+  }
+  trusted(href) {
+    const u = new URL(href);
+    if (u.protocol !== "https:" || u.username || u.password || !["yandex.net", "yandex.ru", "yandex.com"].some(
+      (d) => u.hostname === d || u.hostname.endsWith("." + d)
+    ))
+      throw Error("\u041D\u0435\u043E\u0436\u0438\u0434\u0430\u043D\u043D\u044B\u0439 \u0430\u0434\u0440\u0435\u0441 \u043F\u0435\u0440\u0435\u0434\u0430\u0447\u0438 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
+    return href;
+  }
+  async read(f, signal) {
+    if ((await this.meta(f.path, signal)).sha256.toLowerCase() !== f.hash)
+      throw Error("\u0424\u0430\u0439\u043B \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F");
+    const d = await json(
+      this.http,
+      this.url("/resources/download", { path: this.full(f.path) }),
+      this.options(signal)
+    );
+    return bytes(this.http, this.trusted(d.href), {
+      signal,
+      maxBytes: this.limit,
+      redirect: "follow"
+    });
+  }
+  async check(p, expected, signal) {
+    try {
+      const f = await this.meta(p, signal);
+      if (!expected || f.sha256?.toLowerCase() !== expected.hash)
+        throw Error("\u0424\u0430\u0439\u043B \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F \u0438\u043B\u0438 \u043F\u043E\u044F\u0432\u0438\u043B\u0441\u044F");
+    } catch (e) {
+      if (e.status === 404 && !expected) return;
+      throw e;
+    }
+  }
+  async mkdirs(p, signal) {
+    let at = "";
+    for (const x of p.split("/").slice(0, -1)) {
+      at = join(at, x);
+      const r = await this.http.fetch(
+        this.url("/resources", { path: this.full(at) }),
+        this.options(signal, { method: "PUT" })
+      );
+      if (r.status === 409) {
+        const f = await this.meta(at, signal);
+        if (f.type !== "dir") throw Error("\u0424\u0430\u0439\u043B \u0431\u043B\u043E\u043A\u0438\u0440\u0443\u0435\u0442 \u0441\u043E\u0437\u0434\u0430\u043D\u0438\u0435 \u043F\u0430\u043F\u043A\u0438");
+      } else if (r.status !== 201)
+        throw Error("\u0421\u043E\u0437\u0434\u0430\u043D\u0438\u0435 \u043F\u0430\u043F\u043A\u0438 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430: HTTP " + r.status);
+    }
+  }
+  async write(p, b, expected, _mtime, signal) {
+    await this.mkdirs(p, signal);
+    await this.check(p, expected, signal);
+    const d = await json(
+      this.http,
+      this.url("/resources/upload", {
+        path: this.full(p),
+        overwrite: expected ? "true" : "false"
+      }),
+      this.options(signal)
+    );
+    const r = await this.http.fetch(this.trusted(d.href), {
+      method: "PUT",
+      signal,
+      body: b
+    });
+    if (r.status < 200 || r.status >= 300)
+      throw Error("\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430: HTTP " + r.status);
+    const attempts = r.status === 202 ? 20 : 1;
+    const expectedHash = sha(b);
+    for (let i = 0; i < attempts; i++) {
+      signal.throwIfAborted();
+      try {
+        const f = this.info(await this.meta(p, signal), p);
+        if (f.hash === expectedHash) return f;
+      } catch (e) {
+        if (e.status !== 404) throw e;
+      }
+      if (i + 1 < attempts) await (0, import_promises4.setTimeout)(500, void 0, { signal });
+    }
+    throw Error(
+      "\u0417\u0430\u043F\u0438\u0441\u044C \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 \u0435\u0449\u0451 \u043D\u0435 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u0430 \u043E\u0436\u0438\u0434\u0430\u0435\u043C\u043E\u0439 checksum. \u041F\u0435\u0440\u0435\u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u0430\u0439\u043B\u044B; \u043D\u0435\u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043D\u043D\u0430\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0430."
+    );
+  }
+  async delete(f, trash, signal) {
+    await this.check(f.path, f, signal);
+    const r = await this.http.fetch(
+      this.url("/resources", {
+        path: this.full(f.path),
+        permanently: String(!trash)
+      }),
+      this.options(signal, { method: "DELETE" })
+    );
+    if (r.status === 202) {
+      const d = JSON.parse(await r.text());
+      const url = new URL(this.trusted(d.href));
+      if (url.origin !== "https://cloud-api.yandex.net")
+        throw Error("\u041D\u0435\u043E\u0436\u0438\u0434\u0430\u043D\u043D\u044B\u0439 \u0430\u0434\u0440\u0435\u0441 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0438");
+      for (let i = 0; i < 30; i++) {
+        signal.throwIfAborted();
+        const op = await json(this.http, url.href, this.options(signal));
+        if (op.status === "success") return;
+        if (op.status === "failed")
+          throw Error("\u0423\u0434\u0430\u043B\u0435\u043D\u0438\u0435 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 \u043D\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u0435\u043D\u043E");
+        await new Promise((r2) => setTimeout(r2, 1e3));
+      }
+      throw Error("\u0423\u0434\u0430\u043B\u0435\u043D\u0438\u0435 \u0435\u0449\u0451 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443 \u043F\u043E\u0437\u0436\u0435.");
+    }
+    if (r.status !== 204)
+      throw Error("\u0423\u0434\u0430\u043B\u0435\u043D\u0438\u0435 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430: HTTP " + r.status);
+  }
+};
 
 // src/core/send-budget.ts
 var SendBudgetError = class extends Error {
@@ -1596,13 +2006,13 @@ async function googleResponse(response, signal) {
     const reason = typeof candidate === "string" && /^[\w.-]{1,80}$/.test(candidate) ? candidate : void 0;
     const retryable = response.status === 408 || response.status === 429 || response.status >= 500 || ["rateLimitExceeded", "userRateLimitExceeded"].includes(reason ?? "");
     const retry = response.headers["retry-after"];
-    const delay = retry && /^\d+$/.test(retry) ? Number(retry) * 1e3 : retry ? Math.max(0, Date.parse(retry) - Date.now()) : 0;
+    const delay2 = retry && /^\d+$/.test(retry) ? Number(retry) * 1e3 : retry ? Math.max(0, Date.parse(retry) - Date.now()) : 0;
     throw Object.assign(new SyncFault(
       reason === "invalid_grant" || response.status === 401 ? "auth-required" : reason ?? "google-api",
       `Google request failed: HTTP ${response.status}${reason ? ` (${reason})` : ""}`,
       "source",
       retryable
-    ), { status: response.status, retryAt: retryable && Number.isFinite(delay) && delay > 0 ? Date.now() + delay : void 0 });
+    ), { status: response.status, retryAt: retryable && Number.isFinite(delay2) && delay2 > 0 ? Date.now() + delay2 : void 0 });
   }
   if (!data || typeof data !== "object") throw new SyncFault("response-format", "Invalid Google response", "source");
   return data;
@@ -1909,40 +2319,6 @@ async function authorizeAttempt(client, transport, signal, openBrowser, options)
 
 // src/ui.ts
 var import_obsidian = require("obsidian");
-
-// src/core/model.ts
-function newProfile(connectionId = "") {
-  return {
-    id: crypto.randomUUID(),
-    name: "\u041D\u043E\u0432\u044B\u0439 \u043F\u0440\u043E\u0444\u0438\u043B\u044C",
-    connectionId,
-    remoteRoot: "",
-    localRoot: "",
-    branch: "main",
-    subpath: "",
-    direction: "pull",
-    scope: "all",
-    folders: [],
-    categories: ["notes", "attachments"],
-    excludePaths: [],
-    excludeData: true,
-    excludeWorkspace: true,
-    maxMB: 50,
-    conflict: "both",
-    conflictWhen: "both-changed",
-    deletion: "ignore",
-    deleteConflict: "ask",
-    intervalMinutes: 15,
-    startup: false,
-    onChange: false,
-    enabled: false,
-    confirmDeletes: true
-  };
-}
-
-// src/ui.ts
-init_remotes();
-init_paths();
 var VIEW_TYPE = "sync-studio-workspace";
 var providers = {
   gdrive: "Google Drive \xB7 OAuth",
@@ -1950,6 +2326,9 @@ var providers = {
   yandex: "\u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A",
   github: "GitHub"
 };
+function rootLabel(c) {
+  return c?.provider === "yandex" ? "\u041F\u0430\u043F\u043A\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430" : c?.provider === "github" ? "\u0420\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0439 owner/repo" : "\u0421\u0441\u044B\u043B\u043A\u0430 \u0438\u043B\u0438 ID \u043F\u0430\u043F\u043A\u0438 Google Drive";
+}
 var directions = {
   pull: "\u041F\u043E\u043B\u0443\u0447\u0430\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F",
   push: "\u041E\u0442\u043F\u0440\u0430\u0432\u043B\u044F\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F",
@@ -1985,8 +2364,25 @@ function el(at, tag, text2 = "", cls = "") {
 }
 function button(at, text2, fn, primary = false) {
   const b = el(at, "button", text2, primary ? "mod-cta" : "");
-  b.onclick = () => {
-    void Promise.resolve().then(fn).catch((e) => new import_obsidian.Notice(e.message));
+  b.onclick = async () => {
+    if (b.disabled) return;
+    b.disabled = true;
+    b.setAttribute("aria-busy", "true");
+    try {
+      await fn();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      new import_obsidian.Notice(message, 15e3);
+      const target = b.closest(".modal-content") || b.closest(".sync-studio") || at;
+      let error = target.querySelector(".ss-action-error");
+      if (!error)
+        error = el(target, "p", "", "ss-banner ss-action-error");
+      error.setAttribute("role", "alert");
+      error.textContent = message;
+    } finally {
+      b.disabled = false;
+      b.removeAttribute("aria-busy");
+    }
   };
   return b;
 }
@@ -2006,7 +2402,7 @@ function text(at, label, value, fn, type = "text") {
   const i = el(wrap, "input");
   i.type = type;
   i.value = value;
-  i.onchange = () => fn(i.value);
+  i.oninput = () => fn(i.value);
   return i;
 }
 function select(at, label, value, options, fn) {
@@ -2064,6 +2460,40 @@ var StudioView = class extends import_obsidian.ItemView {
   page = "profiles";
   active = "";
   tab = "scope";
+  importDraft;
+  profileDrafts = /* @__PURE__ */ new Map();
+  startEditing(p) {
+    this.profileDrafts.set(p.id, {
+      value: structuredClone(p),
+      original: structuredClone(p)
+    });
+    this.render();
+  }
+  async saveEdits(id) {
+    const draft = this.profileDrafts.get(id);
+    if (!draft) return;
+    draft.error = void 0;
+    try {
+      await this.studio.saveProfile(draft.value, draft.original);
+      this.profileDrafts.delete(id);
+      new import_obsidian.Notice("\u041F\u0440\u043E\u0444\u0438\u043B\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D");
+    } catch (error) {
+      draft.error = error instanceof Error ? error.message : String(error);
+    }
+    this.render();
+  }
+  editActions(at, p) {
+    if (this.profileDrafts.has(p.id)) {
+      button(at, "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C", () => this.saveEdits(p.id), true).disabled = this.studio.busy;
+      button(at, "\u041E\u0442\u043C\u0435\u043D\u0430", () => {
+        if (this.studio.lastError === this.profileDrafts.get(p.id)?.error)
+          this.studio.lastError = "";
+        this.profileDrafts.delete(p.id);
+        this.render();
+      }).disabled = this.studio.busy;
+    } else
+      button(at, "\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C", () => this.startEditing(p), true).disabled = this.studio.busy;
+  }
   getViewType() {
     return VIEW_TYPE;
   }
@@ -2092,15 +2522,16 @@ var StudioView = class extends import_obsidian.ItemView {
     el(b, "small", "OBSIDIAN / SYNC STUDIO", "ss-kicker");
     el(b, "h1", "\u0412\u0430\u0448\u0438 \u0444\u0430\u0439\u043B\u044B. \u0412\u0430\u0448\u0438 \u043F\u0440\u0430\u0432\u0438\u043B\u0430.");
     const actions = el(header, "div", "", "ss-actions");
-    badge(actions, "0.1 \xB7 Desktop alpha");
+    badge(actions, this.studio.manifest.version + " \xB7 Desktop alpha");
     if (this.studio.busy)
       button(actions, "\u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C", () => this.studio.controller?.abort());
     else badge(actions, this.studio.phase);
     const nav = el(root, "nav", "", "ss-topnav");
     for (const [key, value] of Object.entries({
       profiles: "01 / \u041F\u0440\u043E\u0444\u0438\u043B\u0438",
-      operations: "02 / \u0426\u0435\u043D\u0442\u0440 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0439",
-      import: "03 / \u0418\u043C\u043F\u043E\u0440\u0442"
+      connections: "02 / \u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F",
+      operations: "03 / \u0426\u0435\u043D\u0442\u0440 \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u0439",
+      import: "04 / \u0418\u043C\u043F\u043E\u0440\u0442"
     })) {
       const b2 = button(nav, value, () => {
         this.page = key;
@@ -2110,8 +2541,59 @@ var StudioView = class extends import_obsidian.ItemView {
     }
     if (this.studio.busy)
       banner(root, this.studio.phase + "\u2026 \u041D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0432\u0440\u0435\u043C\u0435\u043D\u043D\u043E \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u044B.");
+    if (this.studio.lastError) {
+      const e = banner(root, this.studio.lastError);
+      e.setAttribute("role", "alert");
+      const collision = this.studio.collision;
+      if (collision)
+        button(e, "\u0418\u0441\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u043A\u043E\u043D\u0444\u043B\u0438\u043A\u0442\u0443\u044E\u0449\u0438\u0435 \u043F\u0443\u0442\u0438 \u0438\u0437 \u043F\u0440\u043E\u0444\u0438\u043B\u044F", async () => {
+          const p = this.studio.data.profiles.find(
+            (p2) => p2.id === collision.profileId
+          );
+          if (!p) throw Error("\u041F\u0440\u043E\u0444\u0438\u043B\u044C \u0443\u0434\u0430\u043B\u0451\u043D");
+          p.excludePaths = [
+            .../* @__PURE__ */ new Set([...p.excludePaths, ...collision.paths])
+          ];
+          this.studio.collision = void 0;
+          this.studio.lastError = "";
+          await this.studio.save();
+          this.active = p.id;
+          this.page = "profiles";
+          this.tab = "scope";
+          this.render();
+          new import_obsidian.Notice(
+            "\u041F\u0443\u0442\u0438 \u0438\u0441\u043A\u043B\u044E\u0447\u0435\u043D\u044B. \u0418\u0445 \u0444\u0430\u0439\u043B\u044B \u043E\u0441\u0442\u0430\u044E\u0442\u0441\u044F \u043D\u0435\u0442\u0440\u043E\u043D\u0443\u0442\u044B\u043C\u0438. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u0439."
+          );
+        }).disabled = this.studio.busy;
+      button(e, "\u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0434\u0438\u0430\u0433\u043D\u043E\u0441\u0442\u0438\u043A\u0443", async () => {
+        await navigator.clipboard.writeText(
+          JSON.stringify(
+            {
+              version: this.studio.manifest.version,
+              phase: this.studio.phase,
+              error: this.studio.lastError,
+              collision: this.studio.collision?.paths,
+              recent: this.studio.data.history.slice(0, 5).map((r) => ({
+                at: r.at,
+                status: r.status,
+                applied: r.applied,
+                message: r.message
+              }))
+            },
+            null,
+            2
+          )
+        );
+        new import_obsidian.Notice("\u0414\u0438\u0430\u0433\u043D\u043E\u0441\u0442\u0438\u043A\u0430 \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u0430. \u0422\u043E\u043A\u0435\u043D\u044B \u0438 \u043A\u043B\u044E\u0447\u0438 \u043D\u0435 \u0432\u043A\u043B\u044E\u0447\u0435\u043D\u044B.");
+      });
+      button(e, "\u0421\u043A\u0440\u044B\u0442\u044C", () => {
+        this.studio.lastError = "";
+        this.render();
+      });
+    }
     const content = el(root, "div");
     if (this.page === "profiles") this.profilePage(content);
+    else if (this.page === "connections") this.connectionPage(content);
     else if (this.page === "operations") this.operations(content);
     else this.importPage(content);
   }
@@ -2131,16 +2613,22 @@ var StudioView = class extends import_obsidian.ItemView {
       );
     }
     button(side, "\uFF0B \u041D\u043E\u0432\u044B\u0439 \u043F\u0440\u043E\u0444\u0438\u043B\u044C", async () => {
-      const p2 = newProfile(this.studio.data.connections[0]?.id);
-      this.studio.data.profiles.push(p2);
+      const c = this.studio.data.connections[0];
+      if (!c) {
+        this.connections();
+        return;
+      }
+      const p2 = await this.studio.createProfile(c);
       this.active = p2.id;
       this.tab = "route";
-      await this.save();
+      this.startEditing(p2);
     }).disabled = this.studio.busy;
     el(side, "hr");
     button(side, "\u25CE \u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F", () => this.connections());
     button(side, "\u25A7 \u0412\u043E\u0437\u043C\u043E\u0436\u043D\u043E\u0441\u0442\u0438", () => this.capabilities());
-    const p = this.selected();
+    const savedProfile = this.selected();
+    const edit = savedProfile ? this.profileDrafts.get(savedProfile.id) : void 0;
+    const p = edit?.value || savedProfile;
     if (!p) {
       title(
         main,
@@ -2162,6 +2650,7 @@ var StudioView = class extends import_obsidian.ItemView {
       `${directions[p.direction]} \xB7 ${p.localRoot || "\u041A\u043E\u0440\u0435\u043D\u044C vault"}`
     );
     const actions = el(head, "div", "", "ss-actions");
+    this.editActions(actions, p);
     button(actions, "\u0414\u0443\u0431\u043B\u0438\u0440\u043E\u0432\u0430\u0442\u044C", async () => {
       const next = structuredClone(p);
       next.id = crypto.randomUUID();
@@ -2170,13 +2659,19 @@ var StudioView = class extends import_obsidian.ItemView {
       this.studio.data.profiles.push(next);
       this.active = next.id;
       await this.save();
-    }).disabled = this.studio.busy;
+    }).disabled = this.studio.busy || !!edit;
     button(
       actions,
       "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F",
       async () => this.preview(await this.studio.inspect(p)),
       true
-    ).disabled = this.studio.busy;
+    ).disabled = this.studio.busy || !!edit;
+    if (edit)
+      banner(
+        main,
+        "\u0420\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u044F. \u0418\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u043F\u0440\u0438\u043C\u0435\u043D\u044F\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u0441\u043B\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u044F \xAB\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C\xBB. \u041C\u043E\u0436\u043D\u043E \u043F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0430\u0442\u044C \u0432\u043A\u043B\u0430\u0434\u043A\u0438 \u2014 \u0447\u0435\u0440\u043D\u043E\u0432\u0438\u043A \u043E\u0441\u0442\u0430\u043D\u0435\u0442\u0441\u044F."
+      );
+    if (edit?.error) banner(main, edit.error).setAttribute("role", "alert");
     const nav = el(main, "nav", "", "ss-tabs");
     for (const [key, value] of Object.entries({
       scope: "\u0427\u0442\u043E \u043F\u0435\u0440\u0435\u043D\u043E\u0441\u0438\u0442\u044C",
@@ -2192,17 +2687,18 @@ var StudioView = class extends import_obsidian.ItemView {
       b.toggleClass("is-active", this.tab === key);
     }
     const body = el(main, "fieldset");
-    body.disabled = this.studio.busy;
+    body.disabled = this.studio.busy || !edit && this.tab !== "history";
     if (this.tab === "scope") this.scopePanel(body, p);
     else if (this.tab === "route") this.route(body, p);
     else if (this.tab === "behavior") this.behavior(body, p);
     else if (this.tab === "schedule") this.schedule(body, p);
     else this.history(body, p.id);
-    const footer = el(main, "footer", "", "ss-between");
+    const footer = el(main, "footer", "", "ss-between ss-profile-save");
+    this.editActions(el(footer, "div", "", "ss-actions"), p);
     el(
       footer,
       "small",
-      "\u0418\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F \u043F\u043E\u0441\u043B\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0438\u044F \u0440\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F \u043F\u043E\u043B\u044F.",
+      edit ? "\u0427\u0435\u0440\u043D\u043E\u0432\u0438\u043A \u043D\u0435 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0435\u0442\u0441\u044F \u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u0435\u0439 \u0434\u043E \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u044F." : "\u0427\u0442\u043E\u0431\u044B \u0438\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u043F\u0440\u043E\u0444\u0438\u043B\u044F, \u043D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C\xBB.",
       "ss-muted"
     );
     button(
@@ -2228,11 +2724,21 @@ var StudioView = class extends import_obsidian.ItemView {
           m.close();
         });
       }).open()
-    ).disabled = this.studio.busy;
+    ).disabled = this.studio.busy || !!edit;
   }
   patch(p, key, value) {
+    if (this.profileDrafts.get(p.id)?.value !== p) return;
     p[key] = value;
-    void this.save().catch((e) => new import_obsidian.Notice(e.message));
+    if (key === "direction" && value === "both") p.oneWayMode = "tracked";
+    if (key === "direction" && value !== "pull") p.driveDuplicates = "error";
+    if ([
+      "scope",
+      "connectionId",
+      "sourceConnectionId",
+      "direction",
+      "oneWayMode"
+    ].includes(key))
+      this.render();
   }
   scopePanel(at, p) {
     title(
@@ -2329,14 +2835,11 @@ var StudioView = class extends import_obsidian.ItemView {
     );
     if (p.sourceKind) {
       const source = card(at);
-      el(source, "h3", "\u0412\u043D\u0435\u0448\u043D\u0438\u0439 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A");
-      text(
-        source,
-        "\u041F\u0430\u043F\u043A\u0430 / \u043A\u043E\u0440\u0435\u043D\u044C \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0430",
-        p.sourceRoot || "",
-        (v) => this.patch(p, "sourceRoot", v)
+      const connection = this.studio.data.connections.find(
+        (c2) => c2.id === p.sourceConnectionId
       );
-      if (p.sourceKind === "connection") {
+      el(source, "h3", "\u0412\u043D\u0435\u0448\u043D\u0438\u0439 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A");
+      if (p.sourceKind === "connection")
         select(
           source,
           "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0430",
@@ -2344,20 +2847,41 @@ var StudioView = class extends import_obsidian.ItemView {
           Object.fromEntries(
             this.studio.data.connections.map((c2) => [c2.id, c2.name])
           ),
-          (v) => this.patch(p, "sourceConnectionId", v)
+          (v) => {
+            const c2 = this.studio.data.connections.find((c3) => c3.id === v);
+            p.sourceRoot = c2?.root || "";
+            this.patch(p, "sourceConnectionId", v);
+          }
         );
-        text(
-          source,
-          "\u0412\u0435\u0442\u043A\u0430 GitHub",
-          p.sourceBranch || "main",
-          (v) => this.patch(p, "sourceBranch", v)
-        );
-        text(
-          source,
-          "\u041F\u043E\u0434\u043A\u0430\u0442\u0430\u043B\u043E\u0433 GitHub",
-          p.sourceSubpath || "",
-          (v) => this.patch(p, "sourceSubpath", v)
-        );
+      text(
+        source,
+        p.sourceKind === "folder" ? "\u0410\u0431\u0441\u043E\u043B\u044E\u0442\u043D\u044B\u0439 \u043F\u0443\u0442\u044C \u043F\u0430\u043F\u043A\u0438" : rootLabel(connection),
+        p.sourceRoot || "",
+        (v) => this.patch(p, "sourceRoot", v)
+      );
+      if (p.sourceKind === "connection" && connection) {
+        if (connection.provider === "github") {
+          text(
+            source,
+            "\u0412\u0435\u0442\u043A\u0430 GitHub (\u043F\u0443\u0441\u0442\u043E = \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E)",
+            p.sourceBranch || "",
+            (v) => this.patch(p, "sourceBranch", v)
+          );
+          text(
+            source,
+            "\u041F\u043E\u0434\u043A\u0430\u0442\u0430\u043B\u043E\u0433 GitHub",
+            p.sourceSubpath || "",
+            (v) => this.patch(p, "sourceSubpath", v)
+          );
+        } else
+          button(
+            source,
+            "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u043F\u0430\u043F\u043A\u0443 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0430",
+            () => this.pickFolder(connection, p.sourceRoot || "", async (root) => {
+              this.patch(p, "sourceRoot", root);
+              this.render();
+            })
+          );
       }
     }
     text(at, "\u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u044F", p.name, (v) => this.patch(p, "name", v));
@@ -2371,7 +2895,13 @@ var StudioView = class extends import_obsidian.ItemView {
         ["", "\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435"],
         ...this.studio.data.connections.map((c2) => [c2.id, c2.name])
       ]),
-      (v) => this.patch(p, "connectionId", v)
+      (v) => {
+        const connection = this.studio.data.connections.find((c2) => c2.id === v);
+        p.remoteRoot = connection?.root || (connection?.provider === "gdrive" ? "root" : connection?.provider === "yandex" ? "disk:/" : "");
+        if (connection?.provider === "github" || connection?.provider === "gdrive-public")
+          p.direction = "pull";
+        this.patch(p, "connectionId", v);
+      }
     );
     const c = this.studio.data.connections.find((c2) => c2.id === p.connectionId);
     text(
@@ -2380,10 +2910,35 @@ var StudioView = class extends import_obsidian.ItemView {
       p.remoteRoot,
       (v) => this.patch(p, "remoteRoot", v)
     );
-    if (c?.provider === "gdrive" || c?.provider === "gdrive-public")
-      button(remote, "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u043F\u0430\u043F\u043A\u0443 Drive", () => this.pickDrive(p));
+    if (c) {
+      button(remote, "\u0420\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435", () => this.editConnection(c));
+      if (c.provider !== "github")
+        button(
+          remote,
+          "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u043F\u0430\u043F\u043A\u0443",
+          () => this.pickFolder(c, p.remoteRoot, async (root) => {
+            this.patch(p, "remoteRoot", root);
+            this.render();
+          })
+        );
+      button(remote, "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u0434\u043E\u0441\u0442\u0443\u043F \u043A \u043F\u0430\u043F\u043A\u0435", async () => {
+        const result = await this.studio.exclusive(
+          "\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0434\u043E\u0441\u0442\u0443\u043F\u0430",
+          (signal) => this.studio.checkRoot(p, signal)
+        );
+        new Dialog(
+          this.app,
+          (at2) => title(at2, "\u0414\u043E\u0441\u0442\u0443\u043F \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D", result)
+        ).open();
+      });
+    }
     if (c?.provider === "github") {
-      text(remote, "\u0412\u0435\u0442\u043A\u0430 / \u0442\u0435\u0433", p.branch, (v) => this.patch(p, "branch", v));
+      text(
+        remote,
+        "\u0412\u0435\u0442\u043A\u0430 / \u0442\u0435\u0433 (\u043F\u0443\u0441\u0442\u043E = \u0432\u0435\u0442\u043A\u0430 \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E)",
+        p.branch,
+        (v) => this.patch(p, "branch", v)
+      );
       text(
         remote,
         "\u041F\u043E\u0434\u043A\u0430\u0442\u0430\u043B\u043E\u0433 \u0440\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u044F",
@@ -2412,7 +2967,7 @@ var StudioView = class extends import_obsidian.ItemView {
     );
     banner(
       at,
-      "\u041F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435 \u043D\u0435 \u0437\u0430\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442 \u0432 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A. \u041E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 \u043D\u0435 \u0438\u0437\u043C\u0435\u043D\u044F\u0435\u0442 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u043E\u0440\u0438\u0433\u0438\u043D\u0430\u043B. \u0417\u0435\u0440\u043A\u0430\u043B\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u0435 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0445 \u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0445 \u0444\u0430\u0439\u043B\u043E\u0432 \u0432 \u044D\u0442\u043E\u0439 \u0432\u0435\u0440\u0441\u0438\u0438 \u043E\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u0435\u0442."
+      "\u041F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435 \u043D\u0435 \u0437\u0430\u043F\u0438\u0441\u044B\u0432\u0430\u0435\u0442 \u0432 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A. \u041E\u0442\u043F\u0440\u0430\u0432\u043A\u0430 \u043D\u0435 \u0438\u0437\u043C\u0435\u043D\u044F\u0435\u0442 \u043B\u043E\u043A\u0430\u043B\u044C\u043D\u044B\u0439 \u043E\u0440\u0438\u0433\u0438\u043D\u0430\u043B."
     );
   }
   behavior(at, p) {
@@ -2421,6 +2976,39 @@ var StudioView = class extends import_obsidian.ItemView {
       "\u0427\u0442\u043E \u0434\u0435\u043B\u0430\u0442\u044C \u0441 \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F\u043C\u0438",
       "\u041F\u043E\u043B\u0438\u0442\u0438\u043A\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F \u043D\u0435 \u043F\u043E\u0434\u043C\u0435\u043D\u044F\u0435\u0442\u0441\u044F \u043F\u043E\u043B\u0438\u0442\u0438\u043A\u043E\u0439 \u043A\u043E\u043D\u0444\u043B\u0438\u043A\u0442\u043E\u0432."
     );
+    if (p.direction !== "both") {
+      select(
+        at,
+        "\u0420\u0435\u0436\u0438\u043C \u043E\u0434\u043D\u043E\u0433\u043E \u043D\u0430\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u044F",
+        p.oneWayMode || "tracked",
+        {
+          tracked: "\u041E\u0442\u0441\u043B\u0435\u0436\u0438\u0432\u0430\u0442\u044C \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u0438 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D\u043D\u044B\u0435 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F",
+          mirror: "\u0417\u0435\u0440\u043A\u0430\u043B\u043E: \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A \u0438\u043C\u0435\u0435\u0442 \u043F\u0440\u0438\u043E\u0440\u0438\u0442\u0435\u0442"
+        },
+        (v) => this.patch(p, "oneWayMode", v)
+      );
+      if (p.oneWayMode === "mirror")
+        banner(
+          at,
+          "\u0417\u0435\u0440\u043A\u0430\u043B\u043E \u0437\u0430\u043C\u0435\u043D\u044F\u0435\u0442 \u043E\u0442\u043B\u0438\u0447\u0430\u044E\u0449\u0438\u0435\u0441\u044F \u0444\u0430\u0439\u043B\u044B \u0432\u0435\u0440\u0441\u0438\u0435\u0439 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0430. \u041F\u0440\u0438 \u0432\u043A\u043B\u044E\u0447\u0451\u043D\u043D\u044B\u0445 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F\u0445 \u043B\u0438\u0448\u043D\u0438\u0435 \u0444\u0430\u0439\u043B\u044B \u043D\u0430\u0437\u043D\u0430\u0447\u0435\u043D\u0438\u044F \u0443\u0434\u0430\u043B\u044F\u044E\u0442\u0441\u044F \u0443\u0436\u0435 \u043F\u0440\u0438 \u043F\u0435\u0440\u0432\u043E\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u0435. \u041F\u043E\u043B\u0438\u0442\u0438\u043A\u0438 \u043A\u043E\u043D\u0444\u043B\u0438\u043A\u0442\u043E\u0432 \u043D\u0438\u0436\u0435 \u0434\u0435\u0439\u0441\u0442\u0432\u0443\u044E\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0432 \u0440\u0435\u0436\u0438\u043C\u0435 \u043E\u0442\u0441\u043B\u0435\u0436\u0438\u0432\u0430\u043D\u0438\u044F."
+        );
+    }
+    if (p.direction === "pull" && this.studio.data.connections.find((c) => c.id === p.connectionId)?.provider.startsWith("gdrive")) {
+      select(
+        at,
+        "\u041E\u0434\u043D\u043E\u0438\u043C\u0451\u043D\u043D\u044B\u0435 \u0444\u0430\u0439\u043B\u044B \u0432 Drive",
+        p.driveDuplicates || "error",
+        {
+          error: "\u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C\u0441\u044F \u0438 \u043F\u043E\u043A\u0430\u0437\u0430\u0442\u044C \u043A\u043E\u043B\u043B\u0438\u0437\u0438\u044E",
+          newest: "\u041F\u043E\u043B\u0443\u0447\u0430\u0442\u044C \u043D\u043E\u0432\u0435\u0439\u0448\u0438\u0439 \u0434\u0443\u0431\u043B\u044C (\u043F\u043E Sync Engine)"
+        },
+        (v) => this.patch(p, "driveDuplicates", v)
+      );
+      banner(
+        at,
+        "\u0412\u044B\u0431\u043E\u0440 \u043D\u043E\u0432\u0435\u0439\u0448\u0435\u0433\u043E \u0434\u0443\u0431\u043B\u044F \u0434\u0435\u0439\u0441\u0442\u0432\u0443\u0435\u0442 \u0442\u043E\u043B\u044C\u043A\u043E \u0434\u043B\u044F \u043F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u044F \u0444\u0430\u0439\u043B\u043E\u0432. \u0414\u0443\u0431\u043B\u0438 \u043F\u0430\u043F\u043E\u043A \u0438 \u043A\u043E\u043B\u043B\u0438\u0437\u0438\u0438 \u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0430 \u0442\u0440\u0435\u0431\u0443\u044E\u0442 \u043F\u0435\u0440\u0435\u0438\u043C\u0435\u043D\u043E\u0432\u0430\u043D\u0438\u044F \u0438\u043B\u0438 \u0438\u0441\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F. \u0414\u0440\u0443\u0433\u0438\u0435 \u043A\u043E\u043F\u0438\u0438 \u0432 Drive \u043E\u0441\u0442\u0430\u044E\u0442\u0441\u044F \u043D\u0435\u0442\u0440\u043E\u043D\u0443\u0442\u044B\u043C\u0438."
+      );
+    }
     select(
       at,
       "\u0415\u0441\u043B\u0438 \u0432\u0435\u0440\u0441\u0438\u0438 \u0440\u0430\u0437\u043B\u0438\u0447\u0430\u044E\u0442\u0441\u044F",
@@ -2591,18 +3179,20 @@ var StudioView = class extends import_obsidian.ItemView {
       "\u0421\u043E\u0435\u0434\u0438\u043D\u0438\u0442\u0435 \u043D\u0443\u0436\u043D\u044B\u0435 \u043F\u0430\u043F\u043A\u0438",
       "\u0418\u043C\u043F\u043E\u0440\u0442 \u0438\u0434\u0451\u0442 \u0447\u0435\u0440\u0435\u0437 \u044D\u0442\u043E \u0443\u0441\u0442\u0440\u043E\u0439\u0441\u0442\u0432\u043E. \u041F\u0440\u043E\u043C\u0435\u0436\u0443\u0442\u043E\u0447\u043D\u044B\u0435 \u0444\u0430\u0439\u043B\u044B \u043D\u0435 \u0434\u043E\u0431\u0430\u0432\u043B\u044F\u044E\u0442\u0441\u044F \u0432 vault."
     );
-    const draft = newProfile();
-    draft.name = "\u0418\u043C\u043F\u043E\u0440\u0442 \u0432\u043D\u0435\u0448\u043D\u0438\u0445 \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u043E\u0432";
-    draft.direction = "push";
-    draft.sourceKind = "folder";
-    draft.sourceRoot = "";
-    draft.sourceBranch = "main";
+    const draft = this.importDraft ||= {
+      ...newProfile(),
+      name: "\u0418\u043C\u043F\u043E\u0440\u0442 \u0432\u043D\u0435\u0448\u043D\u0438\u0445 \u043C\u0430\u0442\u0435\u0440\u0438\u0430\u043B\u043E\u0432",
+      direction: "push",
+      sourceKind: "folder",
+      sourceRoot: "",
+      sourceBranch: ""
+    };
     const g = grid(main), left = card(g), right = card(g);
     title(left, "\u041E\u0442\u043A\u0443\u0434\u0430 \u0431\u0440\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B");
     select(
       left,
       "\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A",
-      "folder",
+      draft.sourceKind === "folder" ? "folder" : draft.sourceConnectionId || "folder",
       Object.fromEntries([
         ["folder", "\u041F\u0430\u043F\u043A\u0430 \u043D\u0430 \u043A\u043E\u043C\u043F\u044C\u044E\u0442\u0435\u0440\u0435"],
         ...this.studio.data.connections.map((c) => [c.id, c.name])
@@ -2610,26 +3200,45 @@ var StudioView = class extends import_obsidian.ItemView {
       (v) => {
         draft.sourceKind = v === "folder" ? "folder" : "connection";
         draft.sourceConnectionId = v === "folder" ? void 0 : v;
+        draft.sourceRoot = this.studio.data.connections.find((c) => c.id === v)?.root || "";
+        this.render();
       }
     );
+    const sourceConnection = this.studio.data.connections.find(
+      (c) => c.id === draft.sourceConnectionId
+    );
     text(
       left,
-      "\u0410\u0431\u0441\u043E\u043B\u044E\u0442\u043D\u044B\u0439 \u043F\u0443\u0442\u044C / ID \u043F\u0430\u043F\u043A\u0438 / owner/repo",
-      "",
+      draft.sourceKind === "folder" ? "\u0410\u0431\u0441\u043E\u043B\u044E\u0442\u043D\u044B\u0439 \u043F\u0443\u0442\u044C \u043F\u0430\u043F\u043A\u0438" : rootLabel(sourceConnection),
+      draft.sourceRoot || "",
       (v) => draft.sourceRoot = v
     );
-    text(
-      left,
-      "\u0412\u0435\u0442\u043A\u0430 GitHub (\u0435\u0441\u043B\u0438 \u043F\u0440\u0438\u043C\u0435\u043D\u0438\u043C\u043E)",
-      "main",
-      (v) => draft.sourceBranch = v
-    );
-    text(
-      left,
-      "\u041F\u043E\u0434\u043A\u0430\u0442\u0430\u043B\u043E\u0433 GitHub (\u043D\u0435\u043E\u0431\u044F\u0437\u0430\u0442\u0435\u043B\u044C\u043D\u043E)",
-      "",
-      (v) => draft.sourceSubpath = v
-    );
+    if (sourceConnection?.provider === "github" && draft.sourceKind === "connection") {
+      text(
+        left,
+        "\u0412\u0435\u0442\u043A\u0430 GitHub (\u043F\u0443\u0441\u0442\u043E = \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E)",
+        draft.sourceBranch || "",
+        (v) => draft.sourceBranch = v
+      );
+      text(
+        left,
+        "\u041F\u043E\u0434\u043A\u0430\u0442\u0430\u043B\u043E\u0433 GitHub",
+        draft.sourceSubpath || "",
+        (v) => draft.sourceSubpath = v
+      );
+    } else if (sourceConnection && draft.sourceKind === "connection")
+      button(
+        left,
+        "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u043F\u0430\u043F\u043A\u0443 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0430",
+        () => this.pickFolder(
+          sourceConnection,
+          draft.sourceRoot || "",
+          async (root) => {
+            draft.sourceRoot = root;
+            this.render();
+          }
+        )
+      );
     el(
       left,
       "p",
@@ -2640,20 +3249,34 @@ var StudioView = class extends import_obsidian.ItemView {
     const targets = this.studio.data.connections.filter(
       (c) => c.provider === "gdrive" || c.provider === "yandex"
     );
-    draft.connectionId = targets[0]?.id || "";
+    draft.connectionId ||= targets[0]?.id || "";
     select(
       right,
       "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u043D\u0430\u0437\u043D\u0430\u0447\u0435\u043D\u0438\u044F",
       draft.connectionId,
       Object.fromEntries(targets.map((c) => [c.id, c.name])),
-      (v) => draft.connectionId = v
+      (v) => {
+        draft.connectionId = v;
+        draft.remoteRoot = targets.find((c) => c.id === v)?.root || "";
+        this.render();
+      }
     );
     text(
       right,
-      "\u0421\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0430\u044F \u043F\u0430\u043F\u043A\u0430 Drive / \u043F\u0443\u0442\u044C \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430",
-      "",
+      rootLabel(targets.find((c) => c.id === draft.connectionId)),
+      draft.remoteRoot,
       (v) => draft.remoteRoot = v
     );
+    const targetConnection = targets.find((c) => c.id === draft.connectionId);
+    if (targetConnection)
+      button(
+        right,
+        "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u043F\u0430\u043F\u043A\u0443 \u043D\u0430\u0437\u043D\u0430\u0447\u0435\u043D\u0438\u044F",
+        () => this.pickFolder(targetConnection, draft.remoteRoot, async (root) => {
+          draft.remoteRoot = root;
+          this.render();
+        })
+      );
     text(right, "\u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u044F", draft.name, (v) => draft.name = v);
     select(
       right,
@@ -2674,7 +3297,9 @@ var StudioView = class extends import_obsidian.ItemView {
       async () => {
         if (!draft.sourceRoot || !draft.remoteRoot || !draft.connectionId)
           throw Error("\u0417\u0430\u043F\u043E\u043B\u043D\u0438\u0442\u0435 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A \u0438 \u043D\u0430\u0437\u043D\u0430\u0447\u0435\u043D\u0438\u0435");
-        this.studio.data.profiles.push(draft);
+        if (!this.studio.data.profiles.some((p) => p.id === draft.id))
+          this.studio.data.profiles.push(draft);
+        this.importDraft = void 0;
         this.active = draft.id;
         this.page = "profiles";
         this.tab = "route";
@@ -2709,122 +3334,289 @@ var StudioView = class extends import_obsidian.ItemView {
     }).open();
   }
   connections() {
-    new Dialog(this.app, (at, m) => {
-      title(
-        at,
-        "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F",
-        "\u0410\u043A\u043A\u0430\u0443\u043D\u0442\u044B \u043D\u0435\u0437\u0430\u0432\u0438\u0441\u0438\u043C\u044B \u043E\u0442 \u043F\u0440\u043E\u0444\u0438\u043B\u0435\u0439. \u0421\u0435\u043A\u0440\u0435\u0442\u044B \u0445\u0440\u0430\u043D\u044F\u0442\u0441\u044F \u0447\u0435\u0440\u0435\u0437 Obsidian Secret Storage."
+    this.page = "connections";
+    this.render();
+  }
+  connectionPage(at) {
+    title(
+      at,
+      "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F",
+      "\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u0441\u0435\u0440\u0432\u0438\u0441 \u0438 \u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u0430\u043F\u043A\u0443, \u0437\u0430\u0442\u0435\u043C \u0441\u043E\u0437\u0434\u0430\u0439\u0442\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u044C. \u041B\u044E\u0431\u043E\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u043C\u043E\u0436\u043D\u043E \u043E\u0442\u043A\u0440\u044B\u0442\u044C \u043F\u043E\u0432\u0442\u043E\u0440\u043D\u043E."
+    );
+    for (const c of this.studio.data.connections) {
+      const box = card(at);
+      title(box, c.name, providers[c.provider]);
+      el(box, "p", c.root || "\u041F\u0430\u043F\u043A\u0430 \u0432\u044B\u0431\u0438\u0440\u0430\u0435\u0442\u0441\u044F \u0432 \u043F\u0440\u043E\u0444\u0438\u043B\u0435");
+      el(
+        box,
+        "small",
+        c.checkedAt ? `\u041F\u0440\u043E\u0432\u0435\u0440\u0435\u043D\u043E ${new Date(c.checkedAt).toLocaleString()}: ${c.accountLabel || "\u0434\u043E\u0441\u0442\u0443\u043F \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D"}` : "\u0414\u043E\u0441\u0442\u0443\u043F \u0435\u0449\u0451 \u043D\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u0435\u043D",
+        "ss-muted"
       );
-      for (const c of this.studio.data.connections) {
-        const r = row(at, c.name, providers[c.provider]);
-        button(r, "\u041D\u0430\u0441\u0442\u0440\u043E\u0438\u0442\u044C", () => {
-          m.close();
-          this.editConnection(c);
-        }).disabled = this.studio.busy;
-      }
-      button(at, "\uFF0B \u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C", () => {
-        m.close();
+      button(box, "\u0420\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u0442\u044C", () => this.editConnection(c)).disabled = this.studio.busy;
+      button(box, "\u0421\u043E\u0437\u0434\u0430\u0442\u044C \u043F\u0440\u043E\u0444\u0438\u043B\u044C", () => this.profileFor(c)).disabled = this.studio.busy;
+      button(box, "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435", async () => {
+        c.accountLabel = await this.studio.exclusive(
+          "\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F",
+          (signal) => this.studio.testConnection(c, signal)
+        );
+        c.checkedAt = Date.now();
+        await this.save();
+      }).disabled = this.studio.busy;
+    }
+    button(
+      at,
+      "\uFF0B \u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435",
+      () => {
         const id = crypto.randomUUID();
         this.editConnection(
           {
             id,
-            name: "\u041D\u043E\u0432\u043E\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435",
+            name: "Google Drive",
             provider: "gdrive",
-            secretRef: "sync-studio-" + id
+            secretRef: "sync-studio-" + id,
+            root: "root"
           },
           true
         );
-      }).disabled = this.studio.busy;
-    }).open();
+      },
+      true
+    ).disabled = this.studio.busy;
+  }
+  async profileFor(c) {
+    const p = await this.studio.createProfile(c);
+    this.active = p.id;
+    this.page = "profiles";
+    this.tab = "route";
+    this.render();
   }
   editConnection(original, isNew = false) {
     const c = structuredClone(original);
-    new Dialog(this.app, (at, m) => {
-      title(at, "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435");
-      text(at, "\u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435", c.name, (v) => c.name = v);
-      const provider = select(
-        at,
-        "\u0421\u0435\u0440\u0432\u0438\u0441",
-        c.provider,
-        providers,
-        (v) => c.provider = v
-      );
-      provider.disabled = !isNew;
-      let value = "";
-      text(
-        at,
-        "\u0422\u043E\u043A\u0435\u043D / API key (\u043A\u0440\u043E\u043C\u0435 Google OAuth)",
-        value,
-        (v) => value = v,
-        "password"
-      );
-      el(
-        at,
-        "p",
-        "\u0414\u043B\u044F Google OAuth \u0438\u043C\u043F\u043E\u0440\u0442\u0438\u0440\u0443\u0439\u0442\u0435 JSON \u043A\u043B\u0438\u0435\u043D\u0442\u0430 \u0442\u0438\u043F\u0430 Desktop app \u0438\u0437 Google Cloud. \u0423 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0435\u0433\u043E \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F \u043F\u0443\u0441\u0442\u043E\u0435 \u043F\u043E\u043B\u0435 \u0442\u043E\u043A\u0435\u043D\u0430 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0435\u0442 \u043F\u0440\u0435\u0436\u043D\u0438\u0439 \u0441\u0435\u043A\u0440\u0435\u0442.",
-        "ss-muted"
-      );
-      const label = el(at, "label", "", "ss-field");
-      el(label, "span", "Google Desktop OAuth client JSON");
-      const json2 = el(label, "textarea");
-      json2.rows = 5;
-      json2.placeholder = '{"installed": {"client_id": "\u2026"}}';
-      const file = el(label, "input");
-      file.type = "file";
-      file.accept = ".json,application/json";
-      file.onchange = () => {
-        const f = file.files?.[0];
-        if (f)
-          void f.text().then((s) => {
-            json2.value = s;
-          });
-      };
-      const persist = async () => {
-        if (!c.name.trim()) throw Error("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435");
-        if (isNew) {
-          if (!this.studio.data.connections.some((x) => x.id === c.id))
-            this.studio.data.connections.push(c);
-        } else Object.assign(original, c);
-        await this.studio.save();
-      };
-      button(
-        at,
-        "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C Google OAuth",
-        async () => {
-          if (c.provider !== "gdrive")
-            throw Error("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 Google Drive OAuth");
-          await this.studio.connectGoogle(c, json2.value);
-          await persist();
-          m.close();
-          this.render();
-        },
-        true
-      );
-      button(at, "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C", async () => {
-        if (c.provider === "gdrive" && !c.clientId)
-          throw Error("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u0432\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u0435 Google OAuth");
-        if (value) this.studio.setSecret(c, value);
-        if (c.provider !== "github" && c.provider !== "gdrive" && !this.studio.getSecret(c))
-          throw Error("\u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u0442\u043E\u043A\u0435\u043D / API key");
-        await persist();
-        m.close();
-        this.render();
-      });
-      if (!isNew)
-        button(at, "\u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u043D\u0430 \u044D\u0442\u043E\u043C \u0443\u0441\u0442\u0440\u043E\u0439\u0441\u0442\u0432\u0435", async () => {
-          await this.studio.disconnect(original);
-          m.close();
-          this.render();
+    let saved = !isNew, value = "", oauthJSON = "", status = "", running = false;
+    let secretDraft = false;
+    const isolateSecret = () => {
+      if (secretDraft) return;
+      const old = this.studio.getSecret(c);
+      c.secretRef = "sync-studio-" + crypto.randomUUID();
+      if (old) this.studio.setSecret(c, old);
+      secretDraft = true;
+    };
+    let task;
+    const modal = new Dialog(this.app, (at, m) => {
+      const draw = () => {
+        at.empty();
+        title(
+          at,
+          saved ? "\u0420\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F" : "\u041D\u043E\u0432\u043E\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435",
+          "1. \u0414\u043E\u0441\u0442\u0443\u043F \u2192 2. \u041F\u0430\u043F\u043A\u0430 \u0438 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u2192 3. \u0421\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u0435 \u0438 \u043F\u0440\u043E\u0444\u0438\u043B\u044C"
+        );
+        const form = el(at, "fieldset");
+        form.disabled = running;
+        text(form, "\u041D\u0430\u0437\u0432\u0430\u043D\u0438\u0435", c.name, (v) => c.name = v);
+        const provider = select(form, "\u0421\u0435\u0440\u0432\u0438\u0441", c.provider, providers, (v) => {
+          c.provider = v;
+          c.secretRef = "sync-studio-" + crypto.randomUUID();
+          secretDraft = true;
+          c.clientId = void 0;
+          c.clientSecretRef = void 0;
+          c.subject = void 0;
+          c.checkedAt = void 0;
+          c.accountLabel = void 0;
+          c.name = providers[c.provider];
+          c.root = c.provider === "gdrive" ? "root" : c.provider === "yandex" ? "disk:/" : "";
+          value = "";
+          status = "";
+          draw();
         });
-      banner(
-        at,
-        "\u0412\u044B\u0431\u043E\u0440 \u043F\u0430\u043F\u043A\u0438 \u043E\u0433\u0440\u0430\u043D\u0438\u0447\u0438\u0432\u0430\u0435\u0442 \u0440\u0430\u0431\u043E\u0442\u0443 \u043F\u0440\u043E\u0444\u0438\u043B\u044F, \u043D\u043E \u043D\u0435 OAuth-\u043F\u0440\u0430\u0432\u0430 \u0430\u043A\u043A\u0430\u0443\u043D\u0442\u0430. Google OAuth \u0437\u0430\u043F\u0440\u0430\u0448\u0438\u0432\u0430\u0435\u0442 drive \u0434\u043B\u044F \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0438\u0445 \u0444\u0430\u0439\u043B\u043E\u0432. \u041E\u0442\u043E\u0437\u0432\u0430\u0442\u044C \u0434\u043E\u0441\u0442\u0443\u043F \u043F\u043E\u043B\u043D\u043E\u0441\u0442\u044C\u044E \u043C\u043E\u0436\u043D\u043E \u0432 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430\u0445 Google-\u0430\u043A\u043A\u0430\u0443\u043D\u0442\u0430."
-      );
-    }).open();
+        provider.disabled = saved;
+        if (c.provider === "gdrive") {
+          el(
+            form,
+            "p",
+            c.clientId && this.studio.getSecret(c) ? "Google \u0430\u0432\u0442\u043E\u0440\u0438\u0437\u043E\u0432\u0430\u043D. \u041C\u043E\u0436\u043D\u043E \u043F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043F\u0430\u043F\u043A\u0443, \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0438\u043B\u0438 \u0432\u043E\u0439\u0442\u0438 \u0437\u0430\u043D\u043E\u0432\u043E." : "\u0417\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u0435 JSON \u043A\u043B\u0438\u0435\u043D\u0442\u0430 Desktop app \u0438\u0437 Google Cloud, \u0437\u0430\u0442\u0435\u043C \u0432\u043E\u0439\u0434\u0438\u0442\u0435 \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435."
+          );
+          const label = el(form, "label", "", "ss-field");
+          el(label, "span", "Google Desktop OAuth client JSON");
+          const input = el(label, "textarea");
+          input.rows = 4;
+          input.value = oauthJSON;
+          input.oninput = () => oauthJSON = input.value;
+          const file = el(label, "input");
+          file.type = "file";
+          file.accept = ".json,application/json";
+          file.onchange = async () => {
+            try {
+              if (file.files?.[0]) {
+                oauthJSON = await file.files[0].text();
+                input.value = oauthJSON;
+              }
+            } catch (e) {
+              status = String(e);
+              draw();
+            }
+          };
+          button(
+            form,
+            c.clientId ? "\u0412\u043E\u0439\u0442\u0438 \u0437\u0430\u043D\u043E\u0432\u043E \u0432 Google" : "\u0412\u043E\u0439\u0442\u0438 \u0432 Google",
+            () => run(async () => {
+              isolateSecret();
+              await this.studio.connectGoogle(c, oauthJSON);
+              status = "Google \u0430\u0432\u0442\u043E\u0440\u0438\u0437\u043E\u0432\u0430\u043D. \u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043F\u0430\u043F\u043A\u0443 \u0438 \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435.";
+            }),
+            true
+          );
+        } else {
+          const labels = {
+            yandex: "OAuth-\u0442\u043E\u043A\u0435\u043D \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430",
+            github: "GitHub token (\u043D\u0435\u043E\u0431\u044F\u0437\u0430\u0442\u0435\u043B\u044C\u043D\u043E \u0434\u043B\u044F \u043F\u0443\u0431\u043B\u0438\u0447\u043D\u044B\u0445 \u0440\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0435\u0432)",
+            "gdrive-public": "Google Drive API key"
+          };
+          const hints = {
+            yandex: "\u041D\u0443\u0436\u0435\u043D OAuth-\u0442\u043E\u043A\u0435\u043D \u042F\u043D\u0434\u0435\u043A\u0441\u0430 \u0441 \u0434\u043E\u0441\u0442\u0443\u043F\u043E\u043C \u043A \u0414\u0438\u0441\u043A\u0443. \u0414\u043B\u044F \u043E\u0442\u043F\u0440\u0430\u0432\u043A\u0438 \u043D\u0443\u0436\u043D\u044B \u043F\u0440\u0430\u0432\u0430 \u0437\u0430\u043F\u0438\u0441\u0438. \u042D\u0442\u043E \u043D\u0435 Google OAuth.",
+            github: "\u0414\u043B\u044F \u043F\u0440\u0438\u0432\u0430\u0442\u043D\u043E\u0433\u043E \u0440\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u044F \u043D\u0443\u0436\u0435\u043D token \u0441 Contents: read. \u041F\u0443\u0431\u043B\u0438\u0447\u043D\u044B\u0439 \u0440\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0439 \u043C\u043E\u0436\u043D\u043E \u0447\u0438\u0442\u0430\u0442\u044C \u0431\u0435\u0437 \u0442\u043E\u043A\u0435\u043D\u0430.",
+            "gdrive-public": "\u041F\u0430\u043F\u043A\u0430 \u0434\u043E\u043B\u0436\u043D\u0430 \u0431\u044B\u0442\u044C \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430 \u043F\u043E \u0441\u0441\u044B\u043B\u043A\u0435. API key \u2014 \u0438\u0437 \u043F\u0440\u043E\u0435\u043A\u0442\u0430 Google Cloud \u0441 \u0432\u043A\u043B\u044E\u0447\u0451\u043D\u043D\u044B\u043C Drive API. \u0422\u043E\u043B\u044C\u043A\u043E \u0447\u0442\u0435\u043D\u0438\u0435."
+          };
+          text(form, labels[c.provider], value, (v) => value = v, "password");
+          el(form, "p", hints[c.provider], "ss-muted");
+          if (saved) el(form, "small", "\u041F\u0443\u0441\u0442\u043E\u0435 \u043F\u043E\u043B\u0435 \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u0435\u0442 \u043F\u0440\u0435\u0436\u043D\u0438\u0439 \u0441\u0435\u043A\u0440\u0435\u0442.");
+        }
+        text(
+          form,
+          c.provider === "yandex" ? "\u041F\u0430\u043F\u043A\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 (disk:/ = \u0432\u0435\u0441\u044C \u0434\u0438\u0441\u043A)" : c.provider === "github" ? "\u0420\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0439 owner/repo" : "\u0421\u0441\u044B\u043B\u043A\u0430 \u0438\u043B\u0438 ID \u043F\u0430\u043F\u043A\u0438 Google Drive",
+          c.root || "",
+          (v) => {
+            c.root = v.trim();
+            c.checkedAt = void 0;
+            c.accountLabel = void 0;
+          }
+        );
+        el(
+          form,
+          "small",
+          "\u041F\u0430\u043F\u043A\u0430 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0435\u0442\u0441\u044F \u0434\u043B\u044F \u043D\u043E\u0432\u044B\u0445 \u043F\u0440\u043E\u0444\u0438\u043B\u0435\u0439. \u041F\u0430\u043F\u043A\u0443 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0435\u0433\u043E \u043F\u0440\u043E\u0444\u0438\u043B\u044F \u043C\u0435\u043D\u044F\u0439\u0442\u0435 \u043D\u0430 \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \xAB\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435\xBB.",
+          "ss-muted"
+        );
+        const stageSecret = () => {
+          if (value.trim() && value.trim() !== this.studio.getSecret(c)) {
+            isolateSecret();
+            this.studio.setSecret(c, value.trim());
+            c.checkedAt = void 0;
+            c.accountLabel = void 0;
+          }
+        };
+        if (c.provider !== "github")
+          button(form, "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u043F\u0430\u043F\u043A\u0443", async () => {
+            stageSecret();
+            await this.pickFolder(c, c.root || "", async (root) => {
+              c.root = root;
+              draw();
+            });
+          });
+        button(
+          form,
+          "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0438 \u043F\u0430\u043F\u043A\u0443",
+          () => run(async () => {
+            stageSecret();
+            task = new AbortController();
+            c.accountLabel = await this.studio.exclusive(
+              "\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F",
+              (signal) => {
+                task.signal.addEventListener(
+                  "abort",
+                  () => this.studio.controller?.abort(),
+                  { once: true }
+                );
+                return this.studio.testConnection(c, signal);
+              }
+            );
+            c.checkedAt = Date.now();
+            status = c.accountLabel + ". \u0422\u0435\u043F\u0435\u0440\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435.";
+          })
+        );
+        const persist = async () => {
+          stageSecret();
+          await this.studio.saveConnection(c);
+          saved = true;
+          secretDraft = false;
+          value = "";
+          this.render();
+        };
+        button(
+          form,
+          "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435",
+          () => run(async () => {
+            await persist();
+            status = "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u043E. \u0421\u043E\u0437\u0434\u0430\u0439\u0442\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u044C \u0438\u043B\u0438 \u043D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0413\u043E\u0442\u043E\u0432\u043E\xBB.";
+          }),
+          true
+        );
+        button(
+          form,
+          "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u0438 \u0441\u043E\u0437\u0434\u0430\u0442\u044C \u043F\u0440\u043E\u0444\u0438\u043B\u044C",
+          () => run(async () => {
+            await persist();
+            await this.profileFor(c);
+            m.close();
+          }),
+          true
+        );
+        if (saved)
+          button(
+            form,
+            "\u041E\u0442\u043A\u043B\u044E\u0447\u0438\u0442\u044C \u0430\u043A\u043A\u0430\u0443\u043D\u0442",
+            () => run(async () => {
+              await this.studio.disconnect(c);
+              c.checkedAt = void 0;
+              status = "\u0410\u043A\u043A\u0430\u0443\u043D\u0442 \u043E\u0442\u043A\u043B\u044E\u0447\u0451\u043D. \u041F\u0440\u043E\u0444\u0438\u043B\u0438 \u043F\u0440\u0438\u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B. \u041C\u043E\u0436\u043D\u043E \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u044C\u0441\u044F \u0437\u0430\u043D\u043E\u0432\u043E.";
+              await this.studio.saveConnectionMetadata(c);
+              this.render();
+            })
+          );
+        if (status) {
+          const note = banner(at, status);
+          note.setAttribute("role", "status");
+        }
+        if (running) {
+          banner(
+            at,
+            "\u0412\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F\u2026 \u0414\u043B\u044F Google \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u0442\u0435 \u0432\u0445\u043E\u0434 \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435 \u0438 \u0432\u0435\u0440\u043D\u0438\u0442\u0435\u0441\u044C \u0441\u044E\u0434\u0430."
+          );
+          button(at, "\u041E\u0442\u043C\u0435\u043D\u0438\u0442\u044C \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044E", () => {
+            task?.abort(new Error("\u041E\u0442\u043C\u0435\u043D\u0435\u043D\u043E"));
+            this.studio.cancelGoogle();
+          });
+        }
+        button(at, "\u0413\u043E\u0442\u043E\u0432\u043E / \u0437\u0430\u043A\u0440\u044B\u0442\u044C", () => m.close()).disabled = running;
+      };
+      const run = async (fn) => {
+        if (running) return;
+        running = true;
+        status = "";
+        draw();
+        try {
+          await fn();
+        } catch (e) {
+          status = e instanceof Error ? e.message : String(e);
+        } finally {
+          running = false;
+          task = void 0;
+          if (at.isConnected) draw();
+        }
+      };
+      draw();
+    });
+    const close = modal.onClose.bind(modal);
+    modal.onClose = () => {
+      task?.abort();
+      if (running) this.studio.cancelGoogle();
+      close();
+    };
+    modal.open();
   }
   async folderScope(p) {
     await this.studio.exclusive("\u041F\u043E\u043B\u0443\u0447\u0435\u043D\u0438\u0435 \u0434\u0435\u0440\u0435\u0432\u0430 \u043F\u0430\u043F\u043E\u043A", async (signal) => {
-      const source = p.direction === "push" ? await this.studio.local(p) : await this.studio.remote(p);
+      const browse = { ...p, scope: "all", folders: [] };
+      const source = p.direction === "push" ? await this.studio.local(browse) : await this.studio.remote(browse);
       const snap = await source.scan(signal);
       if (!snap.complete) throw Error("\u0414\u0435\u0440\u0435\u0432\u043E \u043D\u0435\u043F\u043E\u043B\u043D\u043E");
       const dirs = /* @__PURE__ */ new Set();
@@ -2864,7 +3656,7 @@ var StudioView = class extends import_obsidian.ItemView {
             if (!chosen.size) throw Error("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0445\u043E\u0442\u044F \u0431\u044B \u043E\u0434\u043D\u0443 \u043F\u0430\u043F\u043A\u0443");
             p.scope = "folders";
             p.folders = [...chosen];
-            await this.save();
+            this.render();
             m.close();
           },
           true
@@ -2872,58 +3664,73 @@ var StudioView = class extends import_obsidian.ItemView {
       }).open();
     });
   }
-  async pickDrive(p) {
-    await this.studio.exclusive("\u0427\u0442\u0435\u043D\u0438\u0435 \u043F\u0430\u043F\u043E\u043A Drive", async (signal) => {
-      const temp = { ...p, remoteRoot: p.remoteRoot || "root" };
-      const store = await this.studio.remote(temp);
-      if (!(store instanceof DriveStore)) throw Error("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 Google Drive");
-      const stack = [
-        { id: p.remoteRoot ? "root" : "root", name: "\u041D\u0430\u0447\u0430\u043B\u044C\u043D\u0430\u044F \u043F\u0430\u043F\u043A\u0430" }
-      ];
-      const { driveRoot: driveRoot2 } = await Promise.resolve().then(() => (init_remotes(), remotes_exports));
-      stack[0].id = driveRoot2(temp.remoteRoot);
-      const navigate = async (id, name) => {
-        const folders = (await store.children(id, signal)).filter(
-          (f) => f.mimeType === "application/vnd.google-apps.folder"
-        );
-        new Dialog(this.app, (at, m) => {
-          title(
-            at,
-            name,
-            "\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0443\u044E \u043F\u0430\u043F\u043A\u0443; \u0444\u0430\u0439\u043B\u044B \u0434\u0440\u0443\u0433\u0438\u0445 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0439 \u043D\u0435 \u0441\u043A\u0440\u044B\u0432\u0430\u044E\u0442\u0441\u044F."
-          );
-          for (const f of folders) {
-            const r = row(at, f.name);
-            button(r, "\u041E\u0442\u043A\u0440\u044B\u0442\u044C", async () => {
-              m.close();
-              await this.pickDrive({ ...p, remoteRoot: f.id });
+  async pickFolder(c, root, chosen) {
+    const signal = new AbortController();
+    const base = c.provider === "yandex" ? "disk:/" : root || "root";
+    const p = { ...newProfile(c.id), remoteRoot: base };
+    const store = await this.studio.remote(p, c, signal.signal);
+    const stack = [
+      {
+        id: c.provider === "yandex" ? root.replace(/^disk:\//, "").replace(/^\//, "").replace(/\/$/, "") : driveRoot(base),
+        name: root || "\u041A\u043E\u0440\u0435\u043D\u044C"
+      }
+    ];
+    const modal = new Dialog(this.app, (at, m) => {
+      const draw = async () => {
+        at.empty();
+        const current = stack[stack.length - 1];
+        title(at, "\u0412\u044B\u0431\u043E\u0440 \u043F\u0430\u043F\u043A\u0438", current.name);
+        const status = el(at, "p", "\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u043F\u0430\u043F\u043E\u043A\u2026");
+        try {
+          const folders = store instanceof DriveStore ? (await store.children(current.id, signal.signal)).filter(
+            (f) => f.mimeType === "application/vnd.google-apps.folder"
+          ) : store instanceof YandexStore ? await store.folders(current.id, signal.signal) : [];
+          if (!at.isConnected || signal.signal.aborted) return;
+          status.textContent = folders.length ? "\u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u043F\u0430\u043F\u043A\u0443 \u0438\u043B\u0438 \u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0442\u0435\u043A\u0443\u0449\u0443\u044E." : "\u0412\u043B\u043E\u0436\u0435\u043D\u043D\u044B\u0445 \u043F\u0430\u043F\u043E\u043A \u043D\u0435\u0442. \u041C\u043E\u0436\u043D\u043E \u0432\u044B\u0431\u0440\u0430\u0442\u044C \u0442\u0435\u043A\u0443\u0449\u0443\u044E.";
+          if (stack.length > 1)
+            button(at, "\u2190 \u041D\u0430\u0437\u0430\u0434", async () => {
+              stack.pop();
+              await draw();
             });
-            button(r, "\u0412\u044B\u0431\u0440\u0430\u0442\u044C", async () => {
-              const target = this.studio.data.profiles.find(
-                (x) => x.id === p.id
-              );
-              target.remoteRoot = f.id;
-              await this.save();
-              m.close();
+          if (c.provider !== "gdrive-public")
+            button(at, "\u0412 \u043A\u043E\u0440\u0435\u043D\u044C \u0434\u0438\u0441\u043A\u0430", async () => {
+              stack.splice(0, stack.length, {
+                id: c.provider === "yandex" ? "" : "root",
+                name: "\u041A\u043E\u0440\u0435\u043D\u044C \u0434\u0438\u0441\u043A\u0430"
+              });
+              await draw();
             });
-          }
+          for (const f of folders)
+            button(at, "\u{1F4C1} " + f.name, async () => {
+              stack.push({ id: f.id, name: f.name });
+              await draw();
+            });
           button(
             at,
-            "\u0418\u0441\u043F\u043E\u043B\u044C\u0437\u043E\u0432\u0430\u0442\u044C \u0442\u0435\u043A\u0443\u0449\u0443\u044E \u043F\u0430\u043F\u043A\u0443",
+            "\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u0442\u0435\u043A\u0443\u0449\u0443\u044E \u043F\u0430\u043F\u043A\u0443",
             async () => {
-              const target = this.studio.data.profiles.find(
-                (x) => x.id === p.id
+              await chosen(
+                c.provider === "yandex" ? "disk:/" + current.id : current.id
               );
-              target.remoteRoot = id;
-              await this.save();
               m.close();
             },
             true
           );
-        }).open();
+        } catch (e) {
+          if (!signal.signal.aborted) {
+            status.textContent = e instanceof Error ? e.message : String(e);
+            button(at, "\u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u044C", draw);
+          }
+        }
       };
-      await navigate(stack[0].id, p.remoteRoot || "\u041C\u043E\u0439 \u0434\u0438\u0441\u043A");
+      void draw();
     });
+    const close = modal.onClose.bind(modal);
+    modal.onClose = () => {
+      signal.abort();
+      close();
+    };
+    modal.open();
   }
   preview(plan2) {
     new Dialog(this.app, (at, m) => {
@@ -2976,8 +3783,21 @@ var StudioView = class extends import_obsidian.ItemView {
         actions,
         "\u0412\u044B\u043F\u043E\u043B\u043D\u0438\u0442\u044C \u044D\u0442\u043E\u0442 \u043F\u043B\u0430\u043D",
         async () => {
-          m.close();
           const log = await this.studio.apply(plan2);
+          if (log.status === "failed" || log.status === "partial") {
+            banner(at, log.message);
+            button(at, "\u041F\u0435\u0440\u0435\u043F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B", async () => {
+              const current = this.studio.data.profiles.find(
+                (p) => p.id === plan2.profile.id
+              );
+              if (!current) throw Error("\u041F\u0440\u043E\u0444\u0438\u043B\u044C \u0443\u0434\u0430\u043B\u0451\u043D");
+              const next = await this.studio.inspect(current);
+              m.close();
+              this.preview(next);
+            });
+            return;
+          }
+          m.close();
           new import_obsidian.Notice(log.message);
           this.page = "operations";
           this.render();
@@ -3054,6 +3874,9 @@ var SyncStudio = class extends import_obsidian2.Plugin {
   tokenManagers = /* @__PURE__ */ new Map();
   status;
   pendingPlans = /* @__PURE__ */ new Map();
+  saveChain = Promise.resolve();
+  lastError = "";
+  collision;
   stateFile;
   async onload() {
     const saved = await this.loadData();
@@ -3118,7 +3941,151 @@ var SyncStudio = class extends import_obsidian2.Plugin {
       l.view.render();
   }
   async save() {
-    await this.saveData(this.data);
+    const snapshot = structuredClone(this.data);
+    const next = this.saveChain.then(() => this.saveData(snapshot));
+    this.saveChain = next.catch(() => {
+    });
+    await next;
+  }
+  reportError(error) {
+    this.lastError = error instanceof Error ? error.message : String(error);
+    new import_obsidian2.Notice("Sync Studio: " + this.lastError, 15e3);
+  }
+  invalidateGoogle(id) {
+    for (const [key, manager] of this.tokenManagers)
+      if (key.startsWith(id + ":")) {
+        manager.disconnect();
+        this.tokenManagers.delete(key);
+      }
+  }
+  cancelGoogle() {
+    this.authController?.abort(new Error("\u0410\u0432\u0442\u043E\u0440\u0438\u0437\u0430\u0446\u0438\u044F \u043E\u0442\u043C\u0435\u043D\u0435\u043D\u0430"));
+  }
+  async saveConnection(c, secret) {
+    if (this.busy) throw Error("\u0414\u043E\u0436\u0434\u0438\u0442\u0435\u0441\u044C \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0438\u044F \u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u0438");
+    if (!c.name.trim()) throw Error("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F");
+    if (secret !== void 0) this.setSecret(c, secret.trim());
+    if (c.provider !== "github" && !this.getSecret(c))
+      throw Error("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u0430\u043A\u043A\u0430\u0443\u043D\u0442 \u0438\u043B\u0438 \u0443\u043A\u0430\u0436\u0438\u0442\u0435 \u043A\u043B\u044E\u0447 \u0434\u043E\u0441\u0442\u0443\u043F\u0430");
+    const index = this.data.connections.findIndex((x) => x.id === c.id);
+    const previous = index < 0 ? void 0 : this.data.connections[index];
+    if (index < 0) this.data.connections.push(structuredClone(c));
+    else this.data.connections[index] = structuredClone(c);
+    try {
+      await this.save();
+      if (previous?.secretRef !== c.secretRef || previous?.clientId !== c.clientId) {
+        this.invalidateGoogle(c.id);
+      }
+    } catch (error) {
+      if (index < 0)
+        this.data.connections = this.data.connections.filter(
+          (x) => x.id !== c.id
+        );
+      else this.data.connections[index] = previous;
+      throw error;
+    }
+  }
+  async saveConnectionMetadata(c) {
+    const index = this.data.connections.findIndex((x) => x.id === c.id);
+    if (index < 0) throw Error("\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u043D\u0435 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u043E");
+    this.data.connections[index] = structuredClone(c);
+    await this.save();
+  }
+  async testConnection(c, signal) {
+    if (c.provider === "github") {
+      const token = this.getSecret(c);
+      const info = await json(
+        this.http,
+        "https://api.github.com/" + (token ? "user" : "rate_limit"),
+        {
+          signal,
+          headers: {
+            "User-Agent": "Obsidian-Sync-Studio",
+            ...token ? { Authorization: "Bearer " + token } : {}
+          }
+        }
+      );
+      if (c.root)
+        await this.checkRoot(
+          { ...newProfile(c.id), remoteRoot: c.root },
+          signal,
+          c
+        );
+      return token ? "GitHub: " + info.login : "GitHub: \u043F\u0443\u0431\u043B\u0438\u0447\u043D\u044B\u0439 \u0434\u043E\u0441\u0442\u0443\u043F";
+    }
+    const store = await this.remote(
+      {
+        ...newProfile(c.id),
+        remoteRoot: c.root || (c.provider === "yandex" ? "disk:/" : "root")
+      },
+      c,
+      signal
+    );
+    if (store instanceof DriveStore) {
+      const meta = await store.inspect(driveRoot(c.root || "root"), signal);
+      if (meta.trashed || meta.mimeType !== "application/vnd.google-apps.folder")
+        throw Error("\u0412\u044B\u0431\u0440\u0430\u043D\u043D\u044B\u0439 \u043E\u0431\u044A\u0435\u043A\u0442 Drive \u043D\u0435 \u044F\u0432\u043B\u044F\u0435\u0442\u0441\u044F \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E\u0439 \u043F\u0430\u043F\u043A\u043E\u0439");
+      await store.children(meta.id, signal);
+      return "\u0414\u043E\u0441\u0442\u0443\u043F \u043A \u043F\u0430\u043F\u043A\u0435: " + meta.name;
+    }
+    if (store instanceof YandexStore) {
+      await store.folders("", signal);
+      return "\u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A: \u0434\u043E\u0441\u0442\u0443\u043F \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0451\u043D";
+    }
+    throw Error("\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0441\u0435\u0440\u0432\u0438\u0441");
+  }
+  async checkRoot(p, signal, connection) {
+    const store = await this.remote(p, connection, signal);
+    if (store instanceof DriveStore) {
+      const meta = await store.inspect(driveRoot(p.remoteRoot), signal);
+      if (meta.trashed || meta.mimeType !== "application/vnd.google-apps.folder")
+        throw Error("Drive: \u0443\u043A\u0430\u0436\u0438\u0442\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0443\u044E \u043F\u0430\u043F\u043A\u0443");
+      await store.children(meta.id, signal);
+      return "\u041F\u0430\u043F\u043A\u0430 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430: " + meta.name;
+    }
+    if (store instanceof YandexStore) {
+      await store.folders("", signal);
+      return "\u041F\u0430\u043F\u043A\u0430 \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430";
+    }
+    await store.scan(signal);
+    return "\u0420\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0439 \u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D";
+  }
+  async saveProfile(draft, original) {
+    return this.exclusive("\u0421\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u044F", async () => {
+      const index = this.data.profiles.findIndex((p) => p.id === draft.id);
+      if (index < 0) throw Error("\u041F\u0440\u043E\u0444\u0438\u043B\u044C \u0443\u0434\u0430\u043B\u0451\u043D. \u0421\u043E\u0437\u0434\u0430\u0439\u0442\u0435 \u043D\u043E\u0432\u044B\u0439 \u043F\u0440\u043E\u0444\u0438\u043B\u044C.");
+      const current = this.data.profiles[index];
+      if (JSON.stringify(current) !== JSON.stringify(original))
+        throw Error(
+          "\u0421\u043E\u0445\u0440\u0430\u043D\u0451\u043D\u043D\u044B\u0439 \u043F\u0440\u043E\u0444\u0438\u043B\u044C \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u0440\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u041E\u0442\u043C\u0435\u043D\u0430\xBB, \u0437\u0430\u0442\u0435\u043C \xAB\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C\xBB, \u0447\u0442\u043E\u0431\u044B \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u044B\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438."
+        );
+      const next = structuredClone(draft);
+      next.name = next.name.trim();
+      next.localRoot = path(next.localRoot.trim(), true);
+      next.remoteRoot = next.remoteRoot.trim();
+      next.subpath = path(next.subpath.trim(), true);
+      next.folders = next.folders.map((p) => path(p.trim()));
+      next.excludePaths = next.excludePaths.map((p) => path(p.trim()));
+      validate(next);
+      if (!this.data.connections.some((c) => c.id === next.connectionId))
+        throw Error("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0435\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435");
+      this.data.profiles[index] = next;
+      try {
+        await this.save();
+      } catch (error) {
+        this.data.profiles[index] = current;
+        throw error;
+      }
+      this.pendingPlans.delete(next.id);
+    });
+  }
+  async createProfile(c) {
+    const p = newProfile(c.id);
+    p.name = c.name;
+    p.remoteRoot = c.root || (c.provider === "gdrive" ? "root" : c.provider === "yandex" ? "disk:/" : "");
+    this.data.profiles.push(p);
+    await this.save();
+    return p;
   }
   async saveState() {
     await this.stateFile.write(this.state);
@@ -3140,7 +4107,10 @@ var SyncStudio = class extends import_obsidian2.Plugin {
   async connectGoogle(c, clientJSON) {
     if (!import_obsidian2.Platform.isDesktopApp) throw Error("OAuth \u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u0442\u043E\u043B\u044C\u043A\u043E \u043D\u0430 desktop");
     if (this.authController) throw Error("\u0414\u043E\u0436\u0434\u0438\u0442\u0435\u0441\u044C \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u0430\u0432\u0442\u043E\u0440\u0438\u0437\u0430\u0446\u0438\u0438");
-    const client = parseGoogleClient(clientJSON);
+    const client = clientJSON.trim() ? parseGoogleClient(clientJSON) : c.clientId ? {
+      clientId: c.clientId,
+      clientSecret: c.clientSecretRef ? this.secrets().getSecret(c.clientSecretRef) || void 0 : void 0
+    } : parseGoogleClient(clientJSON);
     this.authController = new AbortController();
     try {
       const grant = await authorizeGoogleDesktop(
@@ -3157,33 +4127,32 @@ var SyncStudio = class extends import_obsidian2.Plugin {
         this.secrets().setSecret(c.clientSecretRef, client.clientSecret);
       this.setSecret(c, grant.refreshToken);
       c.subject = grant.subject;
-      this.tokenManagers.get(c.id)?.disconnect();
-      this.tokenManagers.delete(c.id);
-      await this.save();
-      new import_obsidian2.Notice("Google Drive \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0451\u043D");
+      this.invalidateGoogle(c.id);
+      new import_obsidian2.Notice("Google Drive \u0430\u0432\u0442\u043E\u0440\u0438\u0437\u043E\u0432\u0430\u043D. \u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435.");
     } finally {
       this.authController = void 0;
     }
   }
   disconnect(c) {
     if (this.busy) throw Error("\u0421\u043D\u0430\u0447\u0430\u043B\u0430 \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u0435 \u0437\u0430\u043F\u0443\u0441\u043A");
-    this.tokenManagers.get(c.id)?.disconnect();
-    this.tokenManagers.delete(c.id);
+    this.invalidateGoogle(c.id);
     this.setSecret(c, "");
     if (c.clientSecretRef) this.secrets().setSecret(c.clientSecretRef, "");
     for (const p of this.data.profiles)
-      if (p.connectionId === c.id) p.enabled = false;
+      if (p.connectionId === c.id || p.sourceConnectionId === c.id)
+        p.enabled = false;
     return this.save();
   }
-  async remote(p) {
-    const c = this.data.connections.find((x) => x.id === p.connectionId);
+  async remote(p, connection, signal = this.controller?.signal) {
+    const c = connection || this.data.connections.find((x) => x.id === p.connectionId);
     if (!c) throw Error("\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E");
     const limit = p.maxMB * 1024 * 1024;
     const token = this.getSecret(c);
     if (c.provider === "gdrive") {
       if (!c.clientId || !token)
         throw Error("\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u0435 Google Drive \u0447\u0435\u0440\u0435\u0437 OAuth");
-      let manager = this.tokenManagers.get(c.id);
+      const managerKey = c.id + ":" + c.secretRef;
+      let manager = this.tokenManagers.get(managerKey);
       if (!manager) {
         const client = {
           clientId: c.clientId,
@@ -3197,19 +4166,29 @@ var SyncStudio = class extends import_obsidian2.Plugin {
           Date.now,
           c.subject
         );
-        this.tokenManagers.set(c.id, manager);
+        this.tokenManagers.set(managerKey, manager);
       }
       return new DriveStore(
         new GoogleAuthorizedTransport(this.http, manager),
         p.remoteRoot,
         limit,
         void 0,
-        c.id + ":" + c.subject
+        c.id + ":" + c.subject,
+        scanRules(p, this.app.vault.configDir),
+        p.driveDuplicates || "error"
       );
     }
     if (c.provider === "gdrive-public") {
       if (!token) throw Error("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 Google API key");
-      return new DriveStore(this.http, p.remoteRoot, limit, token, c.id);
+      return new DriveStore(
+        this.http,
+        p.remoteRoot,
+        limit,
+        token,
+        c.id,
+        scanRules(p, this.app.vault.configDir),
+        p.driveDuplicates || "error"
+      );
     }
     if (c.provider === "github")
       return new GitHubStore(
@@ -3218,13 +4197,20 @@ var SyncStudio = class extends import_obsidian2.Plugin {
         p.branch,
         p.subpath,
         token,
-        limit
+        limit,
+        scanRules(p, this.app.vault.configDir)
       );
     if (!token) throw Error("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 OAuth-\u0442\u043E\u043A\u0435\u043D \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430");
-    const store = new YandexStore(this.http, p.remoteRoot, token, limit);
+    const store = new YandexStore(
+      this.http,
+      p.remoteRoot,
+      token,
+      limit,
+      scanRules(p, this.app.vault.configDir)
+    );
     const disk = await json(this.http, "https://cloud-api.yandex.net/v1/disk", {
       headers: { Authorization: "OAuth " + token },
-      signal: this.controller?.signal
+      signal
     });
     if (!disk.user?.uid)
       throw Error("\u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0438\u0434\u0435\u043D\u0442\u0438\u0444\u0438\u043A\u0430\u0442\u043E\u0440 \u0430\u043A\u043A\u0430\u0443\u043D\u0442\u0430");
@@ -3233,7 +4219,11 @@ var SyncStudio = class extends import_obsidian2.Plugin {
   }
   async local(p) {
     if (p.sourceKind === "folder")
-      return new ExternalFolder(p.sourceRoot || "", p.maxMB * 1024 * 1024);
+      return new ExternalFolder(
+        p.sourceRoot || "",
+        p.maxMB * 1024 * 1024,
+        scanRules(p, this.app.vault.configDir)
+      );
     if (p.sourceKind === "connection")
       return this.remote({
         ...p,
@@ -3242,7 +4232,12 @@ var SyncStudio = class extends import_obsidian2.Plugin {
         branch: p.sourceBranch || "main",
         subpath: p.sourceSubpath || ""
       });
-    return new LocalStore(this.app, p.localRoot, p.maxMB * 1024 * 1024);
+    return new LocalStore(
+      this.app,
+      p.localRoot,
+      p.maxMB * 1024 * 1024,
+      scanRules(p, this.app.vault.configDir)
+    );
   }
   validateOverlap(p) {
     if (p.sourceKind) return;
@@ -3255,10 +4250,31 @@ var SyncStudio = class extends import_obsidian2.Plugin {
     }
   }
   async inspect(p) {
-    return this.exclusive(
-      "\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0444\u0430\u0439\u043B\u043E\u0432",
-      async (signal) => this.makePlan(p, signal)
-    );
+    try {
+      this.collision = void 0;
+      return await this.exclusive(
+        "\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0444\u0430\u0439\u043B\u043E\u0432",
+        async (signal) => this.makePlan(p, signal)
+      );
+    } catch (error) {
+      if (error instanceof PathCollision)
+        this.collision = { profileId: p.id, paths: error.paths };
+      this.data.history.unshift({
+        id: crypto.randomUUID(),
+        profileId: p.id,
+        name: p.name + " \u2014 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0430",
+        at: Date.now(),
+        status: "failed",
+        applied: 0,
+        conflicts: 0,
+        message: error instanceof Error ? error.message : String(error),
+        details: []
+      });
+      this.data.history = this.data.history.slice(0, 100);
+      await this.save();
+      this.refresh();
+      throw error;
+    }
   }
   async makePlan(p, signal) {
     validate(p);
@@ -3270,7 +4286,7 @@ var SyncStudio = class extends import_obsidian2.Plugin {
       if (!a || !b) throw Error("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u043E\u0431\u0430 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F");
       if (a.provider.replace("-public", "") === b.provider.replace("-public", ""))
         throw Error(
-          "\u0412 0.1 \u0432\u043D\u0435\u0448\u043D\u044F\u044F \u043F\u0435\u0440\u0435\u0434\u0430\u0447\u0430 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u043C\u0435\u0436\u0434\u0443 \u0440\u0430\u0437\u043D\u044B\u043C\u0438 \u0441\u0435\u0440\u0432\u0438\u0441\u0430\u043C\u0438; \u044D\u0442\u043E \u0438\u0441\u043A\u043B\u044E\u0447\u0430\u0435\u0442 \u043F\u0435\u0440\u0435\u043D\u043E\u0441 \u043F\u0430\u043F\u043A\u0438 \u0432 \u0441\u0430\u043C\u0443 \u0441\u0435\u0431\u044F"
+          "\u0412\u043D\u0435\u0448\u043D\u044F\u044F \u043F\u0435\u0440\u0435\u0434\u0430\u0447\u0430 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u043C\u0435\u0436\u0434\u0443 \u0440\u0430\u0437\u043D\u044B\u043C\u0438 \u0441\u0435\u0440\u0432\u0438\u0441\u0430\u043C\u0438; \u044D\u0442\u043E \u0438\u0441\u043A\u043B\u044E\u0447\u0430\u0435\u0442 \u043F\u0435\u0440\u0435\u043D\u043E\u0441 \u043F\u0430\u043F\u043A\u0438 \u0432 \u0441\u0430\u043C\u0443 \u0441\u0435\u0431\u044F"
         );
     }
     if (!p.sourceKind && p.localRoot && Object.keys(this.state.baselines[p.id]?.files || {}).length && !await this.app.vault.adapter.exists(p.localRoot))
@@ -3292,6 +4308,10 @@ var SyncStudio = class extends import_obsidian2.Plugin {
     const pending = this.state.pending[p.id];
     if (pending) {
       const op = pending.operation, a = Object.hasOwn(l.files, op.path) ? l.files[op.path] : void 0, b = Object.hasOwn(r.files, op.path) ? r.files[op.path] : void 0;
+      if (!selected(op.path, p, this.app.vault.configDir, op.local?.size) || !selected(op.path, p, this.app.vault.configDir, op.remote?.size))
+        throw Error(
+          "\u041D\u0435\u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043D\u043D\u0430\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u0432\u043D\u0435 \u0442\u0435\u043A\u0443\u0449\u0435\u0439 \u043E\u0431\u043B\u0430\u0441\u0442\u0438. \u0412\u0435\u0440\u043D\u0438\u0442\u0435 \u043F\u0440\u0435\u0436\u043D\u044E\u044E \u043E\u0431\u043B\u0430\u0441\u0442\u044C/\u043B\u0438\u043C\u0438\u0442 \u043F\u0440\u043E\u0444\u0438\u043B\u044F \u0434\u043B\u044F \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F: " + op.path
+        );
       const backupPath = join(".sync-conflicts", pending.runId + "/" + op.path);
       let backupVerified = false;
       if (op.action === "keep-both" && await this.app.vault.adapter.exists(backupPath)) {
@@ -3320,7 +4340,7 @@ var SyncStudio = class extends import_obsidian2.Plugin {
     for (const op of result.operations)
       if (category(join(p.localRoot, op.path), this.app.vault.configDir) === "plugin-code" && !["adopt", "skip"].includes(op.action)) {
         op.action = "conflict";
-        op.reason = "\u041A\u043E\u0434 \u043F\u043B\u0430\u0433\u0438\u043D\u0430: \u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u0430\u044F \u043F\u0430\u043A\u0435\u0442\u043D\u0430\u044F \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430; \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0437\u0430\u043C\u0435\u043D\u0430 \u0432 0.1 \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u0430";
+        op.reason = "\u041A\u043E\u0434 \u043F\u043B\u0430\u0433\u0438\u043D\u0430: \u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u0430\u044F \u043F\u0430\u043A\u0435\u0442\u043D\u0430\u044F \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430; \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0430\u044F \u0437\u0430\u043C\u0435\u043D\u0430 \u043E\u0442\u043A\u043B\u044E\u0447\u0435\u043D\u0430";
       }
     return result;
   }
@@ -3332,6 +4352,10 @@ var SyncStudio = class extends import_obsidian2.Plugin {
       if (!current || JSON.stringify(current) !== JSON.stringify(reviewed.profile))
         throw Error("\u041F\u0440\u043E\u0444\u0438\u043B\u044C \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F: \u043F\u043E\u0441\u0442\u0440\u043E\u0439\u0442\u0435 \u043D\u043E\u0432\u044B\u0439 \u043F\u043B\u0430\u043D");
       this.validateOverlap(current);
+      if (this.state.pending[current.id])
+        throw Error(
+          "\u0415\u0441\u0442\u044C \u043D\u0435\u0437\u0430\u0432\u0435\u0440\u0448\u0451\u043D\u043D\u0430\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F. \u041F\u0435\u0440\u0435\u043F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u0444\u0430\u0439\u043B\u044B \u0434\u043B\u044F \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u043F\u0435\u0440\u0435\u0434 \u043F\u043E\u0432\u0442\u043E\u0440\u043D\u044B\u043C \u0437\u0430\u043F\u0443\u0441\u043A\u043E\u043C."
+        );
       const local = await this.local(current), remote = await this.remote(current);
       const log = await execute(
         reviewed,
@@ -3373,6 +4397,7 @@ var SyncStudio = class extends import_obsidian2.Plugin {
           this.status.setText("Sync Studio \xB7 " + this.phase);
         }
       );
+      if (log.status !== "completed") this.lastError = log.message;
       this.data.history.unshift(log);
       this.data.history = this.data.history.slice(0, 100);
       await this.save();
@@ -3383,12 +4408,16 @@ var SyncStudio = class extends import_obsidian2.Plugin {
   }
   async exclusive(phase, fn) {
     if (this.busy) throw Error("\u0414\u0440\u0443\u0433\u043E\u0439 \u0437\u0430\u043F\u0443\u0441\u043A \u0443\u0436\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F");
+    this.lastError = "";
     this.busy = true;
     this.phase = phase;
     this.controller = new AbortController();
     this.refresh();
     try {
       return await fn(this.controller.signal);
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      throw error;
     } finally {
       this.busy = false;
       this.phase = "\u0413\u043E\u0442\u043E\u0432\u043E";
@@ -3400,7 +4429,8 @@ var SyncStudio = class extends import_obsidian2.Plugin {
     return [...this.pendingPlans.values()];
   }
   async tick() {
-    if (this.busy || this.paused || !navigator.onLine) return;
+    if (this.busy || this.authController || this.paused || !navigator.onLine)
+      return;
     const now = Date.now();
     for (const p of this.data.profiles) {
       if (!p.enabled || this.pendingPlans.has(p.id)) continue;
@@ -3421,7 +4451,11 @@ var SyncStudio = class extends import_obsidian2.Plugin {
           this.pendingPlans.set(p.id, result);
           new import_obsidian2.Notice("Sync Studio: \u0442\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044F \u043F\u0440\u043E\u0441\u043C\u043E\u0442\u0440 \u043F\u043B\u0430\u043D\u0430 \xAB" + p.name + "\xBB");
           this.refresh();
-        } else await this.apply(result);
+        } else {
+          const log = await this.apply(result);
+          if (log.status !== "completed")
+            this.failures.set(p.id, (this.failures.get(p.id) || 0) + 1);
+        }
       } catch (e) {
         this.failures.set(p.id, (this.failures.get(p.id) || 0) + 1);
         new import_obsidian2.Notice("Sync Studio: " + e.message);
