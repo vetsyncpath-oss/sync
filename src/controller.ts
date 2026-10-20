@@ -261,6 +261,35 @@ export default class SyncStudio extends Plugin {
     await store.scan(signal);
     return "Репозиторий доступен";
   }
+  async saveProfile(draft: Profile, original: Profile) {
+    return this.exclusive("Сохранение профиля", async () => {
+      const index = this.data.profiles.findIndex((p) => p.id === draft.id);
+      if (index < 0) throw Error("Профиль удалён. Создайте новый профиль.");
+      const current = this.data.profiles[index];
+      if (JSON.stringify(current) !== JSON.stringify(original))
+        throw Error(
+          "Сохранённый профиль изменился во время редактирования. Нажмите «Отмена», затем «Изменить», чтобы загрузить актуальные настройки.",
+        );
+      const next = structuredClone(draft);
+      next.name = next.name.trim();
+      next.localRoot = path(next.localRoot.trim(), true);
+      next.remoteRoot = next.remoteRoot.trim();
+      next.subpath = path(next.subpath.trim(), true);
+      next.folders = next.folders.map((p) => path(p.trim()));
+      next.excludePaths = next.excludePaths.map((p) => path(p.trim()));
+      validate(next);
+      if (!this.data.connections.some((c) => c.id === next.connectionId))
+        throw Error("Выберите существующее подключение");
+      this.data.profiles[index] = next;
+      try {
+        await this.save();
+      } catch (error) {
+        this.data.profiles[index] = current;
+        throw error;
+      }
+      this.pendingPlans.delete(next.id);
+    });
+  }
   async createProfile(c: Connection) {
     const p = newProfile(c.id);
     p.name = c.name;

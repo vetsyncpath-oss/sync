@@ -11,7 +11,7 @@ await build({
   external: ["obsidian", "electron"],
   sourcemap: false,
   banner: {
-    js: "/* Sync Studio 0.2.0 — independent synchronization core. See THIRD_PARTY.md. */",
+    js: "/* Sync Studio 0.2.1 — independent synchronization core. See THIRD_PARTY.md. */",
   },
 });
 await mkdir("dist/sync-studio/licenses", { recursive: true });

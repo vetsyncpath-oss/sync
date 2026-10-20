@@ -249,3 +249,5 @@
 .sync-studio .ss-card > button { margin: 8px 8px 0 0; }
 .sync-studio fieldset > button { margin: 8px 8px 0 0; }
 .sync-studio textarea { width: 100%; font-family: var(--font-monospace); }
+.sync-studio .ss-profile-save { position: sticky; bottom: 0; background: var(--background-primary); padding: 12px; z-index: 2; flex-wrap: wrap; }
+.sync-studio fieldset:disabled { opacity: .75; }

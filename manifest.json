@@ -1,7 +1,7 @@
 {
   "id": "sync-studio",
   "name": "Sync Studio",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minAppVersion": "1.11.4",
   "description": "Profile-based synchronization with explicit plans, conflict policies and tracked deletions.",
   "author": "Sync Studio contributors",

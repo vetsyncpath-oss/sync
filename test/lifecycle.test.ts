@@ -281,17 +281,20 @@ test("UI: Yandex setup, save, edit, profile, pull, update, delete-to-trash and r
     await click("Редактировать");
     input("Название", "Мой Диск", modal());
     await click("Сохранить и создать профиль", modal());
-    const p = h.studio.data.profiles[0];
+    let p = h.studio.data.profiles[0];
     assert.equal(p.remoteRoot, "disk:/");
     assert.equal(p.name, "Мой Диск");
+    await click("Изменить");
     const field = input("Название профиля", "Заметки");
     field.focus();
     await new Promise((r) => setTimeout(r, 0));
     assert.equal(
       document.activeElement,
       field,
-      "autosave must preserve the focused input",
+      "editing must preserve the focused input",
     );
+    await click("Сохранить");
+    p = h.studio.data.profiles[0];
     await click("Проверить изменения");
     await click("Выполнить этот план", modal());
     assert.equal(
@@ -645,6 +648,110 @@ test("UI: external-folder import keeps its draft across tabs and uploads without
       await readFile(join(source, "note.md"), "utf8"),
       "external source",
     );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("UI: profile Edit/Save/Cancel isolates drafts across tabs and persists only on Save", async () => {
+  const h = await harness();
+  try {
+    const c = {
+      id: "ya",
+      name: "Disk",
+      provider: "yandex" as const,
+      secretRef: "ya",
+      root: "disk:/",
+    };
+    h.studio.setSecret(c, "yandex-token");
+    await h.studio.saveConnection(c);
+    await h.studio.createProfile(c);
+    h.view.render();
+    assert.equal(
+      (document.querySelector("main fieldset") as HTMLFieldSetElement).disabled,
+      true,
+    );
+    await click("Изменить");
+    await click("Подключение");
+    input("Название профиля", "Draft name");
+    input("Папка внутри vault (пусто = корень)", "Notes");
+    await click("Изменения");
+    input("Удаления в источнике", "trash");
+    await click("Автозапуск");
+    input("Интервал, минут", "30");
+    assert.equal(h.studio.data.profiles[0].name, "Disk");
+    assert.equal(h.studio.data.profiles[0].deletion, "ignore");
+    assert.equal(h.studio.data.profiles[0].intervalMinutes, 15);
+    await click("02 / Подключения");
+    await click("01 / Профили");
+    await click("Подключение");
+    assert.ok(
+      [...document.querySelectorAll("input")].some(
+        (i) => i.value === "Draft name",
+      ),
+    );
+    await click("Отмена");
+    assert.equal(h.studio.data.profiles[0].name, "Disk");
+    assert.ok(
+      ![...document.querySelectorAll("input")].some(
+        (i) => i.value === "Draft name",
+      ),
+    );
+    await click("Изменить");
+    input("Название профиля", "Saved name");
+    input("Папка внутри vault (пусто = корень)", "Notes");
+    await click("Изменения");
+    input("Удаления в источнике", "trash");
+    await click("Сохранить");
+    assert.equal(h.studio.data.profiles[0].name, "Saved name");
+    assert.equal(h.studio.data.profiles[0].localRoot, "Notes");
+    assert.equal(h.studio.data.profiles[0].deletion, "trash");
+    assert.equal((h.studio as any).persisted.profiles[0].name, "Saved name");
+    assert.equal(
+      (document.querySelector("main fieldset") as HTMLFieldSetElement).disabled,
+      true,
+    );
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("UI: invalid profile stays editable; failed storage keeps the draft and original settings", async () => {
+  const h = await harness();
+  try {
+    const c = {
+      id: "ya",
+      name: "Disk",
+      provider: "yandex" as const,
+      secretRef: "ya",
+      root: "disk:/",
+    };
+    h.studio.setSecret(c, "yandex-token");
+    await h.studio.saveConnection(c);
+    await h.studio.createProfile(c);
+    h.view.render();
+    await click("Изменить");
+    await click("Подключение");
+    input("Название профиля", "");
+    await click("Сохранить");
+    assert.match(document.body.textContent!, /Укажите название/);
+    assert.equal(h.studio.data.profiles[0].name, "Disk");
+    input("Название профиля", "Valid name");
+    const save = h.studio.saveData.bind(h.studio);
+    h.studio.saveData = async () => {
+      throw Error("Storage unavailable");
+    };
+    await click("Сохранить");
+    assert.match(document.body.textContent!, /Storage unavailable/);
+    assert.equal(h.studio.data.profiles[0].name, "Disk");
+    assert.ok(
+      [...document.querySelectorAll("input")].some(
+        (i) => i.value === "Valid name",
+      ),
+    );
+    h.studio.saveData = save;
+    await click("Сохранить");
+    assert.equal((h.studio as any).persisted.profiles[0].name, "Valid name");
   } finally {
     await h.cleanup();
   }

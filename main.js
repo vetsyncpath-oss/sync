@@ -1,4 +1,4 @@
-/* Sync Studio 0.2.0 — independent synchronization core. See THIRD_PARTY.md. */
+/* Sync Studio 0.2.1 — independent synchronization core. See THIRD_PARTY.md. */
 "use strict";
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -2167,6 +2167,39 @@ var StudioView = class extends import_obsidian.ItemView {
   active = "";
   tab = "scope";
   importDraft;
+  profileDrafts = /* @__PURE__ */ new Map();
+  startEditing(p) {
+    this.profileDrafts.set(p.id, {
+      value: structuredClone(p),
+      original: structuredClone(p)
+    });
+    this.render();
+  }
+  async saveEdits(id) {
+    const draft = this.profileDrafts.get(id);
+    if (!draft) return;
+    draft.error = void 0;
+    try {
+      await this.studio.saveProfile(draft.value, draft.original);
+      this.profileDrafts.delete(id);
+      new import_obsidian.Notice("\u041F\u0440\u043E\u0444\u0438\u043B\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D");
+    } catch (error) {
+      draft.error = error instanceof Error ? error.message : String(error);
+    }
+    this.render();
+  }
+  editActions(at, p) {
+    if (this.profileDrafts.has(p.id)) {
+      button(at, "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C", () => this.saveEdits(p.id), true).disabled = this.studio.busy;
+      button(at, "\u041E\u0442\u043C\u0435\u043D\u0430", () => {
+        if (this.studio.lastError === this.profileDrafts.get(p.id)?.error)
+          this.studio.lastError = "";
+        this.profileDrafts.delete(p.id);
+        this.render();
+      }).disabled = this.studio.busy;
+    } else
+      button(at, "\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C", () => this.startEditing(p), true).disabled = this.studio.busy;
+  }
   getViewType() {
     return VIEW_TYPE;
   }
@@ -2294,12 +2327,14 @@ var StudioView = class extends import_obsidian.ItemView {
       const p2 = await this.studio.createProfile(c);
       this.active = p2.id;
       this.tab = "route";
-      await this.save();
+      this.startEditing(p2);
     }).disabled = this.studio.busy;
     el(side, "hr");
     button(side, "\u25CE \u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F", () => this.connections());
     button(side, "\u25A7 \u0412\u043E\u0437\u043C\u043E\u0436\u043D\u043E\u0441\u0442\u0438", () => this.capabilities());
-    const p = this.selected();
+    const savedProfile = this.selected();
+    const edit = savedProfile ? this.profileDrafts.get(savedProfile.id) : void 0;
+    const p = edit?.value || savedProfile;
     if (!p) {
       title(
         main,
@@ -2321,6 +2356,7 @@ var StudioView = class extends import_obsidian.ItemView {
       `${directions[p.direction]} \xB7 ${p.localRoot || "\u041A\u043E\u0440\u0435\u043D\u044C vault"}`
     );
     const actions = el(head, "div", "", "ss-actions");
+    this.editActions(actions, p);
     button(actions, "\u0414\u0443\u0431\u043B\u0438\u0440\u043E\u0432\u0430\u0442\u044C", async () => {
       const next = structuredClone(p);
       next.id = crypto.randomUUID();
@@ -2329,13 +2365,19 @@ var StudioView = class extends import_obsidian.ItemView {
       this.studio.data.profiles.push(next);
       this.active = next.id;
       await this.save();
-    }).disabled = this.studio.busy;
+    }).disabled = this.studio.busy || !!edit;
     button(
       actions,
       "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u0438\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F",
       async () => this.preview(await this.studio.inspect(p)),
       true
-    ).disabled = this.studio.busy;
+    ).disabled = this.studio.busy || !!edit;
+    if (edit)
+      banner(
+        main,
+        "\u0420\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u044F. \u0418\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u043F\u0440\u0438\u043C\u0435\u043D\u044F\u0442\u0441\u044F \u0442\u043E\u043B\u044C\u043A\u043E \u043F\u043E\u0441\u043B\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u044F \xAB\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C\xBB. \u041C\u043E\u0436\u043D\u043E \u043F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0430\u0442\u044C \u0432\u043A\u043B\u0430\u0434\u043A\u0438 \u2014 \u0447\u0435\u0440\u043D\u043E\u0432\u0438\u043A \u043E\u0441\u0442\u0430\u043D\u0435\u0442\u0441\u044F."
+      );
+    if (edit?.error) banner(main, edit.error).setAttribute("role", "alert");
     const nav = el(main, "nav", "", "ss-tabs");
     for (const [key, value] of Object.entries({
       scope: "\u0427\u0442\u043E \u043F\u0435\u0440\u0435\u043D\u043E\u0441\u0438\u0442\u044C",
@@ -2351,17 +2393,18 @@ var StudioView = class extends import_obsidian.ItemView {
       b.toggleClass("is-active", this.tab === key);
     }
     const body = el(main, "fieldset");
-    body.disabled = this.studio.busy;
+    body.disabled = this.studio.busy || !edit && this.tab !== "history";
     if (this.tab === "scope") this.scopePanel(body, p);
     else if (this.tab === "route") this.route(body, p);
     else if (this.tab === "behavior") this.behavior(body, p);
     else if (this.tab === "schedule") this.schedule(body, p);
     else this.history(body, p.id);
-    const footer = el(main, "footer", "", "ss-between");
+    const footer = el(main, "footer", "", "ss-between ss-profile-save");
+    this.editActions(el(footer, "div", "", "ss-actions"), p);
     el(
       footer,
       "small",
-      "\u0418\u0437\u043C\u0435\u043D\u0435\u043D\u0438\u044F \u0441\u043E\u0445\u0440\u0430\u043D\u044F\u044E\u0442\u0441\u044F \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438. \u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 \u0438 \u043F\u0430\u043F\u043A\u0443 \u043C\u043E\u0436\u043D\u043E \u043F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043F\u0435\u0440\u0435\u0434 \u0437\u0430\u043F\u0443\u0441\u043A\u043E\u043C.",
+      edit ? "\u0427\u0435\u0440\u043D\u043E\u0432\u0438\u043A \u043D\u0435 \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0435\u0442\u0441\u044F \u0441\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u0435\u0439 \u0434\u043E \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u044F." : "\u0427\u0442\u043E\u0431\u044B \u0438\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u043F\u0440\u043E\u0444\u0438\u043B\u044F, \u043D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C\xBB.",
       "ss-muted"
     );
     button(
@@ -2387,11 +2430,11 @@ var StudioView = class extends import_obsidian.ItemView {
           m.close();
         });
       }).open()
-    ).disabled = this.studio.busy;
+    ).disabled = this.studio.busy || !!edit;
   }
   patch(p, key, value) {
+    if (this.profileDrafts.get(p.id)?.value !== p) return;
     p[key] = value;
-    void this.studio.save().catch((e) => this.studio.reportError(e));
     if (["scope", "connectionId", "sourceConnectionId", "direction"].includes(key))
       this.render();
   }
@@ -3278,7 +3321,7 @@ var StudioView = class extends import_obsidian.ItemView {
             if (!chosen.size) throw Error("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0445\u043E\u0442\u044F \u0431\u044B \u043E\u0434\u043D\u0443 \u043F\u0430\u043F\u043A\u0443");
             p.scope = "folders";
             p.folders = [...chosen];
-            await this.save();
+            this.render();
             m.close();
           },
           true
@@ -3671,6 +3714,35 @@ var SyncStudio = class extends import_obsidian2.Plugin {
     }
     await store.scan(signal);
     return "\u0420\u0435\u043F\u043E\u0437\u0438\u0442\u043E\u0440\u0438\u0439 \u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D";
+  }
+  async saveProfile(draft, original) {
+    return this.exclusive("\u0421\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u044F", async () => {
+      const index = this.data.profiles.findIndex((p) => p.id === draft.id);
+      if (index < 0) throw Error("\u041F\u0440\u043E\u0444\u0438\u043B\u044C \u0443\u0434\u0430\u043B\u0451\u043D. \u0421\u043E\u0437\u0434\u0430\u0439\u0442\u0435 \u043D\u043E\u0432\u044B\u0439 \u043F\u0440\u043E\u0444\u0438\u043B\u044C.");
+      const current = this.data.profiles[index];
+      if (JSON.stringify(current) !== JSON.stringify(original))
+        throw Error(
+          "\u0421\u043E\u0445\u0440\u0430\u043D\u0451\u043D\u043D\u044B\u0439 \u043F\u0440\u043E\u0444\u0438\u043B\u044C \u0438\u0437\u043C\u0435\u043D\u0438\u043B\u0441\u044F \u0432\u043E \u0432\u0440\u0435\u043C\u044F \u0440\u0435\u0434\u0430\u043A\u0442\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u044F. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u041E\u0442\u043C\u0435\u043D\u0430\xBB, \u0437\u0430\u0442\u0435\u043C \xAB\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C\xBB, \u0447\u0442\u043E\u0431\u044B \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u044B\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438."
+        );
+      const next = structuredClone(draft);
+      next.name = next.name.trim();
+      next.localRoot = path(next.localRoot.trim(), true);
+      next.remoteRoot = next.remoteRoot.trim();
+      next.subpath = path(next.subpath.trim(), true);
+      next.folders = next.folders.map((p) => path(p.trim()));
+      next.excludePaths = next.excludePaths.map((p) => path(p.trim()));
+      validate(next);
+      if (!this.data.connections.some((c) => c.id === next.connectionId))
+        throw Error("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0435\u0435 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435");
+      this.data.profiles[index] = next;
+      try {
+        await this.save();
+      } catch (error) {
+        this.data.profiles[index] = current;
+        throw error;
+      }
+      this.pendingPlans.delete(next.id);
+    });
   }
   async createProfile(c) {
     const p = newProfile(c.id);

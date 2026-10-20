@@ -185,6 +185,44 @@ export class StudioView extends ItemView {
   private active = "";
   private tab = "scope";
   private importDraft?: Profile;
+  private profileDrafts = new Map<
+    string,
+    { value: Profile; original: Profile; error?: string }
+  >();
+  private startEditing(p: Profile) {
+    this.profileDrafts.set(p.id, {
+      value: structuredClone(p),
+      original: structuredClone(p),
+    });
+    this.render();
+  }
+  private async saveEdits(id: string) {
+    const draft = this.profileDrafts.get(id);
+    if (!draft) return;
+    draft.error = undefined;
+    try {
+      await this.studio.saveProfile(draft.value, draft.original);
+      this.profileDrafts.delete(id);
+      new Notice("Профиль сохранён");
+    } catch (error) {
+      draft.error = error instanceof Error ? error.message : String(error);
+    }
+    this.render();
+  }
+  private editActions(at: HTMLElement, p: Profile) {
+    if (this.profileDrafts.has(p.id)) {
+      button(at, "Сохранить", () => this.saveEdits(p.id), true).disabled =
+        this.studio.busy;
+      button(at, "Отмена", () => {
+        if (this.studio.lastError === this.profileDrafts.get(p.id)?.error)
+          this.studio.lastError = "";
+        this.profileDrafts.delete(p.id);
+        this.render();
+      }).disabled = this.studio.busy;
+    } else
+      button(at, "Изменить", () => this.startEditing(p), true).disabled =
+        this.studio.busy;
+  }
   constructor(
     leaf: WorkspaceLeaf,
     private studio: SyncStudio,
@@ -326,12 +364,16 @@ export class StudioView extends ItemView {
       const p = await this.studio.createProfile(c);
       this.active = p.id;
       this.tab = "route";
-      await this.save();
+      this.startEditing(p);
     }).disabled = this.studio.busy;
     el(side, "hr");
     button(side, "◎ Подключения", () => this.connections());
     button(side, "▧ Возможности", () => this.capabilities());
-    const p = this.selected();
+    const savedProfile = this.selected();
+    const edit = savedProfile
+      ? this.profileDrafts.get(savedProfile.id)
+      : undefined;
+    const p = edit?.value || savedProfile;
     if (!p) {
       title(
         main,
@@ -353,6 +395,7 @@ export class StudioView extends ItemView {
       `${directions[p.direction]} · ${p.localRoot || "Корень vault"}`,
     );
     const actions = el(head, "div", "", "ss-actions");
+    this.editActions(actions, p);
     button(actions, "Дублировать", async () => {
       const next = structuredClone(p);
       next.id = crypto.randomUUID();
@@ -361,13 +404,19 @@ export class StudioView extends ItemView {
       this.studio.data.profiles.push(next);
       this.active = next.id;
       await this.save();
-    }).disabled = this.studio.busy;
+    }).disabled = this.studio.busy || !!edit;
     button(
       actions,
       "Проверить изменения",
       async () => this.preview(await this.studio.inspect(p)),
       true,
-    ).disabled = this.studio.busy;
+    ).disabled = this.studio.busy || !!edit;
+    if (edit)
+      banner(
+        main,
+        "Редактирование профиля. Изменения применятся только после нажатия «Сохранить». Можно переключать вкладки — черновик останется.",
+      );
+    if (edit?.error) banner(main, edit.error).setAttribute("role", "alert");
     const nav = el(main, "nav", "", "ss-tabs");
     for (const [key, value] of Object.entries({
       scope: "Что переносить",
@@ -383,17 +432,20 @@ export class StudioView extends ItemView {
       b.toggleClass("is-active", this.tab === key);
     }
     const body = el(main, "fieldset");
-    body.disabled = this.studio.busy;
+    body.disabled = this.studio.busy || (!edit && this.tab !== "history");
     if (this.tab === "scope") this.scopePanel(body, p);
     else if (this.tab === "route") this.route(body, p);
     else if (this.tab === "behavior") this.behavior(body, p);
     else if (this.tab === "schedule") this.schedule(body, p);
     else this.history(body, p.id);
-    const footer = el(main, "footer", "", "ss-between");
+    const footer = el(main, "footer", "", "ss-between ss-profile-save");
+    this.editActions(el(footer, "div", "", "ss-actions"), p);
     el(
       footer,
       "small",
-      "Изменения сохраняются автоматически. Подключение и папку можно проверить перед запуском.",
+      edit
+        ? "Черновик не используется синхронизацией до сохранения."
+        : "Чтобы изменить настройки профиля, нажмите «Изменить».",
       "ss-muted",
     );
     button(footer, "Удалить профиль", () =>
@@ -417,15 +469,15 @@ export class StudioView extends ItemView {
           m.close();
         });
       }).open(),
-    ).disabled = this.studio.busy;
+    ).disabled = this.studio.busy || !!edit;
   }
   private patch<K extends keyof Profile>(
     p: Profile,
     key: K,
     value: Profile[K],
   ) {
+    if (this.profileDrafts.get(p.id)?.value !== p) return;
     p[key] = value;
-    void this.studio.save().catch((e) => this.studio.reportError(e));
     if (
       ["scope", "connectionId", "sourceConnectionId", "direction"].includes(key)
     )
@@ -1340,7 +1392,7 @@ export class StudioView extends ItemView {
             if (!chosen.size) throw Error("Выберите хотя бы одну папку");
             p.scope = "folders";
             p.folders = [...chosen];
-            await this.save();
+            this.render();
             m.close();
           },
           true,
