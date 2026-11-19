@@ -1,9 +1,9 @@
 {
   "id": "vault-folder-sync",
   "name": "Vault Folder Sync",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minAppVersion": "1.6.0",
-  "description": "Синхронизация пар папок с WebDAV по событиям и расписанию, с выбором направления и правил обработки удалений и конфликтов.",
+  "description": "Синхронизация заметок и вложений с Google Drive, Яндекс Диском и WebDAV.",
   "author": "Vault Folder Sync",
   "isDesktopOnly": false
 }

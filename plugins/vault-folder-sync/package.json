@@ -1,0 +1,7 @@
+{
+  "name": "vault-folder-sync",
+  "version": "0.3.0",
+  "private": true,
+  "scripts": { "build": "node build.mjs" },
+  "dependencies": { "@noble/hashes": "1.8.0" }
+}

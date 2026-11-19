@@ -917,6 +917,41 @@ async function writeBackup(app, destination, bytes2) {
 
 // src/adapters/http.ts
 var import_node_https = require("node:https");
+
+// src/adapters/http-response.ts
+async function json(http, url, opts = {}) {
+  const r = await http.fetch(url, opts);
+  if (r.status < 200 || r.status >= 300) {
+    let reason = "";
+    try {
+      const body = JSON.parse(await r.text());
+      const candidate = typeof body.error === "string" ? body.error : body.error?.errors?.[0]?.reason || body.error?.status;
+      if (typeof candidate === "string" && /^[a-zA-Z0-9_.-]{1,100}$/.test(candidate))
+        reason = " (" + candidate + ")";
+    } catch {
+    }
+    const hint = r.status === 401 ? " \u041F\u0435\u0440\u0435\u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u0430\u043A\u043A\u0430\u0443\u043D\u0442: \u0442\u043E\u043A\u0435\u043D \u043D\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043B\u0435\u043D." : r.status === 403 ? " \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u0440\u0430\u0432\u0430 \u0434\u043E\u0441\u0442\u0443\u043F\u0430 \u0438 \u0432\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 API \u0441\u0435\u0440\u0432\u0438\u0441\u0430." : r.status === 404 ? " \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u0443\u0442\u044C/ID \u043F\u0430\u043F\u043A\u0438 \u0438 \u0434\u043E\u0441\u0442\u0443\u043F \u0430\u043A\u043A\u0430\u0443\u043D\u0442\u0430." : r.status === 429 ? " \u041B\u0438\u043C\u0438\u0442 \u0437\u0430\u043F\u0440\u043E\u0441\u043E\u0432 \u0441\u0435\u0440\u0432\u0438\u0441\u0430. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u043E\u0437\u0436\u0435." : " \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F.";
+    throw Object.assign(
+      Error(new URL(url).hostname + ": HTTP " + r.status + reason + hint),
+      { status: r.status }
+    );
+  }
+  try {
+    return JSON.parse(await r.text());
+  } catch {
+    throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 JSON API");
+  }
+}
+async function bytes(http, url, opts = {}) {
+  const r = await http.fetch(url, opts);
+  if (r.status !== 200)
+    throw Object.assign(Error("\u0421\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435: HTTP " + r.status), {
+      status: r.status
+    });
+  return new Uint8Array(await r.arrayBuffer());
+}
+
+// src/adapters/http.ts
 var Http = class {
   async fetch(url, opts = {}) {
     let current = url;
@@ -1009,37 +1044,6 @@ var Http = class {
     });
   }
 };
-async function json(http, url, opts = {}) {
-  const r = await http.fetch(url, opts);
-  if (r.status < 200 || r.status >= 300) {
-    let reason = "";
-    try {
-      const body = JSON.parse(await r.text());
-      const candidate = typeof body.error === "string" ? body.error : body.error?.errors?.[0]?.reason || body.error?.status;
-      if (typeof candidate === "string" && /^[a-zA-Z0-9_.-]{1,100}$/.test(candidate))
-        reason = " (" + candidate + ")";
-    } catch {
-    }
-    const hint = r.status === 401 ? " \u041F\u0435\u0440\u0435\u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u0430\u043A\u043A\u0430\u0443\u043D\u0442: \u0442\u043E\u043A\u0435\u043D \u043D\u0435\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0442\u0435\u043B\u0435\u043D." : r.status === 403 ? " \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u0440\u0430\u0432\u0430 \u0434\u043E\u0441\u0442\u0443\u043F\u0430 \u0438 \u0432\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u0435 API \u0441\u0435\u0440\u0432\u0438\u0441\u0430." : r.status === 404 ? " \u041F\u0440\u043E\u0432\u0435\u0440\u044C\u0442\u0435 \u043F\u0443\u0442\u044C/ID \u043F\u0430\u043F\u043A\u0438 \u0438 \u0434\u043E\u0441\u0442\u0443\u043F \u0430\u043A\u043A\u0430\u0443\u043D\u0442\u0430." : r.status === 429 ? " \u041B\u0438\u043C\u0438\u0442 \u0437\u0430\u043F\u0440\u043E\u0441\u043E\u0432 \u0441\u0435\u0440\u0432\u0438\u0441\u0430. \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u043E\u0437\u0436\u0435." : " \u041F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443 \u043F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0438\u044F.";
-    throw Object.assign(
-      Error(new URL(url).hostname + ": HTTP " + r.status + reason + hint),
-      { status: r.status }
-    );
-  }
-  try {
-    return JSON.parse(await r.text());
-  } catch {
-    throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u044B\u0439 JSON API");
-  }
-}
-async function bytes(http, url, opts = {}) {
-  const r = await http.fetch(url, opts);
-  if (r.status !== 200)
-    throw Object.assign(Error("\u0421\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435: HTTP " + r.status), {
-      status: r.status
-    });
-  return new Uint8Array(await r.arrayBuffer());
-}
 
 // src/sources/remotes.ts
 var import_node_crypto2 = require("node:crypto");
@@ -1401,6 +1405,11 @@ var DriveStore = class {
       id = f.id;
     }
   }
+  async confirmAbsent(p, signal) {
+    const root = await this.inspect(this.root, signal);
+    if (root.trashed || root.mimeType !== FOLDER) throw Error("\u041A\u043E\u0440\u0435\u043D\u044C Drive \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
+    await this.verifyPath(p, void 0, signal);
+  }
   async verifyExpected(p, expected, signal) {
     if (expected) {
       const r = await this.http.fetch(
@@ -1475,22 +1484,20 @@ var DriveStore = class {
       ...!expected ? { parents: [parent] } : {},
       ...mtime ? { modifiedTime: new Date(mtime).toISOString() } : {}
     };
-    const body = b.length > 5 * 1024 * 1024 ? void 0 : Buffer.concat([
-      Buffer.from(
-        `--${boundary}\r
+    const body = b.length > 5 * 1024 * 1024 ? void 0 : await new Blob([
+      `--${boundary}\r
 Content-Type: application/json; charset=UTF-8\r
 \r
 ${JSON.stringify(metadata)}\r
 --${boundary}\r
 Content-Type: ${driveMime(p)}\r
 \r
-`
-      ),
-      Buffer.from(b),
-      Buffer.from(`\r
+`,
+      Uint8Array.from(b).buffer,
+      `\r
 --${boundary}--\r
-`)
-    ]);
+`
+    ]).arrayBuffer();
     const f = b.length > 5 * 1024 * 1024 ? await driveUpload(
       this.http,
       this.url(
@@ -1811,6 +1818,10 @@ var YandexStore = class {
       if (e.status === 404 && !expected) return;
       throw e;
     }
+  }
+  async confirmAbsent(p, signal) {
+    if ((await this.meta("", signal)).type !== "dir") throw Error("\u041A\u043E\u0440\u0435\u043D\u044C \u042F\u043D\u0434\u0435\u043A\u0441 \u0414\u0438\u0441\u043A\u0430 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
+    await this.check(p, void 0, signal);
   }
   async mkdirs(p, signal) {
     let at = "";

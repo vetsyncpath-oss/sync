@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { FileInfo, Snapshot, Store, Profile } from "../core/model";
 import type { NetTransport, NetRequest } from "./types";
-import { json, bytes } from "../adapters/http";
+import { json, bytes } from "../adapters/http-response";
 import { driveUpload, driveMime } from "./drive-upload";
 import {
   path,
@@ -309,6 +309,11 @@ export class DriveStore implements Store {
       id = f.id;
     }
   }
+  async confirmAbsent(p: string, signal: AbortSignal) {
+    const root = await this.inspect(this.root, signal);
+    if (root.trashed || root.mimeType !== FOLDER) throw Error("Корень Drive недоступен");
+    await this.verifyPath(p, undefined, signal);
+  }
   private async verifyExpected(
     p: string,
     expected: FileInfo | undefined,
@@ -402,13 +407,11 @@ export class DriveStore implements Store {
     const body =
       b.length > 5 * 1024 * 1024
         ? undefined
-        : Buffer.concat([
-            Buffer.from(
-              `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${driveMime(p)}\r\n\r\n`,
-            ),
-            Buffer.from(b),
-            Buffer.from(`\r\n--${boundary}--\r\n`),
-          ]);
+        : await new Blob([
+            `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\nContent-Type: ${driveMime(p)}\r\n\r\n`,
+            Uint8Array.from(b).buffer,
+            `\r\n--${boundary}--\r\n`,
+          ]).arrayBuffer();
     const f =
       b.length > 5 * 1024 * 1024
         ? await driveUpload(
@@ -797,6 +800,10 @@ export class YandexStore implements Store {
       if ((e as { status?: number }).status === 404 && !expected) return;
       throw e;
     }
+  }
+  async confirmAbsent(p: string, signal: AbortSignal) {
+    if ((await this.meta("", signal)).type !== "dir") throw Error("Корень Яндекс Диска недоступен");
+    await this.check(p, undefined, signal);
   }
   private async mkdirs(p: string, signal: AbortSignal) {
     let at = "";
