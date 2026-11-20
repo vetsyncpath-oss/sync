@@ -1,12 +1,14 @@
 "use strict";
 
-import { ENGINES, cloudRoot, openCloud, signInGoogle } from "./cloud";
+import { ENGINES, cloudRoot, openCloud } from "./cloud";
+import { GoogleLogin } from "./google-login";
+import { publicSource, needsCredential, publicRoot } from "./public-sources";
 const { Platform, Plugin, PluginSettingTab, Setting, Notice, Modal, TFile, TFolder, requestUrl } = require("obsidian");
 
 const DIRECTIONS = { both: "В обе стороны", upload: "Из Obsidian в WebDAV", download: "Из WebDAV в Obsidian" };
 const DELETIONS = { restore: "Восстанавливать копию", ignore: "Оставлять удалённым", propagate: "Передавать удаление" };
 const CONFLICTS = { skip: "Пропускать с записью в отчёт", local: "Предпочитать Obsidian", remote: "Предпочитать WebDAV", newer: "Предпочитать более новую версию" };
-const DEFAULTS = { name: "Основная", engine: "webdav", url: "", user: "", folder: "", secret: "", direction: "both", deletion: "restore",
+const DEFAULTS = { name: "Основная", engine: "webdav", gitRef: "", gitFolder: "", url: "", user: "", folder: "", secret: "", direction: "both", deletion: "restore",
   conflict: "skip", interval: 0, startup: false, onEdit: false, delay: 15, onReconnect: false };
 const EMPTY_STATE = () => ({ scope: "", files: {} });
 const LABELS = {
@@ -287,7 +289,7 @@ class VaultFolderSync extends Plugin {
     for (const id of this.pending) {
       const pair = this.pair(id);
       if (!pair || !pair.settings.url) { this.pending.delete(id); continue; }
-      if ((pair.settings.engine !== "webdav" || pair.settings.user) && !this.password(pair)) continue;
+      if (needsCredential(pair.settings) && !this.password(pair)) continue;
       this.pending.delete(id);
       void this.run(false, false, id);
       break;
@@ -324,6 +326,7 @@ class VaultFolderSync extends Plugin {
   async sync(pair, preview, rows) {
     const config = { ...pair.settings };
     const webdav = config.engine === "webdav";
+    if (publicSource(config.engine)) config.direction = "download";
     const vault = this.app.vault;
     const root = localRoot(vault, config.folder);
     const excluded = p => isExcluded(vault, p);
@@ -338,7 +341,16 @@ class VaultFolderSync extends Plugin {
     };
     const backend = webdav ? new WebDav(endpoint(config.url), config.user.trim(), credential)
       : await openCloud(config, credential, path => !excluded(full(path)), this.lifetime.signal, rotate);
-    const scope = JSON.stringify(webdav ? [backend.base.href, config.user.trim(), root] : [...backend.identity, root]);
+    try {
+      const scope = JSON.stringify(webdav ? [backend.base.href, config.user.trim(), root] : [...backend.identity, root]);
+      return await this.syncFiles(pair, config, preview, rows, backend, scope, root);
+    } finally { await backend.close?.(); }
+  }
+  async syncFiles(pair, config, preview, rows, backend, scope, root) {
+    const vault = this.app.vault;
+    const full = p => prefix(root,p);
+    const excluded = p => isExcluded(vault,p);
+    const webdav = config.engine === "webdav";
     const label = action => LABELS[action].replace("WebDAV", ENGINES[config.engine]);
     const baseline = new Map(pair.state.scope === scope ? Object.entries(pair.state.files) : []);
     const next = new Map(baseline);
@@ -563,54 +575,53 @@ class SettingsTab extends PluginSettingTab {
     new Setting(el).setName("Сервис").addDropdown(d => {
       for (const [key, name] of Object.entries(ENGINES)) d.addOption(key, name);
       d.setValue(s.engine).onChange(engine => {
-        Object.assign(s, { engine, url: "", user: "", secret: "" });
+        Object.assign(s, { engine, url: "", user: "", secret: "", gitRef:"",gitFolder:"" });
+        if (publicSource(engine)) s.direction="download";
         this.pass = ""; this.keepSecret = false; this.display();
       });
     });
     if (s.engine === "webdav") {
       field("url", "Адрес папки WebDAV", "Полный HTTPS-адрес существующей папки.", "https://cloud.example/dav/Notes/");
       field("user", "Имя пользователя", "Логин WebDAV.");
+    } else if (s.engine === "git") {
+      field("url", "HTTPS URL репозитория", "Для GitHub можно использовать URL с окончаниями .git и без него.", "https://github.com/owner/repo");
+      field("gitRef","Ветка, тег или коммит","Пустое поле означает HEAD.","main");
+      field("gitFolder","Папка в репозитории","Путь от корня. Пустое поле включает весь репозиторий.","docs");
+    } else if (s.engine === "yandexPublic") {
+      field("url","Публичная ссылка Яндекс Диска","Ссылка общего доступа к папке.","https://disk.yandex.ru/d/…");
+    } else if (s.engine === "googlePublic") {
+      field("url","Публичная папка Google Drive","Ссылка с доступом для всех, у кого она есть, или ID папки.","https://drive.google.com/drive/folders/…");
     } else if (s.engine === "google") {
       field("url", "Папка Google Drive", "Ссылка или ID существующей папки. Для корня используйте root.", "https://drive.google.com/drive/folders/…");
     } else {
       field("url", "Папка Яндекс Диска", "Путь к существующей папке. Для корня используйте disk:/.", "disk:/Заметки");
     }
     const isCloud = s.engine !== "webdav";
-    new Setting(el).setName(isCloud ? "OAuth-токен" : "Пароль приложения")
-      .setDesc(isCloud ? "Токен аккаунта с доступом к выбранной папке." : "Хранится в памяти до выключения плагина.")
+    if (!["git","yandexPublic"].includes(s.engine)) new Setting(el).setName(s.engine==="googlePublic" ? "Google Drive API key" : isCloud ? "OAuth-токен" : "Пароль приложения")
+      .setDesc(s.engine==="googlePublic" ? "Ключ проекта с включённым Google Drive API. Вход в аккаунт не требуется." : isCloud ? "Токен аккаунта с доступом к выбранной папке." : "Хранится в памяти до выключения плагина.")
       .addText(t => { passwordText = t; t.inputEl.type = "password"; t.inputEl.autocomplete = "off";
         t.setValue(this.pass).onChange(v => { this.pass = v; });
       });
     if (s.engine === "google" && Platform?.isDesktopApp) {
-      new Setting(el).setName("Войти через Google").setDesc("Выберите JSON OAuth-клиента типа Desktop app. Вход откроется в браузере.")
-        .addButton(b => b.setButtonText("Выбрать JSON и войти").onClick(() => {
-          const input = document.createElement("input");
-          input.type = "file"; input.accept = ".json,application/json";
-          input.onchange = async () => {
-            const file = input.files?.[0];
-            if (!file || plugin.signingIn) return;
-            plugin.signingIn = true;
-            try {
-              const grant = await signInGoogle(await file.text(), plugin.lifetime.signal,
-                url => require("electron").shell.openExternal(url));
-              if (this.draft !== s || s.engine !== "google") return;
-              this.pass = grant;
-              this.display();
-              new Notice("Аккаунт подключён. Сохраните настройки пары.");
-            } catch (e) { if (plugin.active) new Notice(message(e), 8000); }
-            finally { plugin.signingIn = false; }
-          };
-          input.click();
+      new Setting(el).setName("Подключить аккаунт Google").setDesc("Импортируйте JSON клиента Desktop app из файла или буфера обмена.")
+        .addButton(b=>b.setButtonText("Подключить через JSON").onClick(()=>{
+          new GoogleLogin(this.app,plugin.lifetime.signal,grant=>{
+            if (this.draft !== s || s.engine !== "google") return;
+            this.pass=grant;this.display();new Notice("Аккаунт подключён. Сохраните настройки пары.");
+          }).open();
         }));
     }
-    if (isCloud && this.app.secretStorage) {
-      new Setting(el).setName("Сохранить введённый токен в связке ключей Obsidian")
+    if (s.engine === "google" && !Platform?.isDesktopApp)
+      el.createEl("p",{text:"На мобильном устройстве введите OAuth-токен. Для общедоступной папки выберите «Google Drive · публичная папка»."});
+    if (isCloud && needsCredential(s) && this.app.secretStorage) {
+      new Setting(el).setName("Сохранить ключ или токен в связке ключей Obsidian")
         .setDesc("Позволяет выполнять автообмен после перезапуска. Применяется при сохранении пары.")
         .addToggle(t => t.setValue(this.keepSecret).onChange(v => { this.keepSecret = v; }));
     }
-    choice("direction", "Направление обмена", "Односторонний режим разрешает изменения только в папке назначения.", Object.fromEntries(Object.entries(DIRECTIONS).map(([k,v]) => [k, v.replace("WebDAV", ENGINES[s.engine])])));
+    if (publicSource(s.engine)) new Setting(el).setName("Направление обмена").setDesc("Только получение в Obsidian.");
+    else choice("direction", "Направление обмена", "Односторонний режим разрешает изменения только в папке назначения.", Object.fromEntries(Object.entries(DIRECTIONS).map(([k,v]) => [k, v.replace("WebDAV", ENGINES[s.engine])])));
     if (plugin.advanced) {
-      if (this.app.secretStorage) field("secret", "Имя секрета Obsidian", "Для запуска после перезапуска укажите имя существующего секрета с паролем. Пароль сеанса имеет приоритет.");
+      if (this.app.secretStorage && !["git","yandexPublic"].includes(s.engine)) field("secret", "Имя секрета Obsidian", "Для запуска после перезапуска укажите имя существующего секрета с паролем. Пароль сеанса имеет приоритет.");
       choice("deletion", "Удаление файлов", "Удаление передаётся только для ранее синхронизированного файла. Изменённая оставшаяся копия попадёт в отчёт.", DELETIONS);
       choice("conflict", "Разрешение конфликтов", "Применяется и при первом сравнении разных версий. Если выбор противоречит направлению обмена, файл будет пропущен.", { ...CONFLICTS, remote: "Предпочитать " + ENGINES[s.engine] });
       el.createEl("h3", { text: "Автосинхронизация" });
@@ -630,7 +641,8 @@ class SettingsTab extends PluginSettingTab {
         if (s.engine === "webdav") endpoint(s.url);
         else {
           if (!s.url.trim()) throw Error("Укажите удалённую папку.");
-          cloudRoot(s.engine, s.url);
+          if (publicSource(s.engine)) { publicRoot(s); s.direction="download"; }
+          else cloudRoot(s.engine, s.url);
         }
         const folder = localRoot(this.app.vault, s.folder);
         if (!s.name.trim()) throw new Error("Введите название пары.");
@@ -643,7 +655,7 @@ class SettingsTab extends PluginSettingTab {
         }
         pair.settings = { ...s, name: s.name.trim(), folder, url: s.url.trim(), user: s.user.trim(), secret: s.secret.trim() };
         plugin.passwords.set(pair.id, this.pass);
-        if (old.engine !== s.engine || old.url !== pair.settings.url || old.user !== pair.settings.user || old.folder !== folder) {
+        if (old.gitFolder !== s.gitFolder || old.gitRef !== s.gitRef || old.engine !== s.engine || old.url !== pair.settings.url || old.user !== pair.settings.user || old.folder !== folder) {
           pair.state = EMPTY_STATE();
           plugin.pending.delete(pair.id);
         }

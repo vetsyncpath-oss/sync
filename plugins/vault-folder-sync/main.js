@@ -1,7 +1,40 @@
 "use strict";
 
-// src/cloud.js
+// src/public-sources.js
 var import_obsidian = require("obsidian");
+
+// ../../src/adapters/http-response.ts
+async function json(http, url, opts = {}) {
+  const r = await http.fetch(url, opts);
+  if (r.status < 200 || r.status >= 300) {
+    let reason = "";
+    try {
+      const body = JSON.parse(await r.text());
+      const candidate = typeof body.error === "string" ? body.error : body.error?.errors?.[0]?.reason || body.error?.status;
+      if (typeof candidate === "string" && /^[a-zA-Z0-9_.-]{1,100}$/.test(candidate))
+        reason = " (" + candidate + ")";
+    } catch {
+    }
+    const hint = r.status === 401 ? " Переподключите аккаунт: токен недействителен." : r.status === 403 ? " Проверьте права доступа и включение API сервиса." : r.status === 404 ? " Проверьте путь/ID папки и доступ аккаунта." : r.status === 429 ? " Лимит запросов сервиса. Повторите позже." : " Повторите проверку подключения.";
+    throw Object.assign(
+      Error(new URL(url).hostname + ": HTTP " + r.status + reason + hint),
+      { status: r.status }
+    );
+  }
+  try {
+    return JSON.parse(await r.text());
+  } catch {
+    throw Error("Некорректный JSON API");
+  }
+}
+async function bytes(http, url, opts = {}) {
+  const r = await http.fetch(url, opts);
+  if (r.status !== 200)
+    throw Object.assign(Error("Скачивание: HTTP " + r.status), {
+      status: r.status
+    });
+  return new Uint8Array(await r.arrayBuffer());
+}
 
 // node_modules/@noble/hashes/esm/utils.js
 function isBytes(a) {
@@ -348,6 +381,71 @@ var SHA1_IV = /* @__PURE__ */ Uint32Array.from([
   271733878,
   3285377520
 ]);
+var SHA1_W = /* @__PURE__ */ new Uint32Array(80);
+var SHA1 = class extends HashMD {
+  constructor() {
+    super(64, 20, 8, false);
+    this.A = SHA1_IV[0] | 0;
+    this.B = SHA1_IV[1] | 0;
+    this.C = SHA1_IV[2] | 0;
+    this.D = SHA1_IV[3] | 0;
+    this.E = SHA1_IV[4] | 0;
+  }
+  get() {
+    const { A, B, C, D, E } = this;
+    return [A, B, C, D, E];
+  }
+  set(A, B, C, D, E) {
+    this.A = A | 0;
+    this.B = B | 0;
+    this.C = C | 0;
+    this.D = D | 0;
+    this.E = E | 0;
+  }
+  process(view, offset2) {
+    for (let i = 0; i < 16; i++, offset2 += 4)
+      SHA1_W[i] = view.getUint32(offset2, false);
+    for (let i = 16; i < 80; i++)
+      SHA1_W[i] = rotl(SHA1_W[i - 3] ^ SHA1_W[i - 8] ^ SHA1_W[i - 14] ^ SHA1_W[i - 16], 1);
+    let { A, B, C, D, E } = this;
+    for (let i = 0; i < 80; i++) {
+      let F, K2;
+      if (i < 20) {
+        F = Chi(B, C, D);
+        K2 = 1518500249;
+      } else if (i < 40) {
+        F = B ^ C ^ D;
+        K2 = 1859775393;
+      } else if (i < 60) {
+        F = Maj(B, C, D);
+        K2 = 2400959708;
+      } else {
+        F = B ^ C ^ D;
+        K2 = 3395469782;
+      }
+      const T = rotl(A, 5) + F + E + K2 + SHA1_W[i] | 0;
+      E = D;
+      D = C;
+      C = rotl(B, 30);
+      B = A;
+      A = T;
+    }
+    A = A + this.A | 0;
+    B = B + this.B | 0;
+    C = C + this.C | 0;
+    D = D + this.D | 0;
+    E = E + this.E | 0;
+    this.set(A, B, C, D, E);
+  }
+  roundClean() {
+    clean(SHA1_W);
+  }
+  destroy() {
+    this.set(0, 0, 0, 0, 0);
+    clean(this.buffer);
+  }
+};
+var sha1 = /* @__PURE__ */ createHasher(() => new SHA1());
 var p32 = /* @__PURE__ */ Math.pow(2, 32);
 var K = /* @__PURE__ */ Array.from({ length: 64 }, (_, i) => Math.floor(p32 * Math.abs(Math.sin(i + 1))));
 var MD5_IV = /* @__PURE__ */ SHA1_IV.slice(0, 4);
@@ -415,9 +513,12 @@ var MD5 = class extends HashMD {
 };
 var md5 = /* @__PURE__ */ createHasher(() => new MD5());
 
+// node_modules/@noble/hashes/esm/sha1.js
+var sha12 = sha1;
+
 // src/portable-hash.js
 function createHash(name) {
-  const algorithm = { sha256: sha2562, md5 }[name];
+  const algorithm = { sha256: sha2562, md5, sha1: sha12 }[name];
   if (!algorithm) throw new Error("Unsupported hash: " + name);
   const state = algorithm.create();
   return {
@@ -446,39 +547,6 @@ function setTimeout2(ms, value, { signal } = {}) {
     }, ms);
     signal?.addEventListener("abort", abort, { once: true });
   });
-}
-
-// ../../src/adapters/http-response.ts
-async function json(http, url, opts = {}) {
-  const r = await http.fetch(url, opts);
-  if (r.status < 200 || r.status >= 300) {
-    let reason = "";
-    try {
-      const body = JSON.parse(await r.text());
-      const candidate = typeof body.error === "string" ? body.error : body.error?.errors?.[0]?.reason || body.error?.status;
-      if (typeof candidate === "string" && /^[a-zA-Z0-9_.-]{1,100}$/.test(candidate))
-        reason = " (" + candidate + ")";
-    } catch {
-    }
-    const hint = r.status === 401 ? " Переподключите аккаунт: токен недействителен." : r.status === 403 ? " Проверьте права доступа и включение API сервиса." : r.status === 404 ? " Проверьте путь/ID папки и доступ аккаунта." : r.status === 429 ? " Лимит запросов сервиса. Повторите позже." : " Повторите проверку подключения.";
-    throw Object.assign(
-      Error(new URL(url).hostname + ": HTTP " + r.status + reason + hint),
-      { status: r.status }
-    );
-  }
-  try {
-    return JSON.parse(await r.text());
-  } catch {
-    throw Error("Некорректный JSON API");
-  }
-}
-async function bytes(http, url, opts = {}) {
-  const r = await http.fetch(url, opts);
-  if (r.status !== 200)
-    throw Object.assign(Error("Скачивание: HTTP " + r.status), {
-      status: r.status
-    });
-  return new Uint8Array(await r.arrayBuffer());
 }
 
 // ../../src/sources/drive-upload.ts
@@ -608,6 +676,7 @@ function path(value, allowEmpty = false) {
   return v;
 }
 var join = (a, b) => a ? a + "/" + b : b;
+var under = (p, root) => !root || p === root || p.startsWith(root + "/");
 var PathCollision = class extends Error {
   constructor(message2, paths) {
     super(message2);
@@ -634,7 +703,7 @@ function uniquePaths(paths) {
 // ../../src/sources/remotes.ts
 var hashCache = /* @__PURE__ */ new Map();
 var FOLDER = "application/vnd.google-apps.folder";
-var fields = "id,name,mimeType,size,modifiedTime,version,sha256Checksum,md5Checksum,trashed,capabilities(canEdit,canDownload,canAddChildren)";
+var fields = "id,name,mimeType,resourceKey,size,modifiedTime,version,sha256Checksum,md5Checksum,trashed,capabilities(canEdit,canDownload,canAddChildren)";
 function driveRoot(value) {
   const v = value.trim();
   if (!v.startsWith("https://")) {
@@ -657,7 +726,8 @@ var DriveStore = class {
     this.duplicates = duplicates;
     this.root = driveRoot(root);
     this.key = publicKey;
-    this.resourceKey = root.startsWith("https:") ? new URL(root).searchParams.get("resourcekey") || void 0 : void 0;
+    const rootKey = root.startsWith("https:") ? new URL(root).searchParams.get("resourcekey") : "";
+    if (rootKey) this.resourceKeys.set(this.root, rootKey);
     this.writable = !publicKey && duplicates === "error";
     this.trashSupported = this.writable;
     this.identity = "drive:" + identityAccount + ":" + this.root;
@@ -668,7 +738,7 @@ var DriveStore = class {
   root;
   folders = /* @__PURE__ */ new Map();
   key;
-  resourceKey;
+  resourceKeys = /* @__PURE__ */ new Map();
   url(suffix, query = {}, upload = false) {
     const u = new URL(
       "https://www.googleapis.com/" + (upload ? "upload/" : "") + "drive/v3/" + suffix
@@ -681,12 +751,13 @@ var DriveStore = class {
       u.searchParams.set(k, v);
     return u.href;
   }
-  opts(signal, extra = {}) {
+  opts(signal, extra = {}, id = this.root) {
+    const key = this.resourceKeys.get(id);
     return {
       ...extra,
       signal,
       headers: {
-        ...this.resourceKey ? { "X-Goog-Drive-Resource-Keys": `${this.root}/${this.resourceKey}` } : {},
+        ...key ? { "X-Goog-Drive-Resource-Keys": `${id}/${key}` } : {},
         ...extra.headers
       }
     };
@@ -695,7 +766,7 @@ var DriveStore = class {
     return json(
       this.http,
       this.url("files/" + encodeURIComponent(id), { fields }),
-      this.opts(signal)
+      this.opts(signal, {}, id)
     );
   }
   async info(f, p, signal) {
@@ -740,12 +811,15 @@ var DriveStore = class {
           includeItemsFromAllDrives: "true",
           ...next ? { pageToken: next } : {}
         }),
-        this.opts(signal)
+        this.opts(signal, {}, id)
       );
       if (d.incompleteSearch || !Array.isArray(d.files))
         throw Error("Неполный ответ Drive");
       if (d.nextPageToken !== void 0 && typeof d.nextPageToken !== "string")
         throw Error("Некорректная страница Drive");
+      for (const child2 of d.files) {
+        if (child2.resourceKey) this.resourceKeys.set(child2.id, child2.resourceKey);
+      }
       out.push(...d.files);
       next = d.nextPageToken || "";
     } while (next);
@@ -828,7 +902,7 @@ var DriveStore = class {
     const b = await bytes(
       this.http,
       this.url("files/" + encodeURIComponent(f.id), { alt: "media" }),
-      this.opts(signal, { maxBytes: this.limit })
+      this.opts(signal, { maxBytes: this.limit }, f.id)
     );
     if (b.length !== Number(f.size))
       throw Error("Размер Drive-файла не совпал");
@@ -1015,6 +1089,120 @@ Content-Type: ${driveMime(p)}\r
     );
     if (r.status < 200 || r.status >= 300)
       throw Error("Удаление Drive: HTTP " + r.status);
+  }
+};
+var GitHubStore = class {
+  constructor(http, repo, ref, prefix2, token, limit, rules) {
+    this.http = http;
+    this.ref = ref;
+    this.prefix = prefix2;
+    this.token = token;
+    this.limit = limit;
+    this.rules = rules;
+    const m = repo.replace(/^https:\/\/github.com\//, "").replace(/\.git$/, "").replace(/\/$/, "").match(/^([\w.-]+)\/([\w.-]+)$/);
+    if (!m) throw Error("Репозиторий: owner/repo");
+    path(prefix2, true);
+    this.base = `https://api.github.com/repos/${m[1]}/${m[2]}`;
+    this.identity = `github:${m[1]}/${m[2]}:${ref}:${prefix2}`;
+  }
+  identity;
+  writable = false;
+  trashSupported = false;
+  base;
+  options(signal) {
+    return {
+      signal,
+      maxBytes: 16 * 1024 * 1024,
+      headers: {
+        Accept: "application/vnd.github+json",
+        "User-Agent": "Obsidian-Sync-Studio",
+        ...this.token ? { Authorization: "Bearer " + this.token } : {}
+      }
+    };
+  }
+  async scan(signal) {
+    const c = await json(
+      this.http,
+      this.base + "/commits/" + encodeURIComponent(this.ref || "HEAD"),
+      this.options(signal)
+    );
+    if (!c.commit?.tree?.sha) throw Error("GitHub не вернул дерево коммита");
+    const tree = await json(
+      this.http,
+      this.base + "/git/trees/" + c.commit.tree.sha + "?recursive=1",
+      this.options(signal)
+    );
+    if (tree.truncated || !Array.isArray(tree.tree))
+      throw Error("Неполное дерево GitHub: запуск остановлен");
+    if (this.prefix && !tree.tree.some((f) => f.type === "tree" && f.path === this.prefix))
+      throw Error("Каталог GitHub не найден");
+    const files = /* @__PURE__ */ Object.create(null);
+    const directories = [];
+    for (const f of tree.tree) {
+      if (!under(f.path, this.prefix) || f.path === this.prefix) continue;
+      const p = this.prefix ? f.path.slice(this.prefix.length + 1) : f.path;
+      if (f.type === "tree") {
+        if (!this.rules || this.rules.folder(p)) directories.push(path(p));
+        continue;
+      }
+      if (this.rules && !this.rules.file(p)) continue;
+      path(p);
+      if (f.type !== "blob" || !["100644", "100755"].includes(f.mode))
+        throw Error("Ссылки и submodules не поддерживаются: " + f.path);
+      if (!Number.isSafeInteger(f.size) || f.size < 0)
+        throw Error("GitHub не вернул размер");
+      let hash2 = "oversize:" + f.size;
+      if (f.size <= this.limit) {
+        hash2 = hashCache.get("git:" + f.sha) || sha(await this.blob(f.sha, signal));
+        if (hashCache.size > 1e5) hashCache.clear();
+        hashCache.set("git:" + f.sha, hash2);
+      }
+      files[p] = { path: p, hash: hash2, size: f.size, version: f.sha, id: f.sha };
+    }
+    uniquePaths([...Object.keys(files), ...directories]);
+    return {
+      files,
+      directories,
+      identity: this.identity,
+      complete: true,
+      warnings: [
+        "GitHub: только получение; файловое время изменения недоступно."
+      ]
+    };
+  }
+  async confirmAbsent(p, signal) {
+    const commit = await json(this.http, this.base + "/commits/" + encodeURIComponent(this.ref || "HEAD"), this.options(signal));
+    const id = commit.commit?.tree?.sha;
+    if (!id) throw Error("GitHub не вернул дерево коммита");
+    const tree = await json(this.http, this.base + "/git/trees/" + id + "?recursive=1", this.options(signal));
+    if (tree.truncated !== false || !Array.isArray(tree.tree) || this.prefix && !tree.tree.some((f) => f.type === "tree" && f.path === this.prefix))
+      throw Error("Невозможно подтвердить отсутствие пути GitHub");
+    if (tree.tree.some((f) => f.path === join(this.prefix, p))) throw Error("Путь снова появился в GitHub: " + p);
+  }
+  async blob(id, signal) {
+    const r = await json(this.http, this.base + "/git/blobs/" + id, {
+      ...this.options(signal),
+      maxBytes: Math.ceil(this.limit * 1.5) + 1024
+    });
+    if (r.encoding !== "base64" || typeof r.content !== "string")
+      throw Error("Неподдерживаемый ответ GitHub");
+    const b = Uint8Array.from(atob(r.content), (c) => c.charCodeAt(0));
+    if (b.length > this.limit) throw Error("Превышен размер файла");
+    const hash2 = createHash("sha1").update(new TextEncoder().encode(`blob ${b.length}\0`)).update(b).digest("hex");
+    if (hash2 !== id) throw Error("GitHub blob checksum mismatch");
+    if (new TextDecoder().decode(b.subarray(0, 80)).startsWith("version https://git-lfs.github.com/spec"))
+      throw Error("Git LFS требует отдельного скачивания");
+    return b;
+  }
+  async read(f, signal) {
+    signal.throwIfAborted();
+    return this.blob(f.id, signal);
+  }
+  async write() {
+    throw Error("GitHub в этой версии — только получение");
+  }
+  async delete() {
+    throw Error("GitHub в этой версии — только получение");
   }
 };
 var YandexStore = class {
@@ -1262,6 +1450,279 @@ var YandexStore = class {
       throw Error("Удаление Яндекс Диска: HTTP " + r.status);
   }
 };
+
+// src/public-git.js
+async function openNativeGit(repo, ref, prefix2, included, signal) {
+  const fs = require("node:fs/promises"), os = require("node:os"), path2 = require("node:path");
+  const { execFile } = require("node:child_process");
+  const dir = await fs.mkdtemp(path2.join(os.tmpdir(), "obsidian-public-git-"));
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_"))
+  );
+  Object.assign(env, {
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: os.devNull,
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ALLOW_PROTOCOL: "https"
+  });
+  const git = (args, maxBuffer = 64 * 1024 * 1024) => new Promise(
+    (resolve, reject) => execFile(
+      "git",
+      ["-c", "credential.helper=", ...args],
+      {
+        cwd: dir,
+        env,
+        signal,
+        encoding: "buffer",
+        maxBuffer,
+        timeout: 12e4,
+        windowsHide: true
+      },
+      (err, out) => err ? reject(
+        Error(
+          err.code === "ENOENT" ? "Установите Git и добавьте его в PATH." : "Git не смог прочитать репозиторий или версию: " + args[0]
+        )
+      ) : resolve(out)
+    )
+  );
+  const close = () => fs.rm(dir, { recursive: true, force: true });
+  const fetchCommit = async () => {
+    await git([
+      "fetch",
+      "--quiet",
+      "--depth=1",
+      "--no-tags",
+      "--no-recurse-submodules",
+      "--",
+      repo,
+      ref
+    ]);
+    return (await git(["rev-parse", "--verify", "FETCH_HEAD^{commit}"])).toString().trim();
+  };
+  try {
+    await git(["init", "--bare", "--template=", "."]);
+    const commit = await fetchCommit();
+    const tree = async (at) => {
+      const treeish = prefix2 ? at + ":" + prefix2 : at;
+      if (prefix2) {
+        const type = await git(["cat-file", "-t", treeish]).catch(() => null);
+        if (type?.toString().trim() !== "tree")
+          throw Error("Подпапка Git отсутствует: " + prefix2);
+      }
+      const data = await git(["ls-tree", "-rzt", treeish]);
+      return new TextDecoder("utf-8", { fatal: true }).decode(data).split("\0").filter(Boolean);
+    };
+    const read = async (file) => {
+      const data = await git(["cat-file", "blob", file.id]);
+      if (data.subarray(0, 80).toString().startsWith("version https://git-lfs.github.com/spec"))
+        throw Error("Git LFS не поддерживается: " + file.path);
+      return data;
+    };
+    return {
+      close,
+      read,
+      async scan() {
+        const files = /* @__PURE__ */ Object.create(null), directories = [];
+        for (const row of await tree(commit)) {
+          const match = /^(\d+) (\w+) ([a-f0-9]+)\t([\s\S]+)$/.exec(row);
+          if (!match) throw Error("Некорректное дерево Git.");
+          const [, mode, type, id, p] = match;
+          if (!included(p)) continue;
+          if (type === "tree") {
+            directories.push(p);
+            continue;
+          }
+          if (type !== "blob" || !["100644", "100755"].includes(mode))
+            throw Error("Ссылка или submodule в выбранной папке: " + p);
+          const bytes2 = await read({ id, path: p });
+          const hash2 = Array.from(
+            new Uint8Array(await crypto.subtle.digest("SHA-256", bytes2)),
+            (b) => b.toString(16).padStart(2, "0")
+          ).join("");
+          files[p] = { path: p, id, size: bytes2.length, hash: hash2 };
+        }
+        return { files, directories, complete: true };
+      },
+      async confirmAbsent(p) {
+        if ((await tree(await fetchCommit())).some(
+          (line) => line.slice(line.indexOf("	") + 1) === p
+        ))
+          throw Error("Путь снова появился в Git: " + p);
+      }
+    };
+  } catch (e) {
+    await close();
+    throw e;
+  }
+}
+
+// src/public-sources.js
+var publicSource = (engine) => ["googlePublic", "yandexPublic", "git"].includes(engine);
+var anonymous = (engine) => engine === "yandexPublic" || engine === "git";
+var needsCredential = (s) => !anonymous(s.engine) && (s.engine !== "webdav" || !!s.user);
+function gitLocation(s) {
+  const u = new URL(s.url.trim());
+  if (u.protocol !== "https:" || u.username || u.password || u.search || u.hash || u.pathname === "/")
+    throw Error("Введите HTTPS URL клонирования публичного репозитория.");
+  const repo = u.href.replace(/\/$/, "").replace(/\.git$/, "");
+  const ref = (s.gitRef || "").trim() || "HEAD";
+  if (ref.startsWith("-") || /[\s~^:?*\[\\\x00-\x1f\x7f]|\.\.|@\{|\/\/|\/$/.test(ref))
+    throw Error("Проверьте имя ветки, тега или коммита.");
+  const prefix2 = path((s.gitFolder || "").trim().replace(/^\/|\/$/g, ""), true);
+  if (u.hostname === "github.com" && !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/.test(repo))
+    throw Error(
+      "Укажите URL репозитория GitHub. Ветку и подпапку введите в отдельных полях."
+    );
+  return { repo, ref, prefix: prefix2 };
+}
+function publicRoot(s) {
+  if (s.engine === "git") return gitLocation(s).repo;
+  if (s.engine === "googlePublic") return driveRoot(s.url);
+  const u = new URL(s.url.trim());
+  if (u.protocol !== "https:" || u.username || u.password || !/^(?:yadi\.sk|(?:disk(?:\.360)?|360)\.yandex\.(?:ru|com|kz|by))$/.test(
+    u.hostname
+  ) || u.pathname === "/")
+    throw Error("Укажите публичную ссылку Яндекс Диска на папку.");
+  return u.origin + u.pathname.replace(/\/$/, "");
+}
+var YandexPublic = class {
+  constructor(http, key, included) {
+    this.http = http;
+    this.key = key;
+    this.included = included;
+  }
+  url(p, download = false, offset2 = 0) {
+    const q = new URLSearchParams({ public_key: this.key, path: "/" + p });
+    if (!download) {
+      q.set("limit", "200");
+      q.set("offset", String(offset2));
+    }
+    return "https://cloud-api.yandex.net/v1/disk/public/resources" + (download ? "/download?" : "?") + q;
+  }
+  async scan(signal) {
+    const files = /* @__PURE__ */ Object.create(null), directories = [], paths = [], pending = [""];
+    while (pending.length) {
+      const dir = pending.pop();
+      let offset2 = 0, total;
+      do {
+        const data = await json(this.http, this.url(dir, false, offset2), {
+          signal
+        });
+        const page = data._embedded;
+        if (data.type !== "dir" || !page || !Array.isArray(page.items) || !Number.isSafeInteger(page.total) || page.total < 0 || page.offset !== offset2 || total !== void 0 && total !== page.total || offset2 + page.items.length > page.total || !page.items.length && offset2 < page.total)
+          throw Error("Неполный список публичной папки Яндекс Диска.");
+        total = page.total;
+        for (const item of page.items) {
+          if (typeof item.name !== "string" || /[/\\]/.test(item.name))
+            throw Error("Некорректное имя на Яндекс Диске.");
+          const p = path(dir ? dir + "/" + item.name : item.name);
+          if (!this.included(p)) continue;
+          paths.push(p);
+          if (item.type === "dir") {
+            directories.push(p);
+            pending.push(p);
+          } else if (item.type === "file") {
+            if (!Number.isSafeInteger(item.size) || item.size < 0)
+              throw Error("Нет размера файла: " + p);
+            const f = {
+              path: p,
+              size: item.size,
+              mtime: Date.parse(item.modified),
+              hash: item.sha256?.toLowerCase()
+            };
+            if (!/^[a-f\d]{64}$/.test(f.hash || "")) {
+              const content = await this.read(f, signal);
+              f.hash = Array.from(
+                new Uint8Array(await crypto.subtle.digest("SHA-256", content)),
+                (b) => b.toString(16).padStart(2, "0")
+              ).join("");
+            }
+            files[p] = f;
+          } else throw Error("Неизвестный тип ресурса: " + p);
+        }
+        offset2 += page.items.length;
+      } while (offset2 < total);
+    }
+    uniquePaths(paths);
+    return { files, directories, complete: true };
+  }
+  async read(file, signal) {
+    const link = await json(this.http, this.url(file.path, true), { signal });
+    const u = new URL(link.href);
+    if (u.protocol !== "https:" || u.username || u.password || !/(^|\.)yandex\.(net|ru|com)$/.test(u.hostname))
+      throw Error("Неизвестный адрес загрузки Яндекс Диска.");
+    const data = await bytes(this.http, u.href, { signal });
+    if (data.length !== file.size) throw Error("Файл изменился: " + file.path);
+    return data;
+  }
+  async confirmAbsent(p, signal) {
+    if ((await json(this.http, this.url(""), { signal })).type !== "dir")
+      throw Error("Публичная папка недоступна.");
+    try {
+      await json(this.http, this.url(p), { signal });
+    } catch (e) {
+      if (e.status === 404) return;
+      throw e;
+    }
+    throw Error("Файл снова появился на Яндекс Диске: " + p);
+  }
+};
+async function openPublic(s, credential, included, signal, http) {
+  const root = publicRoot(s), rules = { file: included, folder: included };
+  let store, identity = [s.engine, root];
+  if (s.engine === "git") {
+    const { repo, ref, prefix: prefix2 } = gitLocation(s);
+    identity.push(ref, prefix2);
+    if (new URL(repo).hostname === "github.com")
+      store = new GitHubStore(
+        http,
+        repo,
+        ref,
+        prefix2,
+        "",
+        Number.MAX_SAFE_INTEGER,
+        rules
+      );
+    else {
+      if (!import_obsidian.Platform?.isDesktopApp)
+        throw Error(
+          "На мобильном клиенте используйте публичный репозиторий GitHub."
+        );
+      store = await openNativeGit(repo, ref, prefix2, included, signal);
+    }
+  } else if (s.engine === "googlePublic") {
+    if (!credential.trim())
+      throw Error("Введите API key проекта с включённым Google Drive API.");
+    store = new DriveStore(
+      http,
+      s.url.trim(),
+      Number.MAX_SAFE_INTEGER,
+      credential.trim(),
+      "",
+      rules
+    );
+  } else store = new YandexPublic(http, root, included);
+  try {
+    const snapshot = await store.scan(signal);
+    return {
+      identity,
+      snapshot,
+      close: () => store.close?.(),
+      async read(p) {
+        return Uint8Array.from(await store.read(snapshot.files[p], signal)).buffer;
+      },
+      async confirmAbsent(p) {
+        await store.confirmAbsent(p, signal);
+      }
+    };
+  } catch (e) {
+    await store.close?.();
+    throw e;
+  }
+}
+
+// src/cloud.js
+var import_obsidian2 = require("obsidian");
 
 // ../../src/core/send-budget.ts
 var SendBudgetError = class extends Error {
@@ -1694,6 +2155,9 @@ async function authorizeAttempt(client, transport2, signal, openBrowser, options
 var ENGINES = {
   webdav: "WebDAV",
   google: "Google Drive",
+  googlePublic: "Google Drive · публичная папка",
+  yandexPublic: "Яндекс Диск · публичная папка",
+  git: "Git · публичный репозиторий",
   yandex: "Яндекс Диск"
 };
 function cloudRoot(engine, input) {
@@ -1708,7 +2172,7 @@ var transport = {
     const body = opts.body instanceof Uint8Array ? Uint8Array.from(opts.body).buffer : opts.body;
     let r;
     try {
-      r = await (0, import_obsidian.requestUrl)({
+      r = await (0, import_obsidian2.requestUrl)({
         url,
         method: opts.method || "GET",
         headers: opts.headers,
@@ -1788,6 +2252,7 @@ function googleTransport(credential, rotate) {
   };
 }
 async function openCloud(settings, credential, included, signal, rotate) {
+  if (publicSource(settings.engine)) return openPublic(settings, credential, included, signal, transport);
   credential = credential.trim();
   if (!credential) throw Error("Укажите OAuth-токен или подключите аккаунт.");
   const root = cloudRoot(settings.engine, settings.url);
@@ -1857,14 +2322,161 @@ async function openCloud(settings, credential, included, signal, rotate) {
   };
 }
 
+// src/google-login.js
+var import_obsidian3 = require("obsidian");
+var GoogleLogin = class extends import_obsidian3.Modal {
+  constructor(app, lifetime, onGrant) {
+    super(app);
+    this.onGrant = onGrant;
+    this.lifetime = lifetime;
+    this.controller = new AbortController();
+    this.cancel = () => this.close();
+  }
+  onOpen() {
+    this.lifetime.addEventListener("abort", this.cancel, { once: true });
+    this.setTitle("Подключить Google Drive");
+    const el = this.contentEl;
+    el.createEl("p", {
+      text: "Выберите JSON OAuth-клиента типа Desktop app или вставьте его содержимое. Вход выполняется в браузере."
+    });
+    let raw = "", busy = false;
+    const file = el.createEl("input", {
+      attr: {
+        type: "file",
+        accept: ".json,application/json",
+        "aria-label": "Файл OAuth-клиента"
+      }
+    });
+    const paste = el.createEl("textarea", {
+      attr: {
+        "aria-label": "JSON OAuth-клиента",
+        placeholder: "Или вставьте JSON здесь",
+        spellcheck: "false",
+        autocomplete: "off"
+      }
+    });
+    const status = el.createEl("p", {
+      attr: { role: "status", "aria-live": "polite" }
+    });
+    const links = el.createDiv();
+    const actions = new import_obsidian3.Setting(el);
+    let start;
+    const validate = (value) => {
+      raw = "";
+      try {
+        if (!value.trim()) {
+          status.setText("Выберите файл или вставьте JSON.");
+          return;
+        }
+        parseGoogleClient(value.trim().replace(/^\uFEFF/, ""));
+        raw = value.trim();
+        status.setText("Клиент Desktop app готов к входу.");
+      } catch {
+        status.setText(
+          "Нужен корректный JSON клиента Desktop app с полем installed.client_id."
+        );
+      } finally {
+        start.setDisabled(!raw || busy);
+      }
+    };
+    let edit = 0;
+    file.onchange = async () => {
+      const seq = ++edit;
+      const selected = file.files?.[0];
+      if (!selected) return;
+      paste.value = "";
+      validate("");
+      try {
+        const text = await selected.text();
+        if (seq === edit) validate(text);
+      } catch {
+        status.setText("Файл не удалось прочитать. Вставьте содержимое JSON.");
+      }
+    };
+    paste.oninput = () => {
+      edit++;
+      file.value = "";
+      validate(paste.value);
+    };
+    actions.addButton((b) => {
+      start = b;
+      b.setButtonText("Открыть вход Google").setCta().setDisabled(true).onClick(async () => {
+        if (!raw || busy) return;
+        busy = true;
+        start.setDisabled(true);
+        file.disabled = paste.disabled = true;
+        links.empty();
+        status.setText("Подготовка входа…");
+        try {
+          const grant = await signInGoogle(
+            raw,
+            this.controller.signal,
+            async (url) => {
+              status.setText(
+                "Завершите вход в браузере и вернитесь в Obsidian."
+              );
+              links.createEl("a", {
+                text: "Открыть страницу Google",
+                href: url,
+                attr: { target: "_blank", rel: "noopener noreferrer" }
+              });
+              new import_obsidian3.Setting(links).addButton(
+                (copy) => copy.setButtonText("Скопировать ссылку").onClick(async () => {
+                  try {
+                    await el.ownerDocument.defaultView.navigator.clipboard.writeText(
+                      url
+                    );
+                    status.setText("Ссылка скопирована.");
+                  } catch {
+                    status.setText(
+                      "Используйте ссылку «Открыть страницу Google»."
+                    );
+                  }
+                })
+              );
+              try {
+                await require("electron").shell.openExternal(url);
+              } catch {
+                status.setText("Откройте страницу Google по ссылке ниже.");
+              }
+            }
+          );
+          if (!this.controller.signal.aborted) {
+            this.onGrant(grant);
+            this.close();
+          }
+        } catch (e) {
+          if (!this.controller.signal.aborted)
+            status.setText("Вход не завершён. " + (e.message || String(e)));
+        } finally {
+          busy = false;
+          links.empty();
+          start.setDisabled(!raw);
+          file.disabled = paste.disabled = false;
+        }
+      });
+    });
+    actions.addButton(
+      (b) => b.setButtonText("Отмена").onClick(() => this.close())
+    );
+  }
+  onClose() {
+    this.lifetime.removeEventListener("abort", this.cancel);
+    this.controller.abort();
+    this.contentEl.empty();
+  }
+};
+
 // src/plugin.js
-var { Platform, Plugin, PluginSettingTab, Setting, Notice, Modal, TFile, TFolder, requestUrl: requestUrl2 } = require("obsidian");
+var { Platform: Platform2, Plugin, PluginSettingTab, Setting: Setting2, Notice, Modal: Modal2, TFile, TFolder, requestUrl: requestUrl2 } = require("obsidian");
 var DIRECTIONS = { both: "В обе стороны", upload: "Из Obsidian в WebDAV", download: "Из WebDAV в Obsidian" };
 var DELETIONS = { restore: "Восстанавливать копию", ignore: "Оставлять удалённым", propagate: "Передавать удаление" };
 var CONFLICTS = { skip: "Пропускать с записью в отчёт", local: "Предпочитать Obsidian", remote: "Предпочитать WebDAV", newer: "Предпочитать более новую версию" };
 var DEFAULTS = {
   name: "Основная",
   engine: "webdav",
+  gitRef: "",
+  gitFolder: "",
   url: "",
   user: "",
   folder: "",
@@ -2043,7 +2655,7 @@ var WebDav = class {
     this.check(response, [201], "MKCOL", path2);
   }
 };
-var Report = class extends Modal {
+var Report = class extends Modal2 {
   constructor(app, title, rows) {
     super(app);
     this.title = title;
@@ -2157,7 +2769,7 @@ var VaultFolderSync = class extends Plugin {
         this.pending.delete(id);
         continue;
       }
-      if ((pair.settings.engine !== "webdav" || pair.settings.user) && !this.password(pair)) continue;
+      if (needsCredential(pair.settings) && !this.password(pair)) continue;
       this.pending.delete(id);
       void this.run(false, false, id);
       break;
@@ -2198,6 +2810,7 @@ var VaultFolderSync = class extends Plugin {
   async sync(pair, preview, rows) {
     const config = { ...pair.settings };
     const webdav = config.engine === "webdav";
+    if (publicSource(config.engine)) config.direction = "download";
     const vault = this.app.vault;
     const root = localRoot(vault, config.folder);
     const excluded = (p) => isExcluded(vault, p);
@@ -2210,7 +2823,18 @@ var VaultFolderSync = class extends Plugin {
       } else if (config.secret) this.app.secretStorage.setSecret(config.secret, value);
     };
     const backend = webdav ? new WebDav(endpoint(config.url), config.user.trim(), credential) : await openCloud(config, credential, (path2) => !excluded(full(path2)), this.lifetime.signal, rotate);
-    const scope = JSON.stringify(webdav ? [backend.base.href, config.user.trim(), root] : [...backend.identity, root]);
+    try {
+      const scope = JSON.stringify(webdav ? [backend.base.href, config.user.trim(), root] : [...backend.identity, root]);
+      return await this.syncFiles(pair, config, preview, rows, backend, scope, root);
+    } finally {
+      await backend.close?.();
+    }
+  }
+  async syncFiles(pair, config, preview, rows, backend, scope, root) {
+    const vault = this.app.vault;
+    const full = (p) => prefix(root, p);
+    const excluded = (p) => isExcluded(vault, p);
+    const webdav = config.engine === "webdav";
     const label = (action) => LABELS[action].replace("WebDAV", ENGINES[config.engine]);
     const baseline = new Map(pair.state.scope === scope ? Object.entries(pair.state.files) : []);
     const next = new Map(baseline);
@@ -2357,7 +2981,7 @@ var VaultFolderSync = class extends Plugin {
     return changed || conflicts ? "Выполнено: " + changed + ", требуют внимания: " + conflicts : "";
   }
 };
-var RemovePair = class extends Modal {
+var RemovePair = class extends Modal2 {
   constructor(app, name, remove) {
     super(app);
     this.name = name;
@@ -2366,7 +2990,7 @@ var RemovePair = class extends Modal {
   onOpen() {
     this.contentEl.createEl("h3", { text: "Убрать пару «" + this.name + "»?" });
     this.contentEl.createEl("p", { text: "Будут удалены настройки пары и история сравнения. Файлы останутся в обеих папках." });
-    new Setting(this.contentEl).addButton((b) => b.setButtonText("Отмена").onClick(() => this.close())).addButton((b) => b.setButtonText("Убрать пару").setWarning().onClick(async () => {
+    new Setting2(this.contentEl).addButton((b) => b.setButtonText("Отмена").onClick(() => this.close())).addButton((b) => b.setButtonText("Убрать пару").setWarning().onClick(async () => {
       this.close();
       await this.remove();
     }));
@@ -2409,7 +3033,7 @@ var SettingsTab = class extends PluginSettingTab {
       await plugin.persist();
       this.display();
     };
-    new Setting(el).setName("Пара папок").setDesc("Команды и кнопка на ленте работают с выбранной парой.").addDropdown((d) => {
+    new Setting2(el).setName("Пара папок").setDesc("Команды и кнопка на ленте работают с выбранной парой.").addDropdown((d) => {
       for (const p of plugin.pairs) d.addOption(p.id, p.settings.name);
       d.setValue(pair.id).onChange(select);
     }).addButton((b) => b.setButtonText("Добавить").onClick(async () => {
@@ -2432,13 +3056,13 @@ var SettingsTab = class extends PluginSettingTab {
         await select(plugin.pairs[0].id);
       }).open();
     }));
-    new Setting(el).setName("Режим настроек").addDropdown((d) => d.addOption("basic", "Основные").addOption("advanced", "Расширенные").setValue(plugin.advanced ? "advanced" : "basic").onChange(async (v) => {
+    new Setting2(el).setName("Режим настроек").addDropdown((d) => d.addOption("basic", "Основные").addOption("advanced", "Расширенные").setValue(plugin.advanced ? "advanced" : "basic").onChange(async (v) => {
       plugin.advanced = v === "advanced";
       await plugin.persist();
       this.display();
     }));
     let passwordText, secretText;
-    const field = (key, label, desc, placeholder = "") => new Setting(el).setName(label).setDesc(desc).addText((t) => {
+    const field = (key, label, desc, placeholder = "") => new Setting2(el).setName(label).setDesc(desc).addText((t) => {
       if (key === "secret") secretText = t;
       t.setValue(s[key]).setPlaceholder(placeholder).onChange((v) => {
         if (s.engine === "webdav" && (key === "url" || key === "user") && s[key] !== v) {
@@ -2450,21 +3074,22 @@ var SettingsTab = class extends PluginSettingTab {
         s[key] = v;
       });
     });
-    const choice = (key, label, desc, options) => new Setting(el).setName(label).setDesc(desc).addDropdown((d) => {
+    const choice = (key, label, desc, options) => new Setting2(el).setName(label).setDesc(desc).addDropdown((d) => {
       for (const [k, v] of Object.entries(options)) d.addOption(k, v);
       d.setValue(String(s[key])).onChange((v) => {
         s[key] = typeof DEFAULTS[key] === "number" ? Number(v) : v;
       });
     });
-    const toggle = (key, label, desc) => new Setting(el).setName(label).setDesc(desc).addToggle((t) => t.setValue(s[key]).onChange((v) => {
+    const toggle = (key, label, desc) => new Setting2(el).setName(label).setDesc(desc).addToggle((t) => t.setValue(s[key]).onChange((v) => {
       s[key] = v;
     }));
     field("name", "Название пары", "Отображается в списке пар и в отчёте.");
     field("folder", "Папка в Obsidian", "Путь от корня хранилища. Пустое поле включает всё хранилище.", "Заметки/Работа");
-    new Setting(el).setName("Сервис").addDropdown((d) => {
+    new Setting2(el).setName("Сервис").addDropdown((d) => {
       for (const [key, name] of Object.entries(ENGINES)) d.addOption(key, name);
       d.setValue(s.engine).onChange((engine) => {
-        Object.assign(s, { engine, url: "", user: "", secret: "" });
+        Object.assign(s, { engine, url: "", user: "", secret: "", gitRef: "", gitFolder: "" });
+        if (publicSource(engine)) s.direction = "download";
         this.pass = "";
         this.keepSecret = false;
         this.display();
@@ -2473,13 +3098,21 @@ var SettingsTab = class extends PluginSettingTab {
     if (s.engine === "webdav") {
       field("url", "Адрес папки WebDAV", "Полный HTTPS-адрес существующей папки.", "https://cloud.example/dav/Notes/");
       field("user", "Имя пользователя", "Логин WebDAV.");
+    } else if (s.engine === "git") {
+      field("url", "HTTPS URL репозитория", "Для GitHub можно использовать URL с окончаниями .git и без него.", "https://github.com/owner/repo");
+      field("gitRef", "Ветка, тег или коммит", "Пустое поле означает HEAD.", "main");
+      field("gitFolder", "Папка в репозитории", "Путь от корня. Пустое поле включает весь репозиторий.", "docs");
+    } else if (s.engine === "yandexPublic") {
+      field("url", "Публичная ссылка Яндекс Диска", "Ссылка общего доступа к папке.", "https://disk.yandex.ru/d/…");
+    } else if (s.engine === "googlePublic") {
+      field("url", "Публичная папка Google Drive", "Ссылка с доступом для всех, у кого она есть, или ID папки.", "https://drive.google.com/drive/folders/…");
     } else if (s.engine === "google") {
       field("url", "Папка Google Drive", "Ссылка или ID существующей папки. Для корня используйте root.", "https://drive.google.com/drive/folders/…");
     } else {
       field("url", "Папка Яндекс Диска", "Путь к существующей папке. Для корня используйте disk:/.", "disk:/Заметки");
     }
     const isCloud = s.engine !== "webdav";
-    new Setting(el).setName(isCloud ? "OAuth-токен" : "Пароль приложения").setDesc(isCloud ? "Токен аккаунта с доступом к выбранной папке." : "Хранится в памяти до выключения плагина.").addText((t) => {
+    if (!["git", "yandexPublic"].includes(s.engine)) new Setting2(el).setName(s.engine === "googlePublic" ? "Google Drive API key" : isCloud ? "OAuth-токен" : "Пароль приложения").setDesc(s.engine === "googlePublic" ? "Ключ проекта с включённым Google Drive API. Вход в аккаунт не требуется." : isCloud ? "Токен аккаунта с доступом к выбранной папке." : "Хранится в памяти до выключения плагина.").addText((t) => {
       passwordText = t;
       t.inputEl.type = "password";
       t.inputEl.autocomplete = "off";
@@ -2487,42 +3120,27 @@ var SettingsTab = class extends PluginSettingTab {
         this.pass = v;
       });
     });
-    if (s.engine === "google" && Platform?.isDesktopApp) {
-      new Setting(el).setName("Войти через Google").setDesc("Выберите JSON OAuth-клиента типа Desktop app. Вход откроется в браузере.").addButton((b) => b.setButtonText("Выбрать JSON и войти").onClick(() => {
-        const input = document.createElement("input");
-        input.type = "file";
-        input.accept = ".json,application/json";
-        input.onchange = async () => {
-          const file = input.files?.[0];
-          if (!file || plugin.signingIn) return;
-          plugin.signingIn = true;
-          try {
-            const grant = await signInGoogle(
-              await file.text(),
-              plugin.lifetime.signal,
-              (url) => require("electron").shell.openExternal(url)
-            );
-            if (this.draft !== s || s.engine !== "google") return;
-            this.pass = grant;
-            this.display();
-            new Notice("Аккаунт подключён. Сохраните настройки пары.");
-          } catch (e) {
-            if (plugin.active) new Notice(message(e), 8e3);
-          } finally {
-            plugin.signingIn = false;
-          }
-        };
-        input.click();
+    if (s.engine === "google" && Platform2?.isDesktopApp) {
+      new Setting2(el).setName("Подключить аккаунт Google").setDesc("Импортируйте JSON клиента Desktop app из файла или буфера обмена.").addButton((b) => b.setButtonText("Подключить через JSON").onClick(() => {
+        new GoogleLogin(this.app, plugin.lifetime.signal, (grant) => {
+          if (this.draft !== s || s.engine !== "google") return;
+          this.pass = grant;
+          this.display();
+          new Notice("Аккаунт подключён. Сохраните настройки пары.");
+        }).open();
       }));
     }
-    if (isCloud && this.app.secretStorage) {
-      new Setting(el).setName("Сохранить введённый токен в связке ключей Obsidian").setDesc("Позволяет выполнять автообмен после перезапуска. Применяется при сохранении пары.").addToggle((t) => t.setValue(this.keepSecret).onChange((v) => {
+    if (s.engine === "google" && !Platform2?.isDesktopApp)
+      el.createEl("p", { text: "На мобильном устройстве введите OAuth-токен. Для общедоступной папки выберите «Google Drive · публичная папка»." });
+    if (isCloud && needsCredential(s) && this.app.secretStorage) {
+      new Setting2(el).setName("Сохранить ключ или токен в связке ключей Obsidian").setDesc("Позволяет выполнять автообмен после перезапуска. Применяется при сохранении пары.").addToggle((t) => t.setValue(this.keepSecret).onChange((v) => {
         this.keepSecret = v;
       }));
     }
-    choice("direction", "Направление обмена", "Односторонний режим разрешает изменения только в папке назначения.", Object.fromEntries(Object.entries(DIRECTIONS).map(([k, v]) => [k, v.replace("WebDAV", ENGINES[s.engine])])));
+    if (publicSource(s.engine)) new Setting2(el).setName("Направление обмена").setDesc("Только получение в Obsidian.");
+    else choice("direction", "Направление обмена", "Односторонний режим разрешает изменения только в папке назначения.", Object.fromEntries(Object.entries(DIRECTIONS).map(([k, v]) => [k, v.replace("WebDAV", ENGINES[s.engine])])));
     if (plugin.advanced) {
-      if (this.app.secretStorage) field("secret", "Имя секрета Obsidian", "Для запуска после перезапуска укажите имя существующего секрета с паролем. Пароль сеанса имеет приоритет.");
+      if (this.app.secretStorage && !["git", "yandexPublic"].includes(s.engine)) field("secret", "Имя секрета Obsidian", "Для запуска после перезапуска укажите имя существующего секрета с паролем. Пароль сеанса имеет приоритет.");
       choice("deletion", "Удаление файлов", "Удаление передаётся только для ранее синхронизированного файла. Изменённая оставшаяся копия попадёт в отчёт.", DELETIONS);
       choice("conflict", "Разрешение конфликтов", "Применяется и при первом сравнении разных версий. Если выбор противоречит направлению обмена, файл будет пропущен.", { ...CONFLICTS, remote: "Предпочитать " + ENGINES[s.engine] });
       el.createEl("h3", { text: "Автосинхронизация" });
@@ -2548,7 +3166,10 @@ var SettingsTab = class extends PluginSettingTab {
         if (s.engine === "webdav") endpoint(s.url);
         else {
           if (!s.url.trim()) throw Error("Укажите удалённую папку.");
-          cloudRoot(s.engine, s.url);
+          if (publicSource(s.engine)) {
+            publicRoot(s);
+            s.direction = "download";
+          } else cloudRoot(s.engine, s.url);
         }
         const folder = localRoot(this.app.vault, s.folder);
         if (!s.name.trim()) throw new Error("Введите название пары.");
@@ -2564,7 +3185,7 @@ var SettingsTab = class extends PluginSettingTab {
         }
         pair.settings = { ...s, name: s.name.trim(), folder, url: s.url.trim(), user: s.user.trim(), secret: s.secret.trim() };
         plugin.passwords.set(pair.id, this.pass);
-        if (old.engine !== s.engine || old.url !== pair.settings.url || old.user !== pair.settings.user || old.folder !== folder) {
+        if (old.gitFolder !== s.gitFolder || old.gitRef !== s.gitRef || old.engine !== s.engine || old.url !== pair.settings.url || old.user !== pair.settings.user || old.folder !== folder) {
           pair.state = EMPTY_STATE();
           plugin.pending.delete(pair.id);
         }
@@ -2577,7 +3198,7 @@ var SettingsTab = class extends PluginSettingTab {
         return false;
       }
     };
-    new Setting(el).setName("Применить настройки пары").setDesc("Сохраните изменения перед переключением пары. Предпросмотр и запуск также сохраняют форму.").addButton((b) => b.setButtonText("Сохранить").onClick(async () => {
+    new Setting2(el).setName("Применить настройки пары").setDesc("Сохраните изменения перед переключением пары. Предпросмотр и запуск также сохраняют форму.").addButton((b) => b.setButtonText("Сохранить").onClick(async () => {
       if (await save()) {
         this.display();
         new Notice("Пара сохранена.");

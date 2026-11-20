@@ -1167,7 +1167,7 @@ async function driveUpload(http, url, method, metadata, data, options) {
 // src/sources/remotes.ts
 var hashCache = /* @__PURE__ */ new Map();
 var FOLDER = "application/vnd.google-apps.folder";
-var fields = "id,name,mimeType,size,modifiedTime,version,sha256Checksum,md5Checksum,trashed,capabilities(canEdit,canDownload,canAddChildren)";
+var fields = "id,name,mimeType,resourceKey,size,modifiedTime,version,sha256Checksum,md5Checksum,trashed,capabilities(canEdit,canDownload,canAddChildren)";
 function driveRoot(value) {
   const v = value.trim();
   if (!v.startsWith("https://")) {
@@ -1190,7 +1190,8 @@ var DriveStore = class {
     this.duplicates = duplicates;
     this.root = driveRoot(root);
     this.key = publicKey;
-    this.resourceKey = root.startsWith("https:") ? new URL(root).searchParams.get("resourcekey") || void 0 : void 0;
+    const rootKey = root.startsWith("https:") ? new URL(root).searchParams.get("resourcekey") : "";
+    if (rootKey) this.resourceKeys.set(this.root, rootKey);
     this.writable = !publicKey && duplicates === "error";
     this.trashSupported = this.writable;
     this.identity = "drive:" + identityAccount + ":" + this.root;
@@ -1201,7 +1202,7 @@ var DriveStore = class {
   root;
   folders = /* @__PURE__ */ new Map();
   key;
-  resourceKey;
+  resourceKeys = /* @__PURE__ */ new Map();
   url(suffix, query = {}, upload = false) {
     const u = new URL(
       "https://www.googleapis.com/" + (upload ? "upload/" : "") + "drive/v3/" + suffix
@@ -1214,12 +1215,13 @@ var DriveStore = class {
       u.searchParams.set(k, v);
     return u.href;
   }
-  opts(signal, extra = {}) {
+  opts(signal, extra = {}, id = this.root) {
+    const key = this.resourceKeys.get(id);
     return {
       ...extra,
       signal,
       headers: {
-        ...this.resourceKey ? { "X-Goog-Drive-Resource-Keys": `${this.root}/${this.resourceKey}` } : {},
+        ...key ? { "X-Goog-Drive-Resource-Keys": `${id}/${key}` } : {},
         ...extra.headers
       }
     };
@@ -1228,7 +1230,7 @@ var DriveStore = class {
     return json(
       this.http,
       this.url("files/" + encodeURIComponent(id), { fields }),
-      this.opts(signal)
+      this.opts(signal, {}, id)
     );
   }
   async info(f, p, signal) {
@@ -1273,12 +1275,15 @@ var DriveStore = class {
           includeItemsFromAllDrives: "true",
           ...next ? { pageToken: next } : {}
         }),
-        this.opts(signal)
+        this.opts(signal, {}, id)
       );
       if (d.incompleteSearch || !Array.isArray(d.files))
         throw Error("\u041D\u0435\u043F\u043E\u043B\u043D\u044B\u0439 \u043E\u0442\u0432\u0435\u0442 Drive");
       if (d.nextPageToken !== void 0 && typeof d.nextPageToken !== "string")
         throw Error("\u041D\u0435\u043A\u043E\u0440\u0440\u0435\u043A\u0442\u043D\u0430\u044F \u0441\u0442\u0440\u0430\u043D\u0438\u0446\u0430 Drive");
+      for (const child of d.files) {
+        if (child.resourceKey) this.resourceKeys.set(child.id, child.resourceKey);
+      }
       out.push(...d.files);
       next = d.nextPageToken || "";
     } while (next);
@@ -1361,7 +1366,7 @@ var DriveStore = class {
     const b = await bytes(
       this.http,
       this.url("files/" + encodeURIComponent(f.id), { alt: "media" }),
-      this.opts(signal, { maxBytes: this.limit })
+      this.opts(signal, { maxBytes: this.limit }, f.id)
     );
     if (b.length !== Number(f.size))
       throw Error("\u0420\u0430\u0437\u043C\u0435\u0440 Drive-\u0444\u0430\u0439\u043B\u0430 \u043D\u0435 \u0441\u043E\u0432\u043F\u0430\u043B");
@@ -1629,6 +1634,15 @@ var GitHubStore = class {
       ]
     };
   }
+  async confirmAbsent(p, signal) {
+    const commit = await json(this.http, this.base + "/commits/" + encodeURIComponent(this.ref || "HEAD"), this.options(signal));
+    const id = commit.commit?.tree?.sha;
+    if (!id) throw Error("GitHub \u043D\u0435 \u0432\u0435\u0440\u043D\u0443\u043B \u0434\u0435\u0440\u0435\u0432\u043E \u043A\u043E\u043C\u043C\u0438\u0442\u0430");
+    const tree = await json(this.http, this.base + "/git/trees/" + id + "?recursive=1", this.options(signal));
+    if (tree.truncated !== false || !Array.isArray(tree.tree) || this.prefix && !tree.tree.some((f) => f.type === "tree" && f.path === this.prefix))
+      throw Error("\u041D\u0435\u0432\u043E\u0437\u043C\u043E\u0436\u043D\u043E \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u044C \u043E\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0438\u0435 \u043F\u0443\u0442\u0438 GitHub");
+    if (tree.tree.some((f) => f.path === join(this.prefix, p))) throw Error("\u041F\u0443\u0442\u044C \u0441\u043D\u043E\u0432\u0430 \u043F\u043E\u044F\u0432\u0438\u043B\u0441\u044F \u0432 GitHub: " + p);
+  }
   async blob(id, signal) {
     const r = await json(this.http, this.base + "/git/blobs/" + id, {
       ...this.options(signal),
@@ -1636,11 +1650,11 @@ var GitHubStore = class {
     });
     if (r.encoding !== "base64" || typeof r.content !== "string")
       throw Error("\u041D\u0435\u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u043C\u044B\u0439 \u043E\u0442\u0432\u0435\u0442 GitHub");
-    const b = Buffer.from(r.content, "base64");
+    const b = Uint8Array.from(atob(r.content), (c) => c.charCodeAt(0));
     if (b.length > this.limit) throw Error("\u041F\u0440\u0435\u0432\u044B\u0448\u0435\u043D \u0440\u0430\u0437\u043C\u0435\u0440 \u0444\u0430\u0439\u043B\u0430");
-    const hash = (0, import_node_crypto2.createHash)("sha1").update(Buffer.from(`blob ${b.length}\0`)).update(b).digest("hex");
+    const hash = (0, import_node_crypto2.createHash)("sha1").update(new TextEncoder().encode(`blob ${b.length}\0`)).update(b).digest("hex");
     if (hash !== id) throw Error("GitHub blob checksum mismatch");
-    if (b.subarray(0, 80).toString().startsWith("version https://git-lfs.github.com/spec"))
+    if (new TextDecoder().decode(b.subarray(0, 80)).startsWith("version https://git-lfs.github.com/spec"))
       throw Error("Git LFS \u0442\u0440\u0435\u0431\u0443\u0435\u0442 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E\u0433\u043E \u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u044F");
     return b;
   }

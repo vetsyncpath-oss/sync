@@ -24,8 +24,8 @@ jobs:
           npm ci --no-audit --no-fund
           npm run build
           git diff --exit-code -- main.js
-          node --test tests/cloud.test.cjs
-          unzip -p releases/vault-folder-sync-0.3.0.zip vault-folder-sync/main.js | cmp - main.js
+          node --test tests/*.test.cjs
+          unzip -p releases/vault-folder-sync-0.4.0.zip vault-folder-sync/main.js | cmp - main.js
       - uses: actions/upload-artifact@v4
         with:
           name: sync-studio-0.3.0-alpha

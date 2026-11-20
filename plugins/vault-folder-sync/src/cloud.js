@@ -1,3 +1,4 @@
+import { openPublic, publicSource } from "./public-sources";
 import { requestUrl } from "obsidian";
 import {
   DriveStore,
@@ -16,6 +17,9 @@ import { path as relativePath } from "../../../src/core/paths";
 export const ENGINES = {
   webdav: "WebDAV",
   google: "Google Drive",
+  googlePublic: "Google Drive · публичная папка",
+  yandexPublic: "Яндекс Диск · публичная папка",
+  git: "Git · публичный репозиторий",
   yandex: "Яндекс Диск",
 };
 
@@ -130,6 +134,7 @@ export async function openCloud(
   signal,
   rotate,
 ) {
+  if (publicSource(settings.engine)) return openPublic(settings, credential, included, signal, transport);
   credential = credential.trim();
   if (!credential) throw Error("Укажите OAuth-токен или подключите аккаунт.");
   const root = cloudRoot(settings.engine, settings.url);

@@ -283,3 +283,120 @@ test("Google refresh credentials, subject check and rotation stay out of data.js
   pl.passwords.set(pair.id, JSON.stringify({ ...data, subject: "other" }));
   await assert.rejects(sync, /identity changed/);
 });
+
+for (const engine of ["googlePublic", "yandexPublic", "git"])
+  test(
+    engine + " public folder stays read-only and verifies absence",
+    async () => {
+      const { api, pair, pl, put, sync, files } = await fixture(engine);
+      const content = Buffer.from([9, 0, 8, 255]),
+        digest = sha(content),
+        name = "source.bin";
+      const blob = createHash("sha1")
+        .update("blob " + content.length + "\0")
+        .update(content)
+        .digest("hex");
+      let present = true,
+        complete = true;
+      Object.assign(pair.settings, {
+        url: {
+          googlePublic:
+            "https://drive.google.com/drive/folders/root?resourcekey=root-key",
+          yandexPublic: "https://disk.yandex.ru/d/unit",
+          git: "https://github.com/owner/repo.git",
+        }[engine],
+        gitRef: "v1",
+        gitFolder: "",
+        direction: "upload",
+      });
+      if (engine !== "googlePublic") pl.passwords.clear();
+      api.request = ({ url, method, headers = {} }) => {
+        assert.equal(method, "GET");
+        assert.equal(headers.Authorization, undefined);
+        const u = new URL(url),
+          child = {
+            id: "f",
+            name,
+            mimeType: "application/octet-stream",
+            size: content.length,
+            version: "1",
+            resourceKey: "file-key",
+            sha256Checksum: digest,
+          };
+        if (engine === "googlePublic") {
+          assert.equal(u.searchParams.get("key"), "access");
+          if (u.pathname.endsWith("/f")) {
+            assert.equal(headers["X-Goog-Drive-Resource-Keys"], "f/file-key");
+            return result(200, u.searchParams.has("alt") ? content : child);
+          }
+          assert.equal(headers["X-Goog-Drive-Resource-Keys"], "root/root-key");
+          if (u.pathname.endsWith("/root"))
+            return result(200, {
+              id: "root",
+              mimeType: "application/vnd.google-apps.folder",
+            });
+          return result(200, {
+            files: present ? [child] : [],
+            incompleteSearch: !complete,
+          });
+        }
+        if (engine === "yandexPublic") {
+          if (u.hostname === "downloader.disk.yandex.ru")
+            return result(200, content);
+          assert.equal(u.searchParams.get("public_key"), pair.settings.url);
+          if (u.pathname.endsWith("/download"))
+            return result(200, {
+              href: "https://downloader.disk.yandex.ru/test",
+            });
+          if (u.searchParams.get("path") !== "/")
+            return result(404, { error: "DiskNotFoundError" });
+          const items = present
+            ? [{ name, type: "file", size: content.length, sha256: digest }]
+            : [];
+          return result(200, {
+            type: "dir",
+            _embedded: {
+              items,
+              offset: 0,
+              total: items.length + (complete ? 0 : 1),
+            },
+          });
+        }
+        if (u.pathname.endsWith("/commits/v1"))
+          return result(200, { commit: { tree: { sha: "treeid" } } });
+        if (u.pathname.includes("/blobs/"))
+          return result(200, {
+            encoding: "base64",
+            content: content.toString("base64"),
+          });
+        assert.match(u.pathname, /git\/trees\/treeid$/);
+        return result(200, {
+          truncated: !complete,
+          tree: present
+            ? [
+                {
+                  path: name,
+                  type: "blob",
+                  mode: "100644",
+                  sha: blob,
+                  size: content.length,
+                },
+              ]
+            : [],
+        });
+      };
+      put("private.bin", [1, 2]);
+      let preview = await sync(true);
+      assert.equal(files.has(name), false);
+      assert.deepEqual(await sync(), preview);
+      assert.deepEqual(Buffer.from(files.get(name).data), content);
+      present = false;
+      complete = false;
+      await assert.rejects(sync);
+      assert.ok(files.has(name));
+      complete = true;
+      await sync();
+      assert.equal(files.has(name), false);
+      assert.ok(files.has("private.bin"));
+    },
+  );

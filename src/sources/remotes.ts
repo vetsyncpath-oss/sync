@@ -16,7 +16,7 @@ import {
 const hashCache = new Map<string, string>();
 const FOLDER = "application/vnd.google-apps.folder";
 const fields =
-  "id,name,mimeType,size,modifiedTime,version,sha256Checksum,md5Checksum,trashed,capabilities(canEdit,canDownload,canAddChildren)";
+  "id,name,mimeType,resourceKey,size,modifiedTime,version,sha256Checksum,md5Checksum,trashed,capabilities(canEdit,canDownload,canAddChildren)";
 export function driveRoot(value: string): string {
   const v = value.trim();
   if (!v.startsWith("https://")) {
@@ -39,7 +39,7 @@ export class DriveStore implements Store {
   private root: string;
   private folders = new Map<string, string>();
   private key?: string;
-  private resourceKey?: string;
+  private resourceKeys = new Map<string,string>();
   constructor(
     private http: NetTransport,
     root: string,
@@ -51,9 +51,8 @@ export class DriveStore implements Store {
   ) {
     this.root = driveRoot(root);
     this.key = publicKey;
-    this.resourceKey = root.startsWith("https:")
-      ? new URL(root).searchParams.get("resourcekey") || undefined
-      : undefined;
+    const rootKey = root.startsWith("https:") ? new URL(root).searchParams.get("resourcekey") : "";
+    if (rootKey) this.resourceKeys.set(this.root,rootKey);
     this.writable = !publicKey && duplicates === "error";
     this.trashSupported = this.writable;
     this.identity = "drive:" + identityAccount + ":" + this.root;
@@ -77,13 +76,14 @@ export class DriveStore implements Store {
       u.searchParams.set(k, v);
     return u.href;
   }
-  private opts(signal: AbortSignal, extra: NetRequest = {}): NetRequest {
+  private opts(signal: AbortSignal, extra: NetRequest = {}, id = this.root): NetRequest {
+    const key = this.resourceKeys.get(id);
     return {
       ...extra,
       signal,
       headers: {
-        ...(this.resourceKey
-          ? { "X-Goog-Drive-Resource-Keys": `${this.root}/${this.resourceKey}` }
+        ...(key
+          ? { "X-Goog-Drive-Resource-Keys": `${id}/${key}` }
           : {}),
         ...extra.headers,
       },
@@ -93,7 +93,7 @@ export class DriveStore implements Store {
     return json(
       this.http,
       this.url("files/" + encodeURIComponent(id), { fields }),
-      this.opts(signal),
+      this.opts(signal, {}, id),
     );
   }
   private async info(
@@ -145,12 +145,15 @@ export class DriveStore implements Store {
           includeItemsFromAllDrives: "true",
           ...(next ? { pageToken: next } : {}),
         }),
-        this.opts(signal),
+        this.opts(signal, {}, id),
       );
       if (d.incompleteSearch || !Array.isArray(d.files))
         throw Error("Неполный ответ Drive");
       if (d.nextPageToken !== undefined && typeof d.nextPageToken !== "string")
         throw Error("Некорректная страница Drive");
+      for (const child of d.files) {
+        if (child.resourceKey) this.resourceKeys.set(child.id,child.resourceKey);
+      }
       out.push(...d.files);
       next = d.nextPageToken || "";
     } while (next);
@@ -256,7 +259,7 @@ export class DriveStore implements Store {
     const b = await bytes(
       this.http,
       this.url("files/" + encodeURIComponent(f.id), { alt: "media" }),
-      this.opts(signal, { maxBytes: this.limit }),
+      this.opts(signal, { maxBytes: this.limit }, f.id),
     );
     if (b.length !== Number(f.size))
       throw Error("Размер Drive-файла не совпал");
@@ -557,6 +560,15 @@ export class GitHubStore implements Store {
       ],
     };
   }
+  async confirmAbsent(p: string, signal: AbortSignal) {
+    const commit = await json(this.http, this.base + "/commits/" + encodeURIComponent(this.ref || "HEAD"), this.options(signal));
+    const id = commit.commit?.tree?.sha;
+    if (!id) throw Error("GitHub не вернул дерево коммита");
+    const tree = await json(this.http, this.base + "/git/trees/" + id + "?recursive=1", this.options(signal));
+    if (tree.truncated !== false || !Array.isArray(tree.tree) || (this.prefix && !tree.tree.some((f:any)=>f.type==="tree" && f.path===this.prefix)))
+      throw Error("Невозможно подтвердить отсутствие пути GitHub");
+    if (tree.tree.some((f:any)=>f.path===join(this.prefix,p))) throw Error("Путь снова появился в GitHub: " + p);
+  }
   private async blob(id: string, signal: AbortSignal) {
     const r = await json(this.http, this.base + "/git/blobs/" + id, {
       ...this.options(signal),
@@ -564,17 +576,15 @@ export class GitHubStore implements Store {
     });
     if (r.encoding !== "base64" || typeof r.content !== "string")
       throw Error("Неподдерживаемый ответ GitHub");
-    const b = Buffer.from(r.content, "base64");
+    const b = Uint8Array.from(atob(r.content), c => c.charCodeAt(0));
     if (b.length > this.limit) throw Error("Превышен размер файла");
     const hash = createHash("sha1")
-      .update(Buffer.from(`blob ${b.length}\0`))
+      .update(new TextEncoder().encode(`blob ${b.length}\0`))
       .update(b)
       .digest("hex");
     if (hash !== id) throw Error("GitHub blob checksum mismatch");
     if (
-      b
-        .subarray(0, 80)
-        .toString()
+      new TextDecoder().decode(b.subarray(0, 80))
         .startsWith("version https://git-lfs.github.com/spec")
     )
       throw Error("Git LFS требует отдельного скачивания");
