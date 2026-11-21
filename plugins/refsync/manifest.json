@@ -1,0 +1,9 @@
+{
+  "id": "refsync",
+  "name": "RefSync",
+  "version": "0.1.0",
+  "minAppVersion": "1.8.7",
+  "description": "One-way reference distribution for content and Obsidian settings. M1 local provider.",
+  "author": "RefSync contributors",
+  "isDesktopOnly": false
+}

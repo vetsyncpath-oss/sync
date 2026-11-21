@@ -1,0 +1,35 @@
+name: RefSync
+on:
+  pull_request:
+    paths:
+      - 'plugins/refsync/**'
+      - '.github/workflows/refsync.yml'
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/refsync
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: plugins/refsync/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - run: npm run build
+      - run: git diff --exit-code -- main.js
+      - name: Verify shipped archive contents
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+          for archive in Path("releases").glob("*.zip"):
+              with ZipFile(archive) as shipped:
+                  for item in shipped.namelist():
+                      assert shipped.read(item) == Path(item.removeprefix("refsync/")).read_bytes()
+          PY

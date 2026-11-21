@@ -1,0 +1,109 @@
+import {
+  fresh,
+  type Baseline,
+  type Bytes,
+  hash,
+  checked,
+  type Scope,
+} from "./model";
+export interface DeviceStorage {
+  get(key: string): unknown;
+  set(key: string, value: unknown): void;
+}
+export class StateStore {
+  readonly device: string;
+  constructor(private readonly port: DeviceStorage) {
+    const current = port.get("device");
+    this.device =
+      typeof current === "string" && /^[a-f0-9-]{36}$/.test(current)
+        ? current
+        : crypto.randomUUID();
+    port.set("device", this.device);
+  }
+  get(key: string): Baseline {
+    const raw = this.port.get("state:" + this.device + ":" + key);
+    if (raw == null) return fresh();
+    if (
+      typeof raw !== "object" ||
+      !("entries" in raw) ||
+      typeof raw.entries !== "object" ||
+      !raw.entries ||
+      !("size" in raw) ||
+      typeof raw.size !== "number" ||
+      !("lastRun" in raw) ||
+      typeof raw.lastRun !== "string"
+    )
+      throw Error("state");
+    return structuredClone(raw as Baseline);
+  }
+  put(key: string, value: Baseline) {
+    this.port.set("state:" + this.device + ":" + key, value);
+  }
+}
+export interface ArtifactStore {
+  putNew(path: string, data: Bytes): Promise<void>;
+  read(path: string): Promise<Bytes>;
+  has(path: string): Promise<boolean>;
+  dirs(): Promise<string[]>;
+  removeTree(path: string): Promise<void>;
+}
+const enc = (x: unknown) => new TextEncoder().encode(JSON.stringify(x)).buffer;
+export interface Intent {
+  path: string;
+  action: "write" | "delete";
+  mtime?: number;
+  digest?: string;
+}
+export interface Transaction {
+  version: 1;
+  id: string;
+  key: string;
+  target: string;
+  scope: Scope;
+  before: Baseline;
+  steps: Intent[];
+}
+export class ApplyJournal {
+  constructor(readonly disk: ArtifactStore) {}
+  async json<T>(p: string): Promise<T> {
+    return JSON.parse(new TextDecoder().decode(await this.disk.read(p))) as T;
+  }
+  mark(p: string) {
+    return this.disk.putNew(p, enc(true));
+  }
+  async begin(t: Transaction) {
+    await this.disk.putNew(t.id + "/intent.json", enc(t));
+  }
+  async backup(id: string, i: number, bytes: Bytes | null) {
+    if (bytes !== null) await this.disk.putNew(id + "/backup/" + i, bytes);
+    await this.disk.putNew(
+      id + "/armed/" + i,
+      enc(bytes === null ? null : await hash(bytes)),
+    );
+  }
+  async transactions(): Promise<Transaction[]> {
+    const out: Transaction[] = [];
+    for (const id of await this.disk.dirs()) {
+      if (!/^[0-9a-f-]{36}$/.test(id)) continue;
+      if (!(await this.disk.has(id + "/intent.json"))) {
+        await this.disk.removeTree(id);
+        continue;
+      }
+      const t = await this.json<Transaction>(id + "/intent.json");
+      if (
+        t.version !== 1 ||
+        t.id !== id ||
+        !Array.isArray(t.steps) ||
+        !["content", "settings"].includes(t.scope)
+      )
+        throw Error("journal");
+      for (const step of t.steps) {
+        checked(step.path);
+        if (step.action !== "write" && step.action !== "delete")
+          throw Error("journal");
+      }
+      out.push(t);
+    }
+    return out;
+  }
+}
