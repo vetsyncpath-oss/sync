@@ -25,7 +25,11 @@ jobs:
           cache: npm
           cache-dependency-path: plugins/refsync/package-lock.json
       - run: npm ci --no-audit --no-fund
-      - run: npm test
+      - name: Run core tests
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test | tee tests.log || { echo "::error::$(sed -n '/failing tests:/,$p' tests.log | head -c 1500 | tr '\n' ' ')"; exit 1; }
       - run: npm run build
       - run: git diff --exit-code -- main.js
       - name: Verify shipped archive contents
@@ -47,4 +51,8 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           python -m pip install playwright==1.56.0
-          python scripts/windows-smoke.py
+          python scripts/windows-smoke.py 2>&1 | Tee-Object -Variable smoke
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::$(($smoke | Select-Object -Last 14) -join ' ')"
+            exit 1
+          }

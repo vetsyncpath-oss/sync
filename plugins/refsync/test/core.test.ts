@@ -625,18 +625,23 @@ test("events match only eligible roots, coalesce repeated requests and preserve 
     ),
   );
   const log: string[] = [];
+  let completed!: () => void;
+  const bothFinished = new Promise<void>((resolve) => {
+    completed = resolve;
+  });
   const scheduler = new Scheduler(
     async (id) => {
       log.push(id + "+");
       await sleep(2);
       log.push(id + "-");
+      if (id === "b") completed();
     },
     (e) => assert.fail(String(e)),
   );
   scheduler.schedule("a", 1);
   scheduler.schedule("a", 1);
   scheduler.schedule("b", 1);
-  await sleep(20);
+  await bothFinished;
   assert.deepEqual(log, ["a+", "a-", "b+", "b-"]);
   scheduler.schedule("c", 10);
   scheduler.stop();
