@@ -69,7 +69,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             # Deliver a harmless fixture plugin, then let Obsidian itself activate it at startup.
             page.evaluate("""async()=>{
               const rs=app.plugins.plugins.refsync,v=app.vault,a=v.adapter;
-              const old=rs.config.profiles[0],id='refsync-ci-fixture',ref='Комплект';
+              const old=rs.config.profiles.find(p=>p.id==='windows-ci'),id='refsync-ci-fixture',ref='Комплект';
               await v.createFolder(ref+'/plugins/'+id);
               await v.create(ref+'/plugins/'+id+'/main.js',"const {Plugin}=require('obsidian');module.exports=class extends Plugin{async onload(){this.received=await this.loadData();}};");
               await v.create(ref+'/plugins/'+id+'/manifest.json',JSON.stringify({id,name:'RefSync CI Fixture',version:'1.0.0',minAppVersion:'1.8.7',description:'Settings smoke test',author:'RefSync',isDesktopOnly:false}));
