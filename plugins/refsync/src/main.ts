@@ -3,6 +3,7 @@ import { withPluginData, reloadApp } from "./hot-config";
 import { needsReload, verifySettings } from "./verify-settings";
 import { canAutoReload, type ReloadRequest } from "./reload-manager";
 import {
+  requestUrl,
   Plugin,
   Platform,
   Modal,
@@ -37,6 +38,12 @@ import {
   MutationFence,
 } from "./runtime";
 import { Review } from "./review";
+import { PublicStore, type RemoteTree } from "./public-store";
+import { GoogleTree, YandexTree, type Transport } from "./public-cloud";
+import { GitTree } from "./public-git";
+import { gitFs } from "./git-fs";
+import { ensure } from "./vault";
+import { referenceId, location } from "./public-location";
 import { Editor } from "./editor";
 
 type Intent = "dry" | "run" | "auto" | "release";
@@ -108,7 +115,7 @@ export default class RefSync extends Plugin {
             p.role === "subscriber" &&
             p.scope === "settings" &&
             p.id === JSON.parse(t.key)[0] &&
-            JSON.parse(t.key)[2] === "vault:" + p.reference,
+            JSON.parse(t.key)[2] === referenceId(p),
         );
         return p && t.target === this.app.vault.configDir
           ? (p.config ?? legacyConfig())
@@ -472,8 +479,58 @@ export default class RefSync extends Plugin {
         : undefined,
     );
   }
+  googleKey() {
+    return String(this.app.loadLocalStorage("refsync:google-public-key") ?? "");
+  }
+  saveGoogleKey(value: string) {
+    this.app.saveLocalStorage("refsync:google-public-key", value.trim());
+  }
+  publicReference(p: Profile, prefix = p.reference) {
+    if (p.access !== "public" || p.role !== "subscriber" || !p.remote)
+      throw Error("readonly");
+    const { root, resourceKey } = location(p.remote);
+    const send: Transport = async (url, method = "GET", headers = {}, body) => {
+      try {
+        const r = await requestUrl({
+          url,
+          method,
+          headers,
+          body,
+          throw: false,
+        });
+        return {
+          status: r.status,
+          headers: r.headers,
+          arrayBuffer: r.arrayBuffer,
+        };
+      } catch (cause) {
+        throw Error("remoteNetwork", { cause });
+      }
+    };
+    let tree: RemoteTree;
+    if (p.remote.engine === "google")
+      tree = new GoogleTree(send, root, this.googleKey(), resourceKey);
+    else if (p.remote.engine === "yandex") tree = new YandexTree(send, root);
+    else {
+      const identity = JSON.stringify([root, p.remote.branch]),
+        adapter = this.app.vault.adapter;
+      tree = new GitTree(
+        async () => {
+          const key = await hash(new TextEncoder().encode(identity).buffer),
+            dir = join(this.logDir, "git/" + key);
+          await ensure(adapter, dir);
+          return gitFs(adapter, dir);
+        },
+        send,
+        root,
+        p.remote.branch,
+        this.app.vault.getName() + ":" + identity,
+      );
+    }
+    return new PublicStore(referenceId(p), tree, prefix === "/" ? "" : prefix);
+  }
   private stores(p: Profile) {
-    if (p.access !== "local") throw Error("invalid");
+    if (p.access !== "local" && p.access !== "public") throw Error("invalid");
     const make = (path: string, ro: boolean) =>
       new LocalProvider(
         this.app.vault,
@@ -496,7 +553,10 @@ export default class RefSync extends Plugin {
           : undefined,
       );
     return {
-      reference: make(p.reference, p.role === "subscriber"),
+      reference:
+        p.access === "public"
+          ? this.publicReference(p)
+          : make(p.reference, p.role === "subscriber"),
       local: make(
         p.scope === "settings" ? this.app.vault.configDir : p.local,
         p.role === "publisher",
@@ -586,7 +646,13 @@ export default class RefSync extends Plugin {
     return (
       this.manifest.id +
       ":first:" +
-      JSON.stringify([p.id, p.scope, p.role, p.local, p.reference])
+      JSON.stringify([
+        p.id,
+        p.scope,
+        p.role,
+        p.local,
+        p.access === "local" ? p.reference : referenceId(p),
+      ])
     );
   }
   private async deliver(
@@ -622,7 +688,7 @@ export default class RefSync extends Plugin {
         active,
         budget: new RunBudget(
           undefined,
-          undefined,
+          p.access === "public" ? 90000 : undefined,
           undefined,
           this.engine.applier.fence,
         ),

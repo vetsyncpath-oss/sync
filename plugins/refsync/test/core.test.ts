@@ -873,3 +873,70 @@ test("a fresh subscriber keeps RefSync enabled when the community plugin list ha
   );
   assert.ok(!dry.plan.held.includes(path));
 });
+
+import { GoogleTree } from "../src/public-cloud";
+import { PublicStore } from "../src/public-store";
+test("public mirror aborts before any mutation on a broken page, or if a deletion candidate reappears", async () => {
+  const { engine, target, disk } = fixture();
+  const p: Profile = {
+    ...defaults,
+    access: "public",
+    remote: { engine: "google", url: "root", branch: "" },
+    reference: "/",
+    mirror: "full",
+    deletions: true,
+    maxDeletePercent: 100,
+    deleteGrace: 100,
+  };
+  target.data.set("keep.md", bytes("original"));
+  for (const incomplete of [true, false]) {
+    let visits = 0;
+    const store = new PublicStore(
+      "drive",
+      new GoogleTree(
+        async (url) => {
+          let obj = {};
+          if (url.includes("/files/root"))
+            obj = {
+              id: "root",
+              mimeType: "application/vnd.google-apps.folder",
+            };
+          else if (url.includes("/files/a?"))
+            return { status: 200, headers: {}, arrayBuffer: bytes("A") };
+          else if (url.includes("pageToken="))
+            obj = { incompleteSearch: true, files: [] };
+          else {
+            visits++;
+            const files = [
+              {
+                id: "a",
+                name: "new.md",
+                size: "1",
+                mimeType: "text/plain",
+                modifiedTime: "2025-01-01T00:00:00Z",
+              },
+            ];
+            if (visits > 1)
+              files.push({ ...files[0], id: "b", name: "keep.md" });
+            obj = { files, ...(incomplete ? { nextPageToken: "more" } : {}) };
+          }
+          return {
+            status: 200,
+            headers: {},
+            arrayBuffer: bytes(JSON.stringify(obj)),
+          };
+        },
+        "root",
+        "key",
+        "",
+      ),
+    );
+    await assert.rejects(
+      engine.run(p, store, target, false),
+      incomplete ? /incomplete/ : /referenceChanged/,
+    );
+    assert.equal(text(target.data.get("keep.md")!), "original");
+    assert.equal(target.data.size, 1);
+    assert.equal(disk.data.size, 0);
+  }
+});

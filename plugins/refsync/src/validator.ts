@@ -1,3 +1,4 @@
+import { location } from "./public-location";
 import { validConfig } from "./config-scope";
 import { parseOverlay } from "./json-overlay";
 import { type Profile, safe, under, fold } from "./model";
@@ -83,6 +84,14 @@ export function validate(
       (p[key] !== "/" && p[key] !== "" && !safe(p[key]))
     )
       err(key, "path");
+  if (p.access === "public") {
+    try {
+      if (!p.remote) throw Error("publicUrl");
+      location(p.remote);
+    } catch (e) {
+      err("remote", e instanceof Error ? e.message : "publicUrl");
+    }
+  }
   if (!/^[\w-]+$/.test(p.id)) err("id", "invalid");
   for (const k of [
     "enabled",
@@ -140,7 +149,7 @@ export function validate(
   if (p.access === "local" && hidden(ref)) err("reference", "protected");
   if (p.scope === "content" && hidden(local)) err("local", "protected");
   if (
-    under(ref, fold(configDir)) ||
+    (p.access === "local" && under(ref, fold(configDir))) ||
     (p.scope === "content" && under(local, fold(configDir)))
   )
     err("reference", "protected");

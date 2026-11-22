@@ -3,7 +3,7 @@ import { parseOverlay } from "./json-overlay";
 import { pathFilter } from "./filters";
 import { selectPlan, type Choices } from "./selection";
 import { RunBudget, sleep, transient } from "./runtime";
-import { type Profile, type StorageProvider } from "./model";
+import { type Profile, type Snapshot, type StorageProvider } from "./model";
 import { validate } from "./validator";
 import { scan } from "./scanner";
 import { plan, type Plan } from "./planner";
@@ -25,6 +25,7 @@ export class StatusStore {
 }
 export class SyncEngine {
   private busy = false;
+  private lastSource?: { key: string; snapshot: Snapshot };
   constructor(
     readonly applier: Applier,
     readonly status: StatusStore,
@@ -73,7 +74,12 @@ export class SyncEngine {
       this.status.set("scan");
       const budget =
         options.budget ??
-        new RunBudget(undefined, undefined, undefined, this.applier.fence);
+        new RunBudget(
+          undefined,
+          p.access === "public" ? 90000 : undefined,
+          undefined,
+          this.applier.fence,
+        );
       const cfg = p.config ?? legacyConfig();
       const projection =
         p.scope === "settings"
@@ -87,8 +93,26 @@ export class SyncEngine {
             }
           : undefined;
       const filter = p.scope === "content" ? pathFilter(p) : () => true;
-      const inputs = await Promise.allSettled([
-        scan(
+      const scanSource = async () => {
+        const revision =
+          p.access === "public"
+            ? await budget.io(() => source.getRevision())
+            : null;
+        const cacheKey =
+          revision &&
+          JSON.stringify([
+            source.id,
+            revision,
+            p.scope,
+            cfg,
+            p.include,
+            p.exclude,
+            p.maxMiB,
+            projection?.blocked,
+          ]);
+        if (cacheKey && this.lastSource?.key === cacheKey)
+          return this.lastSource.snapshot;
+        const snapshot = await scan(
           source,
           p.scope,
           this.configDir,
@@ -99,7 +123,16 @@ export class SyncEngine {
           p.scope === "content" ? p.maxMiB : 0,
           cfg,
           projection,
-        ),
+        );
+        if (
+          cacheKey &&
+          ![...(snapshot.skipped?.values() ?? [])].includes("locked")
+        )
+          this.lastSource = { key: cacheKey, snapshot };
+        return snapshot;
+      };
+      const inputs = await Promise.allSettled([
+        scanSource(),
         scan(
           target,
           p.scope,
@@ -166,6 +199,11 @@ export class SyncEngine {
           return true;
         });
         if (options.active && !options.active()) throw Error("stopped");
+        const deletes = result.ops
+          .filter((op) => op.action === "delete")
+          .map((op) => op.path);
+        if (deletes.length && source.confirmAbsent)
+          await budget.io(() => source.confirmAbsent!(deletes));
         this.status.set("apply");
         changed = await this.applier.apply(
           p,

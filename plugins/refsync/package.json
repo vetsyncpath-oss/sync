@@ -1,6 +1,6 @@
 {
   "name": "obsidian-refsync",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "scripts": {
     "build": "tsc --noEmit && node esbuild.config.mjs",
@@ -15,7 +15,10 @@
     "typescript": "5.9.3"
   },
   "dependencies": {
+    "@noble/hashes": "1.8.0",
+    "buffer": "6.0.3",
     "diff": "^8.0.4",
+    "isomorphic-git": "1.44.18",
     "picomatch": "^4.0.7"
   }
 }

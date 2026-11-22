@@ -1,3 +1,5 @@
+import { RemoteFolderBrowser } from "./remote-browser";
+import type { PublicSource } from "./public-location";
 import { scopeEditor } from "./scope-editor";
 import { legacyConfig, preset } from "./config-scope";
 import { PluginSettingTab, Setting, Platform, type App } from "obsidian";
@@ -63,12 +65,18 @@ export class Editor extends PluginSettingTab {
           [
             t(p.scope),
             p.role === "subscriber"
-              ? p.reference +
+              ? (p.access === "public" && p.remote
+                  ? t(p.remote.engine) + " · "
+                  : "") +
+                p.reference +
                 " → " +
                 (p.scope === "settings" ? this.app.vault.configDir : p.local)
               : (p.scope === "settings" ? this.app.vault.configDir : p.local) +
-                " → " +
-                p.reference,
+                    " → " +
+                    p.access ===
+                  "local"
+                ? p.reference
+                : "",
             t(p.inheritMode ? rs.config.mode : p.mode),
           ].join(" · "),
         );
@@ -224,8 +232,83 @@ export class Editor extends PluginSettingTab {
     text("name", "name");
     toggle("enabled", "enabled");
     choice("scope", "scope", ["content", "settings"]);
-    choice("role", "role", ["subscriber", "publisher"]);
-    text("reference", "reference");
+    new Setting(el).setName(t("engine")).addDropdown((d) => {
+      for (const k of ["vaultSource", "google", "yandex", "git"])
+        d.addOption(k, t(k));
+      d.setValue(p.remote?.engine ?? "vaultSource").onChange((v) => {
+        if (v === "vaultSource") {
+          delete p.remote;
+          p.access = "local";
+          p.reference = "RefSync-reference";
+        } else {
+          p.access = "public";
+          p.role = "subscriber";
+          p.reference = "/";
+          p.remote = {
+            engine: v as PublicSource["engine"],
+            url: "",
+            branch: "",
+          };
+        }
+        this.display();
+      });
+    });
+    const remote = p.access === "public" ? p.remote : undefined;
+    choice("role", "role", ["subscriber", "publisher"], !!remote);
+    if (remote) {
+      new Setting(el)
+        .setName(t("remote"))
+        .setDesc(t("readonly"))
+        .addText((c) =>
+          c.setValue(remote.url).onChange((v) => {
+            remote.url = v.trim();
+            validateForm();
+          }),
+        );
+      if (remote.engine === "git")
+        new Setting(el).setName(t("branch")).addText((c) =>
+          c.setValue(remote.branch).onChange((v) => {
+            remote.branch = v.trim();
+            validateForm();
+          }),
+        );
+      if (remote.engine === "google") {
+        let key = rs.googleKey();
+        new Setting(el)
+          .setName(t("deviceKey"))
+          .addText((c) => {
+            c.inputEl.type = "password";
+            c.setValue(key).onChange((v) => {
+              key = v;
+            });
+          })
+          .addButton((b) =>
+            b.setButtonText(t("save")).onClick(() => {
+              rs.saveGoogleKey(key);
+              b.setButtonText(t("saved"));
+            }),
+          );
+      }
+    }
+    text("reference", remote ? "subfolder" : "reference");
+    if (remote)
+      new Setting(el).addButton((b) =>
+        b.setButtonText(t("browse")).onClick(() => {
+          try {
+            new RemoteFolderBrowser(
+              this.app,
+              rs.publicReference(p, ""),
+              t,
+              (path) => {
+                p.reference = path;
+                this.display();
+              },
+            ).open();
+          } catch (e) {
+            rs.report(e, p.id);
+          }
+        }),
+      );
     if (p.scope === "settings")
       new Setting(el).setName(t("target")).setDesc(this.app.vault.configDir);
     else text("local", "target");
@@ -305,7 +388,7 @@ export class Editor extends PluginSettingTab {
           if (!validateForm()) return;
           try {
             for (const dir of [
-              p.reference,
+              p.access === "local" ? p.reference : "",
               p.scope === "content" ? p.local : this.app.vault.configDir,
             ])
               if (

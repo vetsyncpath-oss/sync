@@ -1,9 +1,9 @@
 {
   "id": "refsync",
   "name": "RefSync",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "minAppVersion": "1.8.7",
-  "description": "Distribute content and settings from a reference folder with profiles, selective review, schedules and rollback.",
+  "description": "Sync notes and settings from vault folders, public Google Drive or Yandex Disk folders, and HTTPS Git repositories.",
   "author": "RefSync contributors",
   "isDesktopOnly": false
 }

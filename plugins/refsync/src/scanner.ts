@@ -36,6 +36,10 @@ export async function scan(
   while (todo.length) {
     const dir = todo.pop()!;
     const list = await budget.io(() => provider.list(dir));
+    for (const path of list.skipped ?? []) {
+      if (parent(path) !== dir) throw Error("path");
+      snap.skipped!.set(path, "filter");
+    }
     for (const [paths, isDir] of [
       [list.files, false],
       [list.folders, true],

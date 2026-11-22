@@ -6,6 +6,7 @@ export type Policy = "source" | "target" | "newer" | "both";
 export type Mode = "plan" | "silent";
 export type Volatility = "H" | "S" | "V";
 export interface Profile {
+  remote?: import("./public-location").PublicSource;
   config?: ConfigScope;
   id: string;
   name: string;
@@ -108,7 +109,10 @@ export interface StorageProvider {
     rateLimits: number | null;
   };
   withFilePaused?: (path: string, write: () => Promise<void>) => Promise<void>;
-  list(dir: string): Promise<{ files: string[]; folders: string[] }>;
+  confirmAbsent?: (paths: string[]) => Promise<void>;
+  list(
+    dir: string,
+  ): Promise<{ files: string[]; folders: string[]; skipped?: string[] }>;
   stat(path: string): Promise<(FileMeta & { type: "file" | "folder" }) | null>;
   download(path: string): Promise<Bytes>;
   upload(path: string, data: Bytes, mtime?: number): Promise<void>;

@@ -171,7 +171,7 @@ export function eventPath(p: Profile, path: string): boolean {
     path.split("/").some((s) => s.startsWith("."))
   )
     return false;
-  return [p.reference, p.local].some((root) =>
-    under(path, root === "/" ? "" : root),
+  return (p.access === "local" ? [p.reference, p.local] : [p.local]).some(
+    (root) => under(path, root === "/" ? "" : root),
   );
 }

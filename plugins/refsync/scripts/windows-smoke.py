@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
     home = Path(temp)
     vault = home / "Хранилище Windows"
     (vault / ".obsidian").mkdir(parents=True)
-    with ZipFile(root / f"releases/refsync-{version}-m3.zip") as archive:
+    with ZipFile(root / f"releases/refsync-{version}-m4.zip") as archive:
         archive.extractall(vault / ".obsidian/plugins")
     settings = home / "config"
     settings.mkdir()
@@ -65,6 +65,17 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
               const reloaded=app.plugins.plugins.refsync;await reloaded.ready;if(!JSON.parse(await a.read(path)).ok)throw Error('verify after reload');
               const stores=reloaded.stores(p);await reloaded.engine.applier.undo(JSON.stringify([p.id,p.scope,stores.reference.id,stores.local.id]),stores.local);
               if(await a.exists(path))throw Error('undo');return 'Windows Obsidian: ZIP, Cyrillic paths, content, configDir, verification and undo passed';
+            }"""))
+            print(page.evaluate("""async()=>{
+              const rs=app.plugins.plugins.refsync, v=app.vault;
+              const local='Подписка Git';await v.createFolder(local);
+              const q={...rs.config.profiles.find(p=>p.id==='windows-ci'),id:'public-git',scope:'content',access:'public',
+                local,reference:'/',remote:{engine:'git',url:'https://github.com/octocat/Hello-World.git',branch:'master'}};
+              await rs.put(q,true);
+              const stores=rs.stores(q),before=await rs.engine.run(q,stores.reference,stores.local,true);
+              if(!before.plan.ops.some(op=>op.path==='README'&&op.action==='write')||await v.adapter.exists(local+'/README'))throw Error('Git preview');
+              await rs.execute(q.id,'run');if(!(await v.adapter.read(local+'/README')).includes('Hello World'))throw Error('Git apply');
+              return 'Public GitHub HTTPS: preview, shallow fetch and delivery in Windows Obsidian passed';
             }"""))
             # Deliver a harmless fixture plugin, then let Obsidian itself activate it at startup.
             page.evaluate("""async()=>{

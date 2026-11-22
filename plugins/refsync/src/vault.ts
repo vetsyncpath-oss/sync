@@ -14,7 +14,7 @@ import {
   type Scope,
 } from "./model";
 import type { ArtifactStore } from "./state";
-async function ensure(adapter: DataAdapter, dir: string) {
+export async function ensure(adapter: DataAdapter, dir: string) {
   if (!dir) return;
   const stat = await adapter.stat(dir);
   if (stat?.type === "folder") return;
