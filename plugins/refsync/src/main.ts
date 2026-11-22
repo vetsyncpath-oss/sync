@@ -715,6 +715,7 @@ export default class RefSync extends Plugin {
           this.engine.applier.undo(
             JSON.stringify([p.id, p.scope, source.id, target.id]),
             target,
+            (t) => this.recoveryTarget(t),
           ),
         );
         await this.log("undo", 1, p.id);

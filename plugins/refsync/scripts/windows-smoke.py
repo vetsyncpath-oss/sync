@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             page.wait_for_function("!!window.app?.vault?.adapter",timeout=65000)
             assert page.evaluate("app.vault.getName()") == vault.name
             # Enable community plugins explicitly for this fresh, test-owned vault.
-            page.evaluate("""async()=>{if(!app.plugins.isEnabled())await app.plugins.setEnable(true);await app.plugins.loadManifests();await app.plugins.enablePlugin('refsync');}""")
+            page.evaluate("""async()=>{if(!app.plugins.isEnabled())await app.plugins.setEnable(true);await app.plugins.loadManifests();await app.plugins.enablePluginAndSave('refsync');}""")
             page.wait_for_function("!!app.plugins.plugins.refsync")
             print(page.evaluate("""async()=>{
               const rs=app.plugins.plugins.refsync;await rs.ready;
@@ -65,6 +65,33 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
               const reloaded=app.plugins.plugins.refsync;await reloaded.ready;if(!JSON.parse(await a.read(path)).ok)throw Error('verify after reload');
               const stores=reloaded.stores(p);await reloaded.engine.applier.undo(JSON.stringify([p.id,p.scope,stores.reference.id,stores.local.id]),stores.local);
               if(await a.exists(path))throw Error('undo');return 'Windows Obsidian: ZIP, Cyrillic paths, content, configDir, verification and undo passed';
+            }"""))
+            # Deliver a harmless fixture plugin, then let Obsidian itself activate it at startup.
+            page.evaluate("""async()=>{
+              const rs=app.plugins.plugins.refsync,v=app.vault,a=v.adapter;
+              const old=rs.config.profiles[0],id='refsync-ci-fixture',ref='Комплект';
+              await v.createFolder(ref+'/plugins/'+id);
+              await v.create(ref+'/plugins/'+id+'/main.js',"const {Plugin}=require('obsidian');module.exports=class extends Plugin{async onload(){this.received=await this.loadData();}};");
+              await v.create(ref+'/plugins/'+id+'/manifest.json',JSON.stringify({id,name:'RefSync CI Fixture',version:'1.0.0',minAppVersion:'1.8.7',description:'Settings smoke test',author:'RefSync',isDesktopOnly:false}));
+              await v.create(ref+'/plugins/'+id+'/data.json','{"setting":1,"device":"source"}');
+              await v.create(ref+'/community-plugins.json',JSON.stringify([id]));
+              const p={...old,id:'windows-install',reference:ref,config:{...old.config,categories:['code','data','community'],reload:'never',strategy:'batch',legacyThemes:false,overlay:'plugins/*/data.json => device'}};
+              await rs.put(p,true);await rs.execute(p.id,'run');
+              const ids=JSON.parse(await a.read(v.configDir+'/community-plugins.json'));
+              if(!ids.includes('refsync')||!ids.includes(id))throw Error('delivered membership');
+            }""")
+            page.reload(wait_until="domcontentloaded")
+            page.wait_for_function("window.app?.plugins?.plugins?.['refsync-ci-fixture']?.received?.setting===1",timeout=45000)
+            print(page.evaluate("""async()=>{
+              const rs=app.plugins.plugins.refsync;await rs.ready;
+              const p=rs.config.profiles.find(p=>p.id==='windows-install'),v=app.vault,a=v.adapter,id='refsync-ci-fixture';
+              const relative='/plugins/'+id+'/data.json';
+              await a.write(v.configDir+relative,'{"setting":1,"device":"this PC"}');
+              const file=v.getAbstractFileByPath(p.reference+relative);
+              await v.modify(file,'{"setting":2,"device":"another PC"}');
+              await rs.execute(p.id,'run');
+              const active=app.plugins.plugins[id];if(active?.received?.setting!==2||active.received.device!=='this PC')throw Error('hot data overlay');
+              return 'Windows Obsidian: activation after app reload, hot data update and per-device JSON overlay passed';
             }"""))
     finally:
         subprocess.run(["taskkill","/PID",str(app.pid),"/T","/F"],capture_output=True)

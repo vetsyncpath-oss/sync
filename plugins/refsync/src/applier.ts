@@ -85,7 +85,11 @@ export class Applier {
     }
     this.needsRecovery = false;
   }
-  async undo(key: string, target: StorageProvider) {
+  async undo(
+    key: string,
+    target: StorageProvider,
+    resolve?: (t: Transaction) => StorageProvider,
+  ) {
     this.fence.check();
     this.needsRecovery = true;
     const last = this.state.get(key).lastRun;
@@ -94,7 +98,7 @@ export class Applier {
     );
     if (!t) throw Error("noBackup");
     await this.journal.mark(t.id + "/undo-start");
-    await this.restore(t, target);
+    await this.restore(t, resolve ? resolve(t) : target);
     this.state.put(key, t.before);
     await this.journal.mark(t.id + "/undo-done");
     this.needsRecovery = false;

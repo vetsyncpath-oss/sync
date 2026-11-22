@@ -2437,7 +2437,7 @@ var Applier = class {
     }
     this.needsRecovery = false;
   }
-  async undo(key, target) {
+  async undo(key, target, resolve) {
     this.fence.check();
     this.needsRecovery = true;
     const last = this.state.get(key).lastRun;
@@ -2446,7 +2446,7 @@ var Applier = class {
     );
     if (!t) throw Error("noBackup");
     await this.journal.mark(t.id + "/undo-start");
-    await this.restore(t, target);
+    await this.restore(t, resolve ? resolve(t) : target);
     this.state.put(key, t.before);
     await this.journal.mark(t.id + "/undo-done");
     this.needsRecovery = false;
@@ -5157,7 +5157,8 @@ var RefSync = class extends import_obsidian5.Plugin {
         await this.engine.exclusive(
           () => this.engine.applier.undo(
             JSON.stringify([p.id, p.scope, source.id, target.id]),
-            target
+            target,
+            (t) => this.recoveryTarget(t)
           )
         );
         await this.log("undo", 1, p.id);
