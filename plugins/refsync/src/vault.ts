@@ -1,3 +1,4 @@
+import type { ConfigScope } from "./config-scope";
 import { selected } from "./classifier";
 import { TFile, type DataAdapter, type Vault } from "obsidian";
 import {
@@ -75,6 +76,8 @@ export class LocalProvider implements StorageProvider {
       trashDays: 30,
     },
     private ownWrite?: (path: string, digest: string | null) => void,
+    private config?: ConfigScope,
+    readonly withFilePaused?: StorageProvider["withFilePaused"],
   ) {
     if (root) checked(root);
     if (under(fold(root), fold(join(vault.configDir, "plugins/" + self))))
@@ -100,7 +103,14 @@ export class LocalProvider implements StorageProvider {
   private writable(p: string, directory = false) {
     if (
       this.capabilities.readOnly ||
-      !selected(p, this.scope, this.vault.configDir, this.self, directory)
+      !selected(
+        p,
+        this.scope,
+        this.vault.configDir,
+        this.self,
+        directory,
+        this.config,
+      )
     )
       throw Error("protected");
     const path = this.path(p);

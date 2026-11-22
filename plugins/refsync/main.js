@@ -1658,9 +1658,9 @@ var require_picomatch = __commonJS({
     var utils = require_utils();
     var constants = require_constants();
     var isObject = (val) => val && typeof val === "object" && !Array.isArray(val);
-    var picomatch2 = (glob, options, returnState = false) => {
+    var picomatch4 = (glob, options, returnState = false) => {
       if (Array.isArray(glob)) {
-        const fns = glob.map((input) => picomatch2(input, options, returnState));
+        const fns = glob.map((input) => picomatch4(input, options, returnState));
         const arrayMatcher = (str) => {
           for (const isMatch of fns) {
             const state2 = isMatch(str);
@@ -1676,16 +1676,16 @@ var require_picomatch = __commonJS({
       }
       const opts = options || {};
       const posix = opts.windows;
-      const regex = isState ? picomatch2.compileRe(glob, options) : picomatch2.makeRe(glob, options, false, true);
+      const regex = isState ? picomatch4.compileRe(glob, options) : picomatch4.makeRe(glob, options, false, true);
       const state = regex.state;
       delete regex.state;
       let isIgnored = () => false;
       if (opts.ignore) {
         const ignoreOpts = { ...options, ignore: null, onMatch: null, onResult: null };
-        isIgnored = picomatch2(opts.ignore, ignoreOpts, returnState);
+        isIgnored = picomatch4(opts.ignore, ignoreOpts, returnState);
       }
       const matcher = (input, returnObject = false) => {
-        const { isMatch, match, output } = picomatch2.test(input, regex, options, { glob, posix });
+        const { isMatch, match, output } = picomatch4.test(input, regex, options, { glob, posix });
         const result = { glob, state, regex, posix, input, output, match, isMatch };
         if (typeof opts.onResult === "function") {
           opts.onResult(result);
@@ -1711,7 +1711,7 @@ var require_picomatch = __commonJS({
       }
       return matcher;
     };
-    picomatch2.test = (input, regex, options, { glob, posix } = {}) => {
+    picomatch4.test = (input, regex, options, { glob, posix } = {}) => {
       if (typeof input !== "string") {
         throw new TypeError("Expected input to be a string");
       }
@@ -1728,24 +1728,24 @@ var require_picomatch = __commonJS({
       }
       if (match === false || opts.capture === true) {
         if (opts.matchBase === true || opts.basename === true) {
-          match = picomatch2.matchBase(input, regex, options, posix);
+          match = picomatch4.matchBase(input, regex, options, posix);
         } else {
           match = regex.exec(output);
         }
       }
       return { isMatch: Boolean(match), match, output };
     };
-    picomatch2.matchBase = (input, glob, options, posix = options && options.windows) => {
-      const regex = glob instanceof RegExp ? glob : picomatch2.makeRe(glob, options);
+    picomatch4.matchBase = (input, glob, options, posix = options && options.windows) => {
+      const regex = glob instanceof RegExp ? glob : picomatch4.makeRe(glob, options);
       return regex.test(utils.basename(input, { windows: posix }));
     };
-    picomatch2.isMatch = (str, patterns, options) => picomatch2(patterns, options)(str);
-    picomatch2.parse = (pattern, options) => {
-      if (Array.isArray(pattern)) return pattern.map((p) => picomatch2.parse(p, options));
+    picomatch4.isMatch = (str, patterns, options) => picomatch4(patterns, options)(str);
+    picomatch4.parse = (pattern, options) => {
+      if (Array.isArray(pattern)) return pattern.map((p) => picomatch4.parse(p, options));
       return parse(pattern, { ...options, fastpaths: false });
     };
-    picomatch2.scan = (input, options) => scan2(input, options);
-    picomatch2.compileRe = (state, options, returnOutput = false, returnState = false) => {
+    picomatch4.scan = (input, options) => scan2(input, options);
+    picomatch4.compileRe = (state, options, returnOutput = false, returnState = false) => {
       if (returnOutput === true) {
         return state.output;
       }
@@ -1756,13 +1756,13 @@ var require_picomatch = __commonJS({
       if (state && state.negated === true) {
         source = `^(?!${source}).*$`;
       }
-      const regex = picomatch2.toRegex(source, options);
+      const regex = picomatch4.toRegex(source, options);
       if (returnState === true) {
         regex.state = state;
       }
       return regex;
     };
-    picomatch2.makeRe = (input, options = {}, returnOutput = false, returnState = false) => {
+    picomatch4.makeRe = (input, options = {}, returnOutput = false, returnState = false) => {
       if (!input || typeof input !== "string") {
         throw new TypeError("Expected a non-empty string");
       }
@@ -1773,9 +1773,9 @@ var require_picomatch = __commonJS({
       if (!parsed.output) {
         parsed = parse(input, options);
       }
-      return picomatch2.compileRe(parsed, options, returnOutput, returnState);
+      return picomatch4.compileRe(parsed, options, returnOutput, returnState);
     };
-    picomatch2.toRegex = (source, options) => {
+    picomatch4.toRegex = (source, options) => {
       try {
         const opts = options || {};
         return new RegExp(source, opts.flags || (opts.nocase ? "i" : ""));
@@ -1784,8 +1784,8 @@ var require_picomatch = __commonJS({
         return /$^/;
       }
     };
-    picomatch2.constants = constants;
-    module2.exports = picomatch2;
+    picomatch4.constants = constants;
+    module2.exports = picomatch4;
   }
 });
 
@@ -1803,7 +1803,9 @@ __export(main_exports, {
   default: () => RefSync
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian4 = require("obsidian");
+
+// src/config-scope.ts
+var import_posix = __toESM(require_posix());
 
 // src/model.ts
 var defaults = {
@@ -1855,7 +1857,9 @@ var fold = (v) => v.normalize("NFC").toLowerCase();
 var under = (p, base) => !base || p === base || p.startsWith(base + "/");
 function safe(p) {
   return p.length < 1024 && p.split("/").every(
-    (s) => s.length > 0 && s.length <= 255 && !/[<>:"\\|?*\x00-\x1F\x7F]/.test(s) && !/[. ]$/.test(s) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(s)
+    (s) => s.length > 0 && s.length <= 255 && !/[<>:"\\|?*\x00-\x1F\x7F]/.test(s) && !/[. ]$/.test(s) && !/^(con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(
+      s
+    )
   );
 }
 function checked(p) {
@@ -1869,64 +1873,197 @@ async function hash(b) {
   ).join("");
 }
 
-// src/profiles.ts
-var object = (v) => !!v && typeof v === "object" && !Array.isArray(v);
-function loadProfiles(raw) {
-  let profiles = [];
-  let current = "", mode = "plan", paused = false;
-  if (object(raw) && Array.isArray(raw.profiles)) {
-    const ids = /* @__PURE__ */ new Set();
-    for (const entry of raw.profiles) {
-      if (!object(entry) || typeof entry.id !== "string" || ids.has(entry.id))
-        throw Error("invalid");
-      ids.add(entry.id);
-      profiles.push({ ...defaults, ...entry });
-    }
-    current = String(raw.current);
-    mode = raw.mode === "silent" ? "silent" : "plan";
-    paused = raw.paused === true;
-  } else if (object(raw) && object(raw.profile)) {
-    profiles = [
-      {
-        ...defaults,
-        startup: false,
-        onFocus: false,
-        onOnline: false,
-        intervalMinutes: 0,
-        inheritMode: false,
-        trash: "vault",
-        ...raw.profile
-      }
-    ];
-  } else
-    profiles = [
-      {
-        ...defaults,
-        startup: false,
-        onFocus: false,
-        onOnline: false,
-        intervalMinutes: 0
-      }
-    ];
-  return {
-    version: 2,
-    profiles,
-    current: profiles.some((p) => p.id === current) ? current : profiles[0]?.id ?? "",
-    mode,
-    paused
-  };
+// src/config-scope.ts
+var categories = [
+  "core",
+  "appearance",
+  "themes",
+  "snippets",
+  "community",
+  "code",
+  "data",
+  "extras"
+];
+function preset(name) {
+  switch (name) {
+    case "look":
+      return ["appearance", "themes", "snippets"];
+    case "plugins":
+      return ["code", "community"];
+    case "noData":
+      return categories.filter((c) => c !== "data" && c !== "extras");
+    case "full":
+      return categories.filter((c) => c !== "extras");
+    default:
+      return ["core", "appearance", "themes", "snippets", "community", "data"];
+  }
 }
-function newProfile(copy) {
-  const id = crypto.randomUUID(), tag = id.slice(0, 6);
-  return copy ? { ...copy, id, name: copy.name + " (2)", enabled: false } : {
-    ...defaults,
-    id,
-    name: "RefSync " + tag,
-    local: "RefSync-copy-" + tag,
-    reference: "RefSync-reference-" + tag,
-    enabled: false,
-    fileEvents: true
-  };
+var legacyConfig = () => ({
+  categories: preset("legacy"),
+  codeAllow: "",
+  codeDeny: "",
+  dataAllow: "",
+  dataDeny: "",
+  include: "",
+  exclude: "",
+  overlay: "",
+  platformFilter: true,
+  strategy: "changes",
+  reload: "next",
+  idleSeconds: 30,
+  legacyThemes: true
+});
+function category(path) {
+  const [dir, id, ...tail] = fold(path).split("/");
+  if (!id && dir.endsWith(".json"))
+    return dir === "appearance.json" ? "appearance" : dir === "community-plugins.json" ? "community" : "core";
+  if (dir === "themes" && tail.length) return "themes";
+  if (dir === "snippets" && path.endsWith(".css")) return "snippets";
+  if (dir !== "plugins" || !id || !tail.length) return;
+  const file = tail.join("/");
+  return file === "data.json" ? "data" : ["main.js", "manifest.json", "styles.css"].includes(file) ? "code" : "extras";
+}
+var terms = (s) => s.split(/[\n,]+/).map((x) => x.trim()).filter(Boolean);
+var matches = (path, patterns) => terms(patterns).some(
+  (pattern) => import_posix.default.isMatch(path, pattern, {
+    nonegate: true,
+    noextglob: true,
+    nobrace: true,
+    nocase: true
+  })
+);
+function inScope(path, c, directory) {
+  path = fold(path);
+  if (directory)
+    return /^(themes|snippets|plugins)(\/|$)/.test(path) || !!c.include;
+  const cat = category(path), custom = matches(path, c.include);
+  if (!custom && (!cat || !c.categories.includes(cat))) return false;
+  if (c.legacyThemes && cat === "themes" && !custom && !/^themes\/[^/]+\/(manifest\.json|theme\.css)$/.test(path))
+    return false;
+  if (matches(path, c.exclude)) return false;
+  const id = path.startsWith("plugins/") ? path.split("/")[1] : void 0;
+  if (!id) return true;
+  const [allow, deny] = cat === "data" ? [c.dataAllow, c.dataDeny] : [c.codeAllow, c.codeDeny];
+  return (!allow.trim() || matches(id, allow)) && !matches(id, deny);
+}
+async function mobileExcluded(source, target, budget) {
+  const blocked = /* @__PURE__ */ new Set();
+  for (const store of [source, target]) {
+    if (!await budget.io(() => store.stat("plugins"))) continue;
+    const dirs = await budget.io(() => store.list("plugins"));
+    for (const folder of dirs.folders) {
+      if (!/^plugins\/[^/]+$/.test(folder)) throw Error("path");
+      const path = folder + "/manifest.json";
+      if (!await budget.io(() => store.stat(path))) continue;
+      const m = JSON.parse(
+        new TextDecoder().decode(await budget.io(() => store.download(path)))
+      );
+      if (m.isDesktopOnly === true) blocked.add(fold(folder.split("/")[1]));
+    }
+  }
+  return [...blocked];
+}
+function validConfig(c) {
+  return !!c && Array.isArray(c.categories) && c.categories.every((k) => categories.includes(k)) && [
+    "codeAllow",
+    "codeDeny",
+    "dataAllow",
+    "dataDeny",
+    "include",
+    "exclude",
+    "overlay"
+  ].every(
+    (k) => typeof c[k] === "string" && String(c[k]).length <= 8192
+  ) && typeof c.platformFilter === "boolean" && typeof c.legacyThemes === "boolean" && ["batch", "changes"].includes(c.strategy) && ["now", "next", "idle", "never"].includes(c.reload) && Number.isInteger(c.idleSeconds) && c.idleSeconds >= 1 && c.idleSeconds <= 3600;
+}
+
+// src/hot-config.ts
+async function withPluginData(app, self, path, write) {
+  const id = /^plugins\/([^/]+)\/data\.json$/.exec(path)?.[1];
+  const host = app.plugins;
+  if (!id || id === self || !host?.plugins?.[id] || typeof host.disablePlugin !== "function" || typeof host.enablePlugin !== "function" || host.isEnabled?.() === false) {
+    await write();
+    return;
+  }
+  await host.disablePlugin(id);
+  try {
+    await write();
+  } finally {
+    await host.enablePlugin(id);
+  }
+}
+function reloadApp(app) {
+  const commands = app.commands;
+  if (!commands?.executeCommandById?.("app:reload"))
+    throw Error("reloadUnavailable");
+}
+
+// src/json-overlay.ts
+var import_posix2 = __toESM(require_posix());
+function parseOverlay(text) {
+  return text.split(/\r?\n/).filter((line) => line.trim()).map((line) => {
+    const split = line.indexOf("=>");
+    if (split < 1) throw Error("overlaySyntax");
+    const file = line.slice(0, split).trim(), expr = line.slice(split + 2).trim().replace(/^\$\./, "").replace(/\[(\*|[0-9]+)\]/g, ".$1");
+    const keys = expr.split(".");
+    if (!file || keys.some((k) => !k || k !== "*" && !/^[\p{L}\p{N}_$-]+$/u.test(k)))
+      throw Error("overlaySyntax");
+    return { file, keys };
+  });
+}
+var record = (x) => !!x && typeof x === "object" && !Array.isArray(x);
+function combine(source, local, rules) {
+  if (rules.some((r) => !r.length)) return local;
+  const obj = record(source) || source === void 0 && record(local), array = Array.isArray(source) || source === void 0 && Array.isArray(local);
+  if (!obj && !array) return source;
+  const result = /* @__PURE__ */ Object.create(null);
+  const a = obj && record(source) || array && Array.isArray(source) ? source : {};
+  const b = obj && record(local) || array && Array.isArray(local) ? local : {};
+  for (const key of [
+    .../* @__PURE__ */ new Set([...Object.keys(a), ...Object.keys(b)])
+  ].sort()) {
+    const next = rules.filter((r) => r[0] === key || r[0] === "*").map((r) => r.slice(1));
+    const value = combine(
+      Object.hasOwn(a, key) ? a[key] : void 0,
+      next.length && Object.hasOwn(b, key) ? b[key] : void 0,
+      next
+    );
+    if (value !== void 0) result[key] = value;
+  }
+  if (!Object.keys(result).length && (source === void 0 || rules.length && Object.keys(a).length > 0 && !local))
+    return void 0;
+  if (array) {
+    const out = [];
+    for (const k of Object.keys(result)) out[Number(k)] = result[k];
+    return out;
+  }
+  return result;
+}
+var decode = (b) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(b));
+var encode = (v) => new TextEncoder().encode(JSON.stringify(v) + "\n").buffer;
+function project(path, bytes, policy, local) {
+  if (!path.toLowerCase().endsWith(".json")) return bytes;
+  const src = decode(bytes), rules = policy.rules.filter((r) => import_posix2.default.isMatch(path, r.file, { nocase: true })).map((r) => r.keys);
+  if (fold(path) === "community-plugins.json") {
+    if (!Array.isArray(src) || src.some((id) => typeof id !== "string"))
+      throw Error("invalidConfig");
+    const ids = src.filter(
+      (id) => fold(id) !== fold(policy.self) && !policy.blocked.includes(fold(id))
+    );
+    const old2 = local ? decode(local) : null;
+    if (Array.isArray(old2) && old2.includes(policy.self)) ids.push(policy.self);
+    return encode([...new Set(ids)].sort());
+  }
+  const old = rules.length && local ? decode(local) : void 0;
+  return encode(
+    combine(src, old, rules) ?? (Array.isArray(src) ? [] : record(src) ? {} : src)
+  );
+}
+var settingsHash = (path, bytes, policy) => hash(project(path, bytes, policy));
+function deliveryBytes(path, bytes, policy, local) {
+  if (fold(path) !== "community-plugins.json" && !policy.rules.some((r) => import_posix2.default.isMatch(path, r.file, { nocase: true })))
+    return bytes;
+  return project(path, bytes, policy, local);
 }
 
 // src/runtime.ts
@@ -2095,6 +2232,159 @@ function eventPath(p, path) {
   );
 }
 
+// src/verify-settings.ts
+var needsReload = (p) => !["snippets", "data"].includes(category(p) ?? "core");
+async function verifySettings(journal, target, current, budget = new RunBudget()) {
+  const reports = [], covered = /* @__PURE__ */ new Set();
+  const transactions = (await journal.transactions()).filter((t) => t.settings?.local).sort((a, b) => b.settings.at - a.settings.at);
+  for (const t of transactions) {
+    if (!await journal.disk.has(t.id + "/done") || await journal.disk.has(t.id + "/rolled-back"))
+      continue;
+    const cfg = current(t), policy = t.settings.projection, paths = [];
+    const undone = await journal.disk.has(t.id + "/undo-start");
+    for (const [i, step] of t.steps.entries()) {
+      if (await journal.disk.has(t.id + "/skipped/" + i)) continue;
+      const key = JSON.stringify([t.target, step.path]);
+      if (covered.has(key)) continue;
+      covered.add(key);
+      if (!undone && cfg && inScope(step.path, cfg, false)) paths.push(i);
+    }
+    if (undone || !cfg || await journal.disk.has(t.id + "/verified") || await journal.disk.has(t.id + "/verify-failed"))
+      continue;
+    const store = target(t), report = { id: t.id, repaired: 0, unresolved: [] };
+    const read = async (path) => await budget.io(() => store.stat(path)) ? await budget.io(() => store.download(path)) : null;
+    const equivalent = async (path, local, expected, projection) => {
+      if (!local || !expected) return local === expected;
+      try {
+        return await settingsHash(path, local, projection) === await settingsHash(path, expected, projection);
+      } catch {
+        return false;
+      }
+    };
+    for (const i of paths) {
+      const step = t.steps[i], path = step.path, expected = step.action === "delete" ? null : await journal.disk.read(t.id + "/stage/" + i);
+      if (expected && await hash(expected) !== step.digest)
+        throw Error("incomplete");
+      let ok = await equivalent(path, await read(path), expected, policy);
+      for (let attempt = 1; !ok && attempt <= 2; attempt++) {
+        const marker = t.id + "/verify/" + i + "/" + attempt;
+        if (await journal.disk.has(marker)) continue;
+        await journal.mark(marker);
+        const fix = async () => {
+          const old = await read(path);
+          if (expected) {
+            await budget.io(
+              () => store.upload(
+                path,
+                deliveryBytes(path, expected, policy, old),
+                step.mtime
+              ),
+              false
+            );
+          } else if (old) await budget.io(() => store.delete(path), false);
+        };
+        try {
+          if (store.withFilePaused) await store.withFilePaused(path, fix);
+          else await fix();
+          report.repaired++;
+        } catch (e) {
+          budget.fence.check();
+          if (attempt === 2) break;
+        }
+        ok = await equivalent(path, await read(path), expected, policy);
+      }
+      if (!ok) report.unresolved.push(path);
+    }
+    await journal.mark(
+      t.id + (report.unresolved.length ? "/verify-failed" : "/verified")
+    );
+    if (!report.unresolved.length) {
+      await journal.disk.removeTree(t.id + "/stage");
+      await journal.disk.removeTree(t.id + "/unchanged");
+    }
+    reports.push(report);
+  }
+  return reports;
+}
+
+// src/reload-manager.ts
+function canAutoReload(history, now = Date.now()) {
+  const recent = history.filter((v) => v > now - 36e5);
+  return recent.length < 2 && recent.every((v) => v <= now - 3e5);
+}
+
+// src/main.ts
+var import_obsidian5 = require("obsidian");
+
+// src/profiles.ts
+var object = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+function loadProfiles(raw) {
+  let profiles = [];
+  let current = "", mode = "plan", paused = false;
+  if (object(raw) && Array.isArray(raw.profiles)) {
+    const ids = /* @__PURE__ */ new Set();
+    for (const entry of raw.profiles) {
+      if (!object(entry) || typeof entry.id !== "string" || ids.has(entry.id))
+        throw Error("invalid");
+      ids.add(entry.id);
+      profiles.push({ ...defaults, ...entry });
+    }
+    current = String(raw.current);
+    mode = raw.mode === "silent" ? "silent" : "plan";
+    paused = raw.paused === true;
+  } else if (object(raw) && object(raw.profile)) {
+    profiles = [
+      {
+        ...defaults,
+        startup: false,
+        onFocus: false,
+        onOnline: false,
+        intervalMinutes: 0,
+        inheritMode: false,
+        trash: "vault",
+        ...raw.profile
+      }
+    ];
+  } else
+    profiles = [
+      {
+        ...defaults,
+        startup: false,
+        onFocus: false,
+        onOnline: false,
+        intervalMinutes: 0
+      }
+    ];
+  for (const p of profiles) {
+    if (p.scope === "settings" && p.config === void 0) {
+      p.config = legacyConfig();
+      p.startup = false;
+      p.intervalMinutes = 0;
+      p.onFocus = false;
+      p.onOnline = false;
+    }
+  }
+  return {
+    version: 2,
+    profiles,
+    current: profiles.some((p) => p.id === current) ? current : profiles[0]?.id ?? "",
+    mode,
+    paused
+  };
+}
+function newProfile(copy) {
+  const id = crypto.randomUUID(), tag = id.slice(0, 6);
+  return copy ? { ...structuredClone(copy), id, name: copy.name + " (2)", enabled: false } : {
+    ...defaults,
+    id,
+    name: "RefSync " + tag,
+    local: "RefSync-copy-" + tag,
+    reference: "RefSync-reference-" + tag,
+    enabled: false,
+    fileEvents: true
+  };
+}
+
 // src/applier.ts
 var decoder = new TextDecoder();
 var Applier = class {
@@ -2110,17 +2400,21 @@ var Applier = class {
       const p = t.steps[i].path, armed = t.id + "/armed/" + i;
       if (!await this.journal.disk.has(armed) || await this.journal.disk.has(t.id + "/skipped/" + i))
         continue;
-      const saved = await this.journal.json(armed);
-      const stat = await budget.io(() => target.stat(p));
-      if (stat?.type === "folder") throw Error("collision");
-      if (saved === null) {
-        if (stat) await budget.io(() => target.delete(p), false);
-      } else {
-        const bytes = await this.journal.disk.read(t.id + "/backup/" + i);
-        if (await hash(bytes) !== saved) throw Error("backup");
-        if (!stat || await hash(await budget.io(() => target.download(p))) !== saved)
-          await budget.io(() => target.upload(p, bytes), false);
-      }
+      const perform = async () => {
+        const saved = await this.journal.json(armed);
+        const stat = await budget.io(() => target.stat(p));
+        if (stat?.type === "folder") throw Error("collision");
+        if (saved === null) {
+          if (stat) await budget.io(() => target.delete(p), false);
+        } else {
+          const bytes = await this.journal.disk.read(t.id + "/backup/" + i);
+          if (await hash(bytes) !== saved) throw Error("backup");
+          if (!stat || await hash(await budget.io(() => target.download(p))) !== saved)
+            await budget.io(() => target.upload(p, bytes), false);
+        }
+      };
+      if (target.withFilePaused) await target.withFilePaused(p, perform);
+      else await perform();
     }
   }
   async recover(resolve) {
@@ -2157,13 +2451,17 @@ var Applier = class {
     await this.journal.mark(t.id + "/undo-done");
     this.needsRecovery = false;
   }
-  async apply(profile, plan2, source, target, key, targetPath, budget = new RunBudget(void 0, void 0, void 0, this.fence), progress, active) {
+  async apply(profile, plan2, source, target, key, targetPath, budget = new RunBudget(void 0, void 0, void 0, this.fence), progress, active, projection) {
     this.fence.check();
     if (this.needsRecovery) throw Error("journal");
     const checkpoint = () => {
       budget.check();
       if (active && !active()) throw Error("stopped");
     };
+    const cfg = profile.config ?? legacyConfig();
+    const batch = profile.scope === "settings" && cfg.strategy === "batch";
+    if (batch && plan2.deferred.some((x) => x.reason === "locked"))
+      throw Error("incomplete");
     const previous = this.state.get(key);
     const next = {
       ...fresh(),
@@ -2178,6 +2476,7 @@ var Applier = class {
       await this.journal.disk.putNew(id + "/stage/" + steps.length, bytes);
       steps.push({ path, action: "write", mtime, digest });
     };
+    const stageBatch = batch && plan2.ops.some((x) => x.action === "write" || x.action === "delete");
     const displaced = /* @__PURE__ */ new Map();
     try {
       for (const op of plan2.ops) {
@@ -2200,16 +2499,25 @@ var Applier = class {
           };
           continue;
         }
+        if (stageBatch && op.action === "ack") {
+          const bytes = await budget.io(() => source.download(p));
+          if (await hash(bytes) !== (s.rawHash ?? s.hash))
+            throw Error("referenceChanged");
+          await this.journal.disk.putNew(
+            id + "/unchanged/" + await hash(new TextEncoder().encode(p).buffer),
+            projection ? deliveryBytes(p, bytes, projection) : bytes
+          );
+        }
         if (op.action === "write" || op.action === "both") {
           let bytes;
           try {
             bytes = await budget.io(() => source.download(p));
           } catch (e) {
-            if (!transient(e)) throw e;
+            if (batch || !transient(e)) throw e;
             plan2.deferred.push({ path: p, reason: "locked" });
             continue;
           }
-          if (bytes.byteLength !== s.size || await hash(bytes) !== s.hash) {
+          if (bytes.byteLength !== s.size || await hash(bytes) !== (s.rawHash ?? s.hash)) {
             if (profile.role === "publisher") {
               plan2.deferred.push({ path: p, reason: "unstable" });
               continue;
@@ -2226,7 +2534,11 @@ var Applier = class {
             displaced.set(copy, p);
             steps.push({ path: copy, action: "write" });
           }
-          await stage(p, bytes, s.mtime);
+          await stage(
+            p,
+            projection ? deliveryBytes(p, bytes, projection) : bytes,
+            s.mtime
+          );
         }
         next.entries[p] = {
           size: s.size,
@@ -2251,6 +2563,12 @@ var Applier = class {
       key,
       target: targetPath,
       scope: profile.scope,
+      settings: projection ? {
+        config: cfg,
+        projection,
+        local: profile.role === "subscriber",
+        at: Date.now()
+      } : void 0,
       before: previous,
       steps
     };
@@ -2265,32 +2583,42 @@ var Applier = class {
         try {
           for (let i = start; i < end; i++) {
             checkpoint();
-            const step = steps[i], stat = await budget.io(() => target.stat(step.path));
-            if (stat?.type === "folder") throw Error("collision");
-            const old = stat ? await budget.io(() => target.download(step.path)) : null;
-            const copy = displaced.get(step.path);
-            if (copy && stat) throw Error("collision");
-            await this.journal.backup(id, i, old);
-            if (step.action === "delete") {
-              if (stat)
-                await budget.io(async () => {
-                  if (await target.stat(step.path))
-                    await target.delete(step.path);
-                }, false);
-            } else {
-              const bytes = copy ? await budget.io(() => target.download(copy)) : await this.journal.disk.read(id + "/stage/" + i);
-              if (step.digest && await hash(bytes) !== step.digest)
-                throw Error("incomplete");
-              await budget.io(
-                () => target.upload(step.path, bytes, step.mtime),
-                false
-              );
-            }
+            const step = steps[i];
+            const perform = async () => {
+              const stat = await budget.io(() => target.stat(step.path));
+              if (stat?.type === "folder") throw Error("collision");
+              const old = stat ? await budget.io(() => target.download(step.path)) : null;
+              const copy = displaced.get(step.path);
+              if (copy && stat) throw Error("collision");
+              await this.journal.backup(id, i, old);
+              if (step.action === "delete") {
+                if (stat)
+                  await budget.io(async () => {
+                    if (await target.stat(step.path))
+                      await target.delete(step.path);
+                  }, false);
+              } else {
+                const bytes = copy ? await budget.io(() => target.download(copy)) : await this.journal.disk.read(id + "/stage/" + i);
+                if (step.digest && await hash(bytes) !== step.digest)
+                  throw Error("incomplete");
+                await budget.io(
+                  () => target.upload(
+                    step.path,
+                    projection ? deliveryBytes(step.path, bytes, projection, old) : bytes,
+                    step.mtime
+                  ),
+                  false
+                );
+              }
+            };
+            if (target.withFilePaused)
+              await target.withFilePaused(step.path, perform);
+            else await perform();
             await this.journal.mark(id + "/applied/" + i);
           }
           changed += end - start;
         } catch (e) {
-          if (!transient(e)) throw e;
+          if (batch || !transient(e)) throw e;
           await this.restore(t, target, start, end);
           for (let i = start; i < end; i++)
             await this.journal.mark(id + "/skipped/" + i);
@@ -2413,7 +2741,7 @@ function volatility(p, scope) {
     return "V";
   return /^(?:[^/]+\.json|plugins\/[^/]+\/data\.json)$/.test(p) ? "H" : "S";
 }
-function selected(p, scope, configDir, self, directory) {
+function selected(p, scope, configDir, self, directory, config = legacyConfig()) {
   const f = fold(p);
   if (f.split("/").some(
     (s) => [".git", ".trash", ".sync-trash", "node_modules"].includes(s)
@@ -2423,11 +2751,7 @@ function selected(p, scope, configDir, self, directory) {
     return !under(f, fold(configDir)) && !p.split("/").some((s) => s.startsWith(".")) && !/(?:\.tmp$|(?:^|\/)(?:thumbs\.db|desktop\.ini)$)/i.test(p);
   if (volatility(p, scope) === "V" || p.split("/").some((s) => s.startsWith(".")))
     return false;
-  if (directory)
-    return /^(themes|snippets)(\/|$)|^plugins(?:\/[^/]+)?$/.test(p);
-  return /^[^/]+\.json$|^themes\/[^/]+\/(manifest\.json|theme\.css)$|^snippets\/.+\.css$|^plugins\/[^/]+\/data\.json$/.test(
-    p
-  );
+  return inScope(p, config, directory);
 }
 var priority = (p) => p === "community-plugins.json" ? 3 : p.includes("/") ? p.endsWith("/data.json") ? 1 : 0 : 2;
 
@@ -2485,13 +2809,15 @@ var LocalProvider = class {
   constructor(vault, root, self, scope, readOnly = false, policy = {
     trash: "vault",
     trashDays: 30
-  }, ownWrite) {
+  }, ownWrite, config, withFilePaused) {
     this.vault = vault;
     this.root = root;
     this.self = self;
     this.scope = scope;
     this.policy = policy;
     this.ownWrite = ownWrite;
+    this.config = config;
+    this.withFilePaused = withFilePaused;
     if (root) checked(root);
     if (under(fold(root), fold(join(vault.configDir, "plugins/" + self))))
       throw Error("protected");
@@ -2513,7 +2839,14 @@ var LocalProvider = class {
     return !under(fold(path), fold(this.vault.configDir)) && !path.split("/").some((s) => s.startsWith("."));
   }
   writable(p, directory = false) {
-    if (this.capabilities.readOnly || !selected(p, this.scope, this.vault.configDir, this.self, directory))
+    if (this.capabilities.readOnly || !selected(
+      p,
+      this.scope,
+      this.vault.configDir,
+      this.self,
+      directory,
+      this.config
+    ))
       throw Error("protected");
     const path = this.path(p);
     if (under(
@@ -2633,10 +2966,10 @@ var LocalProvider = class {
 };
 
 // src/filters.ts
-var import_posix = __toESM(require_posix());
+var import_posix3 = __toESM(require_posix());
 function pathFilter(p) {
   const compile = (s) => s.split(/[\n,]+/).map((v) => v.trim()).filter(Boolean).map(
-    (v) => (0, import_posix.default)(v, { nonegate: true, noextglob: true, nobrace: true })
+    (v) => (0, import_posix3.default)(v, { nonegate: true, noextglob: true, nobrace: true })
   );
   const include = compile(p.include), exclude = compile(p.exclude);
   return (path) => !exclude.some((f) => f(path)) && (!include.length || include.some((f) => f(path)));
@@ -2762,6 +3095,15 @@ function validate(p, desktop, readOnly, configDir) {
   for (const field of ["include", "exclude"])
     if (typeof p[field] !== "string" || p[field].length > 4096)
       err(field, "invalid");
+  if (p.config !== void 0) {
+    if (!validConfig(p.config)) err("config", "invalidConfig");
+    else
+      try {
+        parseOverlay(p.config.overlay);
+      } catch {
+        err("config", "overlaySyntax");
+      }
+  }
   if (errors.length) return errors;
   const local = fold(
     p.scope === "settings" ? configDir : p.local === "/" ? "" : p.local
@@ -2777,14 +3119,14 @@ function validate(p, desktop, readOnly, configDir) {
 }
 
 // src/scanner.ts
-async function scan(provider, scope, configDir, self, skipHotTarget = false, budget = new RunBudget(), accept = (path) => true, maxMiB = 0) {
+async function scan(provider, scope, configDir, self, skipHotTarget = false, budget = new RunBudget(), accept = (path) => true, maxMiB = 0, config, projection) {
   const snap = {
     files: /* @__PURE__ */ new Map(),
     directories: /* @__PURE__ */ new Set(),
     complete: false,
     skipped: /* @__PURE__ */ new Map()
   };
-  const todo = [""], seen = /* @__PURE__ */ new Set();
+  const todo = [""], seen = /* @__PURE__ */ new Map();
   if ((await budget.io(() => provider.stat("")))?.type !== "folder")
     throw Error("missingRoot");
   while (todo.length) {
@@ -2796,10 +3138,20 @@ async function scan(provider, scope, configDir, self, skipHotTarget = false, bud
     ]) {
       for (const p of paths) {
         if (parent(p) !== dir) throw Error("path");
-        if (!selected(p, scope, configDir, self, isDir)) continue;
-        checked(p);
-        if (seen.has(fold(p))) throw Error("collision");
-        seen.add(fold(p));
+        if (!selected(p, scope, configDir, self, isDir, config)) continue;
+        if (projection?.blocked.includes(fold(p.split("/")[1] ?? "")) && p.startsWith("plugins/"))
+          continue;
+        if (!safe(p)) {
+          snap.skipped.set(p, "badPath");
+          continue;
+        }
+        const alias = seen.get(fold(p));
+        if (alias !== void 0) {
+          snap.skipped.set(alias, "collision");
+          snap.skipped.set(p, "collision");
+          continue;
+        }
+        seen.set(fold(p), p);
         if (isDir) {
           snap.directories.add(p);
           todo.push(p);
@@ -2828,8 +3180,10 @@ async function scan(provider, scope, configDir, self, skipHotTarget = false, bud
           }
           const bytes = await budget.io(() => provider.download(p));
           if (bytes.byteLength !== stat.size) throw Error("incomplete");
+          const rawHash = await hash(bytes);
           snap.files.set(p, {
-            hash: await hash(bytes),
+            rawHash,
+            hash: projection ? await settingsHash(p, bytes, projection) : rawHash,
             size: stat.size,
             mtime: stat.mtime,
             kind
@@ -2856,6 +3210,7 @@ var resolveConflict = (policy, s, t) => {
 // src/planner.ts
 function plan(p, src, dst, base, resolve = resolveConflict) {
   if (!src.complete || !dst.complete) throw Error("incomplete");
+  const skipped = new Map([...src.skipped ?? [], ...dst.skipped ?? []]);
   const names = /* @__PURE__ */ new Map();
   for (const snap of [src, dst])
     for (const [paths, kind] of [
@@ -2864,14 +3219,24 @@ function plan(p, src, dst, base, resolve = resolveConflict) {
     ])
       for (const path of paths) {
         const key = fold(path), sig = kind + " " + path;
-        if (names.has(key) && names.get(key) !== sig) throw Error("collision");
+        if (names.has(key) && names.get(key) !== sig)
+          skipped.set(path, "collision");
         names.set(key, sig);
       }
-  const skipped = new Map([...src.skipped ?? [], ...dst.skipped ?? []]);
+  const alias = (s) => fold(s).split("/").map((k) => k.replace(/[. ]+$/, "")).join("/");
+  const blocked = new Set([...skipped.keys()].map(alias));
+  const protectedPath = (path) => {
+    const parts = alias(path).split("/");
+    while (parts.length) {
+      if (blocked.has(parts.join("/"))) return true;
+      parts.pop();
+    }
+    return false;
+  };
   const deferred = [...skipped].filter(([, reason]) => reason !== "filter").map(([path, reason]) => ({ path, reason }));
   const ops = [], deletes = [];
   for (const path of /* @__PURE__ */ new Set([...src.files.keys(), ...dst.files.keys()])) {
-    if (skipped.has(path)) continue;
+    if (protectedPath(path)) continue;
     const s = src.files.get(path), t = dst.files.get(path), b = Object.hasOwn(base.entries, path) ? base.entries[path] : void 0;
     if (!s) {
       if (t && (p.mirror === "full" || p.deletions && b?.delivered))
@@ -2885,6 +3250,8 @@ function plan(p, src, dst, base, resolve = resolveConflict) {
     }
     const strict = p.strictDrift || p.scope === "content" && p.mirror === "full";
     if (!strict && b?.seen === s.hash) continue;
+    if (!strict && p.scope === "settings" && s.rawHash && b?.seen === s.rawHash && s.rawHash !== s.hash)
+      continue;
     const conflict = !!t && s.kind === "S" && (!b || t.hash !== b.hash && s.hash !== b.applied);
     const action = conflict && t && p.mirror !== "full" ? resolve(p.conflict, s, t) : "write";
     ops.push({ path, action, source: s, target: t, conflict });
@@ -2898,7 +3265,7 @@ function plan(p, src, dst, base, resolve = resolveConflict) {
     ops,
     deferred,
     forgotten: Object.keys(base.entries).filter(
-      (path) => !skipped.has(path) && !src.files.has(path) && !dst.files.has(path)
+      (path) => !protectedPath(path) && !src.files.has(path) && !dst.files.has(path)
     ),
     held: protect ? deletes.map((d) => d.path) : [],
     count: src.files.size,
@@ -2954,6 +3321,12 @@ var SyncEngine = class {
       const key = JSON.stringify([p.id, p.scope, source.id, target.id]);
       this.status.set("scan");
       const budget = options.budget ?? new RunBudget(void 0, void 0, void 0, this.applier.fence);
+      const cfg = p.config ?? legacyConfig();
+      const projection = p.scope === "settings" ? {
+        rules: parseOverlay(cfg.overlay),
+        self: this.self,
+        blocked: !this.desktop && cfg.platformFilter ? await mobileExcluded(source, target, budget) : []
+      } : void 0;
       const filter = p.scope === "content" ? pathFilter(p) : () => true;
       const inputs = await Promise.allSettled([
         scan(
@@ -2964,7 +3337,9 @@ var SyncEngine = class {
           false,
           budget,
           filter,
-          p.scope === "content" ? p.maxMiB : 0
+          p.scope === "content" ? p.maxMiB : 0,
+          cfg,
+          projection
         ),
         scan(
           target,
@@ -2974,7 +3349,9 @@ var SyncEngine = class {
           !p.strictDrift,
           budget,
           filter,
-          p.scope === "content" ? p.maxMiB : 0
+          p.scope === "content" ? p.maxMiB : 0,
+          cfg,
+          projection
         )
       ]);
       const [s, t] = inputs.map((i) => {
@@ -3028,7 +3405,8 @@ var SyncEngine = class {
           p.role === "subscriber" ? p.scope === "settings" ? this.configDir : p.local : p.reference,
           budget,
           options.progress,
-          options.active
+          options.active,
+          projection
         );
       }
       this.status.set(
@@ -3045,6 +3423,45 @@ var ru = {
   maxDeletePercent: "Порог удалений, % от цели",
   shrinkPercent: "Порог уменьшения эталона, %",
   deleteGrace: "Минимум файлов для процентного порога удалений",
+  scopePreset: "Набор настроек",
+  preset_full: "Полная копия",
+  preset_noData: "Всё кроме данных плагинов",
+  preset_look: "Оформление и темы",
+  preset_plugins: "Код и список плагинов",
+  preset_custom: "Свой набор",
+  cat_core: "Основные настройки",
+  cat_appearance: "Оформление",
+  cat_themes: "Темы",
+  cat_snippets: "CSS-сниппеты",
+  cat_community: "Список включённых плагинов",
+  cat_code: "Код, манифесты и стили плагинов",
+  cat_data: "Данные плагинов",
+  cat_extras: "Прочие файлы плагинов",
+  existingCode: "Выбранные данные или список плагинов рассчитаны на уже установленный код.",
+  cfg_codeAllow: "Разрешённые ID для файлов плагинов (glob через запятую)",
+  cfg_codeDeny: "Исключённые ID для файлов плагинов",
+  cfg_dataAllow: "Разрешённые ID для data.json",
+  cfg_dataDeny: "Исключённые ID для data.json",
+  cfg_include: "Дополнительные файлы настроек (glob)",
+  cfg_exclude: "Исключить пути (glob)",
+  cfg_overlay: "Локальные ключи JSON, по строке: plugins/*/data.json => accounts[*].token",
+  mobileFilter: "Исключать desktop-only плагины на мобильных устройствах",
+  strategy: "Стратегия применения",
+  batch: "Пакет с полным предварительным чтением",
+  changes: "Только изменения",
+  reloadPolicy: "Перезагрузка Obsidian",
+  reload_now: "Сразу после применения",
+  reload_next: "При следующем запуске",
+  reload_idle: "При простое",
+  reload_never: "Только отметка в строке состояния",
+  idleDelay: "Простой до перезагрузки, секунд",
+  reloadNeeded: "Изменения требуют перезагрузки",
+  repairFailed: "Проверка настроек завершилась с расхождениями",
+  invalidConfig: "Некорректные параметры настроек",
+  overlaySyntax: "Ожидается шаблон файла => путь JSON, по правилу на строке",
+  reloadUnavailable: "Команда перезагрузки недоступна",
+  strictDrift: "Восстанавливать настройки при локальных изменениях",
+  badPath: "Недопустимое имя Windows",
   profiles: "Профили",
   defaultMode: "Режим по умолчанию",
   pause: "Приостановить синхронизацию",
@@ -3174,6 +3591,45 @@ var en = {
   maxDeletePercent: "Deletion threshold (% of target)",
   shrinkPercent: "Source shrink threshold (%)",
   deleteGrace: "Deletion count floor for percentage threshold",
+  scopePreset: "Settings preset",
+  preset_full: "Full copy",
+  preset_noData: "All except plugin data",
+  preset_look: "Appearance and themes",
+  preset_plugins: "Plugin code and list",
+  preset_custom: "Custom selection",
+  cat_core: "Core settings",
+  cat_appearance: "Appearance",
+  cat_themes: "Themes",
+  cat_snippets: "CSS snippets",
+  cat_community: "Enabled community plugins",
+  cat_code: "Plugin code, manifests and styles",
+  cat_data: "Plugin data",
+  cat_extras: "Other plugin files",
+  existingCode: "The selected data or enabled list depends on already installed plugins.",
+  cfg_codeAllow: "Allowed plugin IDs for files (comma-separated globs)",
+  cfg_codeDeny: "Excluded plugin IDs for files",
+  cfg_dataAllow: "Allowed plugin IDs for data.json",
+  cfg_dataDeny: "Excluded plugin IDs for data.json",
+  cfg_include: "Additional settings paths (globs)",
+  cfg_exclude: "Exclude settings paths (globs)",
+  cfg_overlay: "Keep local JSON keys, one per line: plugins/*/data.json => accounts[*].token",
+  mobileFilter: "Exclude desktop-only plugins on mobile",
+  strategy: "Application strategy",
+  batch: "Batch with complete preflight",
+  changes: "Changed files only",
+  reloadPolicy: "Reload Obsidian",
+  reload_now: "Immediately after delivery",
+  reload_next: "At next launch",
+  reload_idle: "When idle",
+  reload_never: "Status indicator only",
+  idleDelay: "Idle time before reload (seconds)",
+  reloadNeeded: "Reload required",
+  repairFailed: "Settings verification found unresolved differences",
+  invalidConfig: "Invalid settings configuration",
+  overlaySyntax: "Expected one file glob => JSON path per line",
+  reloadUnavailable: "Reload command unavailable",
+  strictDrift: "Restore settings after local changes",
+  badPath: "Invalid Windows path",
   profiles: "Profiles",
   defaultMode: "Default mode",
   pause: "Pause sync",
@@ -3577,6 +4033,10 @@ var Review = class extends import_obsidian2.Modal {
     this.titleEl.setText(
       this.tr(this.apply ? "preview" : "dry") + " · " + this.p.name
     );
+    if (this.p.scope === "settings" && this.plan.ops.some(
+      (o) => ["write", "delete"].includes(o.action) && needsReload(o.path)
+    ))
+      this.contentEl.createEl("p", { text: this.tr("reloadNeeded") });
     const metrics = this.contentEl.createEl("p"), toolbar = new import_obsidian2.Setting(this.contentEl);
     toolbar.addSearch(
       (s) => s.setPlaceholder(this.tr("search")).onChange((v) => {
@@ -3749,9 +4209,24 @@ var Review = class extends import_obsidian2.Modal {
     if (!/\.(md|txt|json|css|ya?ml|csv|js|html|xml)$/i.test(op.path) || Math.max(op.target?.size ?? 0, op.source?.size ?? 0) > 131072)
       return;
     try {
-      const [source, target] = this.endpoints(), read = async (s) => new TextDecoder("utf-8", { fatal: true }).decode(
-        await s.download(op.path)
-      );
+      const [source, target] = this.endpoints(), read = async (s) => {
+        let bytes = await s.download(op.path);
+        if (this.p.scope === "settings" && op.path.endsWith(".json"))
+          return JSON.stringify(
+            JSON.parse(
+              new TextDecoder().decode(
+                project(op.path, bytes, {
+                  self: "refsync",
+                  blocked: [],
+                  rules: parseOverlay(this.p.config?.overlay ?? "")
+                })
+              )
+            ),
+            null,
+            2
+          );
+        return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      };
       const [before, after] = await Promise.all([
         op.target ? read(target) : "",
         op.source ? read(source) : ""
@@ -3774,9 +4249,83 @@ var Review = class extends import_obsidian2.Modal {
   }
 };
 
-// src/editor.ts
+// src/scope-editor.ts
 var import_obsidian3 = require("obsidian");
-var Editor = class extends import_obsidian3.PluginSettingTab {
+function scopeEditor(el, p, t, redraw, validate2) {
+  const c = p.config ??= legacyConfig();
+  el.createEl("h3", { text: t("settings") });
+  const sets = ["full", "noData", "look", "plugins"];
+  const selected2 = sets.find(
+    (s) => preset(s).length === c.categories.length && preset(s).every((k) => c.categories.includes(k))
+  ) ?? "custom";
+  new import_obsidian3.Setting(el).setName(t("scopePreset")).addDropdown((d) => {
+    for (const s of [...sets, "custom"]) d.addOption(s, t("preset_" + s));
+    d.setValue(selected2).onChange((v) => {
+      if (v !== "custom") {
+        c.categories = preset(v);
+        c.legacyThemes = false;
+        redraw();
+      }
+    });
+  });
+  for (const k of categories)
+    new import_obsidian3.Setting(el).setName(t("cat_" + k)).setDesc(
+      ["core", "appearance", "data", "community"].includes(k) ? "H" : "S"
+    ).addToggle(
+      (x) => x.setValue(c.categories.includes(k)).onChange((on) => {
+        c.categories = on ? [...c.categories, k] : c.categories.filter((i) => i !== k);
+        if (k === "themes") c.legacyThemes = false;
+        redraw();
+      })
+    );
+  if (!c.categories.includes("code") && c.categories.some((k) => k === "data" || k === "community"))
+    el.createEl("p", { text: t("existingCode") });
+  const input = (k) => new import_obsidian3.Setting(el).setName(t("cfg_" + k)).addTextArea(
+    (a) => a.setValue(c[k]).onChange((v) => {
+      c[k] = v;
+      validate2();
+    })
+  );
+  for (const k of [
+    "codeAllow",
+    "codeDeny",
+    "dataAllow",
+    "dataDeny",
+    "include",
+    "exclude",
+    "overlay"
+  ])
+    input(k);
+  new import_obsidian3.Setting(el).setName(t("mobileFilter")).addToggle(
+    (x) => x.setValue(c.platformFilter).onChange((v) => {
+      c.platformFilter = v;
+    })
+  );
+  new import_obsidian3.Setting(el).setName(t("strategy")).addDropdown((d) => {
+    for (const k of ["batch", "changes"]) d.addOption(k, t(k));
+    d.setValue(c.strategy).onChange((v) => {
+      c.strategy = v;
+    });
+  });
+  new import_obsidian3.Setting(el).setName(t("reloadPolicy")).addDropdown((d) => {
+    for (const k of ["next", "now", "idle", "never"])
+      d.addOption(k, t("reload_" + k));
+    d.setValue(c.reload).onChange((v) => {
+      c.reload = v;
+    });
+  });
+  new import_obsidian3.Setting(el).setName(t("idleDelay")).addText((a) => {
+    a.inputEl.type = "number";
+    a.setValue(String(c.idleSeconds)).onChange((v) => {
+      c.idleSeconds = Number(v);
+      validate2();
+    });
+  });
+}
+
+// src/editor.ts
+var import_obsidian4 = require("obsidian");
+var Editor = class extends import_obsidian4.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -3793,7 +4342,7 @@ var Editor = class extends import_obsidian3.PluginSettingTab {
       return;
     }
     el.createEl("h2", { text: t("profiles") });
-    new import_obsidian3.Setting(el).setName(t("defaultMode")).addDropdown(
+    new import_obsidian4.Setting(el).setName(t("defaultMode")).addDropdown(
       (d) => d.addOption("plan", t("plan")).addOption("silent", t("silent")).setValue(rs.config.mode).onChange(async (v) => {
         await rs.save({
           ...rs.config,
@@ -3801,12 +4350,12 @@ var Editor = class extends import_obsidian3.PluginSettingTab {
         });
       })
     );
-    new import_obsidian3.Setting(el).setName(t("pause")).addToggle(
+    new import_obsidian4.Setting(el).setName(t("pause")).addToggle(
       (c) => c.setValue(rs.config.paused).onChange(async (paused) => {
         await rs.save({ ...rs.config, paused });
       })
     );
-    new import_obsidian3.Setting(el).addButton(
+    new import_obsidian4.Setting(el).addButton(
       (b) => b.setButtonText(t("add")).setCta().onClick(() => {
         this.draft = newProfile();
         this.display();
@@ -3815,7 +4364,7 @@ var Editor = class extends import_obsidian3.PluginSettingTab {
       (b) => b.setButtonText(t("syncAll")).onClick(() => rs.runAll())
     );
     rs.config.profiles.forEach((p, index) => {
-      const row = new import_obsidian3.Setting(el).setName(p.name).setDesc(
+      const row = new import_obsidian4.Setting(el).setName(p.name).setDesc(
         [
           t(p.scope),
           p.role === "subscriber" ? p.reference + " → " + (p.scope === "settings" ? this.app.vault.configDir : p.local) : (p.scope === "settings" ? this.app.vault.configDir : p.local) + " → " + p.reference,
@@ -3830,7 +4379,7 @@ var Editor = class extends import_obsidian3.PluginSettingTab {
       );
       row.addButton(
         (b) => b.setButtonText(t("edit")).onClick(() => {
-          this.draft = { ...p };
+          this.draft = structuredClone(p);
           this.display();
         })
       );
@@ -3856,7 +4405,7 @@ var Editor = class extends import_obsidian3.PluginSettingTab {
               this.display();
             })
           );
-      new import_obsidian3.Setting(el).addButton(
+      new import_obsidian4.Setting(el).addButton(
         (b) => b.setButtonText(t(p.id === rs.config.current ? "current" : "select")).setDisabled(p.id === rs.config.current).onClick(async () => {
           await rs.save({ ...rs.config, current: p.id });
           this.display();
@@ -3875,13 +4424,15 @@ var Editor = class extends import_obsidian3.PluginSettingTab {
       this.draft = void 0;
       this.display();
     };
-    const text = (field, key) => new import_obsidian3.Setting(el).setName(t(key)).addText(
+    const text = (field, key) => new import_obsidian4.Setting(el).setName(t(key)).addText(
       (c) => c.setValue(String(p[field])).onChange((v) => {
-        Object.assign(p, { [field]: v });
+        Object.assign(p, {
+          [field]: field === "reference" || field === "local" ? v.replace(/\\/g, "/") : v
+        });
         validateForm();
       })
     );
-    const num = (field, key) => new import_obsidian3.Setting(el).setName(t(key)).addText((c) => {
+    const num = (field, key) => new import_obsidian4.Setting(el).setName(t(key)).addText((c) => {
       c.inputEl.type = "number";
       c.inputEl.min = "0";
       c.setValue(String(p[field])).onChange((v) => {
@@ -3889,13 +4440,13 @@ var Editor = class extends import_obsidian3.PluginSettingTab {
         validateForm();
       });
     });
-    const toggle = (field, key, disabled = false) => new import_obsidian3.Setting(el).setName(t(key)).addToggle(
+    const toggle = (field, key, disabled = false) => new import_obsidian4.Setting(el).setName(t(key)).addToggle(
       (c) => c.setDisabled(disabled).setValue(p[field] === true).onChange((v) => {
         Object.assign(p, { [field]: v });
         validateForm();
       })
     );
-    const choice = (field, key, values, disabled = false) => new import_obsidian3.Setting(el).setName(t(key)).addDropdown((d) => {
+    const choice = (field, key, values, disabled = false) => new import_obsidian4.Setting(el).setName(t(key)).addDropdown((d) => {
       for (const v of values)
         d.addOption(
           v,
@@ -3909,6 +4460,18 @@ var Editor = class extends import_obsidian3.PluginSettingTab {
         }
         if (p.scope === "settings") {
           p.fileEvents = false;
+          if (field === "scope" && !p.config) {
+            p.config = {
+              ...legacyConfig(),
+              categories: preset("full"),
+              legacyThemes: false,
+              strategy: "batch"
+            };
+            p.startup = true;
+            p.intervalMinutes = 60;
+            p.onFocus = false;
+            p.onOnline = false;
+          }
           if (p.conflict === "both") p.conflict = "source";
         }
         if (field === "role" && p.role === "publisher") {
@@ -3918,14 +4481,23 @@ var Editor = class extends import_obsidian3.PluginSettingTab {
         this.display();
       });
     });
+    if (p.config) p.config = structuredClone(p.config);
     text("name", "name");
     toggle("enabled", "enabled");
     choice("scope", "scope", ["content", "settings"]);
     choice("role", "role", ["subscriber", "publisher"]);
     text("reference", "reference");
     if (p.scope === "settings")
-      new import_obsidian3.Setting(el).setName(t("target")).setDesc(this.app.vault.configDir);
+      new import_obsidian4.Setting(el).setName(t("target")).setDesc(this.app.vault.configDir);
     else text("local", "target");
+    if (p.scope === "settings")
+      scopeEditor(
+        el,
+        p,
+        t,
+        () => this.display(),
+        () => validateForm()
+      );
     choice("mirror", "mirrorMode", ["preserve", "full"]);
     if (p.role === "subscriber") {
       toggle("deletions", "deletions", p.mirror === "full");
@@ -3942,7 +4514,7 @@ var Editor = class extends import_obsidian3.PluginSettingTab {
     num("shrinkPercent", "shrinkPercent");
     choice("trash", "trash", ["plugin", "vault", "system", "permanent"]);
     if (p.trash === "plugin") num("trashDays", "trashDays");
-    new import_obsidian3.Setting(el).setName(t("mode")).addDropdown((d) => {
+    new import_obsidian4.Setting(el).setName(t("mode")).addDropdown((d) => {
       for (const k of ["inherit", "plan", "silent"]) d.addOption(k, t(k));
       d.setValue(p.inheritMode ? "inherit" : p.mode).onChange((v) => {
         p.inheritMode = v === "inherit";
@@ -3951,6 +4523,12 @@ var Editor = class extends import_obsidian3.PluginSettingTab {
       });
     });
     toggle("firstPlan", "firstPlan");
+    if (p.scope === "settings") {
+      toggle("strictDrift", "strictDrift");
+      toggle("startup", "startup");
+      num("startupSeconds", "startupSeconds");
+      num("intervalMinutes", "intervalMinutes");
+    }
     if (p.scope === "content") {
       text("include", "include");
       text("exclude", "exclude");
@@ -3965,11 +4543,11 @@ var Editor = class extends import_obsidian3.PluginSettingTab {
       num("quietSeconds", "quietSeconds");
       num("maxDeferrals", "maxDeferrals");
     }
-    const error = el.createEl("p", { attr: { role: "status" } }), actions = new import_obsidian3.Setting(el);
+    const error = el.createEl("p", { attr: { role: "status" } }), actions = new import_obsidian4.Setting(el);
     const validateForm = () => {
       const errors = validate(
         p,
-        import_obsidian3.Platform.isDesktopApp,
+        import_obsidian4.Platform.isDesktopApp,
         false,
         this.app.vault.configDir
       );
@@ -4038,7 +4616,7 @@ var icons = {
   partial: "shield-alert",
   error: "circle-alert"
 };
-var Confirmation = class extends import_obsidian4.Modal {
+var Confirmation = class extends import_obsidian5.Modal {
   constructor(app, message, tr, action) {
     super(app);
     this.message = message;
@@ -4047,7 +4625,7 @@ var Confirmation = class extends import_obsidian4.Modal {
   }
   onOpen() {
     this.contentEl.createEl("p", { text: this.message });
-    new import_obsidian4.Setting(this.contentEl).addButton(
+    new import_obsidian5.Setting(this.contentEl).addButton(
       (b) => b.setButtonText(this.tr("cancel")).onClick(() => this.close())
     ).addButton(
       (b) => b.setButtonText(this.tr("confirmAction")).onClick(() => {
@@ -4057,7 +4635,7 @@ var Confirmation = class extends import_obsidian4.Modal {
     );
   }
 };
-var RefSync = class extends import_obsidian4.Plugin {
+var RefSync = class extends import_obsidian5.Plugin {
   config;
   t = translator(navigator.language);
   engine;
@@ -4065,7 +4643,7 @@ var RefSync = class extends import_obsidian4.Plugin {
   logDir = "";
   scheduler;
   quiet = new QuietWindow();
-  notices = new NoticeCenter((m) => new import_obsidian4.Notice(m));
+  notices = new NoticeCenter((m) => new import_obsidian5.Notice(m));
   live = true;
   due = /* @__PURE__ */ new Map();
   own = /* @__PURE__ */ new Map();
@@ -4078,6 +4656,58 @@ var RefSync = class extends import_obsidian4.Plugin {
   bar = null;
   ribbon;
   lastPrune = 0;
+  lastInput = Date.now();
+  reloadQueued = false;
+  pendingReload;
+  async verify() {
+    const applier = this.engine.applier;
+    const reports = await verifySettings(
+      applier.journal,
+      (t) => this.recoveryTarget(t),
+      (t) => {
+        const p = this.config.profiles.find(
+          (p2) => p2.enabled && p2.role === "subscriber" && p2.scope === "settings" && p2.id === JSON.parse(t.key)[0] && JSON.parse(t.key)[2] === "vault:" + p2.reference
+        );
+        return p && t.target === this.app.vault.configDir ? p.config ?? legacyConfig() : void 0;
+      },
+      new RunBudget(void 0, void 0, void 0, applier.fence)
+    );
+    for (const r of reports) {
+      await this.log(
+        r.unresolved.length ? "verify-failed" : "verified",
+        r.repaired,
+        this.config.current,
+        r
+      );
+      if (r.unresolved.length)
+        this.notices.send(
+          "verify",
+          this.t("repairFailed") + " · " + r.unresolved.join(", ")
+        );
+    }
+  }
+  promptReload() {
+    if (!this.pendingReload) return;
+    this.confirm(
+      this.t("reloadNeeded") + " · " + this.pendingReload.paths.join(", "),
+      () => this.queueReload(true)
+    );
+  }
+  queueReload(manual = false) {
+    if (this.reloadQueued || !this.pendingReload) return;
+    this.reloadQueued = true;
+    void this.scheduler.serial(async () => {
+      const now = Date.now(), raw = this.app.loadLocalStorage("refsync:reloadHistory"), history = Array.isArray(raw) ? raw.filter((x) => typeof x === "number" && x > now - 36e5) : [];
+      if (!this.live || !this.pendingReload || this.config.paused && !manual)
+        return;
+      if (!manual && (!canAutoReload(history, now) || this.pendingReload.policy === "idle" && now - this.lastInput < this.pendingReload.idleSeconds * 1e3))
+        return;
+      this.app.saveLocalStorage("refsync:reloadHistory", [...history, now]);
+      reloadApp(this.app);
+    }).catch((e) => this.report(e)).finally(() => {
+      this.reloadQueued = false;
+    });
+  }
   startupRecovery;
   async onload() {
     const fence = MutationFence.forVault(this.app.vault);
@@ -4107,7 +4737,7 @@ var RefSync = class extends import_obsidian4.Plugin {
       status,
       this.app.vault.configDir,
       this.manifest.id,
-      import_obsidian4.Platform.isDesktopApp
+      import_obsidian5.Platform.isDesktopApp
     );
     this.scheduler = new Scheduler(
       (id) => this.execute(id, "auto"),
@@ -4118,7 +4748,7 @@ var RefSync = class extends import_obsidian4.Plugin {
       "RefSync",
       (e) => this.menu(e)
     );
-    if (import_obsidian4.Platform.isDesktopApp) {
+    if (import_obsidian5.Platform.isDesktopApp) {
       this.bar = this.addStatusBarItem();
       this.bar.tabIndex = 0;
       this.bar.setAttribute("role", "button");
@@ -4137,6 +4767,7 @@ var RefSync = class extends import_obsidian4.Plugin {
     cmd("dry-run", "dry", () => current("dry"));
     cmd("deliver", "sync", () => current("run"));
     cmd("sync-all", "syncAll", () => this.runAll());
+    cmd("settings-reload", "reloadNeeded", () => this.promptReload());
     cmd("undo", "undo", () => this.confirmUndo());
     cmd("resolve-deletions", "release", () => current("release"));
     cmd(
@@ -4165,9 +4796,11 @@ var RefSync = class extends import_obsidian4.Plugin {
           resolve();
           return;
         }
-        this.startupRecovery = this.engine.exclusive(
-          () => this.engine.applier.recover((t) => this.recoveryTarget(t))
-        ).then(() => {
+        this.startupRecovery = this.engine.exclusive(async () => {
+          await this.engine.applier.recover((t) => this.recoveryTarget(t));
+          if (!this.config.paused)
+            await this.verify().catch((e) => this.report(e));
+        }).then(() => {
           if (this.live) {
             status.set("idle");
             this.listen();
@@ -4197,17 +4830,23 @@ var RefSync = class extends import_obsidian4.Plugin {
   paint() {
     const phase = this.engine.status.phase, label = this.t(this.config.paused ? "paused" : phase);
     const text = ["RefSync", label, this.statusLabel].filter(Boolean).join(" · ");
-    (0, import_obsidian4.setIcon)(this.ribbon, this.config.paused ? "pause" : icons[phase]);
+    (0, import_obsidian5.setIcon)(this.ribbon, this.config.paused ? "pause" : icons[phase]);
     this.ribbon.setAttribute("aria-label", text);
-    this.bar?.setText(text);
+    this.bar?.setText(
+      this.pendingReload ? text + " · " + this.t("reloadNeeded") : text
+    );
   }
   menu(e) {
-    const m = new import_obsidian4.Menu();
+    const m = new import_obsidian5.Menu();
     for (const p of this.config.profiles)
       m.addItem(
         (item) => item.setTitle(p.name).setChecked(p.id === this.config.current).onClick(() => this.save({ ...this.config, current: p.id }))
       );
     m.addSeparator();
+    if (this.pendingReload)
+      m.addItem(
+        (i) => i.setTitle(this.t("reloadNeeded")).onClick(() => this.promptReload())
+      );
     for (const [k, f] of [
       ["preview", () => this.request(this.config.current, "dry")],
       ["sync", () => this.request(this.config.current, "run")],
@@ -4245,13 +4884,19 @@ var RefSync = class extends import_obsidian4.Plugin {
   }
   listen() {
     const contents = () => this.config.profiles.filter(
-      (p) => p.enabled && p.scope === "content" && !this.config.paused
+      (p) => p.enabled && (p.scope === "content" || !!p.config) && !this.config.paused
     );
+    for (const e of ["keydown", "pointerdown"])
+      this.registerDomEvent(document, e, () => {
+        this.lastInput = Date.now();
+      });
     for (const p of contents())
       if (p.startup) this.scheduler.schedule(p.id, p.startupSeconds * 1e3);
     this.registerInterval(
       window.setInterval(() => {
         const now = Date.now();
+        if (this.pendingReload?.policy === "idle" && !this.config.paused && now - this.lastInput >= this.pendingReload.idleSeconds * 1e3)
+          this.queueReload();
         for (const p of contents()) {
           if (!p.intervalMinutes) continue;
           const next = this.due.get(p.id);
@@ -4323,7 +4968,12 @@ var RefSync = class extends import_obsidian4.Plugin {
       this.app.vault,
       t.target === "/" ? "" : t.target,
       this.manifest.id,
-      t.scope
+      t.scope,
+      false,
+      void 0,
+      void 0,
+      t.settings?.config,
+      t.target === this.app.vault.configDir ? (path, write) => withPluginData(this.app, this.manifest.id, path, write) : void 0
     );
   }
   stores(p) {
@@ -4338,7 +4988,9 @@ var RefSync = class extends import_obsidian4.Plugin {
       ro ? void 0 : (file, digest) => this.own.set(JSON.stringify([p.id, file]), {
         digest,
         expires: Date.now() + 1e4
-      })
+      }),
+      p.config,
+      !ro && p.scope === "settings" && path === this.app.vault.configDir ? (file, write) => withPluginData(this.app, this.manifest.id, file, write) : void 0
     );
     return {
       reference: make(p.reference, p.role === "subscriber"),
@@ -4415,7 +5067,7 @@ var RefSync = class extends import_obsidian4.Plugin {
     if (!active()) return;
     const v = this.stores(p);
     const isOpen = (path) => this.app.workspace.getLeavesOfType("markdown").some(
-      (leaf) => leaf.view instanceof import_obsidian4.MarkdownView && leaf.view.file?.path === join(p.local, path)
+      (leaf) => leaf.view instanceof import_obsidian5.MarkdownView && leaf.view.file?.path === join(p.local, path)
     );
     const result = await this.engine.run(
       p,
@@ -4450,6 +5102,24 @@ var RefSync = class extends import_obsidian4.Plugin {
       p.id,
       { held, deferred }
     );
+    if (p.scope === "settings" && p.role === "subscriber" && result.changed) {
+      const cfg = p.config ?? legacyConfig(), excluded = new Set(deferred.map((d) => d.path));
+      const paths = result.plan.ops.filter(
+        (o) => !excluded.has(o.path) && ["write", "delete"].includes(o.action) && needsReload(o.path)
+      ).map((o) => o.path);
+      if (paths.length) {
+        this.pendingReload = {
+          paths: [.../* @__PURE__ */ new Set([...this.pendingReload?.paths ?? [], ...paths])],
+          policy: cfg.reload,
+          idleSeconds: cfg.idleSeconds,
+          at: Date.now()
+        };
+        this.paint();
+        if (cfg.reload === "now") this.queueReload();
+        else if (cfg.reload === "next" && (p.inheritMode ? this.config.mode : p.mode) === "plan")
+          this.promptReload();
+      }
+    }
     if (held.length)
       this.notices.send(
         p.id + ":held",

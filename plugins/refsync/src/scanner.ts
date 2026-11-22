@@ -1,7 +1,9 @@
+import type { ConfigScope } from "./config-scope";
+import { settingsHash, type Projection } from "./json-overlay";
 import { RunBudget, transient } from "./runtime";
 import { selected, volatility } from "./classifier";
 import {
-  checked,
+  safe,
   fold,
   hash,
   parent,
@@ -18,6 +20,8 @@ export async function scan(
   budget = new RunBudget(),
   accept = (path: string) => true,
   maxMiB = 0,
+  config?: ConfigScope,
+  projection?: Projection,
 ): Promise<Snapshot> {
   const snap: Snapshot = {
     files: new Map(),
@@ -26,7 +30,7 @@ export async function scan(
     skipped: new Map(),
   };
   const todo = [""],
-    seen = new Set<string>();
+    seen = new Map<string, string>();
   if ((await budget.io(() => provider.stat("")))?.type !== "folder")
     throw Error("missingRoot");
   while (todo.length) {
@@ -38,10 +42,23 @@ export async function scan(
     ] as const) {
       for (const p of paths) {
         if (parent(p) !== dir) throw Error("path");
-        if (!selected(p, scope, configDir, self, isDir)) continue;
-        checked(p);
-        if (seen.has(fold(p))) throw Error("collision");
-        seen.add(fold(p));
+        if (!selected(p, scope, configDir, self, isDir, config)) continue;
+        if (
+          projection?.blocked.includes(fold(p.split("/")[1] ?? "")) &&
+          p.startsWith("plugins/")
+        )
+          continue;
+        if (!safe(p)) {
+          snap.skipped!.set(p, "badPath");
+          continue;
+        }
+        const alias = seen.get(fold(p));
+        if (alias !== undefined) {
+          snap.skipped!.set(alias, "collision");
+          snap.skipped!.set(p, "collision");
+          continue;
+        }
+        seen.set(fold(p), p);
         if (isDir) {
           snap.directories.add(p);
           todo.push(p);
@@ -70,8 +87,12 @@ export async function scan(
           }
           const bytes = await budget.io(() => provider.download(p));
           if (bytes.byteLength !== stat.size) throw Error("incomplete");
+          const rawHash = await hash(bytes);
           snap.files.set(p, {
-            hash: await hash(bytes),
+            rawHash,
+            hash: projection
+              ? await settingsHash(p, bytes, projection)
+              : rawHash,
             size: stat.size,
             mtime: stat.mtime,
             kind,

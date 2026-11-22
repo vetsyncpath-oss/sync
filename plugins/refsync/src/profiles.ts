@@ -1,3 +1,4 @@
+import { legacyConfig } from "./config-scope";
 import { defaults, type Mode, type Profile } from "./model";
 export interface Configuration {
   version: 2;
@@ -48,6 +49,15 @@ export function loadProfiles(raw: unknown): Configuration {
         intervalMinutes: 0,
       },
     ];
+  for (const p of profiles) {
+    if (p.scope === "settings" && p.config === undefined) {
+      p.config = legacyConfig();
+      p.startup = false;
+      p.intervalMinutes = 0;
+      p.onFocus = false;
+      p.onOnline = false;
+    }
+  }
   return {
     version: 2,
     profiles,
@@ -62,7 +72,7 @@ export function newProfile(copy?: Profile): Profile {
   const id = crypto.randomUUID(),
     tag = id.slice(0, 6);
   return copy
-    ? { ...copy, id, name: copy.name + " (2)", enabled: false }
+    ? { ...structuredClone(copy), id, name: copy.name + " (2)", enabled: false }
     : {
         ...defaults,
         id,

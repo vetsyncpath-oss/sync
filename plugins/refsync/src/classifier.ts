@@ -1,3 +1,4 @@
+import { inScope, legacyConfig, type ConfigScope } from "./config-scope";
 import { fold, join, under, type Scope, type Volatility } from "./model";
 export function volatility(p: string, scope: Scope): Volatility {
   if (scope === "content") return "S";
@@ -17,6 +18,7 @@ export function selected(
   configDir: string,
   self: string,
   directory: boolean,
+  config: ConfigScope = legacyConfig(),
 ): boolean {
   const f = fold(p);
   if (
@@ -40,11 +42,7 @@ export function selected(
     p.split("/").some((s) => s.startsWith("."))
   )
     return false;
-  if (directory)
-    return /^(themes|snippets)(\/|$)|^plugins(?:\/[^/]+)?$/.test(p);
-  return /^[^/]+\.json$|^themes\/[^/]+\/(manifest\.json|theme\.css)$|^snippets\/.+\.css$|^plugins\/[^/]+\/data\.json$/.test(
-    p,
-  );
+  return inScope(p, config, directory);
 }
 export const priority = (p: string) =>
   p === "community-plugins.json"

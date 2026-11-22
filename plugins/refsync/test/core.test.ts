@@ -657,3 +657,190 @@ test("notices are deduplicated by reason and profile until the notification wind
   center.send("p:busy", "p");
   assert.deepEqual(messages, ["p", "q", "p"]);
 });
+
+import {
+  legacyConfig,
+  preset,
+  inScope,
+  mobileExcluded,
+} from "../src/config-scope";
+import {
+  deliveryBytes,
+  settingsHash,
+  project,
+  parseOverlay,
+} from "../src/json-overlay";
+import { verifySettings } from "../src/verify-settings";
+import { safe } from "../src/model";
+import { canAutoReload } from "../src/reload-manager";
+test("Windows reserved device aliases, alternate streams, drive paths, trailing dots and spaces", () => {
+  for (const name of [
+    "aux.txt",
+    "notes/COM¹.md",
+    "LPT²",
+    "CONOUT$",
+    "CONIN$.md",
+    "vault/C:/n",
+    "a:stream",
+    "file. ",
+    "foo/bar.",
+    "C:\\Notes",
+  ])
+    assert.equal(safe(name), false, name);
+  for (const name of ["Книга/Заметка  №1.md", "notes/COM10.md", "foo.bar/baz"])
+    assert.ok(safe(name), name);
+});
+test("case and Unicode collisions protect both sides of a full mirror; other files proceed", async () => {
+  const { engine, source, target } = fixture();
+  source.data.set("A.md", bytes("one"));
+  source.data.set("ok", bytes("safe"));
+  target.data.set("a.md", bytes("local"));
+  source.data.set("é", bytes("one"));
+  source.data.set("e\u0301", bytes("two"));
+  source.data.set("CON.txt", bytes("invalid"));
+  const r = await engine.run(
+    { ...defaults, mirror: "full", deletions: true },
+    source,
+    target,
+    false,
+  );
+  assert.equal(r.changed, 1);
+  assert.equal(text(await target.download("a.md")), "local");
+  assert.equal(text(await target.download("ok")), "safe");
+  assert.ok(r.plan.deferred.length >= 3);
+});
+test("semantic JSON overlays preserve device-specific fields including wildcard array members", async () => {
+  const rules = parseOverlay(
+    "plugins/*/data.json => $.accounts[*].token\nplugins/*/data.json => local.device",
+  );
+  const projection = { rules, self: "refsync", blocked: [] },
+    p = "plugins/demo/data.json";
+  const source = bytes(
+      '{"accounts":[{"label":"new","token":"remote"}],"view":2}',
+    ),
+    local = bytes(
+      '{"accounts":[{"token":"local"}],"local":{"device":"PC","unused":true}}',
+    );
+  const payload = JSON.parse(text(deliveryBytes(p, source, projection, local)));
+  assert.deepEqual(payload, {
+    accounts: [{ label: "new", token: "local" }],
+    view: 2,
+    local: { device: "PC" },
+  });
+  assert.equal(
+    await settingsHash(p, source, projection),
+    await settingsHash(p, bytes(JSON.stringify(payload)), projection),
+  );
+  assert.ok(!text(project(p, source, projection)).includes("remote"));
+  assert.throws(() => parseOverlay("x => a..b"));
+  const a = bytes('\uFEFF{ "b":2,\r\n"a":1}'),
+    b = bytes('{"a":1,"b":2}');
+  assert.equal(
+    await settingsHash("app.json", a, projection),
+    await settingsHash("app.json", b, projection),
+  );
+  assert.deepEqual(
+    JSON.parse(
+      text(
+        deliveryBytes(
+          "community-plugins.json",
+          bytes('["pc","sample"]'),
+          { ...projection, blocked: ["pc"] },
+          bytes('["refsync"]'),
+        ),
+      ),
+    ),
+    ["refsync", "sample"],
+  );
+});
+test("M2 migration retains the old settings scope and manual triggers", () => {
+  const m = loadProfiles({ profiles: [{ ...defaults, scope: "settings" }] });
+  const cfg = m.profiles[0].config!;
+  assert.ok(!cfg.categories.includes("code"));
+  assert.ok(!inScope("themes/theme/other.css", cfg, false));
+  assert.equal(m.profiles[0].intervalMinutes, 0);
+  assert.ok(!m.profiles[0].startup);
+});
+test("settings category, code/data filters, semantic baseline, restart repair and raw undo", async () => {
+  const { source, target, engine, applier, journal } = fixture();
+  const config = {
+    ...legacyConfig(),
+    categories: preset("full"),
+    strategy: "batch" as const,
+    codeAllow: "fixture",
+    overlay: "plugins/*/data.json => device",
+  };
+  for (const fs of [source, target])
+    for (const dir of [
+      "plugins",
+      "plugins/fixture",
+      "plugins/refsync",
+      "plugins/other",
+    ])
+      fs.folders.add(dir);
+  const data = "plugins/fixture/data.json",
+    code = "plugins/fixture/main.js";
+  for (const [p, v] of [
+    [data, '{"value":2,"device":"foreign"}'],
+    [code, "// sample"],
+    ["plugins/refsync/main.js", "self"],
+    ["plugins/other/main.js", "other"],
+  ])
+    source.data.set(p, bytes(v));
+  target.data.set(data, bytes('{"value":1,"device":"Windows"}'));
+  const p: Profile = { ...defaults, scope: "settings", config };
+  const r = await engine.run(p, source, target, false);
+  assert.equal(r.changed, 2);
+  assert.ok(
+    !target.data.has("plugins/refsync/main.js") &&
+      !target.data.has("plugins/other/main.js"),
+  );
+  assert.deepEqual(JSON.parse(text(await target.download(data))), {
+    value: 2,
+    device: "Windows",
+  });
+  target.data.set(data, bytes('{"value":1,"device":"updated"}'));
+  const fix = await verifySettings(
+    journal,
+    () => target,
+    () => config,
+  );
+  assert.equal(fix[0].repaired, 1);
+  assert.deepEqual(JSON.parse(text(await target.download(data))), {
+    value: 2,
+    device: "updated",
+  });
+  assert.deepEqual(
+    await verifySettings(
+      journal,
+      () => target,
+      () => config,
+    ),
+    [],
+  );
+  await applier.undo(
+    JSON.stringify([p.id, p.scope, source.id, target.id]),
+    target,
+  );
+  assert.equal(
+    text(await target.download(data)),
+    '{"value":1,"device":"Windows"}',
+  );
+  assert.ok(!target.data.has(code));
+});
+test("mobile source and installed manifests exclude desktop-only plugins; automatic reloads are limited", async () => {
+  const { source, target } = fixture();
+  source.folders.add("plugins");
+  source.folders.add("plugins/desktop");
+  source.data.set(
+    "plugins/desktop/manifest.json",
+    bytes('{"isDesktopOnly":true}'),
+  );
+  assert.deepEqual(await mobileExcluded(source, target, new RunBudget()), [
+    "desktop",
+  ]);
+  const now = 10_000_000;
+  assert.equal(canAutoReload([now - 100], now), false);
+  assert.ok(canAutoReload([now - 600000], now));
+  assert.ok(!canAutoReload([now - 600000, now - 900000], now));
+});

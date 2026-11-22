@@ -1,3 +1,5 @@
+import { validConfig } from "./config-scope";
+import { parseOverlay } from "./json-overlay";
 import { type Profile, safe, under, fold } from "./model";
 type Field = keyof Profile;
 export interface Rule {
@@ -117,6 +119,15 @@ export function validate(
   for (const field of ["include", "exclude"] as const)
     if (typeof p[field] !== "string" || p[field].length > 4096)
       err(field, "invalid");
+  if (p.config !== undefined) {
+    if (!validConfig(p.config)) err("config", "invalidConfig");
+    else
+      try {
+        parseOverlay(p.config.overlay);
+      } catch {
+        err("config", "overlaySyntax");
+      }
+  }
   if (errors.length) return errors;
   const local = fold(
       p.scope === "settings" ? configDir : p.local === "/" ? "" : p.local,

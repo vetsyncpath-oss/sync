@@ -1,3 +1,4 @@
+import type { ConfigScope } from "./config-scope";
 export type Direction = "SourceToTarget";
 export type Role = "subscriber" | "publisher";
 export type Scope = "content" | "settings";
@@ -5,6 +6,7 @@ export type Policy = "source" | "target" | "newer" | "both";
 export type Mode = "plan" | "silent";
 export type Volatility = "H" | "S" | "V";
 export interface Profile {
+  config?: ConfigScope;
   id: string;
   name: string;
   enabled: boolean;
@@ -87,6 +89,7 @@ export interface FileMeta {
 export interface Entry extends FileMeta {
   hash: string;
   kind: Volatility;
+  rawHash?: string;
 }
 export interface Snapshot {
   files: Map<string, Entry>;
@@ -104,6 +107,7 @@ export interface StorageProvider {
     maxFileSize: number;
     rateLimits: number | null;
   };
+  withFilePaused?: (path: string, write: () => Promise<void>) => Promise<void>;
   list(dir: string): Promise<{ files: string[]; folders: string[] }>;
   stat(path: string): Promise<(FileMeta & { type: "file" | "folder" }) | null>;
   download(path: string): Promise<Bytes>;
@@ -146,7 +150,9 @@ export function safe(p: string): boolean {
           s.length <= 255 &&
           !/[<>:"\\|?*\x00-\x1F\x7F]/.test(s) &&
           !/[. ]$/.test(s) &&
-          !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(s),
+          !/^(con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(
+            s,
+          ),
       )
   );
 }

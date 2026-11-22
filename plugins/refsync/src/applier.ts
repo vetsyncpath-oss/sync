@@ -1,3 +1,5 @@
+import { legacyConfig } from "./config-scope";
+import { deliveryBytes, type Projection } from "./json-overlay";
 import { RunBudget, MutationFence, transient } from "./runtime";
 import {
   fresh,
@@ -37,20 +39,24 @@ export class Applier {
         (await this.journal.disk.has(t.id + "/skipped/" + i))
       )
         continue;
-      const saved = await this.journal.json<string | null>(armed);
-      const stat = await budget.io(() => target.stat(p));
-      if (stat?.type === "folder") throw Error("collision");
-      if (saved === null) {
-        if (stat) await budget.io(() => target.delete(p), false);
-      } else {
-        const bytes = await this.journal.disk.read(t.id + "/backup/" + i);
-        if ((await hash(bytes)) !== saved) throw Error("backup");
-        if (
-          !stat ||
-          (await hash(await budget.io(() => target.download(p)))) !== saved
-        )
-          await budget.io(() => target.upload(p, bytes), false);
-      }
+      const perform = async () => {
+        const saved = await this.journal.json<string | null>(armed);
+        const stat = await budget.io(() => target.stat(p));
+        if (stat?.type === "folder") throw Error("collision");
+        if (saved === null) {
+          if (stat) await budget.io(() => target.delete(p), false);
+        } else {
+          const bytes = await this.journal.disk.read(t.id + "/backup/" + i);
+          if ((await hash(bytes)) !== saved) throw Error("backup");
+          if (
+            !stat ||
+            (await hash(await budget.io(() => target.download(p)))) !== saved
+          )
+            await budget.io(() => target.upload(p, bytes), false);
+        }
+      };
+      if (target.withFilePaused) await target.withFilePaused(p, perform);
+      else await perform();
     }
   }
   async recover(resolve: (t: Transaction) => StorageProvider): Promise<void> {
@@ -103,6 +109,7 @@ export class Applier {
     budget = new RunBudget(undefined, undefined, undefined, this.fence),
     progress?: (done: number, total: number) => void,
     active?: () => boolean,
+    projection?: Projection,
   ): Promise<number> {
     this.fence.check();
     if (this.needsRecovery) throw Error("journal");
@@ -110,6 +117,10 @@ export class Applier {
       budget.check();
       if (active && !active()) throw Error("stopped");
     };
+    const cfg = profile.config ?? legacyConfig();
+    const batch = profile.scope === "settings" && cfg.strategy === "batch";
+    if (batch && plan.deferred.some((x) => x.reason === "locked"))
+      throw Error("incomplete");
     const previous = this.state.get(key);
     const next: Baseline = {
       ...fresh(),
@@ -125,6 +136,9 @@ export class Applier {
       await this.journal.disk.putNew(id + "/stage/" + steps.length, bytes);
       steps.push({ path, action: "write", mtime, digest });
     };
+    const stageBatch =
+      batch &&
+      plan.ops.some((x) => x.action === "write" || x.action === "delete");
     const displaced = new Map<string, string>();
     try {
       for (const op of plan.ops) {
@@ -151,16 +165,30 @@ export class Applier {
           };
           continue;
         }
+        if (stageBatch && op.action === "ack") {
+          const bytes = await budget.io(() => source.download(p));
+          if ((await hash(bytes)) !== (s.rawHash ?? s.hash))
+            throw Error("referenceChanged");
+          await this.journal.disk.putNew(
+            id +
+              "/unchanged/" +
+              (await hash(new TextEncoder().encode(p).buffer)),
+            projection ? deliveryBytes(p, bytes, projection) : bytes,
+          );
+        }
         if (op.action === "write" || op.action === "both") {
           let bytes: Bytes;
           try {
             bytes = await budget.io(() => source.download(p));
           } catch (e) {
-            if (!transient(e)) throw e;
+            if (batch || !transient(e)) throw e;
             plan.deferred.push({ path: p, reason: "locked" });
             continue;
           }
-          if (bytes.byteLength !== s.size || (await hash(bytes)) !== s.hash) {
+          if (
+            bytes.byteLength !== s.size ||
+            (await hash(bytes)) !== (s.rawHash ?? s.hash)
+          ) {
             if (profile.role === "publisher") {
               plan.deferred.push({ path: p, reason: "unstable" });
               continue;
@@ -189,7 +217,11 @@ export class Applier {
             displaced.set(copy, p);
             steps.push({ path: copy, action: "write" });
           }
-          await stage(p, bytes, s.mtime);
+          await stage(
+            p,
+            projection ? deliveryBytes(p, bytes, projection) : bytes,
+            s.mtime,
+          );
         }
         next.entries[p] = {
           size: s.size,
@@ -214,6 +246,14 @@ export class Applier {
       key,
       target: targetPath,
       scope: profile.scope,
+      settings: projection
+        ? {
+            config: cfg,
+            projection,
+            local: profile.role === "subscriber",
+            at: Date.now(),
+          }
+        : undefined,
       before: previous,
       steps,
     };
@@ -228,37 +268,49 @@ export class Applier {
         try {
           for (let i = start; i < end; i++) {
             checkpoint();
-            const step = steps[i],
-              stat = await budget.io(() => target.stat(step.path));
-            if (stat?.type === "folder") throw Error("collision");
-            const old = stat
-              ? await budget.io(() => target.download(step.path))
-              : null;
-            const copy = displaced.get(step.path);
-            if (copy && stat) throw Error("collision");
-            await this.journal.backup(id, i, old);
-            if (step.action === "delete") {
-              if (stat)
-                await budget.io(async () => {
-                  if (await target.stat(step.path))
-                    await target.delete(step.path);
-                }, false);
-            } else {
-              const bytes = copy
-                ? await budget.io(() => target.download(copy))
-                : await this.journal.disk.read(id + "/stage/" + i);
-              if (step.digest && (await hash(bytes)) !== step.digest)
-                throw Error("incomplete");
-              await budget.io(
-                () => target.upload(step.path, bytes, step.mtime),
-                false,
-              );
-            }
+            const step = steps[i];
+            const perform = async () => {
+              const stat = await budget.io(() => target.stat(step.path));
+              if (stat?.type === "folder") throw Error("collision");
+              const old = stat
+                ? await budget.io(() => target.download(step.path))
+                : null;
+              const copy = displaced.get(step.path);
+              if (copy && stat) throw Error("collision");
+              await this.journal.backup(id, i, old);
+              if (step.action === "delete") {
+                if (stat)
+                  await budget.io(async () => {
+                    if (await target.stat(step.path))
+                      await target.delete(step.path);
+                  }, false);
+              } else {
+                const bytes = copy
+                  ? await budget.io(() => target.download(copy))
+                  : await this.journal.disk.read(id + "/stage/" + i);
+                if (step.digest && (await hash(bytes)) !== step.digest)
+                  throw Error("incomplete");
+                await budget.io(
+                  () =>
+                    target.upload(
+                      step.path,
+                      projection
+                        ? deliveryBytes(step.path, bytes, projection, old)
+                        : bytes,
+                      step.mtime,
+                    ),
+                  false,
+                );
+              }
+            };
+            if (target.withFilePaused)
+              await target.withFilePaused(step.path, perform);
+            else await perform();
             await this.journal.mark(id + "/applied/" + i);
           }
           changed += end - start;
         } catch (e) {
-          if (!transient(e)) throw e;
+          if (batch || !transient(e)) throw e;
           await this.restore(t, target, start, end);
           for (let i = start; i < end; i++)
             await this.journal.mark(id + "/skipped/" + i);

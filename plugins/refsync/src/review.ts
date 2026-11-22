@@ -1,3 +1,5 @@
+import { project, parseOverlay } from "./json-overlay";
+import { needsReload } from "./verify-settings";
 import { Modal, Setting, type App } from "obsidian";
 import { diffLines } from "diff";
 import type { Profile, StorageProvider } from "./model";
@@ -26,6 +28,13 @@ export class Review extends Modal {
     this.titleEl.setText(
       this.tr(this.apply ? "preview" : "dry") + " · " + this.p.name,
     );
+    if (
+      this.p.scope === "settings" &&
+      this.plan.ops.some(
+        (o) => ["write", "delete"].includes(o.action) && needsReload(o.path),
+      )
+    )
+      this.contentEl.createEl("p", { text: this.tr("reloadNeeded") });
     const metrics = this.contentEl.createEl("p"),
       toolbar = new Setting(this.contentEl);
     toolbar.addSearch((s) =>
@@ -250,10 +259,24 @@ export class Review extends Modal {
       return;
     try {
       const [source, target] = this.endpoints(),
-        read = async (s: StorageProvider) =>
-          new TextDecoder("utf-8", { fatal: true }).decode(
-            await s.download(op.path),
-          );
+        read = async (s: StorageProvider) => {
+          let bytes = await s.download(op.path);
+          if (this.p.scope === "settings" && op.path.endsWith(".json"))
+            return JSON.stringify(
+              JSON.parse(
+                new TextDecoder().decode(
+                  project(op.path, bytes, {
+                    self: "refsync",
+                    blocked: [],
+                    rules: parseOverlay(this.p.config?.overlay ?? ""),
+                  }),
+                ),
+              ),
+              null,
+              2,
+            );
+          return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+        };
       const [before, after] = await Promise.all([
         op.target ? read(target) : "",
         op.source ? read(source) : "",

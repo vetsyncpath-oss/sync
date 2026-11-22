@@ -1,3 +1,5 @@
+import { scopeEditor } from "./scope-editor";
+import { legacyConfig, preset } from "./config-scope";
 import { PluginSettingTab, Setting, Platform, type App } from "obsidian";
 import type RefSync from "./main";
 import { checked, type Profile } from "./model";
@@ -81,7 +83,7 @@ export class Editor extends PluginSettingTab {
       );
       row.addButton((b) =>
         b.setButtonText(t("edit")).onClick(() => {
-          this.draft = { ...p };
+          this.draft = structuredClone(p);
           this.display();
         }),
       );
@@ -147,7 +149,12 @@ export class Editor extends PluginSettingTab {
     const text = (field: S, key: string) =>
       new Setting(el).setName(t(key)).addText((c) =>
         c.setValue(String(p[field])).onChange((v) => {
-          Object.assign(p, { [field]: v });
+          Object.assign(p, {
+            [field]:
+              field === "reference" || field === "local"
+                ? v.replace(/\\/g, "/")
+                : v,
+          });
           validateForm();
         }),
       );
@@ -192,6 +199,18 @@ export class Editor extends PluginSettingTab {
             }
             if (p.scope === "settings") {
               p.fileEvents = false;
+              if (field === "scope" && !p.config) {
+                p.config = {
+                  ...legacyConfig(),
+                  categories: preset("full"),
+                  legacyThemes: false,
+                  strategy: "batch",
+                };
+                p.startup = true;
+                p.intervalMinutes = 60;
+                p.onFocus = false;
+                p.onOnline = false;
+              }
               if (p.conflict === "both") p.conflict = "source";
             }
             if (field === "role" && p.role === "publisher") {
@@ -201,6 +220,7 @@ export class Editor extends PluginSettingTab {
             this.display();
           });
       });
+    if (p.config) p.config = structuredClone(p.config);
     text("name", "name");
     toggle("enabled", "enabled");
     choice("scope", "scope", ["content", "settings"]);
@@ -209,6 +229,14 @@ export class Editor extends PluginSettingTab {
     if (p.scope === "settings")
       new Setting(el).setName(t("target")).setDesc(this.app.vault.configDir);
     else text("local", "target");
+    if (p.scope === "settings")
+      scopeEditor(
+        el,
+        p,
+        t,
+        () => this.display(),
+        () => validateForm(),
+      );
     choice("mirror", "mirrorMode", ["preserve", "full"]);
     if (p.role === "subscriber") {
       toggle("deletions", "deletions", p.mirror === "full");
@@ -236,6 +264,12 @@ export class Editor extends PluginSettingTab {
       });
     });
     toggle("firstPlan", "firstPlan");
+    if (p.scope === "settings") {
+      toggle("strictDrift", "strictDrift");
+      toggle("startup", "startup");
+      num("startupSeconds", "startupSeconds");
+      num("intervalMinutes", "intervalMinutes");
+    }
     if (p.scope === "content") {
       text("include", "include");
       text("exclude", "exclude");

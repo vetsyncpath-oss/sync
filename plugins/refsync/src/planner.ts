@@ -32,6 +32,7 @@ export function plan(
   resolve: ConflictResolver = resolveConflict,
 ): Plan {
   if (!src.complete || !dst.complete) throw Error("incomplete");
+  const skipped = new Map([...(src.skipped ?? []), ...(dst.skipped ?? [])]);
   const names = new Map<string, string>();
   for (const snap of [src, dst])
     for (const [paths, kind] of [
@@ -41,17 +42,31 @@ export function plan(
       for (const path of paths) {
         const key = fold(path),
           sig = kind + " " + path;
-        if (names.has(key) && names.get(key) !== sig) throw Error("collision");
+        if (names.has(key) && names.get(key) !== sig)
+          skipped.set(path, "collision");
         names.set(key, sig);
       }
-  const skipped = new Map([...(src.skipped ?? []), ...(dst.skipped ?? [])]);
+  const alias = (s: string) =>
+    fold(s)
+      .split("/")
+      .map((k) => k.replace(/[. ]+$/, ""))
+      .join("/");
+  const blocked = new Set([...skipped.keys()].map(alias));
+  const protectedPath = (path: string) => {
+    const parts = alias(path).split("/");
+    while (parts.length) {
+      if (blocked.has(parts.join("/"))) return true;
+      parts.pop();
+    }
+    return false;
+  };
   const deferred = [...skipped]
     .filter(([, reason]) => reason !== "filter")
     .map(([path, reason]) => ({ path, reason }));
   const ops: Op[] = [],
     deletes: Op[] = [];
   for (const path of new Set([...src.files.keys(), ...dst.files.keys()])) {
-    if (skipped.has(path)) continue;
+    if (protectedPath(path)) continue;
     const s = src.files.get(path),
       t = dst.files.get(path),
       b = Object.hasOwn(base.entries, path) ? base.entries[path] : undefined;
@@ -68,6 +83,14 @@ export function plan(
     const strict =
       p.strictDrift || (p.scope === "content" && p.mirror === "full");
     if (!strict && b?.seen === s.hash) continue;
+    if (
+      !strict &&
+      p.scope === "settings" &&
+      s.rawHash &&
+      b?.seen === s.rawHash &&
+      s.rawHash !== s.hash
+    )
+      continue;
     const conflict =
       !!t &&
       s.kind === "S" &&
@@ -96,7 +119,7 @@ export function plan(
     deferred,
     forgotten: Object.keys(base.entries).filter(
       (path) =>
-        !skipped.has(path) && !src.files.has(path) && !dst.files.has(path),
+        !protectedPath(path) && !src.files.has(path) && !dst.files.has(path),
     ),
     held: protect ? deletes.map((d) => d.path) : [],
     count: src.files.size,

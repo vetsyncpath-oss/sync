@@ -1,3 +1,5 @@
+import { legacyConfig, mobileExcluded } from "./config-scope";
+import { parseOverlay } from "./json-overlay";
 import { pathFilter } from "./filters";
 import { selectPlan, type Choices } from "./selection";
 import { RunBudget, sleep, transient } from "./runtime";
@@ -72,6 +74,18 @@ export class SyncEngine {
       const budget =
         options.budget ??
         new RunBudget(undefined, undefined, undefined, this.applier.fence);
+      const cfg = p.config ?? legacyConfig();
+      const projection =
+        p.scope === "settings"
+          ? {
+              rules: parseOverlay(cfg.overlay),
+              self: this.self,
+              blocked:
+                !this.desktop && cfg.platformFilter
+                  ? await mobileExcluded(source, target, budget)
+                  : [],
+            }
+          : undefined;
       const filter = p.scope === "content" ? pathFilter(p) : () => true;
       const inputs = await Promise.allSettled([
         scan(
@@ -83,6 +97,8 @@ export class SyncEngine {
           budget,
           filter,
           p.scope === "content" ? p.maxMiB : 0,
+          cfg,
+          projection,
         ),
         scan(
           target,
@@ -93,6 +109,8 @@ export class SyncEngine {
           budget,
           filter,
           p.scope === "content" ? p.maxMiB : 0,
+          cfg,
+          projection,
         ),
       ]);
       const [s, t] = inputs.map((i) => {
@@ -163,6 +181,7 @@ export class SyncEngine {
           budget,
           options.progress,
           options.active,
+          projection,
         );
       }
       this.status.set(

@@ -1,3 +1,5 @@
+import type { Projection } from "./json-overlay";
+import type { ConfigScope } from "./config-scope";
 import { MutationFence, RunBudget } from "./runtime";
 import {
   fresh,
@@ -80,6 +82,12 @@ export interface Intent {
   digest?: string;
 }
 export interface Transaction {
+  settings?: {
+    config: ConfigScope;
+    projection: Projection;
+    local: boolean;
+    at: number;
+  };
   version: 1;
   id: string;
   key: string;

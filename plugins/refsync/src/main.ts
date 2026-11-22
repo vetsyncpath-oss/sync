@@ -1,3 +1,7 @@
+import { legacyConfig } from "./config-scope";
+import { withPluginData, reloadApp } from "./hot-config";
+import { needsReload, verifySettings } from "./verify-settings";
+import { canAutoReload, type ReloadRequest } from "./reload-manager";
 import {
   Plugin,
   Platform,
@@ -89,6 +93,81 @@ export default class RefSync extends Plugin {
   private bar: HTMLElement | null = null;
   private ribbon!: HTMLElement;
   private lastPrune = 0;
+  private lastInput = Date.now();
+  private reloadQueued = false;
+  private pendingReload?: ReloadRequest;
+  private async verify() {
+    const applier = this.engine.applier;
+    const reports = await verifySettings(
+      applier.journal,
+      (t) => this.recoveryTarget(t),
+      (t) => {
+        const p = this.config.profiles.find(
+          (p) =>
+            p.enabled &&
+            p.role === "subscriber" &&
+            p.scope === "settings" &&
+            p.id === JSON.parse(t.key)[0] &&
+            JSON.parse(t.key)[2] === "vault:" + p.reference,
+        );
+        return p && t.target === this.app.vault.configDir
+          ? (p.config ?? legacyConfig())
+          : undefined;
+      },
+      new RunBudget(undefined, undefined, undefined, applier.fence),
+    );
+    for (const r of reports) {
+      await this.log(
+        r.unresolved.length ? "verify-failed" : "verified",
+        r.repaired,
+        this.config.current,
+        r,
+      );
+      if (r.unresolved.length)
+        this.notices.send(
+          "verify",
+          this.t("repairFailed") + " · " + r.unresolved.join(", "),
+        );
+    }
+  }
+  private promptReload() {
+    if (!this.pendingReload) return;
+    this.confirm(
+      this.t("reloadNeeded") + " · " + this.pendingReload.paths.join(", "),
+      () => this.queueReload(true),
+    );
+  }
+  private queueReload(manual = false) {
+    if (this.reloadQueued || !this.pendingReload) return;
+    this.reloadQueued = true;
+    void this.scheduler
+      .serial(async () => {
+        const now = Date.now(),
+          raw: unknown = this.app.loadLocalStorage("refsync:reloadHistory"),
+          history: number[] = Array.isArray(raw)
+            ? raw.filter((x) => typeof x === "number" && x > now - 3600000)
+            : [];
+        if (
+          !this.live ||
+          !this.pendingReload ||
+          (this.config.paused && !manual)
+        )
+          return;
+        if (
+          !manual &&
+          (!canAutoReload(history, now) ||
+            (this.pendingReload.policy === "idle" &&
+              now - this.lastInput < this.pendingReload.idleSeconds * 1000))
+        )
+          return;
+        this.app.saveLocalStorage("refsync:reloadHistory", [...history, now]);
+        reloadApp(this.app);
+      })
+      .catch((e) => this.report(e))
+      .finally(() => {
+        this.reloadQueued = false;
+      });
+  }
   private startupRecovery?: Promise<void>;
   async onload() {
     const fence = MutationFence.forVault(this.app.vault);
@@ -148,6 +227,7 @@ export default class RefSync extends Plugin {
     cmd("dry-run", "dry", () => current("dry"));
     cmd("deliver", "sync", () => current("run"));
     cmd("sync-all", "syncAll", () => this.runAll());
+    cmd("settings-reload", "reloadNeeded", () => this.promptReload());
     cmd("undo", "undo", () => this.confirmUndo());
     cmd("resolve-deletions", "release", () => current("release"));
     cmd(
@@ -178,9 +258,11 @@ export default class RefSync extends Plugin {
           return;
         }
         this.startupRecovery = this.engine
-          .exclusive(() =>
-            this.engine.applier.recover((t) => this.recoveryTarget(t)),
-          )
+          .exclusive(async () => {
+            await this.engine.applier.recover((t) => this.recoveryTarget(t));
+            if (!this.config.paused)
+              await this.verify().catch((e) => this.report(e));
+          })
           .then(() => {
             if (this.live) {
               status.set("idle");
@@ -216,7 +298,9 @@ export default class RefSync extends Plugin {
       .join(" · ");
     setIcon(this.ribbon, this.config.paused ? "pause" : icons[phase]);
     this.ribbon.setAttribute("aria-label", text);
-    this.bar?.setText(text);
+    this.bar?.setText(
+      this.pendingReload ? text + " · " + this.t("reloadNeeded") : text,
+    );
   }
   private menu(e: MouseEvent) {
     const m = new Menu();
@@ -228,6 +312,10 @@ export default class RefSync extends Plugin {
           .onClick(() => this.save({ ...this.config, current: p.id })),
       );
     m.addSeparator();
+    if (this.pendingReload)
+      m.addItem((i) =>
+        i.setTitle(this.t("reloadNeeded")).onClick(() => this.promptReload()),
+      );
     for (const [k, f] of [
       ["preview", () => this.request(this.config.current, "dry")],
       ["sync", () => this.request(this.config.current, "run")],
@@ -268,13 +356,26 @@ export default class RefSync extends Plugin {
   private listen() {
     const contents = () =>
       this.config.profiles.filter(
-        (p) => p.enabled && p.scope === "content" && !this.config.paused,
+        (p) =>
+          p.enabled &&
+          (p.scope === "content" || !!p.config) &&
+          !this.config.paused,
       );
+    for (const e of ["keydown", "pointerdown"] as const)
+      this.registerDomEvent(document, e, () => {
+        this.lastInput = Date.now();
+      });
     for (const p of contents())
       if (p.startup) this.scheduler.schedule(p.id, p.startupSeconds * 1000);
     this.registerInterval(
       window.setInterval(() => {
         const now = Date.now();
+        if (
+          this.pendingReload?.policy === "idle" &&
+          !this.config.paused &&
+          now - this.lastInput >= this.pendingReload.idleSeconds * 1000
+        )
+          this.queueReload();
         for (const p of contents()) {
           if (!p.intervalMinutes) continue;
           const next = this.due.get(p.id);
@@ -361,6 +462,14 @@ export default class RefSync extends Plugin {
       t.target === "/" ? "" : t.target,
       this.manifest.id,
       t.scope,
+      false,
+      undefined,
+      undefined,
+      t.settings?.config,
+      t.target === this.app.vault.configDir
+        ? (path, write) =>
+            withPluginData(this.app, this.manifest.id, path, write)
+        : undefined,
     );
   }
   private stores(p: Profile) {
@@ -380,6 +489,11 @@ export default class RefSync extends Plugin {
                 digest,
                 expires: Date.now() + 10000,
               }),
+        p.config,
+        !ro && p.scope === "settings" && path === this.app.vault.configDir
+          ? (file, write) =>
+              withPluginData(this.app, this.manifest.id, file, write)
+          : undefined,
       );
     return {
       reference: make(p.reference, p.role === "subscriber"),
@@ -529,6 +643,33 @@ export default class RefSync extends Plugin {
       p.id,
       { held, deferred },
     );
+    if (p.scope === "settings" && p.role === "subscriber" && result.changed) {
+      const cfg = p.config ?? legacyConfig(),
+        excluded = new Set(deferred.map((d) => d.path));
+      const paths = result.plan.ops
+        .filter(
+          (o) =>
+            !excluded.has(o.path) &&
+            ["write", "delete"].includes(o.action) &&
+            needsReload(o.path),
+        )
+        .map((o) => o.path);
+      if (paths.length) {
+        this.pendingReload = {
+          paths: [...new Set([...(this.pendingReload?.paths ?? []), ...paths])],
+          policy: cfg.reload,
+          idleSeconds: cfg.idleSeconds,
+          at: Date.now(),
+        };
+        this.paint();
+        if (cfg.reload === "now") this.queueReload();
+        else if (
+          cfg.reload === "next" &&
+          (p.inheritMode ? this.config.mode : p.mode) === "plan"
+        )
+          this.promptReload();
+      }
+    }
     if (held.length)
       this.notices.send(
         p.id + ":held",

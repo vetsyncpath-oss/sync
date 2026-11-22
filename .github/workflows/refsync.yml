@@ -8,7 +8,12 @@ permissions:
   contents: read
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: plugins/refsync
@@ -24,6 +29,7 @@ jobs:
       - run: npm run build
       - run: git diff --exit-code -- main.js
       - name: Verify shipped archive contents
+        shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -31,8 +37,14 @@ jobs:
           import json
           version = json.loads(Path("manifest.json").read_text())["version"]
           for suffix in ("", "-source"):
-              archive = Path(f"releases/refsync-{version}-m2{suffix}.zip")
+              archive = Path(f"releases/refsync-{version}-m3{suffix}.zip")
               with ZipFile(archive) as shipped:
                   for item in shipped.namelist():
                       assert shipped.read(item) == Path(item.removeprefix("refsync/")).read_bytes()
           PY
+
+      - name: Test packaged plugin in Windows Obsidian
+        if: runner.os == 'Windows'
+        run: |
+          python -m pip install playwright==1.56.0
+          python scripts/windows-smoke.py

@@ -9,7 +9,7 @@ output = root / "releases"
 output.mkdir(exist_ok=True)
 
 def archive(suffix, files):
-    path = output / f"refsync-{version}-m2{suffix}.zip"
+    path = output / f"refsync-{version}-m3{suffix}.zip"
     with ZipFile(path, "w") as dest:
         for file in sorted(files):
             entry = ZipInfo("refsync/" + file.relative_to(root).as_posix())
@@ -19,6 +19,6 @@ def archive(suffix, files):
 
 install = [root / name for name in ("README.md", "main.js", "manifest.json","THIRD_PARTY.txt")]
 source = [root / name for name in ("package.json", "package-lock.json", "tsconfig.json", "esbuild.config.mjs")]
-source += list(root.glob("src/*.ts")) + list(root.glob("test/*.ts")) + [Path(__file__).resolve()]
+source += list(root.glob("src/*.ts")) + list(root.glob("test/*.ts")) + list(root.glob("scripts/*.py"))
 archive("", install)
 archive("-source", install + source)
