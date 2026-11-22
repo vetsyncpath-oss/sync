@@ -1,23 +1,41 @@
 import {
   Plugin,
-  PluginSettingTab,
   Platform,
   Modal,
   Setting,
   Notice,
   Menu,
   setIcon,
+  MarkdownView,
+  TFile,
   type App,
 } from "obsidian";
-import { defaults, join, checked, type Profile } from "./model";
-import { validate } from "./validator";
+import { join, hash, type Profile, type StorageProvider } from "./model";
+import { loadProfiles, type Configuration } from "./profiles";
 import { Applier } from "./applier";
-import { StateStore, ApplyJournal, type Transaction } from "./state";
+import {
+  StateStore,
+  ApplyJournal,
+  TimedArtifacts,
+  type Transaction,
+} from "./state";
 import { LocalProvider, VaultArtifacts } from "./vault";
 import { SyncEngine, StatusStore, type Phase } from "./engine";
 import { translator } from "./i18n";
 import type { Plan } from "./planner";
+import type { Choices } from "./selection";
+import {
+  Scheduler,
+  QuietWindow,
+  NoticeCenter,
+  eventPath,
+  RunBudget,
+  MutationFence,
+} from "./runtime";
+import { Review } from "./review";
+import { Editor } from "./editor";
 
+type Intent = "dry" | "run" | "auto" | "release";
 const icons: Record<Phase, string> = {
   idle: "refresh-cw",
   scan: "search",
@@ -27,215 +45,547 @@ const icons: Record<Phase, string> = {
   partial: "shield-alert",
   error: "circle-alert",
 };
-class StatusController {
-  constructor(
-    plugin: Plugin,
-    store: StatusStore,
-    tr: (key: string) => string,
-    open: (e: MouseEvent) => void,
-  ) {
-    const ribbon = plugin.addRibbonIcon("refresh-cw", "RefSync", open);
-    const bar = Platform.isDesktopApp ? plugin.addStatusBarItem() : null;
-    if (bar) {
-      bar.tabIndex = 0;
-      bar.setAttribute("role", "button");
-      bar.onclick = open;
-      bar.onkeydown = (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          bar.click();
-        }
-      };
-    }
-    plugin.register(
-      store.subscribe((phase) => {
-        setIcon(ribbon, icons[phase]);
-        ribbon.setAttribute("aria-label", "RefSync · " + tr(phase));
-        bar?.setText("RefSync · " + tr(phase));
-      }),
-    );
-  }
-}
-class Review extends Modal {
+class Confirmation extends Modal {
   constructor(
     app: App,
-    private plugin: RefSync,
-    private plan: Plan,
-    private apply?: () => void,
+    private message: string,
+    private tr: (k: string) => string,
+    private action: () => void,
   ) {
     super(app);
   }
   onOpen() {
-    const t = this.plugin.t;
-    this.titleEl.setText("RefSync · " + t(this.apply ? "preview" : "dry"));
-    if (this.apply) this.contentEl.createEl("p", { text: t("previewFirst") });
-    const list = this.contentEl.createEl("ul");
-    const items = this.plan.ops.filter((op) => op.action !== "ack");
-    for (const op of items)
-      list.createEl("li", {
-        text:
-          t(op.action) +
-          " · " +
-          op.path +
-          (op.conflict ? " · " + t("conflict") : ""),
-      });
-    if (!items.length) this.contentEl.createEl("p", { text: t("none") });
-    if (this.plan.held.length)
-      this.contentEl.createEl("p", {
-        text: t("held") + " · " + this.plan.held.join(", "),
-      });
-    if (this.apply)
-      new Setting(this.contentEl).addButton((b) =>
-        b
-          .setButtonText(t("sync"))
-          .setCta()
-          .onClick(() => {
-            this.close();
-            this.apply?.();
-          }),
-      );
-  }
-  onClose() {
-    this.contentEl.empty();
-  }
-}
-class Confirm extends Modal {
-  constructor(
-    app: App,
-    private plugin: RefSync,
-    private run: () => void,
-  ) {
-    super(app);
-  }
-  onOpen() {
-    const t = this.plugin.t;
-    this.contentEl.createEl("p", { text: t("undoText") });
+    this.contentEl.createEl("p", { text: this.message });
     new Setting(this.contentEl)
       .addButton((b) =>
-        b.setButtonText(t("cancel")).onClick(() => this.close()),
+        b.setButtonText(this.tr("cancel")).onClick(() => this.close()),
       )
       .addButton((b) =>
-        b.setButtonText(t("confirm")).onClick(() => {
+        b.setButtonText(this.tr("confirmAction")).onClick(() => {
           this.close();
-          this.run();
+          this.action();
         }),
       );
   }
 }
 export default class RefSync extends Plugin {
-  profile: Profile = { ...defaults };
+  config!: Configuration;
   t = translator(navigator.language);
   private engine!: SyncEngine;
-  private logDir = "";
   private ready!: Promise<void>;
+  private logDir = "";
+  private scheduler!: Scheduler;
+  private quiet = new QuietWindow();
+  private notices = new NoticeCenter((m) => new Notice(m));
+  private live = true;
+  private due = new Map<string, number>();
+  private own = new Map<string, { digest: string | null; expires: number }>();
+  private retries = new Map<string, number>();
+  private saves = Promise.resolve();
+  private reviewQueue: Review[] = [];
+  private openIds = new Set<string>();
+  private activeReview?: Review;
+  private statusLabel = "";
+  private bar: HTMLElement | null = null;
+  private ribbon!: HTMLElement;
+  private lastPrune = 0;
+  private startupRecovery?: Promise<void>;
   async onload() {
-    const data: unknown = await this.loadData();
-    if (
-      data &&
-      typeof data === "object" &&
-      "profile" in data &&
-      data.profile &&
-      typeof data.profile === "object"
-    )
-      this.profile = { ...defaults, ...data.profile };
+    const fence = MutationFence.forVault(this.app.vault);
+    await fence.previousInstance;
+    this.config = loadProfiles(await this.loadData());
     const deviceKey = (k: string) => this.manifest.id + ":" + k;
     const state = new StateStore({
       get: (k) => this.app.loadLocalStorage(deviceKey(k)),
       set: (k, v) => this.app.saveLocalStorage(deviceKey(k), v),
     });
-    const selfDir = join(
+    this.logDir = join(
       this.app.vault.configDir,
-      "plugins/" + this.manifest.id,
+      "plugins/" + this.manifest.id + "/runtime",
     );
-    this.logDir = join(selfDir, "runtime");
-    const disk = new VaultArtifacts(
-      this.app.vault.adapter,
-      join(this.logDir, "journal/" + state.device),
+    const journal = new ApplyJournal(
+      new TimedArtifacts(
+        new VaultArtifacts(
+          this.app.vault.adapter,
+          join(this.logDir, "journal/" + state.device),
+        ),
+        fence,
+      ),
     );
     const status = new StatusStore();
     this.engine = new SyncEngine(
-      new Applier(new ApplyJournal(disk), state),
+      new Applier(journal, state, fence),
       status,
       this.app.vault.configDir,
       this.manifest.id,
       Platform.isDesktopApp,
     );
+    this.scheduler = new Scheduler(
+      (id) => this.execute(id, "auto"),
+      (e) => this.report(e),
+    );
+    this.ribbon = this.addRibbonIcon("refresh-cw", "RefSync", (e) =>
+      this.menu(e),
+    );
+    if (Platform.isDesktopApp) {
+      this.bar = this.addStatusBarItem();
+      this.bar.tabIndex = 0;
+      this.bar.setAttribute("role", "button");
+      this.bar.onclick = (e) => this.menu(e);
+      this.bar.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          this.bar?.click();
+        }
+      };
+    }
+    this.register(status.subscribe(() => this.paint()));
+    this.addSettingTab(new Editor(this.app, this));
+    const current = (intent: Intent) =>
+      this.request(this.config.current, intent);
+    const cmd = (id: string, label: string, fn: () => void) =>
+      this.addCommand({ id, name: this.t(label), callback: fn });
+    cmd("dry-run", "dry", () => current("dry"));
+    cmd("deliver", "sync", () => current("run"));
+    cmd("sync-all", "syncAll", () => this.runAll());
+    cmd("undo", "undo", () => this.confirmUndo());
+    cmd("resolve-deletions", "release", () => current("release"));
+    cmd(
+      "toggle-silent",
+      "defaultMode",
+      () =>
+        void this.save({
+          ...this.config,
+          mode: this.config.mode === "plan" ? "silent" : "plan",
+        }),
+    );
+    cmd(
+      "pause",
+      "pause",
+      () => void this.save({ ...this.config, paused: !this.config.paused }),
+    );
     this.ready = new Promise<void>((resolve, reject) =>
       this.app.workspace.onLayoutReady(() => {
+        if (!this.live) {
+          resolve();
+          return;
+        }
         status.set("recover");
-        this.engine
+        if (fence.pending) {
+          this.engine.applier.needsRecovery = true;
+          this.listen();
+          resolve();
+          return;
+        }
+        this.startupRecovery = this.engine
           .exclusive(() =>
             this.engine.applier.recover((t) => this.recoveryTarget(t)),
           )
           .then(() => {
-            status.set("idle");
+            if (this.live) {
+              status.set("idle");
+              this.listen();
+            }
             resolve();
           }, reject);
       }),
     );
     void this.ready.catch((e) => this.report(e));
-    new StatusController(this, status, this.t, (e) => {
-      const menu = new Menu();
-      for (const [id, fn] of [
-        ["preview", () => this.review(false)],
-        ["sync", () => this.review(true)],
-        ["undo", () => this.confirmUndo()],
-      ] as const)
-        menu.addItem((item) => item.setTitle(this.t(id)).onClick(fn));
-      menu.showAtMouseEvent(e);
-    });
-    this.addSettingTab(new Editor(this.app, this));
-    this.addCommand({
-      id: "dry-run",
-      name: this.t("dry"),
-      callback: () => this.review(false),
-    });
-    this.addCommand({
-      id: "deliver",
-      name: this.t("sync"),
-      callback: () => this.review(true),
-    });
-    this.addCommand({
-      id: "undo",
-      name: this.t("undo"),
-      callback: () => this.confirmUndo(),
+  }
+  onunload() {
+    this.live = false;
+    // A newly enabled instance must finish this instance's rollback before recovery.
+    const fence = MutationFence.forVault(this.app.vault);
+    const previous = fence.previousInstance;
+    fence.previousInstance = Promise.allSettled([
+      previous,
+      this.scheduler?.stop(),
+      this.startupRecovery,
+      this.saves,
+    ]).then(() => {});
+    this.quiet.clear();
+    this.own.clear();
+    this.reviewQueue = [];
+    this.activeReview?.close();
+  }
+  private paint() {
+    const phase = this.engine.status.phase,
+      label = this.t(this.config.paused ? "paused" : phase);
+    const text = ["RefSync", label, this.statusLabel]
+      .filter(Boolean)
+      .join(" · ");
+    setIcon(this.ribbon, this.config.paused ? "pause" : icons[phase]);
+    this.ribbon.setAttribute("aria-label", text);
+    this.bar?.setText(text);
+  }
+  private menu(e: MouseEvent) {
+    const m = new Menu();
+    for (const p of this.config.profiles)
+      m.addItem((item) =>
+        item
+          .setTitle(p.name)
+          .setChecked(p.id === this.config.current)
+          .onClick(() => this.save({ ...this.config, current: p.id })),
+      );
+    m.addSeparator();
+    for (const [k, f] of [
+      ["preview", () => this.request(this.config.current, "dry")],
+      ["sync", () => this.request(this.config.current, "run")],
+      ["syncAll", () => this.runAll()],
+      ["undo", () => this.confirmUndo()],
+      ["release", () => this.request(this.config.current, "release")],
+      [
+        "pause",
+        () => this.save({ ...this.config, paused: !this.config.paused }),
+      ],
+    ] as const)
+      m.addItem((item) => item.setTitle(this.t(k)).onClick(f));
+    m.showAtMouseEvent(e);
+  }
+  save(config: Configuration) {
+    const prev = this.config;
+    this.config = config;
+    for (const p of prev.profiles)
+      if (config.profiles.find((q) => q.id === p.id) !== p) {
+        this.scheduler.cancel(p.id);
+        this.due.delete(p.id);
+      }
+    this.paint();
+    const write = this.saves.then(() => this.saveData(config));
+    this.saves = write.catch((e) => this.report(e));
+    return write;
+  }
+  put(p: Profile, select = false) {
+    const old = this.config.profiles.some((q) => q.id === p.id);
+    return this.save({
+      ...this.config,
+      current: select ? p.id : this.config.current,
+      profiles: old
+        ? this.config.profiles.map((q) => (q.id === p.id ? p : q))
+        : [...this.config.profiles, p],
     });
   }
+  private listen() {
+    const contents = () =>
+      this.config.profiles.filter(
+        (p) => p.enabled && p.scope === "content" && !this.config.paused,
+      );
+    for (const p of contents())
+      if (p.startup) this.scheduler.schedule(p.id, p.startupSeconds * 1000);
+    this.registerInterval(
+      window.setInterval(() => {
+        const now = Date.now();
+        for (const p of contents()) {
+          if (!p.intervalMinutes) continue;
+          const next = this.due.get(p.id);
+          if (next && next <= now) this.scheduler.schedule(p.id);
+          if (!next || next <= now)
+            this.due.set(p.id, now + p.intervalMinutes * 60000);
+        }
+        if (now - this.lastPrune >= 86400000) {
+          this.lastPrune = now;
+          void this.scheduler
+            .serial(() => this.pruneTrash())
+            .catch((e) => this.report(e));
+        }
+        for (const [k, v] of this.own) if (v.expires < now) this.own.delete(k);
+      }, 1000),
+    );
+    for (const event of ["focus", "online"] as const)
+      this.registerDomEvent(window, event, () => {
+        for (const p of contents())
+          if (event === "focus" ? p.onFocus : p.onOnline)
+            this.scheduler.schedule(p.id, p.debounceSeconds * 1000);
+      });
+    this.registerEvent(
+      this.app.workspace.on("editor-change", (_, editor) => {
+        if (editor.file) this.quiet.edited(editor.file.path);
+      }),
+    );
+    const event = (path: string, removed: boolean) => {
+      for (const p of contents())
+        if (eventPath(p, path))
+          void this.fileEvent(p, path, removed).catch((e) =>
+            this.report(e, p.id),
+          );
+    };
+    for (const type of ["create", "modify", "delete"] as const)
+      this.registerEvent(
+        this.app.vault.on(type as "create", (file) =>
+          event(file.path, type === "delete"),
+        ),
+      );
+    this.registerEvent(
+      this.app.vault.on("rename", (file, old) => {
+        event(old, true);
+        event(file.path, false);
+      }),
+    );
+  }
+  private async fileEvent(p: Profile, path: string, removed: boolean) {
+    const key = JSON.stringify([p.id, path]),
+      own = this.own.get(key);
+    if (own && own.expires > Date.now()) {
+      if (removed && own.digest === null) return;
+      if (
+        !removed &&
+        own.digest &&
+        (await this.app.vault.adapter.exists(path))
+      ) {
+        if (
+          (await hash(await this.app.vault.adapter.readBinary(path))) ===
+          own.digest
+        )
+          return;
+      }
+    }
+    this.scheduler.schedule(p.id, p.debounceSeconds * 1000);
+  }
+  private async pruneTrash() {
+    const a = this.app.vault.adapter,
+      root = join(this.logDir, "trash");
+    if (!(await a.exists(root))) return;
+    for (const dir of (await a.list(root)).folders) {
+      const id = dir.slice(root.length + 1);
+      if (
+        dir.startsWith(root + "/") &&
+        /^\d{13}-[a-f0-9-]{36}$/.test(id) &&
+        Number(id.slice(0, 13)) <= Date.now()
+      )
+        await a.rmdir(dir, true);
+    }
+  }
   private recoveryTarget(t: Transaction) {
-    const root = t.target;
     return new LocalProvider(
       this.app.vault,
-      root === "/" ? "" : root,
+      t.target === "/" ? "" : t.target,
       this.manifest.id,
       t.scope,
     );
   }
   private stores(p: Profile) {
     if (p.access !== "local") throw Error("invalid");
-    const local =
-      p.scope === "settings"
-        ? this.app.vault.configDir
-        : p.local === "/"
-          ? ""
-          : p.local;
+    const make = (path: string, ro: boolean) =>
+      new LocalProvider(
+        this.app.vault,
+        path === "/" ? "" : path,
+        this.manifest.id,
+        p.scope,
+        ro,
+        p,
+        ro
+          ? undefined
+          : (file, digest) =>
+              this.own.set(JSON.stringify([p.id, file]), {
+                digest,
+                expires: Date.now() + 10000,
+              }),
+      );
     return {
-      reference: new LocalProvider(
-        this.app.vault,
-        p.reference === "/" ? "" : p.reference,
-        this.manifest.id,
-        p.scope,
-        p.role === "subscriber",
-      ),
-      local: new LocalProvider(
-        this.app.vault,
-        local,
-        this.manifest.id,
-        p.scope,
+      reference: make(p.reference, p.role === "subscriber"),
+      local: make(
+        p.scope === "settings" ? this.app.vault.configDir : p.local,
         p.role === "publisher",
       ),
     };
   }
-  private async log(event: string, count: number) {
+  request(id: string, intent: Intent) {
+    void this.scheduler
+      .serial(() => this.execute(id, intent))
+      .catch((e) => this.report(e, id));
+  }
+  runAll() {
+    for (const p of this.config.profiles)
+      if (p.enabled) this.request(p.id, "run");
+  }
+  private async execute(id: string, intent: Intent) {
+    await this.ready;
+    const p = this.config.profiles.find((x) => x.id === id);
+    if (!p || !this.live) return;
+    if (intent !== "dry" && (!p.enabled || this.config.paused)) return;
+    if (intent === "auto" && this.openIds.has(id)) return;
+    if (this.engine.applier.needsRecovery)
+      await this.engine.exclusive(() =>
+        this.engine.applier.recover((t) => this.recoveryTarget(t)),
+      );
+    this.statusLabel = p.name;
+    const v = this.stores(p);
+    const firstKey = this.firstKey(p),
+      first = p.firstPlan && !this.app.loadLocalStorage(firstKey);
+    if (
+      (intent === "run" || intent === "auto") &&
+      (p.inheritMode ? this.config.mode : p.mode) === "silent" &&
+      !first
+    ) {
+      await this.deliver(p);
+      return;
+    }
+    const { plan } = await this.engine.run(p, v.reference, v.local, true);
+    if (!this.live) return;
+    if (
+      intent === "auto" &&
+      !plan.ops.some((o) => o.action !== "ack") &&
+      !plan.held.length &&
+      !plan.deferred.length
+    )
+      return;
+    if (this.openIds.has(id)) return;
+    this.openIds.add(id);
+    const close = () => {
+      this.openIds.delete(id);
+      this.activeReview = undefined;
+      this.showNext();
+    };
+    const endpoints = (): [StorageProvider, StorageProvider] =>
+      p.role === "subscriber" ? [v.reference, v.local] : [v.local, v.reference];
+    this.reviewQueue.push(
+      new Review(
+        this.app,
+        p,
+        plan,
+        this.t,
+        endpoints,
+        close,
+        intent === "dry"
+          ? undefined
+          : (choices, release) => {
+              const picked =
+                intent === "release"
+                  ? new Map(plan.ops.map((o) => [o.path, "skip" as const]))
+                  : choices;
+              void this.scheduler
+                .serial(() => this.deliver(p, plan, picked, release))
+                .catch((e) => this.report(e, p.id));
+            },
+        intent === "release",
+      ),
+    );
+    this.showNext();
+  }
+  private showNext() {
+    if (!this.activeReview && this.live) {
+      this.activeReview = this.reviewQueue.shift();
+      this.activeReview?.open();
+    }
+  }
+  private firstKey(p: Profile) {
+    return (
+      this.manifest.id +
+      ":first:" +
+      JSON.stringify([p.id, p.scope, p.role, p.local, p.reference])
+    );
+  }
+  private async deliver(
+    p: Profile,
+    approved?: Plan,
+    choices?: Choices,
+    release?: Set<string>,
+  ) {
+    const active = () =>
+      this.live &&
+      !this.config.paused &&
+      p.enabled &&
+      this.config.profiles.includes(p);
+    if (!active()) return;
+    const v = this.stores(p);
+    const isOpen = (path: string) =>
+      this.app.workspace
+        .getLeavesOfType("markdown")
+        .some(
+          (leaf) =>
+            leaf.view instanceof MarkdownView &&
+            leaf.view.file?.path === join(p.local, path),
+        );
+    const result = await this.engine.run(
+      p,
+      v.reference,
+      v.local,
+      false,
+      approved,
+      {
+        choices,
+        release,
+        active,
+        budget: new RunBudget(
+          undefined,
+          undefined,
+          undefined,
+          this.engine.applier.fence,
+        ),
+        quiet: (path) => this.quiet.check(p, path, isOpen(path)),
+        progress: (done, total) => {
+          this.statusLabel = p.name + " · " + done + "/" + total;
+          this.paint();
+        },
+      },
+    );
+    this.app.saveLocalStorage(this.firstKey(p), true);
+    this.statusLabel = p.name;
+    this.paint();
+    const { held, deferred } = result.plan;
+    await this.log(
+      held.length || deferred.length ? "partial" : "done",
+      result.changed,
+      p.id,
+      { held, deferred },
+    );
+    if (held.length)
+      this.notices.send(
+        p.id + ":held",
+        p.name + " · " + this.t("held") + " (" + held.length + ")",
+      );
+    const prefix = p.id + "\n",
+      again = new Set(deferred.map((x) => prefix + x.path));
+    for (const key of this.retries.keys())
+      if (key.startsWith(prefix) && !again.has(key)) this.retries.delete(key);
+    for (const key of again) {
+      const n = (this.retries.get(key) ?? 0) + 1;
+      this.retries.set(key, n);
+      if (n === 6)
+        this.notices.send(
+          p.id + ":deferred",
+          p.name + " · " + this.t("deferred"),
+        );
+    }
+  }
+  confirm(message: string, fn: () => void | Promise<void>) {
+    new Confirmation(
+      this.app,
+      message,
+      this.t,
+      () =>
+        void Promise.resolve()
+          .then(fn)
+          .catch((e) => this.report(e)),
+    ).open();
+  }
+  private confirmUndo() {
+    const p = this.config.profiles.find((p) => p.id === this.config.current);
+    if (!p) return;
+    this.confirm(this.t("undoText") + " · " + p.name, () =>
+      this.scheduler.serial(async () => {
+        await this.ready;
+        const v = this.stores(p),
+          [source, target] =
+            p.role === "subscriber"
+              ? [v.reference, v.local]
+              : [v.local, v.reference];
+        await this.engine.exclusive(() =>
+          this.engine.applier.undo(
+            JSON.stringify([p.id, p.scope, source.id, target.id]),
+            target,
+          ),
+        );
+        await this.log("undo", 1, p.id);
+      }),
+    );
+  }
+  private async log(
+    event: string,
+    count: number,
+    profile: string,
+    details: object = {},
+  ) {
     const a = this.app.vault.adapter;
     if (!(await a.exists(this.logDir))) await a.mkdir(this.logDir);
     const f = join(this.logDir, "events.jsonl"),
@@ -246,162 +596,14 @@ export default class RefSync extends Plugin {
     }
     await a.append(
       f,
-      JSON.stringify({
-        at: Date.now(),
-        profile: this.profile.id,
-        event,
-        count,
-      }) + "\n",
+      JSON.stringify({ at: Date.now(), profile, event, count, ...details }) +
+        "\n",
     );
   }
-  report(e: unknown) {
-    new Notice(
-      "RefSync · " + this.t(e instanceof Error ? e.message : "failed"),
-    );
-    void this.log("error", 0).catch(() => {});
-  }
-  async review(apply: boolean) {
-    try {
-      await this.ready;
-      const p = { ...this.profile },
-        v = this.stores(p),
-        result = await this.engine.run(p, v.reference, v.local, true);
-      new Review(
-        this.app,
-        this,
-        result.plan,
-        apply ? () => void this.deliver(p, result.plan) : undefined,
-      ).open();
-    } catch (e) {
-      this.report(e);
-    }
-  }
-  private async deliver(p: Profile, approved: Plan) {
-    try {
-      await this.ready;
-      const v = this.stores(p);
-      const r = await this.engine.run(p, v.reference, v.local, false, approved);
-      await this.log(r.plan.held.length ? "partial" : "done", r.changed);
-      if (r.plan.held.length) new Notice(this.t("held"));
-    } catch (e) {
-      this.report(e);
-    }
-  }
-  confirmUndo() {
-    new Confirm(this.app, this, () => void this.undo()).open();
-  }
-  private async undo() {
-    try {
-      await this.ready;
-      const p = this.profile,
-        v = this.stores(p);
-      const [source, target] =
-        p.role === "subscriber"
-          ? [v.reference, v.local]
-          : [v.local, v.reference];
-      const key = JSON.stringify([p.id, p.scope, source.id, target.id]);
-      await this.engine.exclusive(() => this.engine.applier.undo(key, target));
-      await this.log("undo", 1);
-    } catch (e) {
-      this.report(e);
-    }
-  }
-}
-class Editor extends PluginSettingTab {
-  constructor(
-    app: App,
-    private plugin: RefSync,
-  ) {
-    super(app, plugin);
-  }
-  display() {
-    const el = this.containerEl,
-      p = { ...this.plugin.profile },
-      t = this.plugin.t;
-    el.empty();
-    el.createEl("h2", { text: t("title") });
-    el.createEl("p", { text: t("instructions") });
-    const scope = new Setting(el).setName(t("scope"));
-    let localInput: HTMLInputElement;
-    scope.addDropdown((d) => {
-      for (const k of ["content", "settings"] as const) d.addOption(k, t(k));
-      d.setValue(p.scope).onChange((v) => {
-        p.scope = v === "content" ? "content" : "settings";
-        localInput.disabled = p.scope === "settings";
-        localInput.value =
-          p.scope === "settings" ? this.app.vault.configDir : p.local;
-        refresh();
-      });
-    });
-    const role = new Setting(el).setName(t("role"));
-    role.addDropdown((d) => {
-      for (const k of ["subscriber", "publisher"] as const)
-        d.addOption(k, t(k));
-      d.setValue(p.role).onChange((v) => {
-        p.role = v === "subscriber" ? "subscriber" : "publisher";
-        refresh();
-      });
-    });
-    new Setting(el).setName(t("reference")).addText((x) =>
-      x.setValue(p.reference).onChange((v) => {
-        p.reference = v.trim();
-        refresh();
-      }),
-    );
-    new Setting(el).setName(t("target")).addText((x) => {
-      localInput = x.inputEl;
-      localInput.disabled = p.scope === "settings";
-      x.setValue(
-        p.scope === "settings" ? this.app.vault.configDir : p.local,
-      ).onChange((v) => {
-        p.local = v.trim();
-        refresh();
-      });
-    });
-    const error = el.createEl("p", { attr: { role: "status" } });
-    const actions = new Setting(el);
-    const refresh = () => {
-      const bad = validate(
-        p,
-        Platform.isDesktopApp,
-        false,
-        this.app.vault.configDir,
-      );
-      error.setText(bad.map((r) => r.field + " · " + t(r.code)).join("\n"));
-      actions.components.forEach((c) => c.setDisabled(bad.length > 0));
-    };
-    actions.addButton((b) =>
-      b.setButtonText(t("save")).onClick(async () => {
-        refresh();
-        if (error.textContent) return;
-        this.plugin.profile = { ...p };
-        await this.plugin.saveData({ profile: p });
-        this.display();
-      }),
-    );
-    actions.addButton((b) =>
-      b.setButtonText(t("init")).onClick(async () => {
-        try {
-          refresh();
-          if (error.textContent) return;
-          for (const dir of [
-            p.reference,
-            p.scope === "settings" ? this.app.vault.configDir : p.local,
-          ]) {
-            if (
-              !dir ||
-              dir === "/" ||
-              (await this.app.vault.adapter.exists(dir))
-            )
-              continue;
-            checked(dir);
-            await this.app.vault.createFolder(dir);
-          }
-        } catch (e) {
-          this.plugin.report(e);
-        }
-      }),
-    );
-    refresh();
+  report(e: unknown, id = this.config?.current ?? "") {
+    if (!this.live) return;
+    const code = e instanceof Error ? e.message : "failed";
+    this.notices.send(id + ":" + code, "RefSync · " + this.t(code));
+    void this.log("error", 0, id, { code }).catch(() => {});
   }
 }

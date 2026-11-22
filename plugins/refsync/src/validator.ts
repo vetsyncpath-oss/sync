@@ -65,6 +65,7 @@ export function validate(
   const err = (field: Field, code: string) =>
     errors.push({ field, code, invalid: true });
   const enums = {
+    trash: ["plugin", "vault", "system", "permanent"],
     role: ["subscriber", "publisher"],
     scope: ["settings", "content"],
     access: ["local", "public", "oauth", "token"],
@@ -82,6 +83,11 @@ export function validate(
       err(key, "path");
   if (!/^[\w-]+$/.test(p.id)) err("id", "invalid");
   for (const k of [
+    "enabled",
+    "inheritMode",
+    "startup",
+    "onFocus",
+    "onOnline",
     "deletions",
     "backup",
     "emptyGuard",
@@ -91,6 +97,26 @@ export function validate(
     "strictDrift",
   ] as const)
     if (typeof p[k] !== "boolean") err(k, "invalid");
+  for (const [field, max] of [
+    ["maxDeleteCount", 1000000],
+    ["maxDeletePercent", 100],
+    ["shrinkPercent", 100],
+    ["deleteGrace", 1000],
+    ["startupSeconds", 3600],
+    ["intervalMinutes", 10080],
+    ["quietSeconds", 600],
+    ["debounceSeconds", 600],
+    ["maxDeferrals", 100],
+    ["maxMiB", 1048576],
+    ["trashDays", 3650],
+  ] as const) {
+    if (!Number.isInteger(p[field]) || p[field] < 0 || p[field] > max)
+      err(field, "invalid");
+  }
+  if (typeof p.name !== "string" || !p.name.trim()) err("name", "invalid");
+  for (const field of ["include", "exclude"] as const)
+    if (typeof p[field] !== "string" || p[field].length > 4096)
+      err(field, "invalid");
   if (errors.length) return errors;
   const local = fold(
       p.scope === "settings" ? configDir : p.local === "/" ? "" : p.local,

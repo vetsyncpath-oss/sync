@@ -1,9 +1,9 @@
 {
   "id": "refsync",
   "name": "RefSync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.8.7",
-  "description": "One-way reference distribution for content and Obsidian settings. M1 local provider.",
+  "description": "Distribute content and settings from a reference folder with profiles, selective review, schedules and rollback.",
   "author": "RefSync contributors",
   "isDesktopOnly": false
 }

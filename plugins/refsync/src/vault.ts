@@ -2,6 +2,8 @@ import { selected } from "./classifier";
 import { TFile, type DataAdapter, type Vault } from "obsidian";
 import {
   checked,
+  hash,
+  type Profile,
   join,
   parent,
   under,
@@ -68,6 +70,11 @@ export class LocalProvider implements StorageProvider {
     private self: string,
     private scope: Scope,
     readOnly = false,
+    private policy: Pick<Profile, "trash" | "trashDays"> = {
+      trash: "vault",
+      trashDays: 30,
+    },
+    private ownWrite?: (path: string, digest: string | null) => void,
   ) {
     if (root) checked(root);
     if (under(fold(root), fold(join(vault.configDir, "plugins/" + self))))
@@ -135,6 +142,7 @@ export class LocalProvider implements StorageProvider {
   async upload(p: string, b: Bytes, mtime?: number) {
     const path = this.writable(p),
       options = Number.isFinite(mtime) ? { mtime } : undefined;
+    if (this.ownWrite) this.ownWrite(path, await hash(b));
     if (this.indexed(path)) {
       const parts = p.split("/");
       let at = "";
@@ -176,13 +184,37 @@ export class LocalProvider implements StorageProvider {
   async delete(p: string) {
     const path = this.writable(p);
     if ((await this.stat(p))?.type !== "file") throw Error("collision");
-    if (!this.indexed(path)) {
-      await this.vault.adapter.trashLocal(path);
-      return;
+    const a = this.vault.adapter;
+    this.ownWrite?.(path, null);
+    const file = this.indexed(path)
+      ? this.vault.getAbstractFileByPath(path)
+      : null;
+    if (this.indexed(path) && !(file instanceof TFile))
+      throw Error("indexPending");
+    switch (this.policy.trash) {
+      case "plugin": {
+        const expires = Date.now() + this.policy.trashDays * 86400000;
+        const dest = join(
+          join(this.vault.configDir, "plugins/" + this.self + "/runtime/trash"),
+          expires + "-" + crypto.randomUUID() + "/" + path,
+        );
+        await ensure(a, parent(dest));
+        if (file) await this.vault.rename(file, dest);
+        else await a.rename(path, dest);
+        break;
+      }
+      case "permanent":
+        if (file) await this.vault.delete(file);
+        else await a.remove(path);
+        break;
+      case "system":
+        if (!(await a.trashSystem(path))) throw Error("trashUnavailable");
+        break;
+      case "vault":
+        if (file) await this.vault.trash(file, false);
+        else await a.trashLocal(path);
+        break;
     }
-    const file = this.vault.getAbstractFileByPath(path);
-    if (!(file instanceof TFile)) throw Error("indexPending");
-    await this.vault.trash(file, false);
   }
   async move(from: string, to: string) {
     const a = this.writable(from),

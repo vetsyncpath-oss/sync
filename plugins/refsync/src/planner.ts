@@ -14,11 +14,13 @@ export interface Op {
   action: Action;
   source?: Entry;
   conflict: boolean;
+  target?: Entry;
 }
 export interface Plan {
   ops: Op[];
   held: string[];
   count: number;
+  deferred: { path: string; reason: string }[];
   forgotten: string[];
   direction: Direction;
 }
@@ -42,15 +44,20 @@ export function plan(
         if (names.has(key) && names.get(key) !== sig) throw Error("collision");
         names.set(key, sig);
       }
+  const skipped = new Map([...(src.skipped ?? []), ...(dst.skipped ?? [])]);
+  const deferred = [...skipped]
+    .filter(([, reason]) => reason !== "filter")
+    .map(([path, reason]) => ({ path, reason }));
   const ops: Op[] = [],
     deletes: Op[] = [];
   for (const path of new Set([...src.files.keys(), ...dst.files.keys()])) {
+    if (skipped.has(path)) continue;
     const s = src.files.get(path),
       t = dst.files.get(path),
       b = Object.hasOwn(base.entries, path) ? base.entries[path] : undefined;
     if (!s) {
       if (t && (p.mirror === "full" || (p.deletions && b?.delivered)))
-        deletes.push({ path, action: "delete", conflict: false });
+        deletes.push({ path, action: "delete", conflict: false, target: t });
       continue;
     }
     if (s.kind === "V") continue;
@@ -69,14 +76,16 @@ export function plan(
       conflict && t && p.mirror !== "full"
         ? resolve(p.conflict, s, t)
         : "write";
-    ops.push({ path, action, source: s, conflict });
+    ops.push({ path, action, source: s, target: t, conflict });
   }
   const protect =
     (p.emptyGuard &&
       (src.files.size === 0 ||
-        (base.size > 0 && src.files.size < base.size * 0.5))) ||
-    deletes.length > 100 ||
-    deletes.length > Math.max(5, dst.files.size * 0.5);
+        (base.size > 0 &&
+          src.files.size < base.size * (1 - p.shrinkPercent / 100)))) ||
+    deletes.length > p.maxDeleteCount ||
+    deletes.length >
+      Math.max(p.deleteGrace, (dst.files.size * p.maxDeletePercent) / 100);
   if (!protect) ops.push(...deletes);
   ops.sort(
     (a, b) =>
@@ -84,8 +93,10 @@ export function plan(
   );
   return {
     ops,
+    deferred,
     forgotten: Object.keys(base.entries).filter(
-      (path) => !src.files.has(path) && !dst.files.has(path),
+      (path) =>
+        !skipped.has(path) && !src.files.has(path) && !dst.files.has(path),
     ),
     held: protect ? deletes.map((d) => d.path) : [],
     count: src.files.size,

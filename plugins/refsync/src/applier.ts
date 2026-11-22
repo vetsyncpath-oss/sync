@@ -1,3 +1,4 @@
+import { RunBudget, MutationFence, transient } from "./runtime";
 import {
   fresh,
   hash,
@@ -15,32 +16,45 @@ import {
 } from "./state";
 const decoder = new TextDecoder();
 export class Applier {
+  needsRecovery = false;
   constructor(
     readonly journal: ApplyJournal,
     readonly state: StateStore,
+    readonly fence = new MutationFence(),
   ) {}
   private async restore(
     t: Transaction,
     target: StorageProvider,
+    start = 0,
+    end = t.steps.length,
   ): Promise<void> {
-    for (let i = t.steps.length - 1; i >= 0; i--) {
+    const budget = new RunBudget(undefined, undefined, undefined, this.fence);
+    for (let i = end - 1; i >= start; i--) {
       const p = t.steps[i].path,
         armed = t.id + "/armed/" + i;
-      if (!(await this.journal.disk.has(armed))) continue;
+      if (
+        !(await this.journal.disk.has(armed)) ||
+        (await this.journal.disk.has(t.id + "/skipped/" + i))
+      )
+        continue;
       const saved = await this.journal.json<string | null>(armed);
-      const stat = await target.stat(p);
+      const stat = await budget.io(() => target.stat(p));
       if (stat?.type === "folder") throw Error("collision");
       if (saved === null) {
-        if (stat) await target.delete(p);
+        if (stat) await budget.io(() => target.delete(p), false);
       } else {
         const bytes = await this.journal.disk.read(t.id + "/backup/" + i);
         if ((await hash(bytes)) !== saved) throw Error("backup");
-        if (!stat || (await hash(await target.download(p))) !== saved)
-          await target.upload(p, bytes);
+        if (
+          !stat ||
+          (await hash(await budget.io(() => target.download(p)))) !== saved
+        )
+          await budget.io(() => target.upload(p, bytes), false);
       }
     }
   }
   async recover(resolve: (t: Transaction) => StorageProvider): Promise<void> {
+    this.fence.check();
     for (const t of await this.journal.transactions()) {
       if (
         (await this.journal.disk.has(t.id + "/undo-start")) &&
@@ -63,8 +77,11 @@ export class Applier {
       await this.restore(t, resolve(t));
       await this.journal.mark(t.id + "/rolled-back");
     }
+    this.needsRecovery = false;
   }
   async undo(key: string, target: StorageProvider) {
+    this.fence.check();
+    this.needsRecovery = true;
     const last = this.state.get(key).lastRun;
     const t = (await this.journal.transactions()).find(
       (v) => v.key === key && v.id === last,
@@ -74,6 +91,7 @@ export class Applier {
     await this.restore(t, target);
     this.state.put(key, t.before);
     await this.journal.mark(t.id + "/undo-done");
+    this.needsRecovery = false;
   }
   async apply(
     profile: Profile,
@@ -82,7 +100,16 @@ export class Applier {
     target: StorageProvider,
     key: string,
     targetPath: string,
+    budget = new RunBudget(undefined, undefined, undefined, this.fence),
+    progress?: (done: number, total: number) => void,
+    active?: () => boolean,
   ): Promise<number> {
+    this.fence.check();
+    if (this.needsRecovery) throw Error("journal");
+    const checkpoint = () => {
+      budget.check();
+      if (active && !active()) throw Error("stopped");
+    };
     const previous = this.state.get(key);
     const next: Baseline = {
       ...fresh(),
@@ -101,6 +128,7 @@ export class Applier {
     const displaced = new Map<string, string>();
     try {
       for (const op of plan.ops) {
+        checkpoint();
         const p = op.path,
           s = op.source,
           b = Object.hasOwn(previous.entries, p)
@@ -124,9 +152,21 @@ export class Applier {
           continue;
         }
         if (op.action === "write" || op.action === "both") {
-          const bytes = await source.download(p);
-          if (bytes.byteLength !== s.size || (await hash(bytes)) !== s.hash)
+          let bytes: Bytes;
+          try {
+            bytes = await budget.io(() => source.download(p));
+          } catch (e) {
+            if (!transient(e)) throw e;
+            plan.deferred.push({ path: p, reason: "locked" });
+            continue;
+          }
+          if (bytes.byteLength !== s.size || (await hash(bytes)) !== s.hash) {
+            if (profile.role === "publisher") {
+              plan.deferred.push({ path: p, reason: "unstable" });
+              continue;
+            }
             throw Error("referenceChanged");
+          }
           if (profile.scope === "settings" && p.endsWith(".json"))
             JSON.parse(decoder.decode(bytes));
           if (op.action === "both") {
@@ -161,7 +201,7 @@ export class Applier {
         };
       }
     } catch (e) {
-      await this.journal.disk.removeTree(id);
+      if (!this.fence.pending) await this.journal.disk.removeTree(id);
       throw e;
     }
     if (!steps.length) {
@@ -177,35 +217,71 @@ export class Applier {
       before: previous,
       steps,
     };
+    checkpoint();
+    this.needsRecovery = true;
     await this.journal.begin(t);
+    let changed = 0;
     try {
-      for (const [i, step] of steps.entries()) {
-        const stat = await target.stat(step.path);
-        if (stat?.type === "folder") throw Error("collision");
-        const old = stat ? await target.download(step.path) : null;
-        const copy = displaced.get(step.path);
-        if (copy && stat) throw Error("collision");
-        await this.journal.backup(id, i, old);
-        if (step.action === "delete") {
-          if (stat) await target.delete(step.path);
-        } else {
-          const bytes = copy
-            ? await target.download(copy)
-            : await this.journal.disk.read(id + "/stage/" + i);
-          if (step.digest && (await hash(bytes)) !== step.digest)
-            throw Error("incomplete");
-          await target.upload(step.path, bytes, step.mtime);
+      for (let start = 0; start < steps.length;) {
+        const path = displaced.get(steps[start].path) ?? steps[start].path;
+        const end = start + (displaced.has(steps[start].path) ? 2 : 1);
+        try {
+          for (let i = start; i < end; i++) {
+            checkpoint();
+            const step = steps[i],
+              stat = await budget.io(() => target.stat(step.path));
+            if (stat?.type === "folder") throw Error("collision");
+            const old = stat
+              ? await budget.io(() => target.download(step.path))
+              : null;
+            const copy = displaced.get(step.path);
+            if (copy && stat) throw Error("collision");
+            await this.journal.backup(id, i, old);
+            if (step.action === "delete") {
+              if (stat)
+                await budget.io(async () => {
+                  if (await target.stat(step.path))
+                    await target.delete(step.path);
+                }, false);
+            } else {
+              const bytes = copy
+                ? await budget.io(() => target.download(copy))
+                : await this.journal.disk.read(id + "/stage/" + i);
+              if (step.digest && (await hash(bytes)) !== step.digest)
+                throw Error("incomplete");
+              await budget.io(
+                () => target.upload(step.path, bytes, step.mtime),
+                false,
+              );
+            }
+            await this.journal.mark(id + "/applied/" + i);
+          }
+          changed += end - start;
+        } catch (e) {
+          if (!transient(e)) throw e;
+          await this.restore(t, target, start, end);
+          for (let i = start; i < end; i++)
+            await this.journal.mark(id + "/skipped/" + i);
+          if (Object.hasOwn(previous.entries, path))
+            next.entries[path] = previous.entries[path];
+          else delete next.entries[path];
+          plan.deferred.push({ path, reason: "locked" });
         }
-        await this.journal.mark(id + "/applied/" + i);
+        progress?.(end, steps.length);
+        start = end;
       }
-      next.lastRun = id;
+      if (changed) next.lastRun = id;
       this.state.put(key, next);
     } catch (e) {
+      budget.fence.check();
+      this.fence.check();
       await this.restore(t, target);
       await this.journal.mark(id + "/rolled-back");
+      this.needsRecovery = false;
       throw e;
     }
     await this.journal.mark(id + "/done");
-    return steps.length;
+    this.needsRecovery = false;
+    return changed;
   }
 }

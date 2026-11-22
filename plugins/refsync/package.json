@@ -1,16 +1,21 @@
 {
   "name": "obsidian-refsync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "build": "tsc --noEmit && node esbuild.config.mjs",
     "test": "node --import tsx --test test/*.test.ts"
   },
   "devDependencies": {
-    "obsidian": "1.14.4",
+    "@types/node": "22.20.5",
+    "@types/picomatch": "^4.0.3",
     "esbuild": "0.25.12",
-    "typescript": "5.9.3",
+    "obsidian": "1.14.4",
     "tsx": "4.23.15",
-    "@types/node": "22.20.5"
+    "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "diff": "^8.0.4",
+    "picomatch": "^4.0.7"
   }
 }

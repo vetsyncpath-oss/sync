@@ -6,6 +6,26 @@ export type Mode = "plan" | "silent";
 export type Volatility = "H" | "S" | "V";
 export interface Profile {
   id: string;
+  name: string;
+  enabled: boolean;
+  inheritMode: boolean;
+  startup: boolean;
+  startupSeconds: number;
+  intervalMinutes: number;
+  onFocus: boolean;
+  onOnline: boolean;
+  debounceSeconds: number;
+  quietSeconds: number;
+  maxDeferrals: number;
+  include: string;
+  exclude: string;
+  maxMiB: number;
+  maxDeleteCount: number;
+  maxDeletePercent: number;
+  shrinkPercent: number;
+  deleteGrace: number;
+  trash: "plugin" | "vault" | "system" | "permanent";
+  trashDays: number;
   role: Role;
   scope: Scope;
   access: "local" | "public" | "oauth" | "token";
@@ -24,6 +44,26 @@ export interface Profile {
 }
 export const defaults: Profile = {
   id: "local",
+  name: "RefSync",
+  enabled: true,
+  inheritMode: true,
+  startup: true,
+  startupSeconds: 5,
+  intervalMinutes: 5,
+  onFocus: true,
+  onOnline: true,
+  debounceSeconds: 2,
+  quietSeconds: 5,
+  maxDeferrals: 3,
+  include: "",
+  exclude: "",
+  maxMiB: 0,
+  maxDeleteCount: 100,
+  maxDeletePercent: 50,
+  shrinkPercent: 50,
+  deleteGrace: 5,
+  trash: "plugin",
+  trashDays: 30,
   role: "subscriber",
   scope: "content",
   access: "local",
@@ -52,6 +92,7 @@ export interface Snapshot {
   files: Map<string, Entry>;
   directories: Set<string>;
   complete: boolean;
+  skipped?: Map<string, string>;
 }
 export type Bytes = ArrayBuffer;
 export interface StorageProvider {

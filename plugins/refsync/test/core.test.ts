@@ -426,3 +426,234 @@ test("a file removed on both sides no longer owns a new local file at the same p
   assert.equal(result.changed, 0);
   assert.equal(text(await target.download("old")), "private");
 });
+
+import { loadProfiles, newProfile } from "../src/profiles";
+import {
+  QuietWindow,
+  RunBudget,
+  NoticeCenter,
+  Scheduler,
+  sleep,
+  eventPath,
+} from "../src/runtime";
+test("M1 migration retains the baseline key, endpoints and manual settings; new IDs are distinct", () => {
+  const {
+    profiles: [p],
+    current,
+  } = loadProfiles({
+    profile: {
+      id: "old",
+      local: "vault-copy",
+      reference: "vault-source",
+      role: "publisher",
+    },
+  });
+  assert.equal(p.id, current);
+  assert.equal(current, "old");
+  assert.equal(p.role, "publisher");
+  assert.equal(p.local, "vault-copy");
+  assert.equal(p.intervalMinutes, 0);
+  assert.equal(p.startup, false);
+  const clone = newProfile(p);
+  assert.notEqual(clone.id, p.id);
+  assert.equal(clone.enabled, false);
+  const config = loadProfiles({
+    profiles: [clone, p],
+    current: p.id,
+    mode: "silent",
+    paused: true,
+  });
+  assert.deepEqual(loadProfiles(config), config);
+  assert.throws(() => loadProfiles({ profiles: [p, p] }));
+});
+test("selected conflict action, unchecked path and unreviewed addition survive a later run", async () => {
+  const { engine, source, target } = fixture();
+  const p = { ...defaults };
+  for (const path of ["a", "b"]) source.data.set(path, bytes("reference"));
+  target.data.set("a", bytes("local"));
+  const dry = await engine.run(p, source, target, true);
+  source.data.set("c", bytes("new"));
+  await engine.run(p, source, target, false, dry.plan, {
+    choices: new Map([
+      ["a", "retain"],
+      ["b", "skip"],
+    ]),
+  });
+  assert.equal(text(await target.download("a")), "local");
+  assert.ok(!target.data.has("b") && !target.data.has("c"));
+  const later = await engine.run(p, source, target, false);
+  assert.equal(later.changed, 2);
+});
+test("held deletions require explicit confirmation per path even in full mirror", async () => {
+  const { engine, source, target } = fixture(),
+    p = { ...defaults, mirror: "full" as const, deletions: true };
+  target.data.set("one", bytes("1"));
+  target.data.set("two", bytes("2"));
+  const dry = await engine.run(p, source, target, true);
+  assert.equal(dry.plan.held.length, 2);
+  const run = await engine.run(p, source, target, false, dry.plan, {
+    release: new Set(["one"]),
+  });
+  assert.equal(run.changed, 1);
+  assert.ok(target.data.has("two"));
+  assert.deepEqual(run.plan.held, ["two"]);
+});
+test("failed reads, content filters and large files never turn into mirror deletions", async () => {
+  const { engine, source, target } = fixture();
+  for (const path of ["ok.md", "locked.md", "large.md", "private.txt"]) {
+    source.data.set(path, bytes("source"));
+    target.data.set(path, bytes("local"));
+  }
+  source.data.set("large.md", new ArrayBuffer(1048577));
+  const get = source.download.bind(source);
+  source.download = async (p) => {
+    if (p === "locked.md") throw Error("EBUSY");
+    return get(p);
+  };
+  const run = await engine.run(
+    {
+      ...defaults,
+      mirror: "full",
+      deletions: true,
+      include: "**/*.md",
+      maxMiB: 1,
+    },
+    source,
+    target,
+    false,
+    undefined,
+    { budget: new RunBudget(undefined, 100, []) },
+  );
+  assert.equal(run.changed, 1);
+  assert.deepEqual(run.plan.deferred, [
+    { path: "locked.md", reason: "locked" },
+  ]);
+  for (const p of ["locked.md", "large.md", "private.txt"])
+    assert.equal(text(await target.download(p)), "local");
+});
+test("a busy destination has bounded retries while unrelated files commit and undo independently", async () => {
+  const { engine, source, target, applier } = fixture();
+  for (const path of ["a", "b"]) {
+    source.data.set(path, bytes("updated"));
+    target.data.set(path, bytes("old"));
+  }
+  let attempts = 0;
+  const put = target.upload.bind(target);
+  target.upload = async (p, b) => {
+    if (p === "a") {
+      attempts++;
+      throw Error("EACCES");
+    }
+    return put(p, b);
+  };
+  const result = await engine.run(defaults, source, target, false, undefined, {
+    budget: new RunBudget(undefined, 50, [1, 1]),
+  });
+  assert.equal(attempts, 3);
+  assert.equal(result.changed, 1);
+  assert.deepEqual(result.plan.deferred, [{ path: "a", reason: "locked" }]);
+  assert.equal(text(await target.download("a")), "old");
+  target.data.set("a", bytes("later edit"));
+  await applier.undo(
+    JSON.stringify(["local", "content", "reference", "target"]),
+    target,
+  );
+  assert.equal(text(await target.download("a")), "later edit");
+  assert.equal(text(await target.download("b")), "old");
+});
+test("a timed-out write fences new mutations until it settles and recovery restores its before-image", async () => {
+  const { engine, source, target, applier } = fixture();
+  source.data.set("one", bytes("source"));
+  target.data.set("one", bytes("old"));
+  const put = target.upload.bind(target);
+  let release!: () => void;
+  target.upload = async (p, b) => {
+    await new Promise<void>((ok) => {
+      release = ok;
+    });
+    await put(p, b);
+  };
+  await assert.rejects(
+    engine.run(defaults, source, target, false, undefined, {
+      budget: new RunBudget(undefined, 15, [], applier.fence),
+    }),
+    /settling/,
+  );
+  await assert.rejects(
+    applier.recover(() => target),
+    /settling/,
+  );
+  target.upload = put;
+  release();
+  await sleep(5);
+  await applier.recover(() => target);
+  assert.equal(text(await target.download("one")), "old");
+});
+test("quiet editor rules defer only that file and force it after the configured limit", async () => {
+  const { engine, source, target } = fixture(),
+    window = new QuietWindow();
+  const p = { ...defaults, maxDeferrals: 2, quietSeconds: 10 };
+  for (const path of ["editing", "other"]) source.data.set(path, bytes("v1"));
+  window.edited(p.local + "/editing", 100);
+  const opts = { quiet: (path: string) => window.check(p, path, true, 110) };
+  const first = await engine.run(p, source, target, false, undefined, opts);
+  assert.equal(first.changed, 1);
+  assert.equal(first.plan.deferred[0].path, "editing");
+  assert.equal(
+    (await engine.run(p, source, target, false, undefined, opts)).changed,
+    0,
+  );
+  assert.equal(
+    (await engine.run(p, source, target, false, undefined, opts)).changed,
+    1,
+  );
+});
+test("events match only eligible roots, coalesce repeated requests and preserve cross-profile serialization", async () => {
+  assert.ok(
+    eventPath({ ...defaults, fileEvents: true }, defaults.reference + "/a.md"),
+  );
+  assert.ok(
+    !eventPath(
+      { ...defaults, fileEvents: true },
+      defaults.reference + "2/a.md",
+    ),
+  );
+  assert.ok(
+    !eventPath(
+      { ...defaults, fileEvents: true, scope: "settings" },
+      "app.json",
+    ),
+  );
+  const log: string[] = [];
+  const scheduler = new Scheduler(
+    async (id) => {
+      log.push(id + "+");
+      await sleep(2);
+      log.push(id + "-");
+    },
+    (e) => assert.fail(String(e)),
+  );
+  scheduler.schedule("a", 1);
+  scheduler.schedule("a", 1);
+  scheduler.schedule("b", 1);
+  await sleep(20);
+  assert.deepEqual(log, ["a+", "a-", "b+", "b-"]);
+  scheduler.schedule("c", 10);
+  scheduler.stop();
+  await sleep(15);
+  assert.equal(log.length, 4);
+});
+test("notices are deduplicated by reason and profile until the notification window expires", () => {
+  let now = 0;
+  const messages: string[] = [],
+    center = new NoticeCenter(
+      (s) => messages.push(s),
+      () => now,
+    );
+  center.send("p:busy", "p");
+  center.send("p:busy", "p");
+  center.send("q:busy", "q");
+  now = 60001;
+  center.send("p:busy", "p");
+  assert.deepEqual(messages, ["p", "q", "p"]);
+});

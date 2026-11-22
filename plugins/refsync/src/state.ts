@@ -1,3 +1,4 @@
+import { MutationFence, RunBudget } from "./runtime";
 import {
   fresh,
   type Baseline,
@@ -46,6 +47,30 @@ export interface ArtifactStore {
   has(path: string): Promise<boolean>;
   dirs(): Promise<string[]>;
   removeTree(path: string): Promise<void>;
+}
+export class TimedArtifacts implements ArtifactStore {
+  constructor(
+    private disk: ArtifactStore,
+    private fence: MutationFence,
+  ) {}
+  private io<T>(work: () => Promise<T>, read = true) {
+    return new RunBudget(undefined, undefined, [], this.fence).io(work, read);
+  }
+  putNew(path: string, data: Bytes) {
+    return this.io(() => this.disk.putNew(path, data), false);
+  }
+  read(path: string) {
+    return this.io(() => this.disk.read(path));
+  }
+  has(path: string) {
+    return this.io(() => this.disk.has(path));
+  }
+  dirs() {
+    return this.io(() => this.disk.dirs());
+  }
+  removeTree(path: string) {
+    return this.io(() => this.disk.removeTree(path), false);
+  }
 }
 const enc = (x: unknown) => new TextEncoder().encode(JSON.stringify(x)).buffer;
 export interface Intent {

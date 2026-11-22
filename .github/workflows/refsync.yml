@@ -28,7 +28,10 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           from zipfile import ZipFile
-          for archive in Path("releases").glob("*.zip"):
+          import json
+          version = json.loads(Path("manifest.json").read_text())["version"]
+          for suffix in ("", "-source"):
+              archive = Path(f"releases/refsync-{version}-m2{suffix}.zip")
               with ZipFile(archive) as shipped:
                   for item in shipped.namelist():
                       assert shipped.read(item) == Path(item.removeprefix("refsync/")).read_bytes()
