@@ -45,7 +45,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
                     if time.monotonic()>until:raise
                     time.sleep(1)
             page=browser.contexts[0].pages[0]
-            page.wait_for_function("!!window.app?.vault?.adapter",timeout=65000)
+            page.wait_for_function("!!window.app?.vault?.adapter && !!window.app?.plugins?.enablePluginAndSave",timeout=65000)
             assert page.evaluate("app.vault.getName()") == vault.name
             # Enable community plugins explicitly for this fresh, test-owned vault.
             page.evaluate("""async()=>{if(!app.plugins.isEnabled())await app.plugins.setEnable(true);await app.plugins.loadManifests();await app.plugins.enablePluginAndSave('refsync');}""")

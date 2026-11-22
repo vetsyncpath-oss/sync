@@ -86,6 +86,7 @@ export function project(
   bytes: Bytes,
   policy: Projection,
   local?: Bytes | null,
+  keepSelf = false,
 ): Bytes {
   if (!path.toLowerCase().endsWith(".json")) return bytes;
   const src = decode(bytes),
@@ -100,7 +101,8 @@ export function project(
         fold(id) !== fold(policy.self) && !policy.blocked.includes(fold(id)),
     );
     const old = local ? decode(local) : null;
-    if (Array.isArray(old) && old.includes(policy.self)) ids.push(policy.self);
+    if (keepSelf || (Array.isArray(old) && old.includes(policy.self)))
+      ids.push(policy.self);
     return encode([...new Set(ids)].sort());
   }
   const old = rules.length && local ? decode(local) : undefined;
@@ -116,11 +118,12 @@ export function deliveryBytes(
   bytes: Bytes,
   policy: Projection,
   local?: Bytes | null,
+  keepSelf = false,
 ): Bytes {
   if (
     fold(path) !== "community-plugins.json" &&
     !policy.rules.some((r) => picomatch.isMatch(path, r.file, { nocase: true }))
   )
     return bytes;
-  return project(path, bytes, policy, local);
+  return project(path, bytes, policy, local, keepSelf);
 }

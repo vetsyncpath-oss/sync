@@ -88,7 +88,7 @@ export async function verifySettings(
               () =>
                 store.upload(
                   path,
-                  deliveryBytes(path, expected, policy, old),
+                  deliveryBytes(path, expected, policy, old, true),
                   step.mtime,
                 ),
               false,

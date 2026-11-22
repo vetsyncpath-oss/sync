@@ -849,3 +849,27 @@ test("mobile source and installed manifests exclude desktop-only plugins; automa
   assert.ok(canAutoReload([now - 600000], now));
   assert.ok(!canAutoReload([now - 600000, now - 900000], now));
 });
+
+test("a fresh subscriber keeps RefSync enabled when the community plugin list has not yet been saved", async () => {
+  const { source, target, engine } = fixture(),
+    path = "community-plugins.json";
+  source.data.set(path, bytes('["fixture"]'));
+  const p: Profile = {
+    ...defaults,
+    scope: "settings",
+    mirror: "full",
+    deletions: true,
+  };
+  await engine.run(p, source, target, false);
+  assert.deepEqual(JSON.parse(text(await target.download(path))), [
+    "fixture",
+    "refsync",
+  ]);
+  source.data.delete(path);
+  source.data.set("app.json", bytes("{}"));
+  const dry = await engine.run(p, source, target, true);
+  assert.ok(
+    !dry.plan.ops.some((o) => o.path === path && o.action === "delete"),
+  );
+  assert.ok(!dry.plan.held.includes(path));
+});

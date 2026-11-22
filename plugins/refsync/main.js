@@ -2041,7 +2041,7 @@ function combine(source, local, rules) {
 }
 var decode = (b) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(b));
 var encode = (v) => new TextEncoder().encode(JSON.stringify(v) + "\n").buffer;
-function project(path, bytes, policy, local) {
+function project(path, bytes, policy, local, keepSelf = false) {
   if (!path.toLowerCase().endsWith(".json")) return bytes;
   const src = decode(bytes), rules = policy.rules.filter((r) => import_posix2.default.isMatch(path, r.file, { nocase: true })).map((r) => r.keys);
   if (fold(path) === "community-plugins.json") {
@@ -2051,7 +2051,8 @@ function project(path, bytes, policy, local) {
       (id) => fold(id) !== fold(policy.self) && !policy.blocked.includes(fold(id))
     );
     const old2 = local ? decode(local) : null;
-    if (Array.isArray(old2) && old2.includes(policy.self)) ids.push(policy.self);
+    if (keepSelf || Array.isArray(old2) && old2.includes(policy.self))
+      ids.push(policy.self);
     return encode([...new Set(ids)].sort());
   }
   const old = rules.length && local ? decode(local) : void 0;
@@ -2060,10 +2061,10 @@ function project(path, bytes, policy, local) {
   );
 }
 var settingsHash = (path, bytes, policy) => hash(project(path, bytes, policy));
-function deliveryBytes(path, bytes, policy, local) {
+function deliveryBytes(path, bytes, policy, local, keepSelf = false) {
   if (fold(path) !== "community-plugins.json" && !policy.rules.some((r) => import_posix2.default.isMatch(path, r.file, { nocase: true })))
     return bytes;
-  return project(path, bytes, policy, local);
+  return project(path, bytes, policy, local, keepSelf);
 }
 
 // src/runtime.ts
@@ -2276,7 +2277,7 @@ async function verifySettings(journal, target, current, budget = new RunBudget()
             await budget.io(
               () => store.upload(
                 path,
-                deliveryBytes(path, expected, policy, old),
+                deliveryBytes(path, expected, policy, old, true),
                 step.mtime
               ),
               false
@@ -2604,7 +2605,13 @@ var Applier = class {
                 await budget.io(
                   () => target.upload(
                     step.path,
-                    projection ? deliveryBytes(step.path, bytes, projection, old) : bytes,
+                    projection ? deliveryBytes(
+                      step.path,
+                      bytes,
+                      projection,
+                      old,
+                      profile.role === "subscriber"
+                    ) : bytes,
                     step.mtime
                   ),
                   false
@@ -3239,6 +3246,8 @@ function plan(p, src, dst, base, resolve = resolveConflict) {
     if (protectedPath(path)) continue;
     const s = src.files.get(path), t = dst.files.get(path), b = Object.hasOwn(base.entries, path) ? base.entries[path] : void 0;
     if (!s) {
+      if (p.scope === "settings" && p.role === "subscriber" && fold(path) === "community-plugins.json")
+        continue;
       if (t && (p.mirror === "full" || p.deletions && b?.delivered))
         deletes.push({ path, action: "delete", conflict: false, target: t });
       continue;

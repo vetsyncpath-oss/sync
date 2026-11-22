@@ -71,6 +71,12 @@ export function plan(
       t = dst.files.get(path),
       b = Object.hasOwn(base.entries, path) ? base.entries[path] : undefined;
     if (!s) {
+      if (
+        p.scope === "settings" &&
+        p.role === "subscriber" &&
+        fold(path) === "community-plugins.json"
+      )
+        continue;
       if (t && (p.mirror === "full" || (p.deletions && b?.delivered)))
         deletes.push({ path, action: "delete", conflict: false, target: t });
       continue;

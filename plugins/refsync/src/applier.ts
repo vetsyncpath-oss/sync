@@ -299,7 +299,13 @@ export class Applier {
                     target.upload(
                       step.path,
                       projection
-                        ? deliveryBytes(step.path, bytes, projection, old)
+                        ? deliveryBytes(
+                            step.path,
+                            bytes,
+                            projection,
+                            old,
+                            profile.role === "subscriber",
+                          )
                         : bytes,
                       step.mtime,
                     ),
