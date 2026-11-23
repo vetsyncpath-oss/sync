@@ -48,6 +48,7 @@ export function sizeOf(v: unknown) {
 export class PublicStore implements StorageProvider {
   readonly capabilities = {
     readOnly: true,
+    canRemoveEmptyDirs: false,
     supportsChecksum: false,
     supportsChangesFeed: false,
     maxFileSize: Infinity,
@@ -163,6 +164,9 @@ export class PublicStore implements StorageProvider {
     throw Error("readonly");
   }
   async mkdir(_path?: string): Promise<void> {
+    throw Error("readonly");
+  }
+  async removeEmptyDir(_path: string): Promise<boolean> {
     throw Error("readonly");
   }
   async move(_from?: string, _to?: string): Promise<void> {

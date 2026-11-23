@@ -1,4 +1,8 @@
-import type { ConfigScope } from "./config-scope";
+import {
+  type ConfigScope,
+  legacyConfig,
+  emptyConfigDirectory,
+} from "./config-scope";
 import { settingsHash, type Projection } from "./json-overlay";
 import { RunBudget, transient } from "./runtime";
 import { selected, volatility } from "./classifier";
@@ -23,7 +27,11 @@ export async function scan(
   config?: ConfigScope,
   projection?: Projection,
 ): Promise<Snapshot> {
+  const managedDirectories = new Set<string>(),
+    occupiedDirectories = new Set<string>();
   const snap: Snapshot = {
+    managedDirectories,
+    occupiedDirectories,
     files: new Map(),
     directories: new Set(),
     complete: false,
@@ -36,6 +44,16 @@ export async function scan(
   while (todo.length) {
     const dir = todo.pop()!;
     const list = await budget.io(() => provider.list(dir));
+    if (
+      dir &&
+      !list.files.length &&
+      !list.folders.length &&
+      !list.skipped?.length &&
+      accept(dir) &&
+      (scope === "content" ||
+        emptyConfigDirectory(dir, config ?? legacyConfig()))
+    )
+      managedDirectories.add(dir);
     for (const path of list.skipped ?? []) {
       if (parent(path) !== dir) throw Error("path");
       snap.skipped!.set(path, "filter");
@@ -46,12 +64,17 @@ export async function scan(
     ] as const) {
       for (const p of paths) {
         if (parent(p) !== dir) throw Error("path");
-        if (!selected(p, scope, configDir, self, isDir, config)) continue;
+        if (!selected(p, scope, configDir, self, isDir, config)) {
+          occupiedDirectories.add(dir);
+          continue;
+        }
         if (
           projection?.blocked.includes(fold(p.split("/")[1] ?? "")) &&
           p.startsWith("plugins/")
-        )
+        ) {
+          occupiedDirectories.add(dir);
           continue;
+        }
         if (!safe(p)) {
           snap.skipped!.set(p, "badPath");
           continue;
@@ -108,6 +131,10 @@ export async function scan(
       }
     }
   }
+  for (const p of [...managedDirectories, ...snap.files.keys()]) {
+    for (let d = parent(p); d; d = parent(d)) managedDirectories.add(d);
+  }
+  for (const p of snap.skipped!.keys()) occupiedDirectories.add(parent(p));
   snap.complete = true;
   return snap;
 }

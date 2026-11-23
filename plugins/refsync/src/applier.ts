@@ -7,6 +7,8 @@ import { legacyConfig } from "./config-scope";
 import { deliveryBytes, type Projection } from "./json-overlay";
 import { RunBudget, MutationFence, transient } from "./runtime";
 import {
+  parent,
+  trackedDirectories,
   fresh,
   hash,
   type Baseline,
@@ -50,6 +52,14 @@ export class Applier {
         const saved = await this.journal.json<string | null>(armed);
         if (t.cloud) target.reset?.();
         const stat = await budget.io(() => target.stat(p));
+        if (t.steps[i].action === "mkdir" || t.steps[i].action === "rmdir") {
+          if (stat && stat.type !== "folder") throw Error("collision");
+          if (saved === "folder" && !stat)
+            await budget.io(() => target.mkdir(p), false);
+          if (saved === null && stat)
+            await budget.io(() => target.removeEmptyDir(p), false);
+          return;
+        }
         if (stat?.type === "folder") throw Error("collision");
         if (t.cloud) {
           const expected = t.id + "/after/" + i;
@@ -166,6 +176,10 @@ export class Applier {
       size: plan.held.length ? previous.size : plan.count,
       lastRun: previous.lastRun,
     };
+    const previousFolders = trackedDirectories(previous),
+      folders = new Set(previousFolders);
+    for (const p of plan.forgottenFolders ?? []) folders.delete(p);
+    next.folders = [...folders];
     Object.assign(next.entries, previous.entries);
     for (const path of plan.forgotten) delete next.entries[path];
     const id = crypto.randomUUID(),
@@ -183,7 +197,9 @@ export class Applier {
     const publish =
       publication &&
       (publication.missing ||
-        plan.ops.some((o) => ["write", "both", "delete"].includes(o.action)));
+        plan.ops.some((o) =>
+          ["write", "both", "delete", "mkdir", "rmdir"].includes(o.action),
+        ));
     try {
       if (publish)
         await stage(
@@ -197,6 +213,10 @@ export class Applier {
           b = Object.hasOwn(previous.entries, p)
             ? previous.entries[p]
             : undefined;
+        if (op.action === "mkdir" || op.action === "rmdir") {
+          steps.push({ path: p, action: op.action });
+          continue;
+        }
         if (publish && op.path !== manifestPath) {
           if (op.target?.rawHash || op.target?.hash)
             expectedTarget.set(p, op.target.rawHash ?? op.target.hash);
@@ -330,6 +350,41 @@ export class Applier {
           for (let i = start; i < end; i++) {
             checkpoint();
             const step = steps[i];
+            if (step.action === "mkdir" || step.action === "rmdir") {
+              target.reset?.();
+              const stat = await budget.io(() => target.stat(step.path));
+              if (stat && stat.type !== "folder") throw Error("collision");
+              const creating = step.action === "mkdir";
+              if (creating === !!stat) {
+                if (!stat) folders.delete(step.path);
+                continue;
+              }
+              const origin = await budget.io(() => source.stat(step.path));
+              if (creating ? origin?.type !== "folder" : !!origin)
+                throw Error("referenceChanged");
+              await this.journal.disk.putNew(
+                id + "/armed/" + i,
+                manifestBytes(stat ? "folder" : null),
+              );
+              if (creating) {
+                await budget.io(() => target.mkdir(step.path), false);
+                folders.add(step.path);
+              } else if (
+                await budget.io(() => target.removeEmptyDir(step.path), false)
+              )
+                folders.delete(step.path);
+              else {
+                await this.journal.mark(id + "/skipped/" + i);
+                plan.deferred.push({
+                  path: step.path,
+                  reason: "folderRetained",
+                });
+                continue;
+              }
+              await this.journal.mark(id + "/applied/" + i);
+              changed++;
+              continue;
+            }
             const perform = async () => {
               if (t.cloud) target.reset?.();
               const stat = await budget.io(() => target.stat(step.path));
@@ -396,13 +451,25 @@ export class Applier {
             else await perform();
             await this.journal.mark(id + "/applied/" + i);
           }
-          if (steps[start].path !== manifestPath) changed += end - start;
+          if (
+            steps[start].path !== manifestPath &&
+            !["mkdir", "rmdir"].includes(steps[start].action)
+          ) {
+            changed += end - start;
+            if (steps[start].action === "write")
+              for (let d = parent(path); d && !folders.has(d); d = parent(d))
+                folders.add(d);
+          }
         } catch (e) {
           if (batch || steps[start].path === manifestPath || !transient(e))
             throw e;
           await this.restore(t, target, start, end);
           for (let i = start; i < end; i++)
             await this.journal.mark(id + "/skipped/" + i);
+          if (["mkdir", "rmdir"].includes(steps[start].action)) {
+            if (previousFolders.has(path)) folders.add(path);
+            else folders.delete(path);
+          }
           if (Object.hasOwn(previous.entries, path))
             next.entries[path] = previous.entries[path];
           else delete next.entries[path];
@@ -411,6 +478,7 @@ export class Applier {
         progress?.(end, steps.length);
         start = end;
       }
+      next.folders = [...folders];
       if (changed || publish) next.lastRun = id;
       this.state.put(key, next);
     } catch (e) {

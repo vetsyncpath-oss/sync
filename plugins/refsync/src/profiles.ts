@@ -76,9 +76,9 @@ export function newProfile(copy?: Profile): Profile {
     : {
         ...defaults,
         id,
-        name: "RefSync " + tag,
-        local: "RefSync-copy-" + tag,
-        reference: "RefSync-reference-" + tag,
+        name: "Sync Studio " + tag,
+        local: "Sync Studio-copy-" + tag,
+        reference: "Sync Studio-reference-" + tag,
         enabled: false,
         fileEvents: true,
       };

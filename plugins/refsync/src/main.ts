@@ -109,7 +109,7 @@ class Confirmation extends Modal {
       );
   }
 }
-export default class RefSync extends Plugin {
+export default class SyncStudio extends Plugin {
   accounts!: Accounts;
   private driveCursors = new Map<string, DriveCursor>();
   oauthCancel?: () => void;
@@ -274,7 +274,7 @@ export default class RefSync extends Plugin {
       (id) => this.execute(id, "auto"),
       (e) => this.report(e),
     );
-    this.ribbon = this.addRibbonIcon("refresh-cw", "RefSync", (e) =>
+    this.ribbon = this.addRibbonIcon("refresh-cw", "Sync Studio", (e) =>
       this.menu(e),
     );
     if (Platform.isDesktopApp) {
@@ -367,7 +367,7 @@ export default class RefSync extends Plugin {
   private paint() {
     const phase = this.engine.status.phase,
       label = this.t(this.config.paused ? "paused" : phase);
-    const text = ["RefSync", label, this.statusLabel]
+    const text = ["Sync Studio", label, this.statusLabel]
       .filter(Boolean)
       .join(" · ");
     setIcon(this.ribbon, this.config.paused ? "pause" : icons[phase]);
@@ -600,7 +600,13 @@ export default class RefSync extends Plugin {
       this.driveCursors.set(id, cursor);
       tree = new DriveTree(transport, c.root, cursor);
     } else tree = new DiskTree(transport, send, c.root);
-    const store = new CloudStore(id, tree, prefix === "/" ? "" : prefix, ro);
+    const store = new CloudStore(
+      id,
+      tree,
+      prefix === "/" ? "" : prefix,
+      ro,
+      c.engine !== "google" || a.full,
+    );
     store.capabilities.supportsChangesFeed = c.engine === "google";
     return store;
   }
@@ -918,7 +924,7 @@ export default class RefSync extends Plugin {
   report(e: unknown, id = this.config?.current ?? "") {
     if (!this.live) return;
     const code = e instanceof Error ? errorKey(e.message) : "failed";
-    this.notices.send(id + ":" + code, "RefSync · " + this.t(code));
+    this.notices.send(id + ":" + code, "Sync Studio · " + this.t(code));
     void this.log("error", 0, id, { code }).catch(() => {});
   }
 }

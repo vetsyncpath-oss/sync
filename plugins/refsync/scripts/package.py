@@ -9,7 +9,7 @@ output = root / "releases"
 output.mkdir(exist_ok=True)
 
 def archive(suffix, files):
-    path = output / f"refsync-{version}-m5{suffix}.zip"
+    path = output / f"sync-studio-{version}{suffix}.zip"
     with ZipFile(path, "w") as dest:
         for file in sorted(files):
             entry = ZipInfo("refsync/" + file.relative_to(root).as_posix())

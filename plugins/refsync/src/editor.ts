@@ -5,7 +5,7 @@ import type { PublicSource } from "./public-location";
 import { scopeEditor } from "./scope-editor";
 import { legacyConfig, preset } from "./config-scope";
 import { PluginSettingTab, Setting, Platform, type App } from "obsidian";
-import type RefSync from "./main";
+import type SyncStudio from "./main";
 import { checked, type Profile } from "./model";
 import { newProfile } from "./profiles";
 import { validate } from "./validator";
@@ -13,7 +13,7 @@ export class Editor extends PluginSettingTab {
   private draft?: Profile;
   constructor(
     app: App,
-    private plugin: RefSync,
+    private plugin: SyncStudio,
   ) {
     super(app, plugin);
   }
@@ -281,7 +281,7 @@ export class Editor extends PluginSettingTab {
         } else if (v === "vaultSource") {
           delete p.remote;
           p.access = "local";
-          p.reference = "RefSync-reference";
+          p.reference = "Sync Studio-reference";
         } else {
           p.access = "public";
           p.role = "subscriber";

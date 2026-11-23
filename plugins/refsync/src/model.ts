@@ -49,7 +49,7 @@ export interface Profile {
 }
 export const defaults: Profile = {
   id: "local",
-  name: "RefSync",
+  name: "Sync Studio",
   enabled: true,
   inheritMode: true,
   startup: true,
@@ -72,8 +72,8 @@ export const defaults: Profile = {
   role: "subscriber",
   scope: "content",
   access: "local",
-  local: "RefSync-copy",
-  reference: "RefSync-reference",
+  local: "Sync Studio-copy",
+  reference: "Sync Studio-reference",
   mirror: "preserve",
   deletions: false,
   conflict: "source",
@@ -98,6 +98,8 @@ export interface Entry extends FileMeta {
 export interface Snapshot {
   files: Map<string, Entry>;
   directories: Set<string>;
+  managedDirectories?: Set<string>;
+  occupiedDirectories?: Set<string>;
   complete: boolean;
   skipped?: Map<string, string>;
 }
@@ -108,6 +110,7 @@ export interface StorageProvider {
     readOnly: boolean;
     supportsChecksum: boolean;
     supportsChangesFeed: boolean;
+    canRemoveEmptyDirs?: boolean;
     maxFileSize: number;
     rateLimits: number | null;
   };
@@ -123,6 +126,7 @@ export interface StorageProvider {
   delete(path: string): Promise<void>;
   move(from: string, to: string): Promise<void>;
   mkdir(path: string): Promise<void>;
+  removeEmptyDir(path: string): Promise<boolean>;
   getRevision(): Promise<string | null>;
 }
 export interface RecordState extends FileMeta {
@@ -131,7 +135,17 @@ export interface RecordState extends FileMeta {
   seen: string;
   delivered: boolean;
 }
+export function trackedDirectories(base: Baseline) {
+  if (base.folders) return new Set(base.folders);
+  const dirs = new Set<string>();
+  for (const [path, entry] of Object.entries(base.entries))
+    if (entry.delivered)
+      for (let dir = parent(path); dir && !dirs.has(dir); dir = parent(dir))
+        dirs.add(dir);
+  return dirs;
+}
 export interface Baseline {
+  folders?: string[];
   entries: Record<string, RecordState>;
   size: number;
   lastRun: string;

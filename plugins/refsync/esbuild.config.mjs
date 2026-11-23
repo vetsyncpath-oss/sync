@@ -7,6 +7,12 @@ await build({
   inject: ["src/git-buffer.ts"],
   format: "cjs",
   target: "es2022",
-  external: ["obsidian", "electron", "node:http"],
+  external: [
+    "obsidian",
+    "electron",
+    "node:http",
+    "node:fs/promises",
+    "node:path",
+  ],
   charset: "utf8",
 });

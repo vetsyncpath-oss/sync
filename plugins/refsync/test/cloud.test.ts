@@ -181,6 +181,7 @@ test("private Yandex reads and publishes under app:/, polls operations and never
     if (method === "DELETE") {
       assert.equal(u.searchParams.get("permanently"), "false");
       data.delete(p);
+      dirs.delete(p);
       pending = true;
       return result(
         { href: "https://cloud-api.yandex.net/v1/disk/operations/1" },
@@ -232,10 +233,13 @@ test("private Yandex reads and publishes under app:/, polls operations and never
     new TextDecoder().decode(await s.download("Sub/Я.md")),
     "fixture",
   );
+  assert.equal(await s.removeEmptyDir("Sub"), false);
   await s.delete("Sub/Я.md");
   assert.ok(pending);
   assert.equal(job, 1);
   assert.equal(await s.stat("Sub/Я.md"), null);
+  assert.ok(await s.removeEmptyDir("Sub"));
+  assert.equal(await s.stat("Sub"), null);
   const ro = new CloudStore(
     "y",
     new DiskTree(auth, transfer, "app:/"),
@@ -287,4 +291,54 @@ test("Drive changes advance the cursor without invalidating an unchanged scan", 
   assert.equal(await driveRevision(http, cursor), first);
   changed = true;
   assert.notEqual(await driveRevision(http, cursor), first);
+});
+
+test("Drive folder cleanup lists all children and requires visibility into the whole folder", async () => {
+  let child = true,
+    trashed = false;
+  const http: Transport = async (raw, method = "GET", h, b) => {
+    const url = new URL(raw);
+    if (method === "PATCH") {
+      assert.equal(url.pathname, "/drive/v3/files/sub");
+      assert.deepEqual(JSON.parse(new TextDecoder().decode(b)), {
+        trashed: true,
+      });
+      trashed = true;
+      return result({});
+    }
+    if (url.pathname.endsWith("/root"))
+      return result({
+        id: "root",
+        mimeType: "application/vnd.google-apps.folder",
+      });
+    assert.equal(method, "GET");
+    return result({
+      files: url.searchParams.get("q")?.includes("'root'")
+        ? [
+            {
+              id: "sub",
+              name: "Sub",
+              mimeType: "application/vnd.google-apps.folder",
+            },
+          ]
+        : child
+          ? [
+              {
+                id: "doc",
+                name: "Doc",
+                mimeType: "application/vnd.google-apps.document",
+              },
+            ]
+          : [],
+    });
+  };
+  const tree = new DriveTree(http, "root"),
+    limited = new CloudStore("limited", tree, "", false, false),
+    full = new CloudStore("full", tree, "", false, true);
+  assert.equal(await full.removeEmptyDir("Sub"), false);
+  child = false;
+  assert.equal(await limited.removeEmptyDir("Sub"), false);
+  assert.equal(trashed, false);
+  assert.equal(await full.removeEmptyDir("Sub"), true);
+  assert.ok(trashed);
 });

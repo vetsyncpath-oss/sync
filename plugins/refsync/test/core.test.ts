@@ -66,6 +66,11 @@ class Memory implements StorageProvider {
   async delete(p: string) {
     this.data.delete(p);
   }
+  async removeEmptyDir(p: string) {
+    const l = await this.list(p);
+    if (l.files.length || l.folders.length) return false;
+    return this.folders.delete(p);
+  }
   async mkdir(p: string) {
     this.folders.add(p);
   }
@@ -173,7 +178,7 @@ test("validator shares the UI matrix and checks malformed saved profiles", () =>
   );
   assert.ok(
     validate(
-      { ...defaults, reference: "REFSYNC-COPY/sub" },
+      { ...defaults, reference: defaults.local.toUpperCase() + "/sub" },
       true,
       false,
       ".custom",
@@ -850,7 +855,7 @@ test("mobile source and installed manifests exclude desktop-only plugins; automa
   assert.ok(!canAutoReload([now - 600000, now - 900000], now));
 });
 
-test("a fresh subscriber keeps RefSync enabled when the community plugin list has not yet been saved", async () => {
+test("a fresh subscriber keeps Sync Studio enabled when the community plugin list has not yet been saved", async () => {
   const { source, target, engine } = fixture(),
     path = "community-plugins.json";
   source.data.set(path, bytes('["fixture"]'));
@@ -1261,5 +1266,199 @@ test("cloud rollback preserves a concurrent edit and remains resumable", async (
   target.data.set("note.md", bytes("published"));
   await engine.applier.recover(() => target);
   assert.equal(text(target.data.get("note.md")!), "before");
+  assert.ok(await journal.disk.has(id + "/rolled-back"));
+});
+
+test("folder-only plans, nested mass deletion and undo restore the directory tree", async () => {
+  const { engine, source, target } = fixture(),
+    p = {
+      ...defaults,
+      mirror: "full" as const,
+      deletions: true,
+      silentDeletionSafeguard: false,
+    },
+    silent = { mode: "silent" as const };
+  for (const dir of [
+    "Old",
+    "Old/Sub",
+    "Old/Empty",
+    "Shared",
+    "OnlyLocalEmpty",
+    "Hidden",
+  ])
+    target.folders.add(dir);
+  target.data.set("Old/Sub/a.md", bytes("old"));
+  target.data.set("Shared/extra.md", bytes("extra"));
+  target.data.set("Hidden/.local", bytes("protected"));
+  for (const dir of ["Shared", "New", "New/Empty"]) source.folders.add(dir);
+  const before = [...target.folders].sort();
+  const dry = await engine.run(p, source, target, true, undefined, silent);
+  const actions = dry.plan.ops.map((o) => o.action + " " + o.path);
+  for (const d of ["Old", "Old/Sub", "Old/Empty", "OnlyLocalEmpty"])
+    assert.ok(actions.includes("rmdir " + d));
+  assert.ok(
+    actions.indexOf("delete Old/Sub/a.md") < actions.indexOf("rmdir Old/Sub"),
+  );
+  assert.ok(actions.indexOf("rmdir Old/Sub") < actions.indexOf("rmdir Old"));
+  assert.ok(!actions.includes("rmdir Hidden"));
+  assert.deepEqual([...target.folders].sort(), before);
+  await engine.run(p, source, target, false, undefined, silent);
+  assert.deepEqual([...target.folders].sort(), [
+    "",
+    "Hidden",
+    "New",
+    "New/Empty",
+    "Shared",
+  ]);
+  assert.deepEqual([...target.data.keys()], ["Hidden/.local"]);
+  assert.equal(
+    (await engine.run(p, source, target, false, undefined, silent)).changed,
+    0,
+  );
+  await engine.applier.undo(
+    JSON.stringify([p.id, p.scope, source.id, target.id]),
+    target,
+  );
+  assert.deepEqual([...target.folders].sort(), before);
+  assert.equal(text(target.data.get("Old/Sub/a.md")!), "old");
+});
+test("preserve profiles clean owned directories, including pre-upgrade file baselines, and keep unrelated empty directories", async () => {
+  const { engine, source, target, state } = fixture(),
+    p = { ...defaults, deletions: true, silentDeletionSafeguard: false },
+    silent = { mode: "silent" as const };
+  target.folders.add("Personal");
+  source.folders.add("Owned");
+  source.data.set("Owned/n.md", bytes("n"));
+  await engine.run(p, source, target, false, undefined, silent);
+  const key = JSON.stringify([p.id, p.scope, source.id, target.id]);
+  const legacy = state.get(key);
+  assert.deepEqual(legacy.folders, ["Owned"]);
+  delete legacy.folders;
+  state.put(key, legacy);
+  source.data.clear();
+  source.folders.delete("Owned");
+  await engine.run(
+    { ...p, deletions: false },
+    source,
+    target,
+    false,
+    undefined,
+    silent,
+  );
+  assert.ok(target.folders.has("Owned"));
+  await engine.run(p, source, target, false, undefined, silent);
+  assert.deepEqual([...target.folders].sort(), ["", "Personal"]);
+});
+test("directory holds, review selection and a late local child never cause recursive removal", async () => {
+  const { engine, source, target } = fixture(),
+    p = { ...defaults, mirror: "full" as const, deletions: true };
+  target.folders.add("Gone");
+  target.data.set("Gone/a.md", bytes("a"));
+  const dry = await engine.run(p, source, target, true);
+  assert.ok(dry.plan.held.includes("Gone"));
+  assert.deepEqual(dry.plan.heldFolders, ["Gone"]);
+  const r = await engine.run(p, source, target, false, dry.plan, {
+    release: new Set(["Gone"]),
+  });
+  assert.ok(r.plan.deferred.some((d) => d.path === "Gone"));
+  assert.ok(target.data.has("Gone/a.md"));
+  assert.ok(target.folders.has("Gone"));
+  const remove = target.removeEmptyDir.bind(target);
+  target.removeEmptyDir = async (d) => {
+    target.data.set("Gone/new.md", bytes("user"));
+    return remove(d);
+  };
+  await engine.run(p, source, target, false, dry.plan, {
+    release: new Set(dry.plan.held),
+  });
+  assert.ok(target.folders.has("Gone"));
+  assert.deepEqual([...target.data.keys()], ["Gone/new.md"]);
+});
+test("excluded paths remain intact; unchecking a new folder skips its subtree", async () => {
+  const { engine, source, target } = fixture(),
+    p = {
+      ...defaults,
+      mirror: "full" as const,
+      deletions: true,
+      exclude: "Keep/**",
+      silentDeletionSafeguard: false,
+    },
+    silent = { mode: "silent" as const };
+  for (const d of ["Add", "Add/Nested"]) source.folders.add(d);
+  source.data.set("Add/Nested/t.md", bytes("note"));
+  target.folders.add("Keep");
+  target.folders.add("Keep/Sub");
+  target.data.set("Keep/Sub/image.png", bytes("protected"));
+  const dry = await engine.run(p, source, target, true, undefined, silent);
+  assert.ok(!dry.plan.ops.some((o) => o.path.startsWith("Keep")));
+  await engine.run(p, source, target, false, dry.plan, {
+    ...silent,
+    choices: new Map([["Add", "skip"]]),
+  });
+  assert.ok(!target.folders.has("Add"));
+  assert.ok(target.folders.has("Keep/Sub"));
+});
+test("a folder-only cloud publication changes the manifest revision and can be undone", async () => {
+  const { engine, source: remote, target: local } = fixture(),
+    p: Profile = {
+      ...defaults,
+      access: "oauth",
+      role: "publisher",
+      reference: "Settings",
+      scope: "settings",
+      cloud: { engine: "google", account: "a".repeat(64), root: "root" },
+    };
+  local.folders.add("snippets");
+  local.folders.add("snippets/Empty");
+  await engine.run(p, remote, local, false);
+  const first = await readManifest(remote);
+  assert.deepEqual(first?.directories, ["snippets", "snippets/Empty"]);
+  const sub = new Memory("sub");
+  await engine.run({ ...p, role: "subscriber" }, remote, sub, false);
+  assert.ok(sub.folders.has("snippets/Empty"));
+  local.folders.delete("snippets/Empty");
+  await engine.run(
+    { ...p, deletions: true, silentDeletionSafeguard: false },
+    remote,
+    local,
+    false,
+    undefined,
+    { mode: "silent" },
+  );
+  const after = await readManifest(remote);
+  assert.notEqual(first?.revision, after?.revision);
+  assert.deepEqual(after?.directories, ["snippets"]);
+  await engine.applier.undo(
+    JSON.stringify([p.id, p.scope, local.id, remote.id]),
+    remote,
+  );
+  assert.ok(remote.folders.has("snippets/Empty"));
+  assert.equal((await readManifest(remote))?.revision, first?.revision);
+});
+test("crash recovery rebuilds removed directories and keeps later user contents in newly created ones", async () => {
+  const { engine, target, journal } = fixture(),
+    id = crypto.randomUUID();
+  const t: Transaction = {
+    version: 1,
+    id,
+    key: JSON.stringify(["id", "content", "ref", "target"]),
+    scope: "content",
+    target: "copy",
+    before: fresh(),
+    steps: [
+      { action: "mkdir", path: "New" },
+      { action: "rmdir", path: "Old/Child" },
+      { action: "rmdir", path: "Old" },
+    ],
+  };
+  await journal.begin(t);
+  for (const [index, value] of [null, "folder", "folder"].entries())
+    await journal.disk.putNew(id + "/armed/" + index, manifestBytes(value));
+  target.folders.add("New");
+  target.data.set("New/personal.md", bytes("keep"));
+  await engine.applier.recover(() => target);
+  assert.deepEqual([...target.folders].sort(), ["", "New", "Old", "Old/Child"]);
+  assert.equal(text(target.data.get("New/personal.md")!), "keep");
+  await engine.applier.recover(() => target);
   assert.ok(await journal.disk.has(id + "/rolled-back"));
 });

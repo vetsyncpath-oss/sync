@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
     home = Path(temp)
     vault = home / "Хранилище Windows"
     (vault / ".obsidian").mkdir(parents=True)
-    with ZipFile(root / f"releases/refsync-{version}-m5.zip") as archive:
+    with ZipFile(root / f"releases/sync-studio-{version}.zip") as archive:
         archive.extractall(vault / ".obsidian/plugins")
     settings = home / "config"
     settings.mkdir()
@@ -103,13 +103,34 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
               await rs.execute(off.id,'run');if(await a.exists(path))throw Error('explicit silent safeguard off');
               return 'Windows Obsidian: silent safeguard default, preview, inheritance, reviewed runs and unlimited silent deletes passed';
             }"""))
+            print(page.evaluate("""async()=>{
+              const rs=app.plugins.plugins.refsync,v=app.vault,a=v.adapter;
+              if(rs.manifest.name!=='Sync Studio'||rs.manifest.id!=='refsync')throw Error('upgrade identity');
+              const local='Дерево копии',reference='Дерево эталона';
+              await v.createFolder(local+'/Старое/Вложенное');await v.createFolder(local+'/Осталось пустым');
+              await v.create(local+'/Старое/Вложенное/файл.md','before');await v.createFolder(local+'/Личное');
+              await a.write(local+'/Личное/.hidden','keep');
+              await v.createFolder(reference+'/Новое/Пустое');
+              const p={...rs.config.profiles[0],id:'dir-ci',scope:'content',access:'local',local,reference,enabled:true,
+                role:'subscriber',mirror:'full',deletions:true,conflict:'source',inheritMode:false,mode:'silent',silentDeletionSafeguard:false,
+                fileEvents:false,startup:false,onFocus:false,onOnline:false,intervalMinutes:0,firstPlan:false};
+              await rs.put(p);await rs.execute(p.id,'dry');
+              const plan=rs.activeReview.plan;rs.activeReview.close();
+              if(!plan.ops.some(o=>o.action==='rmdir'&&o.path==='Осталось пустым')||!plan.ops.some(o=>o.action==='mkdir'&&o.path==='Новое/Пустое'))throw Error('folder dry run');
+              await rs.execute(p.id,'run');
+              if(await a.exists(local+'/Старое')||await a.exists(local+'/Осталось пустым')||!await a.exists(local+'/Новое/Пустое')||!await a.exists(local+'/Личное/.hidden'))throw Error('folder delivery');
+              const stores=rs.stores(p),key=JSON.stringify([p.id,p.scope,stores.reference.id,stores.local.id]);
+              await rs.engine.applier.undo(key,stores.local,t=>rs.recoveryTarget(t));
+              if(await a.exists(local+'/Новое')||!await a.exists(local+'/Осталось пустым')||await a.read(local+'/Старое/Вложенное/файл.md')!=='before')throw Error('folder undo');
+              return 'Sync Studio: Windows folder cleanup, empty directory delivery, hidden contents and undo passed';
+            }"""))
             # Deliver a harmless fixture plugin, then let Obsidian itself activate it at startup.
             page.evaluate("""async()=>{
               const rs=app.plugins.plugins.refsync,v=app.vault,a=v.adapter;
               const old=rs.config.profiles.find(p=>p.id==='windows-ci'),id='refsync-ci-fixture',ref='Комплект';
               await v.createFolder(ref+'/plugins/'+id);
               await v.create(ref+'/plugins/'+id+'/main.js',"const {Plugin}=require('obsidian');module.exports=class extends Plugin{async onload(){this.received=await this.loadData();}};");
-              await v.create(ref+'/plugins/'+id+'/manifest.json',JSON.stringify({id,name:'RefSync CI Fixture',version:'1.0.0',minAppVersion:'1.8.7',description:'Settings smoke test',author:'RefSync',isDesktopOnly:false}));
+              await v.create(ref+'/plugins/'+id+'/manifest.json',JSON.stringify({id,name:'Sync Studio CI Fixture',version:'1.0.0',minAppVersion:'1.8.7',description:'Settings smoke test',author:'Sync Studio',isDesktopOnly:false}));
               await v.create(ref+'/plugins/'+id+'/data.json','{"setting":1,"device":"source"}');
               await v.create(ref+'/community-plugins.json',JSON.stringify([id]));
               const p={...old,id:'windows-install',reference:ref,config:{...old.config,categories:['code','data','community'],reload:'never',strategy:'batch',legacyThemes:false,overlay:'plugins/*/data.json => device'}};

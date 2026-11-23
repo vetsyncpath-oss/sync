@@ -77,7 +77,7 @@ export class TimedArtifacts implements ArtifactStore {
 const enc = (x: unknown) => new TextEncoder().encode(JSON.stringify(x)).buffer;
 export interface Intent {
   path: string;
-  action: "write" | "delete";
+  action: "write" | "delete" | "mkdir" | "rmdir";
   mtime?: number;
   digest?: string;
 }
@@ -133,7 +133,7 @@ export class ApplyJournal {
         throw Error("journal");
       for (const step of t.steps) {
         checked(step.path);
-        if (step.action !== "write" && step.action !== "delete")
+        if (!["write", "delete", "mkdir", "rmdir"].includes(step.action))
           throw Error("journal");
       }
       out.push(t);

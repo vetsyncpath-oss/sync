@@ -32,6 +32,7 @@ export async function verifySettings(
       paths: number[] = [];
     const undone = await journal.disk.has(t.id + "/undo-start");
     for (const [i, step] of t.steps.entries()) {
+      if (step.action === "mkdir" || step.action === "rmdir") continue;
       if (await journal.disk.has(t.id + "/skipped/" + i)) continue;
       const key = JSON.stringify([t.target, step.path]);
       if (covered.has(key)) continue;

@@ -88,6 +88,20 @@ const matches = (path: string, patterns: string) =>
       nocase: true,
     }),
   );
+export function emptyConfigDirectory(path: string, c: ConfigScope) {
+  if (matches(path, c.exclude) || matches(path + "/", c.exclude)) return false;
+  if (matches(path, c.include)) return true;
+  const [top, id] = fold(path).split("/");
+  if (top === "themes" || top === "snippets") return c.categories.includes(top);
+  if (top !== "plugins") return false;
+  const allowed = (allow: string, deny: string) =>
+    !id || ((!allow.trim() || matches(id, allow)) && !matches(id, deny));
+  return (
+    ((c.categories.includes("code") || c.categories.includes("extras")) &&
+      allowed(c.codeAllow, c.codeDeny)) ||
+    (c.categories.includes("data") && allowed(c.dataAllow, c.dataDeny))
+  );
+}
 export function inScope(path: string, c: ConfigScope, directory: boolean) {
   path = fold(path);
   if (directory)

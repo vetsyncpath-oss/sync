@@ -1,6 +1,10 @@
 import { readManifest, buildManifest, verifyManifest } from "./cloud-manifest";
 import { selected } from "./classifier";
-import { legacyConfig, mobileExcluded } from "./config-scope";
+import {
+  emptyConfigDirectory,
+  legacyConfig,
+  mobileExcluded,
+} from "./config-scope";
 import { parseOverlay } from "./json-overlay";
 import { pathFilter } from "./filters";
 import { selectPlan, type Choices } from "./selection";
@@ -146,7 +150,11 @@ export class SyncEngine {
             p.maxMiB,
             projection?.blocked,
           ]);
-        if (cacheKey && this.lastSource?.key === cacheKey)
+        if (
+          cacheKey &&
+          (!manifest || manifest.directories) &&
+          this.lastSource?.key === cacheKey
+        )
           return this.lastSource.snapshot;
         const snapshot = await scan(
           source,
@@ -182,6 +190,14 @@ export class SyncEngine {
               !(
                 f.path.startsWith("plugins/") &&
                 projection?.blocked.includes(f.path.split("/")[1].toLowerCase())
+              ),
+            (pth) =>
+              filter(pth) &&
+              selected(pth, p.scope, this.configDir, this.self, true, cfg) &&
+              (p.scope === "content" || emptyConfigDirectory(pth, cfg)) &&
+              !(
+                pth.startsWith("plugins/") &&
+                projection?.blocked.includes(pth.split("/")[1].toLowerCase())
               ),
           );
         if (
@@ -227,6 +243,19 @@ export class SyncEngine {
           options.choices,
           options.release,
         );
+      if (target.capabilities.canRemoveEmptyDirs === false) {
+        const folders = new Set([
+          ...(result.heldFolders ?? []),
+          ...result.ops
+            .filter((op) => op.action === "rmdir")
+            .map((op) => op.path),
+        ]);
+        for (const path of folders)
+          result.deferred.push({ path, reason: "folderRetained" });
+        result.ops = result.ops.filter((op) => op.action !== "rmdir");
+        result.held = result.held.filter((p) => !folders.has(p));
+        result.heldFolders = [];
+      }
       if (!preview) {
         if (options.active && !options.active()) throw Error("stopped");
         if (
@@ -267,7 +296,7 @@ export class SyncEngine {
         });
         if (options.active && !options.active()) throw Error("stopped");
         const deletes = result.ops
-          .filter((op) => op.action === "delete")
+          .filter((op) => op.action === "delete" || op.action === "rmdir")
           .map((op) => op.path);
         if (deletes.length && source.confirmAbsent)
           await budget.io(() => source.confirmAbsent!(deletes));

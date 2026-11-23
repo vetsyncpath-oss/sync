@@ -339,9 +339,11 @@ export class CloudStore extends PublicStore {
     private mutable: MutableTree,
     prefix: string,
     readOnly: boolean,
+    private completeFolderAccess = true,
   ) {
     super(id, mutable, prefix);
     this.capabilities.readOnly = readOnly;
+    this.capabilities.canRemoveEmptyDirs = !readOnly && completeFolderAccess;
     this.capabilities.supportsChecksum = true;
   }
 
@@ -388,6 +390,24 @@ export class CloudStore extends PublicStore {
       )
         throw Error("referenceChanged");
     });
+  }
+  override async removeEmptyDir(path: string) {
+    checked(path);
+    let removed = false;
+    await this.change(async () => {
+      if (!this.completeFolderAccess) return;
+      const dir = await this.find(path);
+      if (!dir) {
+        removed = true;
+        return;
+      }
+      if (dir.type !== "folder") throw Error("collision");
+      // Inspect all children, including unsupported native documents and shortcuts.
+      if ((await this.mutable.children(dir)).length) return;
+      await this.mutable.remove(dir);
+      removed = true;
+    });
+    return removed;
   }
   override async delete(path: string) {
     checked(path);

@@ -22,6 +22,7 @@ interface Manifest {
   generatedAt: string;
   publisherDevice: string;
   files: ManifestEntry[];
+  directories?: string[];
 }
 export async function buildManifest(snapshot: Snapshot, device: string) {
   if (
@@ -37,11 +38,16 @@ export async function buildManifest(snapshot: Snapshot, device: string) {
       mtime: Number.isFinite(v.mtime) ? v.mtime : 0,
     }))
     .sort((a, b) => (a.path < b.path ? -1 : 1));
-  const revision = await hash(manifestBytes(files));
+  const filesHash = await hash(manifestBytes(files));
+  const directories = [
+    ...(snapshot.managedDirectories ?? snapshot.directories),
+  ].sort();
+  const revision = await hash(manifestBytes([filesHash, directories]));
   return manifestBytes({
     schemaVersion: 1,
     revision,
-    filesHash: revision,
+    filesHash,
+    directories,
     generatedAt: new Date().toISOString(),
     publisherDevice: device,
     files,
@@ -76,6 +82,14 @@ export async function readManifest(
   const checksum = await hash(manifestBytes(m.files));
   if ("filesHash" in m && m.filesHash !== checksum)
     throw Error("manifestInvalid");
+  if (
+    m.directories !== undefined &&
+    (!Array.isArray(m.directories) ||
+      m.directories.some((p) => typeof p !== "string" || !safe(p)) ||
+      new Set(m.directories.map(fold)).size !== m.directories.length ||
+      m.revision !== (await hash(manifestBytes([checksum, m.directories]))))
+  )
+    throw Error("manifestInvalid");
   m.revision = JSON.stringify([m.revision, checksum]);
   const seen = new Set<string>();
   for (const f of m.files) {
@@ -99,12 +113,21 @@ export function verifyManifest(
   m: Manifest,
   snap: Snapshot,
   accept: (f: ManifestEntry) => boolean,
+  acceptDir = (p: string) => true,
 ) {
   if (
     !snap.complete ||
     [...(snap.skipped?.values() ?? [])].some((reason) => reason !== "filter")
   )
     throw Error("manifestMismatch");
+  if (m.directories) {
+    const dirs = new Set(m.directories);
+    for (const p of snap.managedDirectories ?? snap.directories)
+      if (!dirs.has(p)) throw Error("manifestMismatch");
+    for (const p of dirs)
+      if (acceptDir(p) && !snap.directories.has(p))
+        throw Error("manifestMismatch");
+  }
   const entries = new Map(m.files.map((f) => [f.path, f]));
   for (const [p, item] of snap.files) {
     const f = entries.get(p);

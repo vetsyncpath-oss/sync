@@ -8,8 +8,11 @@ import {
   type Entry,
   type Direction,
   fold,
+  parent,
+  trackedDirectories,
 } from "./model";
-export type Action = "write" | "delete" | "retain" | "ack" | "both";
+export type Action =
+  "write" | "delete" | "retain" | "ack" | "both" | "mkdir" | "rmdir";
 export interface Op {
   path: string;
   action: Action;
@@ -20,10 +23,26 @@ export interface Op {
 export interface Plan {
   ops: Op[];
   held: string[];
+  heldFolders?: string[];
+  forgottenFolders?: string[];
   count: number;
   deferred: { path: string; reason: string }[];
   forgotten: string[];
   direction: Direction;
+}
+export function sortOps(ops: Op[]) {
+  const rank = (o: Op) =>
+    o.action === "mkdir" ? 0 : o.action === "rmdir" ? 2 : 1;
+  return ops.sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      (a.action === "mkdir"
+        ? a.path.length - b.path.length
+        : a.action === "rmdir"
+          ? b.path.length - a.path.length
+          : priority(a.path) - priority(b.path)) ||
+      a.path.localeCompare(b.path),
+  );
 }
 export function plan(
   p: Profile,
@@ -109,20 +128,44 @@ export function plan(
         : "write";
     ops.push({ path, action, source: s, target: t, conflict });
   }
+  const managedSrc = src.managedDirectories ?? src.directories,
+    managedDst = dst.managedDirectories ?? dst.directories;
+  for (const path of managedSrc)
+    if (!dst.directories.has(path) && !protectedPath(path))
+      ops.push({ path, action: "mkdir", conflict: false });
+  const tracked = trackedDirectories(base),
+    occupied = new Set(dst.occupiedDirectories);
+  const removed = new Set(deletes.map((o) => o.path));
+  for (const path of dst.files.keys())
+    if (!removed.has(path)) occupied.add(parent(path));
+  for (const path of skipped.keys()) occupied.add(parent(path));
+  for (const path of [...dst.directories].sort((a, b) => b.length - a.length)) {
+    if (
+      managedDst.has(path) &&
+      !occupied.has(path) &&
+      !src.directories.has(path) &&
+      !protectedPath(path) &&
+      (p.mirror === "full" || (p.deletions && tracked.has(path)))
+    )
+      deletes.push({ path, action: "rmdir", conflict: false });
+    else occupied.add(parent(path));
+  }
   const protect =
     (mode !== "silent" || p.silentDeletionSafeguard !== false) &&
     ((p.emptyGuard &&
       (src.files.size === 0 ||
         (base.size > 0 &&
           src.files.size < base.size * (1 - p.shrinkPercent / 100)))) ||
+      removed.size >
+        Math.max(p.deleteGrace, (dst.files.size * p.maxDeletePercent) / 100) ||
       deletes.length > p.maxDeleteCount ||
       deletes.length >
-        Math.max(p.deleteGrace, (dst.files.size * p.maxDeletePercent) / 100));
+        Math.max(
+          p.deleteGrace,
+          ((dst.files.size + managedDst.size) * p.maxDeletePercent) / 100,
+        ));
   if (!protect) for (const deletion of deletes) ops.push(deletion);
-  ops.sort(
-    (a, b) =>
-      priority(a.path) - priority(b.path) || a.path.localeCompare(b.path),
-  );
+  sortOps(ops);
   return {
     ops,
     deferred,
@@ -130,6 +173,13 @@ export function plan(
       (path) =>
         !protectedPath(path) && !src.files.has(path) && !dst.files.has(path),
     ),
+    forgottenFolders: [...tracked].filter(
+      (p) =>
+        !dst.directories.has(p) && !src.directories.has(p) && !protectedPath(p),
+    ),
+    heldFolders: protect
+      ? deletes.filter((o) => o.action === "rmdir").map((o) => o.path)
+      : [],
     held: protect ? deletes.map((d) => d.path) : [],
     count: src.files.size,
     direction: "SourceToTarget",

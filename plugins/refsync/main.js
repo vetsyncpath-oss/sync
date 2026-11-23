@@ -10733,7 +10733,7 @@ var require_diff3 = __commonJS({
 // src/main.ts
 var main_exports = {};
 __export(main_exports, {
-  default: () => RefSync
+  default: () => SyncStudio
 });
 module.exports = __toCommonJS(main_exports);
 init_git_buffer();
@@ -11093,7 +11093,7 @@ var import_posix = __toESM(require_posix());
 init_git_buffer();
 var defaults = {
   id: "local",
-  name: "RefSync",
+  name: "Sync Studio",
   enabled: true,
   inheritMode: true,
   startup: true,
@@ -11116,8 +11116,8 @@ var defaults = {
   role: "subscriber",
   scope: "content",
   access: "local",
-  local: "RefSync-copy",
-  reference: "RefSync-reference",
+  local: "Sync Studio-copy",
+  reference: "Sync Studio-reference",
   mirror: "preserve",
   deletions: false,
   conflict: "source",
@@ -11130,6 +11130,15 @@ var defaults = {
   watch: false,
   strictDrift: false
 };
+function trackedDirectories(base) {
+  if (base.folders) return new Set(base.folders);
+  const dirs = /* @__PURE__ */ new Set();
+  for (const [path, entry] of Object.entries(base.entries))
+    if (entry.delivered)
+      for (let dir = parent(path); dir && !dirs.has(dir); dir = parent(dir))
+        dirs.add(dir);
+  return dirs;
+}
 var fresh = () => ({
   entries: /* @__PURE__ */ Object.create(null),
   size: 0,
@@ -11216,6 +11225,15 @@ var matches = (path, patterns) => terms(patterns).some(
     nocase: true
   })
 );
+function emptyConfigDirectory(path, c) {
+  if (matches(path, c.exclude) || matches(path + "/", c.exclude)) return false;
+  if (matches(path, c.include)) return true;
+  const [top, id] = fold(path).split("/");
+  if (top === "themes" || top === "snippets") return c.categories.includes(top);
+  if (top !== "plugins") return false;
+  const allowed = (allow, deny) => !id || (!allow.trim() || matches(id, allow)) && !matches(id, deny);
+  return (c.categories.includes("code") || c.categories.includes("extras")) && allowed(c.codeAllow, c.codeDeny) || c.categories.includes("data") && allowed(c.dataAllow, c.dataDeny);
+}
 function inScope(path, c, directory) {
   path = fold(path);
   if (directory)
@@ -11534,6 +11552,7 @@ async function verifySettings(journal, target, current, budget = new RunBudget()
     const cfg = current(t), policy = t.settings.projection, paths = [];
     const undone = await journal.disk.has(t.id + "/undo-start");
     for (const [i, step] of t.steps.entries()) {
+      if (step.action === "mkdir" || step.action === "rmdir") continue;
       if (await journal.disk.has(t.id + "/skipped/" + i)) continue;
       const key = JSON.stringify([t.target, step.path]);
       if (covered.has(key)) continue;
@@ -11670,9 +11689,9 @@ function newProfile(copy) {
   return copy ? { ...structuredClone(copy), id, name: copy.name + " (2)", enabled: false } : {
     ...defaults,
     id,
-    name: "RefSync " + tag,
-    local: "RefSync-copy-" + tag,
-    reference: "RefSync-reference-" + tag,
+    name: "Sync Studio " + tag,
+    local: "Sync Studio-copy-" + tag,
+    reference: "Sync Studio-reference-" + tag,
     enabled: false,
     fileEvents: true
   };
@@ -11694,11 +11713,16 @@ async function buildManifest(snapshot, device) {
     hash: v.rawHash ?? v.hash,
     mtime: Number.isFinite(v.mtime) ? v.mtime : 0
   })).sort((a, b) => a.path < b.path ? -1 : 1);
-  const revision = await hash(manifestBytes(files));
+  const filesHash = await hash(manifestBytes(files));
+  const directories = [
+    ...snapshot.managedDirectories ?? snapshot.directories
+  ].sort();
+  const revision = await hash(manifestBytes([filesHash, directories]));
   return manifestBytes({
     schemaVersion: 1,
     revision,
-    filesHash: revision,
+    filesHash,
+    directories,
     generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
     publisherDevice: device,
     files
@@ -11721,6 +11745,8 @@ async function readManifest(store) {
   const checksum = await hash(manifestBytes(m.files));
   if ("filesHash" in m && m.filesHash !== checksum)
     throw Error("manifestInvalid");
+  if (m.directories !== void 0 && (!Array.isArray(m.directories) || m.directories.some((p) => typeof p !== "string" || !safe(p)) || new Set(m.directories.map(fold)).size !== m.directories.length || m.revision !== await hash(manifestBytes([checksum, m.directories]))))
+    throw Error("manifestInvalid");
   m.revision = JSON.stringify([m.revision, checksum]);
   const seen = /* @__PURE__ */ new Set();
   for (const f of m.files) {
@@ -11730,9 +11756,17 @@ async function readManifest(store) {
   }
   return m;
 }
-function verifyManifest(m, snap, accept) {
+function verifyManifest(m, snap, accept, acceptDir = (p) => true) {
   if (!snap.complete || [...snap.skipped?.values() ?? []].some((reason) => reason !== "filter"))
     throw Error("manifestMismatch");
+  if (m.directories) {
+    const dirs = new Set(m.directories);
+    for (const p of snap.managedDirectories ?? snap.directories)
+      if (!dirs.has(p)) throw Error("manifestMismatch");
+    for (const p of dirs)
+      if (acceptDir(p) && !snap.directories.has(p))
+        throw Error("manifestMismatch");
+  }
   const entries = new Map(m.files.map((f) => [f.path, f]));
   for (const [p, item] of snap.files) {
     const f = entries.get(p);
@@ -11767,6 +11801,14 @@ var Applier = class {
         const saved = await this.journal.json(armed);
         if (t.cloud) target.reset?.();
         const stat = await budget.io(() => target.stat(p));
+        if (t.steps[i].action === "mkdir" || t.steps[i].action === "rmdir") {
+          if (stat && stat.type !== "folder") throw Error("collision");
+          if (saved === "folder" && !stat)
+            await budget.io(() => target.mkdir(p), false);
+          if (saved === null && stat)
+            await budget.io(() => target.removeEmptyDir(p), false);
+          return;
+        }
         if (stat?.type === "folder") throw Error("collision");
         if (t.cloud) {
           const expected = t.id + "/after/" + i;
@@ -11851,6 +11893,9 @@ var Applier = class {
       size: plan2.held.length ? previous.size : plan2.count,
       lastRun: previous.lastRun
     };
+    const previousFolders = trackedDirectories(previous), folders = new Set(previousFolders);
+    for (const p of plan2.forgottenFolders ?? []) folders.delete(p);
+    next.folders = [...folders];
     Object.assign(next.entries, previous.entries);
     for (const path of plan2.forgotten) delete next.entries[path];
     const id = crypto.randomUUID(), steps = [];
@@ -11862,7 +11907,9 @@ var Applier = class {
     const stageBatch = batch && plan2.ops.some((x) => x.action === "write" || x.action === "delete");
     const displaced = /* @__PURE__ */ new Map();
     const expectedTarget = /* @__PURE__ */ new Map();
-    const publish = publication && (publication.missing || plan2.ops.some((o) => ["write", "both", "delete"].includes(o.action)));
+    const publish = publication && (publication.missing || plan2.ops.some(
+      (o) => ["write", "both", "delete", "mkdir", "rmdir"].includes(o.action)
+    ));
     try {
       if (publish)
         await stage(
@@ -11872,6 +11919,10 @@ var Applier = class {
       for (const op of plan2.ops) {
         checkpoint();
         const p = op.path, s = op.source, b = Object.hasOwn(previous.entries, p) ? previous.entries[p] : void 0;
+        if (op.action === "mkdir" || op.action === "rmdir") {
+          steps.push({ path: p, action: op.action });
+          continue;
+        }
         if (publish && op.path !== manifestPath) {
           if (op.target?.rawHash || op.target?.hash)
             expectedTarget.set(p, op.target.rawHash ?? op.target.hash);
@@ -11983,6 +12034,39 @@ var Applier = class {
           for (let i = start; i < end; i++) {
             checkpoint();
             const step = steps[i];
+            if (step.action === "mkdir" || step.action === "rmdir") {
+              target.reset?.();
+              const stat = await budget.io(() => target.stat(step.path));
+              if (stat && stat.type !== "folder") throw Error("collision");
+              const creating = step.action === "mkdir";
+              if (creating === !!stat) {
+                if (!stat) folders.delete(step.path);
+                continue;
+              }
+              const origin = await budget.io(() => source.stat(step.path));
+              if (creating ? origin?.type !== "folder" : !!origin)
+                throw Error("referenceChanged");
+              await this.journal.disk.putNew(
+                id + "/armed/" + i,
+                manifestBytes(stat ? "folder" : null)
+              );
+              if (creating) {
+                await budget.io(() => target.mkdir(step.path), false);
+                folders.add(step.path);
+              } else if (await budget.io(() => target.removeEmptyDir(step.path), false))
+                folders.delete(step.path);
+              else {
+                await this.journal.mark(id + "/skipped/" + i);
+                plan2.deferred.push({
+                  path: step.path,
+                  reason: "folderRetained"
+                });
+                continue;
+              }
+              await this.journal.mark(id + "/applied/" + i);
+              changed++;
+              continue;
+            }
             const perform = async () => {
               if (t.cloud) target.reset?.();
               const stat = await budget.io(() => target.stat(step.path));
@@ -12034,13 +12118,22 @@ var Applier = class {
             else await perform();
             await this.journal.mark(id + "/applied/" + i);
           }
-          if (steps[start].path !== manifestPath) changed += end - start;
+          if (steps[start].path !== manifestPath && !["mkdir", "rmdir"].includes(steps[start].action)) {
+            changed += end - start;
+            if (steps[start].action === "write")
+              for (let d = parent(path); d && !folders.has(d); d = parent(d))
+                folders.add(d);
+          }
         } catch (e) {
           if (batch || steps[start].path === manifestPath || !transient(e))
             throw e;
           await this.restore(t, target, start, end);
           for (let i = start; i < end; i++)
             await this.journal.mark(id + "/skipped/" + i);
+          if (["mkdir", "rmdir"].includes(steps[start].action)) {
+            if (previousFolders.has(path)) folders.add(path);
+            else folders.delete(path);
+          }
           if (Object.hasOwn(previous.entries, path))
             next.entries[path] = previous.entries[path];
           else delete next.entries[path];
@@ -12049,6 +12142,7 @@ var Applier = class {
         progress?.(end, steps.length);
         start = end;
       }
+      next.folders = [...folders];
       if (changed || publish) next.lastRun = id;
       this.state.put(key, next);
     } catch (e) {
@@ -12144,7 +12238,7 @@ var ApplyJournal = class {
         throw Error("journal");
       for (const step of t.steps) {
         checked(step.path);
-        if (step.action !== "write" && step.action !== "delete")
+        if (!["write", "delete", "mkdir", "rmdir"].includes(step.action))
           throw Error("journal");
       }
       out.push(t);
@@ -12299,8 +12393,11 @@ var LocalProvider = class {
   async mkdir(p) {
     const path = this.writable(p, true);
     if (this.indexed(path)) {
-      if (!this.vault.getAbstractFileByPath(path))
-        await this.vault.createFolder(path);
+      const stat = await this.vault.adapter.stat(path);
+      if (stat?.type === "folder") return;
+      if (stat) throw Error("collision");
+      if (this.vault.getAbstractFileByPath(path)) throw Error("indexPending");
+      await this.vault.createFolder(path);
     } else await ensure(this.vault.adapter, path);
   }
   async upload(p, b, mtime) {
@@ -12375,6 +12472,34 @@ var LocalProvider = class {
         break;
     }
   }
+  async removeEmptyDir(p) {
+    checked(p);
+    const path = this.writable(p, true), a = this.vault.adapter;
+    const listed = await a.list(path);
+    if (listed.files.length || listed.folders.length) return false;
+    try {
+      if (a instanceof import_obsidian.FileSystemAdapter) {
+        const fs = require("node:fs/promises");
+        const paths = require("node:path");
+        const full = a.getFullPath(path), base = await fs.realpath(a.getBasePath());
+        if (paths.relative(paths.join(base, path), await fs.realpath(full)) !== "")
+          return false;
+        await fs.rmdir(full);
+      } else await a.rmdir(path, false);
+    } catch (e) {
+      if (e instanceof Error && /\b(ENOTEMPTY|EEXIST)\b/.test(e.message))
+        return false;
+      const s = await a.stat(path);
+      if (!s) return true;
+      if (s.type === "folder") {
+        const now = await a.list(path);
+        if (now.files.length || now.folders.length) return false;
+      }
+      throw e;
+    }
+    this.ownWrite?.(path, null);
+    return true;
+  }
   async move(from, to) {
     const a = this.writable(from), b = this.writable(to);
     if (await this.vault.adapter.exists(b)) throw Error("collision");
@@ -12400,15 +12525,132 @@ function pathFilter(p) {
     (v) => (0, import_posix3.default)(v, { nonegate: true, noextglob: true, nobrace: true })
   );
   const include = compile(p.include), exclude = compile(p.exclude);
-  return (path) => !exclude.some((f) => f(path)) && (!include.length || include.some((f) => f(path)));
+  return (path) => {
+    if (exclude.some((f) => f(path) || f(path + "/"))) return false;
+    for (let dir = parent(path); dir; dir = parent(dir))
+      if (exclude.some((f) => f(dir) || f(dir + "/"))) return false;
+    return !include.length || include.some((f) => f(path));
+  };
 }
 
 // src/selection.ts
 init_git_buffer();
+
+// src/planner.ts
+init_git_buffer();
+
+// src/conflict-resolver.ts
+init_git_buffer();
+var resolveConflict = (policy, s, t) => {
+  if (policy === "both") return "both";
+  if (policy === "target" || policy === "newer" && Number.isFinite(s.mtime) && Number.isFinite(t.mtime) && t.mtime > s.mtime + 2e3)
+    return "retain";
+  return "write";
+};
+
+// src/planner.ts
+function sortOps(ops) {
+  const rank = (o) => o.action === "mkdir" ? 0 : o.action === "rmdir" ? 2 : 1;
+  return ops.sort(
+    (a, b) => rank(a) - rank(b) || (a.action === "mkdir" ? a.path.length - b.path.length : a.action === "rmdir" ? b.path.length - a.path.length : priority(a.path) - priority(b.path)) || a.path.localeCompare(b.path)
+  );
+}
+function plan(p, src, dst, base, resolve = resolveConflict, mode = "plan") {
+  if (!src.complete || !dst.complete) throw Error("incomplete");
+  const skipped = new Map([...src.skipped ?? [], ...dst.skipped ?? []]);
+  const names = /* @__PURE__ */ new Map();
+  for (const snap of [src, dst])
+    for (const [paths, kind] of [
+      [snap.files.keys(), "file"],
+      [snap.directories.keys(), "folder"]
+    ])
+      for (const path of paths) {
+        const key = fold(path), sig = kind + " " + path;
+        if (names.has(key) && names.get(key) !== sig)
+          skipped.set(path, "collision");
+        names.set(key, sig);
+      }
+  const alias = (s) => fold(s).split("/").map((k) => k.replace(/[. ]+$/, "")).join("/");
+  const blocked = new Set([...skipped.keys()].map(alias));
+  const protectedPath = (path) => {
+    const parts = alias(path).split("/");
+    while (parts.length) {
+      if (blocked.has(parts.join("/"))) return true;
+      parts.pop();
+    }
+    return false;
+  };
+  const deferred = [...skipped].filter(([, reason]) => reason !== "filter").map(([path, reason]) => ({ path, reason }));
+  const ops = [], deletes = [];
+  for (const path of /* @__PURE__ */ new Set([...src.files.keys(), ...dst.files.keys()])) {
+    if (protectedPath(path)) continue;
+    const s = src.files.get(path), t = dst.files.get(path), b = Object.hasOwn(base.entries, path) ? base.entries[path] : void 0;
+    if (!s) {
+      if (p.scope === "settings" && p.role === "subscriber" && fold(path) === "community-plugins.json")
+        continue;
+      if (t && (p.mirror === "full" || p.deletions && b?.delivered))
+        deletes.push({ path, action: "delete", conflict: false, target: t });
+      continue;
+    }
+    if (s.kind === "V") continue;
+    if (s.hash === t?.hash) {
+      ops.push({ path, action: "ack", source: s, conflict: false });
+      continue;
+    }
+    const strict = p.strictDrift || p.scope === "content" && p.mirror === "full";
+    if (!strict && b?.seen === s.hash) continue;
+    if (!strict && p.scope === "settings" && s.rawHash && b?.seen === s.rawHash && s.rawHash !== s.hash)
+      continue;
+    const conflict = !!t && s.kind === "S" && (!b || t.hash !== b.hash && s.hash !== b.applied);
+    const action = conflict && t && p.mirror !== "full" ? resolve(p.conflict, s, t) : "write";
+    ops.push({ path, action, source: s, target: t, conflict });
+  }
+  const managedSrc = src.managedDirectories ?? src.directories, managedDst = dst.managedDirectories ?? dst.directories;
+  for (const path of managedSrc)
+    if (!dst.directories.has(path) && !protectedPath(path))
+      ops.push({ path, action: "mkdir", conflict: false });
+  const tracked = trackedDirectories(base), occupied = new Set(dst.occupiedDirectories);
+  const removed = new Set(deletes.map((o) => o.path));
+  for (const path of dst.files.keys())
+    if (!removed.has(path)) occupied.add(parent(path));
+  for (const path of skipped.keys()) occupied.add(parent(path));
+  for (const path of [...dst.directories].sort((a, b) => b.length - a.length)) {
+    if (managedDst.has(path) && !occupied.has(path) && !src.directories.has(path) && !protectedPath(path) && (p.mirror === "full" || p.deletions && tracked.has(path)))
+      deletes.push({ path, action: "rmdir", conflict: false });
+    else occupied.add(parent(path));
+  }
+  const protect = (mode !== "silent" || p.silentDeletionSafeguard !== false) && (p.emptyGuard && (src.files.size === 0 || base.size > 0 && src.files.size < base.size * (1 - p.shrinkPercent / 100)) || removed.size > Math.max(p.deleteGrace, dst.files.size * p.maxDeletePercent / 100) || deletes.length > p.maxDeleteCount || deletes.length > Math.max(
+    p.deleteGrace,
+    (dst.files.size + managedDst.size) * p.maxDeletePercent / 100
+  ));
+  if (!protect) for (const deletion of deletes) ops.push(deletion);
+  sortOps(ops);
+  return {
+    ops,
+    deferred,
+    forgotten: Object.keys(base.entries).filter(
+      (path) => !protectedPath(path) && !src.files.has(path) && !dst.files.has(path)
+    ),
+    forgottenFolders: [...tracked].filter(
+      (p2) => !dst.directories.has(p2) && !src.directories.has(p2) && !protectedPath(p2)
+    ),
+    heldFolders: protect ? deletes.filter((o) => o.action === "rmdir").map((o) => o.path) : [],
+    held: protect ? deletes.map((d) => d.path) : [],
+    count: src.files.size,
+    direction: "SourceToTarget"
+  };
+}
+
+// src/selection.ts
 function selectPlan(profile, fresh2, review, choices, release) {
   const seen = new Map(review.ops.map((op) => [op.path, op]));
+  const skippedFolders = new Set(
+    review.ops.filter((o) => o.action === "mkdir" && choices?.get(o.path) === "skip").map((o) => o.path)
+  );
   const ops = fresh2.ops.flatMap((op) => {
     const before = seen.get(op.path);
+    for (let d = parent(op.path); d; d = parent(d))
+      if (skippedFolders.has(d)) return [];
     if (!before || choices?.get(op.path) === "skip") return [];
     if (op.action === "ack") return [op];
     if (before.source?.hash !== op.source?.hash || before.action !== op.action || before.conflict !== op.conflict)
@@ -12420,12 +12662,24 @@ function selectPlan(profile, fresh2, review, choices, release) {
     return [{ ...op, action: decision }];
   });
   const reviewedHeld = new Set(review.held);
+  const folders = new Set(fresh2.heldFolders), reviewedFolders = new Set(review.heldFolders);
   const held = fresh2.held.filter((path) => {
     if (!release?.has(path) || !reviewedHeld.has(path)) return true;
-    ops.push({ path, action: "delete", conflict: false });
+    if (folders.has(path) !== reviewedFolders.has(path))
+      throw Error("referenceChanged");
+    ops.push({
+      path,
+      action: folders.has(path) ? "rmdir" : "delete",
+      conflict: false
+    });
     return false;
   });
-  return { ...fresh2, ops, held };
+  return {
+    ...fresh2,
+    ops: sortOps(ops),
+    held,
+    heldFolders: held.filter((p) => folders.has(p))
+  };
 }
 
 // src/validator.ts
@@ -12544,6 +12798,7 @@ var PublicStore = class _PublicStore {
   }
   capabilities = {
     readOnly: true,
+    canRemoveEmptyDirs: false,
     supportsChecksum: false,
     supportsChangesFeed: false,
     maxFileSize: Infinity,
@@ -12641,6 +12896,9 @@ var PublicStore = class _PublicStore {
     throw Error("readonly");
   }
   async mkdir(_path) {
+    throw Error("readonly");
+  }
+  async removeEmptyDir(_path) {
     throw Error("readonly");
   }
   async move(_from, _to) {
@@ -13043,10 +13301,12 @@ var DiskTree = class {
   }
 };
 var CloudStore = class extends PublicStore {
-  constructor(id, mutable, prefix, readOnly) {
+  constructor(id, mutable, prefix, readOnly, completeFolderAccess = true) {
     super(id, mutable, prefix);
     this.mutable = mutable;
+    this.completeFolderAccess = completeFolderAccess;
     this.capabilities.readOnly = readOnly;
+    this.capabilities.canRemoveEmptyDirs = !readOnly && completeFolderAccess;
     this.capabilities.supportsChecksum = true;
   }
   async change(fn) {
@@ -13086,6 +13346,23 @@ var CloudStore = class extends PublicStore {
       if (saved?.type !== "file" || saved.size !== bytes.byteLength || (saved.sha256 ?? await hash(await this.download(path))) !== await hash(bytes))
         throw Error("referenceChanged");
     });
+  }
+  async removeEmptyDir(path) {
+    checked(path);
+    let removed = false;
+    await this.change(async () => {
+      if (!this.completeFolderAccess) return;
+      const dir = await this.find(path);
+      if (!dir) {
+        removed = true;
+        return;
+      }
+      if (dir.type !== "folder") throw Error("collision");
+      if ((await this.mutable.children(dir)).length) return;
+      await this.mutable.remove(dir);
+      removed = true;
+    });
+    return removed;
   }
   async delete(path) {
     checked(path);
@@ -13340,7 +13617,10 @@ function validate(p, desktop, readOnly, configDir) {
 // src/scanner.ts
 init_git_buffer();
 async function scan(provider, scope, configDir, self, skipHotTarget = false, budget = new RunBudget(), accept = (path) => true, maxMiB = 0, config, projection) {
+  const managedDirectories = /* @__PURE__ */ new Set(), occupiedDirectories = /* @__PURE__ */ new Set();
   const snap = {
+    managedDirectories,
+    occupiedDirectories,
     files: /* @__PURE__ */ new Map(),
     directories: /* @__PURE__ */ new Set(),
     complete: false,
@@ -13352,6 +13632,8 @@ async function scan(provider, scope, configDir, self, skipHotTarget = false, bud
   while (todo.length) {
     const dir = todo.pop();
     const list = await budget.io(() => provider.list(dir));
+    if (dir && !list.files.length && !list.folders.length && !list.skipped?.length && accept(dir) && (scope === "content" || emptyConfigDirectory(dir, config ?? legacyConfig())))
+      managedDirectories.add(dir);
     for (const path of list.skipped ?? []) {
       if (parent(path) !== dir) throw Error("path");
       snap.skipped.set(path, "filter");
@@ -13362,9 +13644,14 @@ async function scan(provider, scope, configDir, self, skipHotTarget = false, bud
     ]) {
       for (const p of paths) {
         if (parent(p) !== dir) throw Error("path");
-        if (!selected(p, scope, configDir, self, isDir, config)) continue;
-        if (projection?.blocked.includes(fold(p.split("/")[1] ?? "")) && p.startsWith("plugins/"))
+        if (!selected(p, scope, configDir, self, isDir, config)) {
+          occupiedDirectories.add(dir);
           continue;
+        }
+        if (projection?.blocked.includes(fold(p.split("/")[1] ?? "")) && p.startsWith("plugins/")) {
+          occupiedDirectories.add(dir);
+          continue;
+        }
         if (!safe(p)) {
           snap.skipped.set(p, "badPath");
           continue;
@@ -13419,88 +13706,12 @@ async function scan(provider, scope, configDir, self, skipHotTarget = false, bud
       }
     }
   }
+  for (const p of [...managedDirectories, ...snap.files.keys()]) {
+    for (let d = parent(p); d; d = parent(d)) managedDirectories.add(d);
+  }
+  for (const p of snap.skipped.keys()) occupiedDirectories.add(parent(p));
   snap.complete = true;
   return snap;
-}
-
-// src/planner.ts
-init_git_buffer();
-
-// src/conflict-resolver.ts
-init_git_buffer();
-var resolveConflict = (policy, s, t) => {
-  if (policy === "both") return "both";
-  if (policy === "target" || policy === "newer" && Number.isFinite(s.mtime) && Number.isFinite(t.mtime) && t.mtime > s.mtime + 2e3)
-    return "retain";
-  return "write";
-};
-
-// src/planner.ts
-function plan(p, src, dst, base, resolve = resolveConflict, mode = "plan") {
-  if (!src.complete || !dst.complete) throw Error("incomplete");
-  const skipped = new Map([...src.skipped ?? [], ...dst.skipped ?? []]);
-  const names = /* @__PURE__ */ new Map();
-  for (const snap of [src, dst])
-    for (const [paths, kind] of [
-      [snap.files.keys(), "file"],
-      [snap.directories.keys(), "folder"]
-    ])
-      for (const path of paths) {
-        const key = fold(path), sig = kind + " " + path;
-        if (names.has(key) && names.get(key) !== sig)
-          skipped.set(path, "collision");
-        names.set(key, sig);
-      }
-  const alias = (s) => fold(s).split("/").map((k) => k.replace(/[. ]+$/, "")).join("/");
-  const blocked = new Set([...skipped.keys()].map(alias));
-  const protectedPath = (path) => {
-    const parts = alias(path).split("/");
-    while (parts.length) {
-      if (blocked.has(parts.join("/"))) return true;
-      parts.pop();
-    }
-    return false;
-  };
-  const deferred = [...skipped].filter(([, reason]) => reason !== "filter").map(([path, reason]) => ({ path, reason }));
-  const ops = [], deletes = [];
-  for (const path of /* @__PURE__ */ new Set([...src.files.keys(), ...dst.files.keys()])) {
-    if (protectedPath(path)) continue;
-    const s = src.files.get(path), t = dst.files.get(path), b = Object.hasOwn(base.entries, path) ? base.entries[path] : void 0;
-    if (!s) {
-      if (p.scope === "settings" && p.role === "subscriber" && fold(path) === "community-plugins.json")
-        continue;
-      if (t && (p.mirror === "full" || p.deletions && b?.delivered))
-        deletes.push({ path, action: "delete", conflict: false, target: t });
-      continue;
-    }
-    if (s.kind === "V") continue;
-    if (s.hash === t?.hash) {
-      ops.push({ path, action: "ack", source: s, conflict: false });
-      continue;
-    }
-    const strict = p.strictDrift || p.scope === "content" && p.mirror === "full";
-    if (!strict && b?.seen === s.hash) continue;
-    if (!strict && p.scope === "settings" && s.rawHash && b?.seen === s.rawHash && s.rawHash !== s.hash)
-      continue;
-    const conflict = !!t && s.kind === "S" && (!b || t.hash !== b.hash && s.hash !== b.applied);
-    const action = conflict && t && p.mirror !== "full" ? resolve(p.conflict, s, t) : "write";
-    ops.push({ path, action, source: s, target: t, conflict });
-  }
-  const protect = (mode !== "silent" || p.silentDeletionSafeguard !== false) && (p.emptyGuard && (src.files.size === 0 || base.size > 0 && src.files.size < base.size * (1 - p.shrinkPercent / 100)) || deletes.length > p.maxDeleteCount || deletes.length > Math.max(p.deleteGrace, dst.files.size * p.maxDeletePercent / 100));
-  if (!protect) for (const deletion of deletes) ops.push(deletion);
-  ops.sort(
-    (a, b) => priority(a.path) - priority(b.path) || a.path.localeCompare(b.path)
-  );
-  return {
-    ops,
-    deferred,
-    forgotten: Object.keys(base.entries).filter(
-      (path) => !protectedPath(path) && !src.files.has(path) && !dst.files.has(path)
-    ),
-    held: protect ? deletes.map((d) => d.path) : [],
-    count: src.files.size,
-    direction: "SourceToTarget"
-  };
 }
 
 // src/engine.ts
@@ -13596,7 +13807,7 @@ var SyncEngine = class {
           p.maxMiB,
           projection?.blocked
         ]);
-        if (cacheKey && this.lastSource?.key === cacheKey)
+        if (cacheKey && (!manifest || manifest.directories) && this.lastSource?.key === cacheKey)
           return this.lastSource.snapshot;
         const snapshot = await scan(
           source,
@@ -13621,7 +13832,8 @@ var SyncEngine = class {
               this.self,
               false,
               cfg
-            ) && filter(f.path) && !(p.scope === "content" && p.maxMiB > 0 && f.size > p.maxMiB * 1048576) && !(f.path.startsWith("plugins/") && projection?.blocked.includes(f.path.split("/")[1].toLowerCase()))
+            ) && filter(f.path) && !(p.scope === "content" && p.maxMiB > 0 && f.size > p.maxMiB * 1048576) && !(f.path.startsWith("plugins/") && projection?.blocked.includes(f.path.split("/")[1].toLowerCase())),
+            (pth) => filter(pth) && selected(pth, p.scope, this.configDir, this.self, true, cfg) && (p.scope === "content" || emptyConfigDirectory(pth, cfg)) && !(pth.startsWith("plugins/") && projection?.blocked.includes(pth.split("/")[1].toLowerCase()))
           );
         if (cacheKey && ![...snapshot.skipped?.values() ?? []].includes("locked"))
           this.lastSource = { key: cacheKey, snapshot };
@@ -13663,6 +13875,17 @@ var SyncEngine = class {
           options.choices,
           options.release
         );
+      if (target.capabilities.canRemoveEmptyDirs === false) {
+        const folders = /* @__PURE__ */ new Set([
+          ...result.heldFolders ?? [],
+          ...result.ops.filter((op) => op.action === "rmdir").map((op) => op.path)
+        ]);
+        for (const path of folders)
+          result.deferred.push({ path, reason: "folderRetained" });
+        result.ops = result.ops.filter((op) => op.action !== "rmdir");
+        result.held = result.held.filter((p2) => !folders.has(p2));
+        result.heldFolders = [];
+      }
       if (!preview) {
         if (options.active && !options.active()) throw Error("stopped");
         if (p.scope === "content" && p.role === "publisher" && result.ops.some((x) => x.action === "write" || x.action === "both")) {
@@ -13690,7 +13913,7 @@ var SyncEngine = class {
           return true;
         });
         if (options.active && !options.active()) throw Error("stopped");
-        const deletes = result.ops.filter((op) => op.action === "delete").map((op) => op.path);
+        const deletes = result.ops.filter((op) => op.action === "delete" || op.action === "rmdir").map((op) => op.path);
         if (deletes.length && source.confirmAbsent)
           await budget.io(() => source.confirmAbsent(deletes));
         this.status.set("apply");
@@ -13723,6 +13946,9 @@ var SyncEngine = class {
 // src/i18n.ts
 init_git_buffer();
 var ru = {
+  mkdir: "Создать папку",
+  rmdir: "Удалить пустую папку",
+  folderRetained: "Папка сохранена: содержит другие объекты или доступ к содержимому ограничен",
   publishHint: "При применении издатель записывает .sync-manifest.json в корень облачной папки. По нему подписчики проверяют завершение публикации.",
   accounts: "Аккаунты",
   googlePrivate: "Google Диск · OAuth",
@@ -13783,10 +14009,10 @@ var ru = {
   remoteNetwork: "Не удалось подключиться к источнику",
   remoteName: "Источник вернул неоднозначное имя файла",
   gitRead: "Не удалось получить Git-репозиторий. Проверьте HTTPS-ссылку, ветку и подключение.",
-  maxDeleteCount: "Порог удалений, файлов",
+  maxDeleteCount: "Порог удалений, файлов и папок",
   maxDeletePercent: "Порог удалений, % от цели",
   shrinkPercent: "Порог уменьшения эталона, %",
-  deleteGrace: "Минимум файлов для процентного порога удалений",
+  deleteGrace: "Минимум объектов для процентного порога удалений",
   scopePreset: "Набор настроек",
   preset_full: "Полная копия",
   preset_noData: "Всё кроме данных плагинов",
@@ -13855,11 +14081,11 @@ var ru = {
   newer: "Предпочесть более новый файл",
   deletions: "Применять удаления из эталона",
   trash: "Способ удаления",
-  plugin: "Корзина RefSync",
+  plugin: "Корзина Sync Studio",
   vault: "Корзина хранилища",
   system: "Системная корзина",
   permanent: "Удалить файл с резервной копией",
-  trashDays: "Хранить в корзине RefSync, дней",
+  trashDays: "Хранить в корзине Sync Studio, дней",
   include: "Включать пути (glob через запятую)",
   exclude: "Исключать пути (glob через запятую)",
   maxMiB: "Максимальный размер в МиБ (0 — любой)",
@@ -13900,7 +14126,7 @@ var ru = {
   done: "Готово",
   partial: "Частично",
   error: "Ошибка",
-  title: "RefSync · локальный профиль",
+  title: "Sync Studio · локальный профиль",
   preview: "Показать план",
   sync: "Применить эталон",
   undo: "Откатить последнюю доставку",
@@ -13953,6 +14179,9 @@ var ru = {
   unknown: "Неизвестное состояние"
 };
 var en = {
+  mkdir: "Create folder",
+  rmdir: "Remove empty folder",
+  folderRetained: "Folder retained: it contains other items or access to its contents is limited",
   publishHint: "Applying this profile writes .sync-manifest.json at the cloud folder root so subscribers can verify publication.",
   accounts: "Accounts",
   googlePrivate: "Google Drive · OAuth",
@@ -14085,11 +14314,11 @@ var en = {
   newer: "Prefer newer file",
   deletions: "Propagate source deletions",
   trash: "Deletion destination",
-  plugin: "RefSync trash",
+  plugin: "Sync Studio trash",
   vault: "Vault trash",
   system: "System trash",
   permanent: "Delete file with backup",
-  trashDays: "RefSync trash retention (days)",
+  trashDays: "Sync Studio trash retention (days)",
   include: "Include paths (comma-separated globs)",
   exclude: "Exclude paths (comma-separated globs)",
   maxMiB: "Maximum MiB (0 for unlimited)",
@@ -14130,7 +14359,7 @@ var en = {
   done: "Done",
   partial: "Partial",
   error: "Error",
-  title: "RefSync · local profile",
+  title: "Sync Studio · local profile",
   preview: "Show plan",
   sync: "Apply reference",
   undo: "Roll back last delivery",
@@ -14497,7 +14726,7 @@ var Review = class extends import_obsidian2.Modal {
       (o) => o.action !== "ack" && !this.releaseOnly
     );
     const held = this.plan.held;
-    const eligible = (o) => o.path.toLowerCase().includes(this.query) && (this.filter === "all" || this.filter === "conflict" && o.conflict || this.filter === "delete" && o.action === "delete");
+    const eligible = (o) => o.path.toLowerCase().includes(this.query) && (this.filter === "all" || this.filter === "conflict" && o.conflict || this.filter === "delete" && ["delete", "rmdir"].includes(o.action));
     const filtered = () => ops.filter(eligible);
     if (this.apply && !this.releaseOnly)
       toolbar.addButton(
@@ -14533,7 +14762,7 @@ var Review = class extends import_obsidian2.Modal {
           [this.tr("conflict"), selected2.filter((o) => o.conflict).length],
           [
             this.tr("delete"),
-            selected2.filter((o) => o.action === "delete").length + this.released.size
+            selected2.filter((o) => ["delete", "rmdir"].includes(o.action)).length + this.released.size
           ],
           [this.tr("held"), held.length],
           [this.tr("deferred"), this.plan.deferred.length]
@@ -14549,7 +14778,7 @@ var Review = class extends import_obsidian2.Modal {
         (this.page + 1) * 50
       )) {
         const row = new import_obsidian2.Setting(body2).setName(path).setDesc(
-          this.tr(op ? op.conflict ? "conflict" : op.action : "held")
+          this.tr(op ? op.conflict ? "conflict" : op.action : "held") + (!op && this.plan.heldFolders?.includes(path) ? " · " + this.tr("rmdir") : "")
         );
         if (!op) {
           if (this.releaseOnly)
@@ -14580,9 +14809,10 @@ var Review = class extends import_obsidian2.Modal {
             });
           });
         }
-        row.addButton(
-          (b) => b.setButtonText(this.tr("diff")).onClick(() => void this.diff(op))
-        );
+        if (op.action !== "mkdir" && op.action !== "rmdir")
+          row.addButton(
+            (b) => b.setButtonText(this.tr("diff")).onClick(() => void this.diff(op))
+          );
       }
       if (all.length > 50) {
         pager.setName(this.page + 1 + " / " + Math.ceil(all.length / 50));
@@ -20611,7 +20841,7 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
         } else if (v === "vaultSource") {
           delete p.remote;
           p.access = "local";
-          p.reference = "RefSync-reference";
+          p.reference = "Sync Studio-reference";
         } else {
           p.access = "public";
           p.role = "subscriber";
@@ -20885,7 +21115,7 @@ var Confirmation = class extends import_obsidian7.Modal {
     );
   }
 };
-var RefSync = class extends import_obsidian7.Plugin {
+var SyncStudio = class extends import_obsidian7.Plugin {
   accounts;
   driveCursors = /* @__PURE__ */ new Map();
   oauthCancel;
@@ -21023,7 +21253,7 @@ var RefSync = class extends import_obsidian7.Plugin {
     );
     this.ribbon = this.addRibbonIcon(
       "refresh-cw",
-      "RefSync",
+      "Sync Studio",
       (e) => this.menu(e)
     );
     if (import_obsidian7.Platform.isDesktopApp) {
@@ -21110,7 +21340,7 @@ var RefSync = class extends import_obsidian7.Plugin {
   }
   paint() {
     const phase = this.engine.status.phase, label = this.t(this.config.paused ? "paused" : phase);
-    const text = ["RefSync", label, this.statusLabel].filter(Boolean).join(" · ");
+    const text = ["Sync Studio", label, this.statusLabel].filter(Boolean).join(" · ");
     (0, import_obsidian7.setIcon)(this.ribbon, this.config.paused ? "pause" : icons[phase]);
     this.ribbon.setAttribute("aria-label", text);
     this.bar?.setText(
@@ -21306,7 +21536,13 @@ var RefSync = class extends import_obsidian7.Plugin {
       this.driveCursors.set(id, cursor);
       tree = new DriveTree(transport, c.root, cursor);
     } else tree = new DiskTree(transport, send, c.root);
-    const store = new CloudStore(id, tree, prefix === "/" ? "" : prefix, ro);
+    const store = new CloudStore(
+      id,
+      tree,
+      prefix === "/" ? "" : prefix,
+      ro,
+      c.engine !== "google" || a.full
+    );
     store.capabilities.supportsChangesFeed = c.engine === "google";
     return store;
   }
@@ -21542,7 +21778,7 @@ var RefSync = class extends import_obsidian7.Plugin {
   report(e, id = this.config?.current ?? "") {
     if (!this.live) return;
     const code = e instanceof Error ? errorKey(e.message) : "failed";
-    this.notices.send(id + ":" + code, "RefSync · " + this.t(code));
+    this.notices.send(id + ":" + code, "Sync Studio · " + this.t(code));
     void this.log("error", 0, id, { code }).catch(() => {
     });
   }

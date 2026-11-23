@@ -1,6 +1,6 @@
 {
-  "name": "obsidian-refsync",
-  "version": "0.5.0",
+  "name": "obsidian-sync-studio-plugin",
+  "version": "0.5.1",
   "private": true,
   "scripts": {
     "build": "tsc --noEmit && node esbuild.config.mjs",

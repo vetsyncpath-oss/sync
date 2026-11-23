@@ -8,13 +8,13 @@ import {
   type CloudEngine,
   type Account,
 } from "./accounts";
-import type RefSync from "./main";
+import type SyncStudio from "./main";
 import type { Server } from "node:http";
 
 export class AccountsView extends Modal {
   constructor(
     app: App,
-    private rs: RefSync,
+    private rs: SyncStudio,
     private after: () => void,
   ) {
     super(app);
@@ -86,7 +86,7 @@ class Login extends Modal {
   private timer?: number;
   constructor(
     app: App,
-    private rs: RefSync,
+    private rs: SyncStudio,
     engine: CloudEngine,
     private previous: Account | undefined,
     private done: () => void,

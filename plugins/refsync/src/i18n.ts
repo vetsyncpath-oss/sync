@@ -1,4 +1,8 @@
 const ru = {
+  mkdir: "Создать папку",
+  rmdir: "Удалить пустую папку",
+  folderRetained:
+    "Папка сохранена: содержит другие объекты или доступ к содержимому ограничен",
   publishHint:
     "При применении издатель записывает .sync-manifest.json в корень облачной папки. По нему подписчики проверяют завершение публикации.",
   accounts: "Аккаунты",
@@ -69,10 +73,10 @@ const ru = {
   remoteName: "Источник вернул неоднозначное имя файла",
   gitRead:
     "Не удалось получить Git-репозиторий. Проверьте HTTPS-ссылку, ветку и подключение.",
-  maxDeleteCount: "Порог удалений, файлов",
+  maxDeleteCount: "Порог удалений, файлов и папок",
   maxDeletePercent: "Порог удалений, % от цели",
   shrinkPercent: "Порог уменьшения эталона, %",
-  deleteGrace: "Минимум файлов для процентного порога удалений",
+  deleteGrace: "Минимум объектов для процентного порога удалений",
   scopePreset: "Набор настроек",
   preset_full: "Полная копия",
   preset_noData: "Всё кроме данных плагинов",
@@ -144,11 +148,11 @@ const ru = {
   newer: "Предпочесть более новый файл",
   deletions: "Применять удаления из эталона",
   trash: "Способ удаления",
-  plugin: "Корзина RefSync",
+  plugin: "Корзина Sync Studio",
   vault: "Корзина хранилища",
   system: "Системная корзина",
   permanent: "Удалить файл с резервной копией",
-  trashDays: "Хранить в корзине RefSync, дней",
+  trashDays: "Хранить в корзине Sync Studio, дней",
   include: "Включать пути (glob через запятую)",
   exclude: "Исключать пути (glob через запятую)",
   maxMiB: "Максимальный размер в МиБ (0 — любой)",
@@ -190,7 +194,7 @@ const ru = {
   done: "Готово",
   partial: "Частично",
   error: "Ошибка",
-  title: "RefSync · локальный профиль",
+  title: "Sync Studio · локальный профиль",
   preview: "Показать план",
   sync: "Применить эталон",
   undo: "Откатить последнюю доставку",
@@ -246,6 +250,10 @@ const ru = {
 };
 export type Key = keyof typeof ru;
 const en: Record<Key, string> = {
+  mkdir: "Create folder",
+  rmdir: "Remove empty folder",
+  folderRetained:
+    "Folder retained: it contains other items or access to its contents is limited",
   publishHint:
     "Applying this profile writes .sync-manifest.json at the cloud folder root so subscribers can verify publication.",
   accounts: "Accounts",
@@ -391,11 +399,11 @@ const en: Record<Key, string> = {
   newer: "Prefer newer file",
   deletions: "Propagate source deletions",
   trash: "Deletion destination",
-  plugin: "RefSync trash",
+  plugin: "Sync Studio trash",
   vault: "Vault trash",
   system: "System trash",
   permanent: "Delete file with backup",
-  trashDays: "RefSync trash retention (days)",
+  trashDays: "Sync Studio trash retention (days)",
   include: "Include paths (comma-separated globs)",
   exclude: "Exclude paths (comma-separated globs)",
   maxMiB: "Maximum MiB (0 for unlimited)",
@@ -437,7 +445,7 @@ const en: Record<Key, string> = {
   done: "Done",
   partial: "Partial",
   error: "Error",
-  title: "RefSync · local profile",
+  title: "Sync Studio · local profile",
   preview: "Show plan",
   sync: "Apply reference",
   undo: "Roll back last delivery",

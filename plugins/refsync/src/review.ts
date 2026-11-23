@@ -65,7 +65,7 @@ export class Review extends Modal {
       o.path.toLowerCase().includes(this.query) &&
       (this.filter === "all" ||
         (this.filter === "conflict" && o.conflict) ||
-        (this.filter === "delete" && o.action === "delete"));
+        (this.filter === "delete" && ["delete", "rmdir"].includes(o.action)));
     const filtered = () => ops.filter(eligible);
     if (this.apply && !this.releaseOnly)
       toolbar.addButton((b) =>
@@ -103,8 +103,8 @@ export class Review extends Modal {
           [this.tr("conflict"), selected.filter((o) => o.conflict).length],
           [
             this.tr("delete"),
-            selected.filter((o) => o.action === "delete").length +
-              this.released.size,
+            selected.filter((o) => ["delete", "rmdir"].includes(o.action))
+              .length + this.released.size,
           ],
           [this.tr("held"), held.length],
           [this.tr("deferred"), this.plan.deferred.length],
@@ -124,7 +124,10 @@ export class Review extends Modal {
         const row = new Setting(body)
           .setName(path)
           .setDesc(
-            this.tr(op ? (op.conflict ? "conflict" : op.action) : "held"),
+            this.tr(op ? (op.conflict ? "conflict" : op.action) : "held") +
+              (!op && this.plan.heldFolders?.includes(path)
+                ? " · " + this.tr("rmdir")
+                : ""),
           );
         if (!op) {
           if (this.releaseOnly)
@@ -162,9 +165,10 @@ export class Review extends Modal {
             });
           });
         }
-        row.addButton((b) =>
-          b.setButtonText(this.tr("diff")).onClick(() => void this.diff(op)),
-        );
+        if (op.action !== "mkdir" && op.action !== "rmdir")
+          row.addButton((b) =>
+            b.setButtonText(this.tr("diff")).onClick(() => void this.diff(op)),
+          );
       }
       if (all.length > 50) {
         pager.setName(this.page + 1 + " / " + Math.ceil(all.length / 50));

@@ -1,4 +1,4 @@
-name: RefSync
+name: Sync Studio
 on:
   pull_request:
     paths:
@@ -41,7 +41,7 @@ jobs:
           import json
           version = json.loads(Path("manifest.json").read_text())["version"]
           for suffix in ("", "-source"):
-              archive = Path(f"releases/refsync-{version}-m5{suffix}.zip")
+              archive = Path(f"releases/sync-studio-{version}{suffix}.zip")
               with ZipFile(archive) as shipped:
                   for item in shipped.namelist():
                       assert shipped.read(item) == Path(item.removeprefix("refsync/")).read_bytes()

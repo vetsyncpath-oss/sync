@@ -1,6 +1,11 @@
 import type { ConfigScope } from "./config-scope";
 import { selected } from "./classifier";
-import { TFile, type DataAdapter, type Vault } from "obsidian";
+import {
+  FileSystemAdapter,
+  TFile,
+  type DataAdapter,
+  type Vault,
+} from "obsidian";
 import {
   checked,
   hash,
@@ -145,8 +150,11 @@ export class LocalProvider implements StorageProvider {
   async mkdir(p: string) {
     const path = this.writable(p, true);
     if (this.indexed(path)) {
-      if (!this.vault.getAbstractFileByPath(path))
-        await this.vault.createFolder(path);
+      const stat = await this.vault.adapter.stat(path);
+      if (stat?.type === "folder") return;
+      if (stat) throw Error("collision");
+      if (this.vault.getAbstractFileByPath(path)) throw Error("indexPending");
+      await this.vault.createFolder(path);
     } else await ensure(this.vault.adapter, path);
   }
   async upload(p: string, b: Bytes, mtime?: number) {
@@ -225,6 +233,40 @@ export class LocalProvider implements StorageProvider {
         else await a.trashLocal(path);
         break;
     }
+  }
+  async removeEmptyDir(p: string) {
+    checked(p);
+    const path = this.writable(p, true),
+      a = this.vault.adapter;
+    const listed = await a.list(path);
+    if (listed.files.length || listed.folders.length) return false;
+    try {
+      if (a instanceof FileSystemAdapter) {
+        // Desktop adapters may implement rmdir(false) via fs.rm, which rejects
+        // even empty directories. The native rmdir checks emptiness atomically.
+        const fs: typeof import("node:fs/promises") = require("node:fs/promises");
+        const paths: typeof import("node:path") = require("node:path");
+        const full = a.getFullPath(path),
+          base = await fs.realpath(a.getBasePath());
+        if (
+          paths.relative(paths.join(base, path), await fs.realpath(full)) !== ""
+        )
+          return false;
+        await fs.rmdir(full);
+      } else await a.rmdir(path, false);
+    } catch (e) {
+      if (e instanceof Error && /\b(ENOTEMPTY|EEXIST)\b/.test(e.message))
+        return false;
+      const s = await a.stat(path);
+      if (!s) return true;
+      if (s.type === "folder") {
+        const now = await a.list(path);
+        if (now.files.length || now.folders.length) return false;
+      }
+      throw e;
+    }
+    this.ownWrite?.(path, null);
+    return true;
   }
   async move(from: string, to: string) {
     const a = this.writable(from),

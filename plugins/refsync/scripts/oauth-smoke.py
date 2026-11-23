@@ -21,7 +21,7 @@ def run(page, browser):
           return reply({access_token:'fixture-access',refresh_token:'fixture-refresh',expires_in:3600});
         }
         if(h.Authorization!=='Bearer fixture-access')throw Error('bearer');
-        if(u.pathname.endsWith('/about'))return reply({user:{permissionId:'test-subject',displayName:'RefSync fixture'}});
+        if(u.pathname.endsWith('/about'))return reply({user:{permissionId:'test-subject',displayName:'Sync Studio fixture'}});
         if(u.pathname==='/upload/drive/v3/files'||u.pathname.startsWith('/upload/drive/v3/files/')){
           if(method==='PUT'){
             const id=u.searchParams.get('upload_id'),record=sessions.get(id);if(!record)throw Error('session');
