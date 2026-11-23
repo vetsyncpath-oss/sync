@@ -7809,7 +7809,7 @@ var require_deflate2 = __commonJS({
     }
     Deflate.prototype.push = function(data, mode) {
       var strm = this.strm;
-      var chunkSize = this.options.chunkSize;
+      var chunkSize2 = this.options.chunkSize;
       var status, _mode;
       if (this.ended) {
         return false;
@@ -7826,9 +7826,9 @@ var require_deflate2 = __commonJS({
       strm.avail_in = strm.input.length;
       do {
         if (strm.avail_out === 0) {
-          strm.output = new utils.Buf8(chunkSize);
+          strm.output = new utils.Buf8(chunkSize2);
           strm.next_out = 0;
-          strm.avail_out = chunkSize;
+          strm.avail_out = chunkSize2;
         }
         status = zlib_deflate.deflate(strm, _mode);
         if (status !== Z_STREAM_END && status !== Z_OK) {
@@ -9819,7 +9819,7 @@ var require_inflate2 = __commonJS({
     }
     Inflate.prototype.push = function(data, mode) {
       var strm = this.strm;
-      var chunkSize = this.options.chunkSize;
+      var chunkSize2 = this.options.chunkSize;
       var dictionary = this.options.dictionary;
       var status, _mode;
       var next_out_utf8, tail, utf8str;
@@ -9839,9 +9839,9 @@ var require_inflate2 = __commonJS({
       strm.avail_in = strm.input.length;
       do {
         if (strm.avail_out === 0) {
-          strm.output = new utils.Buf8(chunkSize);
+          strm.output = new utils.Buf8(chunkSize2);
           strm.next_out = 0;
-          strm.avail_out = chunkSize;
+          strm.avail_out = chunkSize2;
         }
         status = zlib_inflate.inflate(strm, c.Z_NO_FLUSH);
         if (status === c.Z_NEED_DICT && dictionary) {
@@ -9863,7 +9863,7 @@ var require_inflate2 = __commonJS({
               tail = strm.next_out - next_out_utf8;
               utf8str = strings.buf2string(strm.output, next_out_utf8);
               strm.next_out = tail;
-              strm.avail_out = chunkSize - tail;
+              strm.avail_out = chunkSize2 - tail;
               if (tail) {
                 utils.arraySet(strm.output, strm.output, next_out_utf8, tail, 0);
               }
@@ -11521,23 +11521,33 @@ var RunBudget = class {
     for (let i = 0; ; i++) {
       this.check();
       let timer;
+      let running = true;
       try {
-        const operation = work();
-        return await Promise.race([
-          operation,
-          new Promise((_, reject) => {
-            timer = setTimeout(
-              () => {
-                if (!read) this.fence.quarantine(operation);
-                reject(Error(read ? "readTimeout" : "settling"));
-              },
-              Math.min(this.operationMs, this.deadline - Date.now())
-            );
-          })
-        ]);
+        let operation;
+        let expire;
+        const timeout = new Promise((_, reject) => {
+          expire = () => {
+            running = false;
+            if (!read) this.fence.quarantine(operation);
+            reject(Error(read ? "readTimeout" : "settling"));
+          };
+        });
+        const progress = () => {
+          if (!running) throw Error(read ? "readTimeout" : "settling");
+          this.check();
+          clearTimeout(timer);
+          timer = setTimeout(
+            expire,
+            Math.min(this.operationMs, this.deadline - Date.now())
+          );
+        };
+        operation = Promise.resolve().then(() => work(progress));
+        progress();
+        return await Promise.race([operation, timeout]);
       } catch (e) {
         if (!transient(e) || i >= this.backoff.length) throw e;
       } finally {
+        running = false;
         clearTimeout(timer);
       }
       await sleep(this.backoff[i]);
@@ -11724,6 +11734,28 @@ init_git_buffer();
 // src/private-cloud.ts
 init_git_buffer();
 
+// src/transfer.ts
+init_git_buffer();
+var chunkSize = 8 * 1024 * 1024;
+function fromBuffer(bytes) {
+  return {
+    size: bytes.byteLength,
+    read: async (offset, length) => bytes.slice(offset, offset + length)
+  };
+}
+async function processChunks(file, consume, progress) {
+  const digest2 = sha256.create();
+  for (let offset = 0; offset < file.size; offset += chunkSize) {
+    const length = Math.min(chunkSize, file.size - offset);
+    const bytes = await file.read(offset, length);
+    if (bytes.byteLength !== length) throw Error("referenceChanged");
+    digest2.update(new Uint8Array(bytes));
+    await consume?.(bytes);
+    progress?.();
+  }
+  return bytesToHex(digest2.digest());
+}
+
 // src/public-cloud.ts
 init_git_buffer();
 
@@ -11902,10 +11934,10 @@ var PublicStore = class _PublicStore {
       version: v.sha256 ?? v.md5
     };
   }
-  async download(path) {
+  async download(path, progress) {
     const v = await this.find(path);
     if (v?.type !== "file") throw Error("incomplete");
-    const bytes = await this.tree.read(v);
+    const bytes = await this.tree.read(v, progress);
     if (v.size >= 0 && bytes.byteLength !== v.size || v.sha256 && await hash(bytes) !== v.sha256 || v.md5 && bytesToHex(md5(new Uint8Array(bytes))) !== v.md5)
       throw Error("referenceChanged");
     return bytes;
@@ -12057,14 +12089,32 @@ var GoogleTree = class {
     } while (token2);
     return result;
   }
-  async read(f) {
-    return check(
-      await this.http(
-        "https://www.googleapis.com/drive/v3/files/" + f.key + "?alt=media&supportsAllDrives=true",
-        "GET",
-        this.headers(f.key, f.resourceKey)
-      )
-    ).arrayBuffer;
+  async read(f, progress) {
+    const url = "https://www.googleapis.com/drive/v3/files/" + f.key + "?alt=media&supportsAllDrives=true";
+    const headers = this.headers(f.key, f.resourceKey);
+    if (f.size <= chunkSize || !(f.sha256 || f.md5))
+      return check(await this.http(url, "GET", headers)).arrayBuffer;
+    let result;
+    for (let start = 0; start < f.size; start += chunkSize) {
+      const end = Math.min(start + chunkSize, f.size) - 1;
+      const reply = check(
+        await this.http(url, "GET", {
+          ...headers,
+          Range: "bytes=" + start + "-" + end
+        })
+      );
+      if (reply.status === 200 && !start && reply.arrayBuffer.byteLength === f.size)
+        return reply.arrayBuffer;
+      const range = Object.entries(reply.headers).find(
+        ([k]) => k.toLowerCase() === "content-range"
+      )?.[1];
+      if (reply.status !== 206 || range !== "bytes " + start + "-" + end + "/" + f.size || reply.arrayBuffer.byteLength !== end - start + 1)
+        throw Error("incomplete");
+      result ??= new Uint8Array(f.size);
+      result.set(new Uint8Array(reply.arrayBuffer), start);
+      progress?.();
+    }
+    return result.buffer;
   }
 };
 var YandexTree = class {
@@ -12143,11 +12193,29 @@ function cloudId(c, prefix) {
 var body = (obj) => new TextEncoder().encode(JSON.stringify(obj)).buffer;
 var jsonHeader = { "Content-Type": "application/json" };
 var api = "https://www.googleapis.com/drive/v3/files";
+function sessionUrl(raw) {
+  const url = new URL(raw);
+  if (url.origin !== "https://www.googleapis.com" || !url.pathname.startsWith("/upload/drive/v3/") || url.username || url.password)
+    throw Error("publicUrl");
+  return url.href;
+}
+function acknowledged(reply, size) {
+  const range = Object.entries(reply.headers).find(
+    ([k]) => k.toLowerCase() === "range"
+  )?.[1];
+  if (!range) return 0;
+  const match = /^bytes=0-(\d+)$/.exec(range);
+  const offset = match ? Number(match[1]) + 1 : NaN;
+  if (!Number.isSafeInteger(offset) || offset <= 0 || offset >= size)
+    throw Error("incomplete");
+  return offset;
+}
 var DriveTree = class extends GoogleTree {
-  constructor(send2, id, cursor = { token: "", revision: "" }) {
+  constructor(send2, id, cursor = { token: "", revision: "" }, sessions) {
     super(send2, id, null, "");
     this.send = send2;
     this.cursor = cursor;
+    this.sessions = sessions;
   }
   revision() {
     return driveRevision(this.send, this.cursor);
@@ -12166,7 +12234,136 @@ var DriveTree = class extends GoogleTree {
       )
     );
   }
-  async write(dir, name, old, bytes, mtime) {
+  async write(dir, name, old, bytes, mtime, progress) {
+    const digest2 = this.sessions && bytes.byteLength > chunkSize ? await hash(bytes) : "";
+    await this.writeChunks(
+      dir,
+      name,
+      old,
+      fromBuffer(bytes),
+      digest2,
+      mtime,
+      progress
+    );
+  }
+  async writeChunks(dir, name, old, file, digest2, mtime, progress) {
+    const { size } = file;
+    const key = this.sessions && size > chunkSize ? await hash(body([dir.key, name])) : "";
+    const signature = JSON.stringify([
+      old?.key,
+      old?.sha256 ?? old?.md5,
+      old?.mtime,
+      size,
+      digest2,
+      mtime
+    ]);
+    const saved = key && this.sessions?.get(key);
+    let session = "", offset = 0;
+    if (saved) {
+      let record3;
+      try {
+        record3 = JSON.parse(saved);
+      } catch {
+      }
+      if (record3?.signature === signature && record3.expires > Date.now()) {
+        session = sessionUrl(record3.url);
+        const status = await this.send(
+          session,
+          "PUT",
+          { "Content-Range": "bytes */" + size },
+          new ArrayBuffer(0)
+        );
+        if (status.status === 308) offset = acknowledged(status, size);
+        else if (status.status === 404 || status.status === 410) session = "";
+        else {
+          check(status);
+          this.sessions.set(key, null);
+          return;
+        }
+        progress?.();
+      }
+    }
+    if (!session) {
+      session = await this.startUpload(dir, name, old, size, mtime);
+      if (key)
+        this.sessions.set(
+          key,
+          JSON.stringify({
+            url: session,
+            signature,
+            expires: Date.now() + 7 * 864e5
+          })
+        );
+      progress?.();
+    }
+    let failures = 0;
+    do {
+      const end = Math.min(size, offset + chunkSize);
+      const headers = {
+        "Content-Type": "application/octet-stream"
+      };
+      if (size) headers["Content-Range"] = `bytes ${offset}-${end - 1}/${size}`;
+      const bytes = await file.read(offset, end - offset);
+      if (bytes.byteLength !== end - offset) throw Error("referenceChanged");
+      let response;
+      try {
+        response = await this.send(session, "PUT", headers, bytes);
+      } catch (e) {
+        if (!(e instanceof Error) || e.message !== "remoteNetwork") throw e;
+      }
+      if (!response || response.status === 429 || [500, 502, 503, 504].includes(response.status)) {
+        if (++failures > 3) {
+          if (response) check(response);
+          throw Error("remoteNetwork");
+        }
+        const hint = response && Object.entries(response.headers).find(
+          ([key2]) => key2.toLowerCase() === "retry-after"
+        )?.[1];
+        const wait = hint ? /^\d+$/.test(hint) ? Number(hint) * 1e3 : Date.parse(hint) - Date.now() : 0;
+        if (wait > 3e4) {
+          if (response) check(response);
+          throw Error("remoteNetwork");
+        }
+        await sleep(
+          Math.max(250 * 2 ** (failures - 1), Number.isFinite(wait) ? wait : 0)
+        );
+        progress?.();
+        const status = await this.send(
+          session,
+          "PUT",
+          { "Content-Range": "bytes */" + size },
+          new ArrayBuffer(0)
+        );
+        if (status.status !== 308) {
+          check(status);
+          if (key) this.sessions.set(key, null);
+          return;
+        }
+        const remoteOffset = acknowledged(status, size);
+        if (remoteOffset < offset || remoteOffset > end)
+          throw Error("incomplete");
+        if (remoteOffset > offset) failures = 0;
+        offset = remoteOffset;
+        continue;
+      }
+      if (response.status !== 308) {
+        if (key && (response.status === 404 || response.status === 410))
+          this.sessions.set(key, null);
+        check(response);
+        if (end !== size) throw Error("incomplete");
+        if (key) this.sessions.set(key, null);
+        progress?.();
+        return;
+      }
+      const next = acknowledged(response, size);
+      if (next <= offset || next > end) throw Error("incomplete");
+      offset = next;
+      failures = 0;
+      progress?.();
+    } while (offset < size);
+    throw Error("incomplete");
+  }
+  async startUpload(dir, name, old, size, mtime) {
     const url = "https://www.googleapis.com/upload/drive/v3/files" + (old ? "/" + old.key : "") + "?supportsAllDrives=true&uploadType=resumable";
     const start = check(
       await this.send(
@@ -12175,7 +12372,7 @@ var DriveTree = class extends GoogleTree {
         {
           ...jsonHeader,
           "X-Upload-Content-Type": "application/octet-stream",
-          "X-Upload-Content-Length": String(bytes.byteLength)
+          "X-Upload-Content-Length": String(size)
         },
         body({
           name,
@@ -12188,37 +12385,7 @@ var DriveTree = class extends GoogleTree {
       ([k]) => k.toLowerCase() === "location"
     )?.[1];
     if (!raw) throw Error("incomplete");
-    const session = new URL(raw);
-    if (session.origin !== "https://www.googleapis.com" || !session.pathname.startsWith("/upload/drive/v3/"))
-      throw Error("publicUrl");
-    const size = bytes.byteLength, chunk = 8 * 1024 * 1024;
-    let offset = 0;
-    do {
-      const end = Math.min(size, offset + chunk), headers = {
-        "Content-Type": "application/octet-stream"
-      };
-      if (size) headers["Content-Range"] = `bytes ${offset}-${end - 1}/${size}`;
-      const res = await this.send(
-        session.href,
-        "PUT",
-        headers,
-        bytes.slice(offset, end)
-      );
-      if (res.status !== 308) {
-        check(res);
-        if (end !== size) throw Error("incomplete");
-        return;
-      }
-      const range = Object.entries(res.headers).find(
-        ([k]) => k.toLowerCase() === "range"
-      )?.[1];
-      const last = range && /^bytes=0-(\d+)$/.exec(range);
-      const next = last ? Number(last[1]) + 1 : 0;
-      if (next <= offset || next > end || next >= size)
-        throw Error("incomplete");
-      offset = next;
-    } while (offset < size);
-    throw Error("incomplete");
+    return sessionUrl(raw);
   }
   async remove(item) {
     check(
@@ -12362,6 +12529,14 @@ var CloudStore = class extends PublicStore {
     this.capabilities.readOnly = readOnly;
     this.capabilities.canRemoveEmptyDirs = !readOnly && completeFolderAccess;
     this.capabilities.supportsChecksum = true;
+    if (mutable instanceof DriveTree)
+      this.uploadChunks = (path, file, digest2, mtime, progress) => this.writeVerified(
+        path,
+        file.size,
+        digest2,
+        (dir, name, old) => mutable.writeChunks(dir, name, old, file, digest2, mtime, progress),
+        progress
+      );
   }
   async change(fn) {
     if (this.capabilities.readOnly) throw Error("readonly");
@@ -12389,15 +12564,35 @@ var CloudStore = class extends PublicStore {
       await this.ensureDir(path);
     });
   }
-  async upload(path, bytes, mtime) {
+  uploadChunks;
+  async upload(path, bytes, mtime, progress) {
+    const digest2 = await hash(bytes);
+    if (this.uploadChunks)
+      return this.uploadChunks(
+        path,
+        fromBuffer(bytes),
+        digest2,
+        mtime,
+        progress ?? (() => {
+        })
+      );
+    return this.writeVerified(
+      path,
+      bytes.byteLength,
+      digest2,
+      (dir, name, old) => this.mutable.write(dir, name, old, bytes, mtime, progress),
+      progress
+    );
+  }
+  async writeVerified(path, size, digest2, write, progress) {
     checked(path);
     await this.change(async () => {
       const dir = await this.ensureDir(parent(path)), old = await this.find(path);
       if (old && old.type !== "file") throw Error("collision");
-      await this.mutable.write(dir, path.split("/").at(-1), old, bytes, mtime);
+      await write(dir, path.split("/").at(-1), old);
       this.reset();
       const saved = await this.find(path);
-      if (saved?.type !== "file" || saved.size !== bytes.byteLength || (saved.sha256 ?? await hash(await this.download(path))) !== await hash(bytes))
+      if (saved?.type !== "file" || saved.size !== size || (saved.sha256 ?? await hash(await this.download(path, progress))) !== digest2)
         throw Error("referenceChanged");
     });
   }
@@ -12774,6 +12969,17 @@ function detachEdited(p, library) {
       delete p[k];
   }
 }
+function endpointLabels(p, configDir, t, account) {
+  const local = (p.scope === "settings" ? configDir : p.local) || "/";
+  const remote = [
+    p.cloud ? t(p.cloud.engine + "Private") : p.remote ? t(p.remote.engine) : "",
+    account,
+    p.cloud?.root ?? p.remote?.url,
+    p.remote?.engine === "git" ? p.remote.branch : "",
+    p.reference || "/"
+  ].filter(Boolean).join(" · ");
+  return p.role === "publisher" ? [local, remote] : [remote, local];
+}
 var deletionPolicy = (p) => p.mirror === "full" ? "full" : p.deletions ? "tracked" : "copyOnly";
 function applyPolicy(p, value) {
   p.mirror = value === "full" ? "full" : "preserve";
@@ -13043,7 +13249,9 @@ var Applier = class {
         if (t.cloud) {
           const expected = t.id + "/after/" + i;
           if (!await this.journal.disk.has(expected)) return;
-          const current = stat ? await hash(await budget.io(() => target.download(p))) : null;
+          const current = stat ? await hash(
+            await budget.io((progress) => target.download(p, progress))
+          ) : null;
           if (current === saved) return;
           if (current !== await this.journal.json(expected))
             throw Error("cloudRecovery");
@@ -13053,8 +13261,13 @@ var Applier = class {
         } else {
           const bytes = await this.journal.disk.read(t.id + "/backup/" + i);
           if (await hash(bytes) !== saved) throw Error("backup");
-          if (!stat || await hash(await budget.io(() => target.download(p))) !== saved)
-            await budget.io(() => target.upload(p, bytes), false);
+          if (!stat || await hash(
+            await budget.io((progress) => target.download(p, progress))
+          ) !== saved)
+            await budget.io(
+              (progress) => target.upload(p, bytes, void 0, progress),
+              false
+            );
         }
       };
       if (target.withFilePaused) await target.withFilePaused(p, perform);
@@ -13197,14 +13410,32 @@ var Applier = class {
           continue;
         }
         if (stageBatch && op.action === "ack") {
-          const bytes = await budget.io(() => source.download(p));
+          const bytes = await budget.io(
+            (progress2) => source.download(p, progress2)
+          );
           if (await hash(bytes) !== (s.rawHash ?? s.hash))
             throw Error("referenceChanged");
         }
-        if (op.action === "write" || op.action === "both") {
+        const chunkFile = op.action === "write" && profile.scope === "content" && profile.role === "publisher" && target.uploadChunks && this.journal.disk.putChunks && s.size > chunkSize && p.toLowerCase() !== configDir.toLowerCase() + "/community-plugins.json" ? source.chunkSource?.(p, s.size) : void 0;
+        if (chunkFile) {
+          const stagePath = id + "/stage/" + steps.length;
+          const digest2 = await this.journal.disk.putChunks(
+            stagePath,
+            chunkFile,
+            checkpoint
+          );
+          if (digest2 !== (s.rawHash ?? s.hash)) throw Error("referenceChanged");
+          steps.push({
+            path: p,
+            action: "write",
+            mtime: s.mtime,
+            size: s.size,
+            digest: digest2
+          });
+        } else if (op.action === "write" || op.action === "both") {
           let bytes;
           try {
-            bytes = await budget.io(() => source.download(p));
+            bytes = await budget.io((progress2) => source.download(p, progress2));
           } catch (e) {
             if (batch || !transient(e)) throw e;
             plan2.deferred.push({ path: p, reason: "locked" });
@@ -13320,7 +13551,9 @@ var Applier = class {
               if (t.cloud) target.reset?.();
               const stat = await budget.io(() => target.stat(step.path));
               if (stat?.type === "folder") throw Error("collision");
-              const old = stat ? await budget.io(() => target.download(step.path)) : null;
+              const old = stat ? await budget.io(
+                (progress2) => target.download(step.path, progress2)
+              ) : null;
               const copy = displaced.get(step.path);
               if (copy && stat) throw Error("collision");
               if (t.cloud || profile.scope === "content") {
@@ -13342,8 +13575,37 @@ var Applier = class {
                     if (await target.stat(step.path))
                       await target.delete(step.path);
                   }, false);
+              } else if (step.size !== void 0 && target.uploadChunks && step.digest) {
+                const file = this.journal.disk.chunkSource?.(
+                  id + "/stage/" + i,
+                  step.size
+                );
+                if (!file || await budget.io(
+                  (progress2) => processChunks(file, void 0, progress2)
+                ) !== step.digest)
+                  throw Error("incomplete");
+                if (t.cloud)
+                  await this.journal.disk.putNew(
+                    id + "/after/" + i,
+                    manifestBytes(step.digest)
+                  );
+                await budget.io(
+                  (progress2) => target.uploadChunks(
+                    step.path,
+                    file,
+                    step.digest,
+                    step.mtime,
+                    () => {
+                      progress2();
+                      checkpoint();
+                    }
+                  ),
+                  false
+                );
               } else {
-                const bytes = copy ? await budget.io(() => target.download(copy)) : publish && i === steps.length - 1 ? await publication.build() : await this.journal.disk.read(id + "/stage/" + i);
+                const bytes = copy ? await budget.io(
+                  (progress2) => target.download(copy, progress2)
+                ) : publish && i === steps.length - 1 ? await publication.build() : await this.journal.disk.read(id + "/stage/" + i);
                 if (step.digest && await hash(bytes) !== step.digest)
                   throw Error("incomplete");
                 const outgoing = projection && step.path !== manifestPath ? deliveryBytes(
@@ -13365,7 +13627,7 @@ var Applier = class {
                     manifestBytes(await hash(outgoing))
                   );
                 await budget.io(
-                  () => target.upload(step.path, outgoing, step.mtime),
+                  (progress2) => target.upload(step.path, outgoing, step.mtime, progress2),
                   false
                 );
               }
@@ -13463,6 +13725,18 @@ var TimedArtifacts = class {
   constructor(disk, fence) {
     this.disk = disk;
     this.fence = fence;
+    if (disk.putChunks)
+      this.putChunks = (p, file, progress) => new RunBudget(void 0, 9e4, [], this.fence).io(
+        (pulse) => disk.putChunks(p, file, () => {
+          pulse();
+          progress();
+        }),
+        false
+      );
+  }
+  putChunks;
+  chunkSource(p, size) {
+    return this.disk.chunkSource?.(p, size);
   }
   io(work, read = true) {
     return new RunBudget(void 0, void 0, [], this.fence).io(work, read);
@@ -13574,10 +13848,74 @@ async function ensure(adapter, dir) {
     if ((await adapter.stat(dir))?.type !== "folder") throw e;
   }
 }
+function desktopFile(adapter, path, size) {
+  if (!(adapter instanceof import_obsidian.FileSystemAdapter)) return void 0;
+  const fs = require("node:fs/promises");
+  const full = adapter.getFullPath(path);
+  return {
+    size,
+    async read(offset, length) {
+      const h = await fs.open(full, "r");
+      try {
+        if ((await h.stat()).size !== size) throw Error("referenceChanged");
+        const buffer = new Uint8Array(length);
+        let done = 0;
+        while (done < length) {
+          const { bytesRead } = await h.read(
+            buffer,
+            done,
+            length - done,
+            offset + done
+          );
+          if (!bytesRead) throw Error("incomplete");
+          done += bytesRead;
+        }
+        return buffer.buffer;
+      } finally {
+        await h.close();
+      }
+    }
+  };
+}
 var VaultArtifacts = class {
   constructor(adapter, root) {
     this.adapter = adapter;
     this.root = root;
+    if (adapter instanceof import_obsidian.FileSystemAdapter) {
+      this.putChunks = async (p, file, progress) => {
+        const path = this.path(p);
+        await ensure(adapter, parent(path));
+        const fs = require("node:fs/promises");
+        const full = adapter.getFullPath(path);
+        const tmp = full + ".tmp-" + crypto.randomUUID();
+        const space = await fs.statfs(adapter.getFullPath(parent(path)));
+        if (space.bavail * space.bsize < file.size) throw Error("diskSpace");
+        const h = await fs.open(tmp, "wx");
+        try {
+          let digest2;
+          try {
+            digest2 = await processChunks(
+              file,
+              async (bytes) => {
+                await h.writeFile(new Uint8Array(bytes));
+              },
+              progress
+            );
+          } finally {
+            await h.close();
+          }
+          if (await adapter.exists(path)) throw Error("state");
+          await fs.rename(tmp, full);
+          return digest2;
+        } finally {
+          await fs.rm(tmp, { force: true });
+        }
+      };
+    }
+  }
+  putChunks;
+  chunkSource(p, size) {
+    return desktopFile(this.adapter, this.path(p), size);
   }
   path(p) {
     return join(this.root, checked(p));
@@ -13674,6 +14012,9 @@ var LocalProvider = class {
   async stat(p) {
     if (!this.root && !p) return { type: "folder", size: 0, mtime: 0 };
     return this.vault.adapter.stat(this.path(p));
+  }
+  chunkSource(p, size) {
+    return desktopFile(this.vault.adapter, this.path(p), size);
   }
   async scanStat(p) {
     const a = this.vault.adapter;
@@ -14152,14 +14493,25 @@ async function scan(provider, scope, configDir, self, skipHotTarget = false, bud
             continue;
           }
           if (options.stats) options.stats.read++;
-          const bytes = await budget.io(() => provider.download(p));
-          if (bytes.byteLength !== stat.size) throw Error("incomplete");
-          const rawHash = await hash(bytes);
+          const file = !policy && stat.size > chunkSize ? provider.chunkSource?.(p, stat.size) : void 0;
+          let rawHash, semantic;
+          if (file)
+            rawHash = await budget.io(
+              (progress) => processChunks(file, void 0, progress)
+            );
+          else {
+            const bytes = await budget.io(
+              (progress) => provider.download(p, progress)
+            );
+            if (bytes.byteLength !== stat.size) throw Error("incomplete");
+            rawHash = await hash(bytes);
+            if (policy) semantic = await settingsHash(name, bytes, policy);
+          }
           if (!policy && stat.version)
             options.cache?.put(cacheKey, stat.version, rawHash);
           snap.files.set(p, {
             rawHash,
-            hash: policy ? await settingsHash(name, bytes, policy) : rawHash,
+            hash: semantic ?? rawHash,
             size: stat.size,
             mtime: stat.mtime,
             kind
@@ -14797,6 +15149,15 @@ var ru = {
   path: "Непереносимый или некорректный путь",
   missingRoot: "Папка не найдена",
   incomplete: "Неполное чтение файлов",
+  contentFiles: "Контент и папка настроек как обычные файлы",
+  categoryOff: "Общая категория выключена. Для передачи нужно включить её или задать подходящую маску включения.",
+  pluginPatterns: "Маски ID плагинов",
+  jsonRules: "Правила JSON",
+  accessFailed: "Ошибка проверки доступа",
+  diskSpace: "Недостаточно места для временной копии",
+  deletionSide: "Удаления на стороне назначения",
+  srcSide: "Источник",
+  destSide: "Назначение",
   collision: "Коллизия путей",
   indexPending: "Файл ещё не готов в индексе",
   referenceChanged: "Источник изменился, повторите сравнение",
@@ -15133,6 +15494,15 @@ var en = {
   path: "Invalid or non-portable path",
   missingRoot: "Folder missing",
   incomplete: "Incomplete listing or read",
+  contentFiles: "Content and configuration folder as ordinary files",
+  categoryOff: "The category is off. Enable it or add a matching inclusion pattern to transfer this part.",
+  pluginPatterns: "Plugin ID patterns",
+  jsonRules: "JSON rules",
+  accessFailed: "Access check failed",
+  diskSpace: "Insufficient disk space for staging",
+  deletionSide: "Deletions at destination",
+  srcSide: "Source",
+  destSide: "Destination",
   collision: "Path collision",
   indexPending: "File not ready in vault index",
   referenceChanged: "Source changed, scan again",
@@ -15415,7 +15785,7 @@ function tokenize(value, options) {
 
 // src/review.ts
 var Review = class extends import_obsidian2.Modal {
-  constructor(app, p, plan2, tr, endpoints2, closed, apply, releaseOnly = false) {
+  constructor(app, p, plan2, tr, endpoints2, closed, apply, releaseOnly = false, accountLabel) {
     super(app);
     this.p = p;
     this.plan = plan2;
@@ -15424,6 +15794,7 @@ var Review = class extends import_obsidian2.Modal {
     this.closed = closed;
     this.apply = apply;
     this.releaseOnly = releaseOnly;
+    this.accountLabel = accountLabel;
   }
   choices = /* @__PURE__ */ new Map();
   query = "";
@@ -15434,6 +15805,17 @@ var Review = class extends import_obsidian2.Modal {
     this.titleEl.setText(
       this.tr(this.apply ? "preview" : "dry") + " · " + this.p.name
     );
+    const [from, to] = endpointLabels(
+      this.p,
+      this.app.vault.configDir,
+      this.tr,
+      this.accountLabel
+    );
+    this.contentEl.createEl("p", { text: from + " → " + to });
+    if (this.p.deletions)
+      this.contentEl.createEl("p", {
+        text: this.tr("deletionSide") + " · " + to
+      });
     if (this.p.scope === "settings" && this.plan.ops.some(
       (o) => ["write", "delete"].includes(o.action) && needsReload(o.path)
     ))
@@ -15605,9 +15987,15 @@ var Review = class extends import_obsidian2.Modal {
     popup.open();
     const out = popup.contentEl.createEl("pre");
     out.style.whiteSpace = "pre-wrap";
+    const [from, to] = endpointLabels(
+      this.p,
+      this.app.vault.configDir,
+      this.tr,
+      this.accountLabel
+    );
     const meta = [
-      this.tr("target") + " · " + (op.target ? op.target.size + " B · " + new Date(op.target.mtime).toLocaleString() + " · " + op.target.hash : "—"),
-      this.tr("reference") + " · " + (op.source ? op.source.size + " B · " + new Date(op.source.mtime).toLocaleString() + " · " + op.source.hash : "—")
+      this.tr("destSide") + " · " + to + " · " + (op.target ? op.target.size + " B · " + new Date(op.target.mtime).toLocaleString() + " · " + op.target.hash : "—"),
+      this.tr("srcSide") + " · " + from + " · " + (op.source ? op.source.size + " B · " + new Date(op.source.mtime).toLocaleString() + " · " + op.source.hash : "—")
     ].join("\n");
     out.setText(meta);
     if (!/\.(md|txt|json|css|ya?ml|csv|js|html|xml)$/i.test(op.path) || Math.max(op.target?.size ?? 0, op.source?.size ?? 0) > 131072)
@@ -21194,6 +21582,8 @@ var PluginFilters = class extends import_obsidian4.Modal {
           });
           const box = label.createEl("input", { type: "checkbox" });
           box.checked = limits.get(id)?.has(k) ?? true;
+          if (!this.config.categories.includes(k))
+            label.title = t("categoryOff");
           box.onchange = () => change(id, k, box.checked);
         }
       }
@@ -21995,7 +22385,24 @@ function libraryPage(el, rs, section, refresh, edit) {
     if (!lib.places.length) el.createEl("p", { text: t("locationsHelp") });
     for (const v of lib.places) {
       const users = uses(rs, v.id);
-      const row = new import_obsidian8.Setting(el).setName(v.name).setDesc([placeTitle(v, t), ...users.map((p) => p.name)].join(" · "));
+      const key = "refsync:place-check:" + v.id;
+      const identity = JSON.stringify(v.endpoint);
+      const row = new import_obsidian8.Setting(el).setName(v.name);
+      const describe = () => {
+        const last = rs.app.loadLocalStorage(key);
+        row.setDesc(
+          [
+            placeTitle(v, t),
+            ...users.map((p) => p.name),
+            last?.identity === identity ? t(last.status) + " · " + new Date(last.at).toLocaleString() : ""
+          ].filter(Boolean).join(" · ")
+        );
+      };
+      const record3 = (status) => {
+        rs.app.saveLocalStorage(key, { identity, status, at: Date.now() });
+        describe();
+      };
+      describe();
       row.addButton(
         (b) => b.setButtonText(t("checkAccess")).onClick(async () => {
           b.setDisabled(true);
@@ -22010,8 +22417,9 @@ function libraryPage(el, rs, section, refresh, edit) {
             await s.list(
               v.endpoint.reference === "/" ? "" : v.endpoint.reference
             );
-            b.setButtonText(t("accessible"));
+            record3("accessible");
           } catch (e) {
+            record3("accessFailed");
             rs.report(e);
           } finally {
             b.setDisabled(false);
@@ -22123,6 +22531,37 @@ function libraryPage(el, rs, section, refresh, edit) {
 
 // src/path-inspector.ts
 init_git_buffer();
+
+// src/path-collision.ts
+init_git_buffer();
+async function collisionNames(stores, path, budget) {
+  let parents = stores.map(() => "");
+  for (const component of path.split("/")) {
+    const matches2 = await Promise.all(
+      stores.map(async (store, i) => {
+        const dir = parents[i];
+        if (dir === null) return [];
+        const listing = await budget.io(() => store.list(dir));
+        const key = fold(join(dir, component));
+        return [
+          ...listing.folders.map((path2) => ({ path: path2, folder: true })),
+          ...listing.files.map((path2) => ({ path: path2, folder: false }))
+        ].filter((entry) => fold(entry.path) === key);
+      })
+    );
+    const distinct = new Set(
+      matches2.flat().map((entry) => entry.path + (entry.folder ? "/" : ""))
+    );
+    if (distinct.size > 1) return [...distinct];
+    parents = matches2.map(
+      (entries) => entries[0]?.folder ? entries[0].path : null
+    );
+    if (parents.every((p) => p === null)) break;
+  }
+  return [];
+}
+
+// src/path-inspector.ts
 var import_obsidian9 = require("obsidian");
 function inspectPath(el, rs, p) {
   const t = rs.t, row = new import_obsidian9.Setting(el).setName(t("whyPath")).setDesc(t("whyPathHelp")), result = el.createEl("p", { attr: { role: "status" } });
@@ -22182,6 +22621,14 @@ function inspectPath(el, rs, p) {
             }
           })
         );
+        if (findings.some((v) => v.endsWith(" · " + t("included")))) {
+          const matches2 = await collisionNames(sides, key, budget);
+          if (matches2.length) {
+            if (key === path)
+              result.setText(t("collision") + " · " + matches2.join(" / "));
+            return;
+          }
+        }
         if (key === path) result.setText(findings.join("  |  "));
       } catch (e) {
         result.setText(t(e instanceof Error ? e.message : "failed"));
@@ -22215,7 +22662,6 @@ function contentEditor(el, p, app, self, t, stores, refresh) {
       refresh();
     })
   );
-  toggle("config", t("configFolder") + " · " + app.vault.configDir);
   toggle("hidden", t("otherHidden"));
   const row = new import_obsidian10.Setting(el).setName(t("folderSelection")).setDesc(c.rules.map((r) => (r.include ? "+ " : "− ") + r.path).join(", "));
   for (const plugins of [false, true])
@@ -22369,6 +22815,22 @@ var FolderSelection = class extends import_obsidian10.Modal {
 // src/scope-editor.ts
 init_git_buffer();
 var import_obsidian11 = require("obsidian");
+function restrictionSummary(c, t) {
+  const masks = (value) => value.split(/[,\n]/).filter((v) => v.trim()).length;
+  return [
+    [t("cfg_include"), masks(c.include)],
+    [t("cfg_exclude"), masks(c.exclude)],
+    [
+      t("pluginPatterns"),
+      [c.codeAllow, c.codeDeny, c.dataAllow, c.dataDeny].reduce(
+        (n, v) => n + masks(v),
+        0
+      )
+    ],
+    [t("pluginFiles"), c.pluginLimits?.length ?? 0],
+    [t("jsonRules"), c.overlay.split("\n").filter((v) => v.trim()).length]
+  ].filter(([, n]) => n).map(([label, n]) => label + " · " + n).join(" / ");
+}
 function scopeEditor(el, p, t, redraw, validate2, plugins) {
   const c = p.config ??= legacyConfig();
   el.createEl("h3", { text: t("settings") });
@@ -22378,16 +22840,7 @@ function scopeEditor(el, p, t, redraw, validate2, plugins) {
   ) ?? "custom";
   const base = new import_obsidian11.Setting(el).setName(t("scopePreset"));
   const note = () => {
-    const n = [
-      c.codeAllow,
-      c.codeDeny,
-      c.dataAllow,
-      c.dataDeny,
-      c.include,
-      c.exclude,
-      c.overlay
-    ].filter((v) => v.trim()).length + (c.pluginLimits?.length ?? 0);
-    base.setDesc(n ? t("modifiedSet") + " · " + n : "");
+    base.setDesc(restrictionSummary(c, t));
   };
   note();
   base.addDropdown((d) => {
@@ -22415,7 +22868,7 @@ function scopeEditor(el, p, t, redraw, validate2, plugins) {
   );
   const details = el.createEl("details");
   details.createEl("summary", { text: t("advancedFilters") });
-  const input = (k) => new import_obsidian11.Setting(details).setName(t("cfg_" + k)).addTextArea(
+  const input = (k) => new import_obsidian11.Setting(details).setClass("sync-studio-" + k).setName(t("cfg_" + k)).addTextArea(
     (a) => a.setValue(c[k]).onChange((v) => {
       c[k] = v;
       note();
@@ -22477,30 +22930,17 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
     this.display();
   }
   summary(p) {
-    const rs = this.plugin, t = rs.t, local = p.scope === "settings" ? this.app.vault.configDir : p.local || "/";
+    const rs = this.plugin, t = rs.t;
     const account = p.cloud && rs.accounts.list().find((a) => a.id === p.cloud.account);
-    const remote = [
-      p.cloud ? t(p.cloud.engine + "Private") : p.remote ? t(p.remote.engine) : "",
-      account?.label,
-      p.cloud?.root ?? p.remote?.url,
-      p.reference || "/"
-    ].filter(Boolean).join(" · ");
-    const [from, to] = p.role === "publisher" ? [local, remote] : [remote, local];
+    const [from, to] = endpointLabels(
+      p,
+      this.app.vault.configDir,
+      t,
+      account?.label
+    );
     const c = p.config ?? legacyConfig();
-    const limits = [
-      c.codeAllow,
-      c.codeDeny,
-      c.dataAllow,
-      c.dataDeny,
-      c.include,
-      c.exclude,
-      c.overlay
-    ].filter((x) => x.trim()).length + (c.pluginLimits?.length ?? 0);
-    const scope = p.scope === "settings" ? [
-      t("settings"),
-      ...c.categories.map((k) => t("cat_" + k)),
-      limits ? t("modifiedSet") + " · " + limits : ""
-    ] : [
+    const limits = restrictionSummary(c, t);
+    const scope = p.scope === "settings" ? [t("settings"), ...c.categories.map((k) => t("cat_" + k)), limits] : [
       t(p.content?.base === "selected" ? "onlySelected" : "allExcept"),
       ...(p.content?.rules ?? []).slice(0, 3).map((r) => (r.include ? "+ " : "− ") + r.path),
       ...p.content?.rules.length && p.content.rules.length > 3 ? ["…"] : [],
@@ -22572,11 +23012,13 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
           ...rs.config,
           mode: v === "silent" ? "silent" : "plan"
         });
+        this.display();
       })
     );
     new import_obsidian12.Setting(el).setName(t("pause")).addToggle(
       (c) => c.setValue(rs.config.paused).onChange(async (paused) => {
         await rs.save({ ...rs.config, paused });
+        this.display();
       })
     );
     new import_obsidian12.Setting(el).addButton(
@@ -22686,6 +23128,7 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
       (c) => c.setDisabled(disabled).setValue(p[field] === true).onChange((v) => {
         Object.assign(p, { [field]: v });
         if ([
+          "firstPlan",
           "startup",
           "fileEvents",
           "onFocus",
@@ -22704,8 +23147,17 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
           v,
           t(field === "conflict" && v === "target" ? "targetVersion" : v)
         );
-      d.setValue(String(p[field])).setDisabled(disabled).onChange((v) => {
-        Object.assign(p, { [field]: v });
+      d.setValue(
+        field === "scope" && p.scope === "content" && p.content?.config ? "contentFiles" : String(p[field])
+      ).setDisabled(disabled).onChange((v) => {
+        if (field === "scope") {
+          p.scope = v === "settings" ? "settings" : "content";
+          if (p.scope === "content")
+            p.content = {
+              ...p.content ?? plainContent(),
+              config: v === "contentFiles"
+            };
+        } else Object.assign(p, { [field]: v });
         if (p.mirror === "full") {
           p.conflict = "source";
           p.deletions = true;
@@ -22772,7 +23224,7 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
     }
     templateControl(el, rs, p, () => this.display());
     el = section("composition");
-    choice("scope", "scope", ["content", "settings"]);
+    choice("scope", "scope", ["content", "settings", "contentFiles"]);
     el.createEl("p", {
       text: t(
         p.scope === "settings" ? "settingsProcessing" : "contentProcessing"
@@ -22846,10 +23298,12 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
       toggle("silentDeletionSafeguard", "silentDeletionSafeguard").setDesc(
         t("silentDeletionSafeguardHelp")
       );
-      num2("maxDeleteCount", "maxDeleteCount");
-      num2("maxDeletePercent", "maxDeletePercent");
-      num2("deleteGrace", "deleteGrace");
-      num2("shrinkPercent", "shrinkPercent");
+      if ((p.inheritMode ? rs.config.mode : p.mode) !== "silent" || p.silentDeletionSafeguard || p.firstPlan) {
+        num2("maxDeleteCount", "maxDeleteCount");
+        num2("maxDeletePercent", "maxDeletePercent");
+        num2("deleteGrace", "deleteGrace");
+        num2("shrinkPercent", "shrinkPercent");
+      }
       choice("trash", "trash", ["plugin", "vault", "system", "permanent"]);
       if (p.trash === "plugin") num2("trashDays", "trashDays");
     }
@@ -22880,6 +23334,14 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
     }
     el = section("diagnostics");
     el.createEl("p", { text: t("diagnosisHelp") });
+    for (const problem of validate(
+      p,
+      import_obsidian12.Platform.isDesktopApp,
+      false,
+      this.app.vault.configDir
+    ))
+      if (!fields.has(problem.field) && typeof p[problem.field] === "number")
+        num2(problem.field, problem.field);
     inspectPath(el, rs, p);
     new import_obsidian12.Setting(el).setName(t("draftPreview")).addButton(
       (b) => b.setButtonText(t("dry")).onClick(async () => {
@@ -22906,19 +23368,26 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
       root.querySelectorAll(".sync-studio-field-error").forEach((n) => n.remove());
       error.empty();
       for (const err of errors) {
-        const row = fields.get(err.field) ?? fields.get(err.field === "config" ? "scope" : "access");
-        row?.settingEl.createEl("small", {
+        const field = fields.get(err.field) ?? fields.get(err.field === "config" ? "scope" : "access");
+        const row = err.code === "overlaySyntax" && root.querySelector(".sync-studio-overlay") || field?.settingEl;
+        row?.createEl("small", {
           text: t(err.code),
           cls: "sync-studio-field-error"
         });
-        const panel = [...panels].find(
-          ([, el2]) => row && el2.contains(row.settingEl)
-        )?.[0] ?? "endpoints";
+        const panel = [...panels].find(([, el2]) => row && el2.contains(row))?.[0] ?? "endpoints";
         error.createEl("button", {
           text: t(panel) + " · " + t(err.code)
         }).onclick = () => {
           this.section = panel;
           this.display();
+          if (err.code === "overlaySyntax") {
+            const overlay = root.querySelector(
+              ".sync-studio-overlay"
+            );
+            const details = overlay?.closest("details");
+            if (details) details.open = true;
+            overlay?.querySelector("textarea")?.focus();
+          }
         };
       }
       return !errors.length;
@@ -23481,7 +23950,21 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     if (c.engine === "google") {
       const cursor = this.driveCursors.get(id) ?? { token: "", revision: "" };
       this.driveCursors.set(id, cursor);
-      tree = new DriveTree(transport, c.root, cursor);
+      const sessionKey = (path) => "refsync-drive-" + bytesToHex(
+        sha2562(
+          new TextEncoder().encode(JSON.stringify([c.account, c.root, path]))
+        )
+      ).slice(0, 48);
+      tree = new DriveTree(transport, c.root, cursor, {
+        get: (path) => this.app.secretStorage?.getSecret(sessionKey(path)) || this.app.loadLocalStorage(sessionKey(path)) || null,
+        set: (path, value) => {
+          const key = sessionKey(path);
+          if (this.app.secretStorage) {
+            this.app.secretStorage.setSecret(key, value ?? "");
+            this.app.saveLocalStorage(key, null);
+          } else this.app.saveLocalStorage(key, value);
+        }
+      });
     } else tree = new DiskTree(transport, send, c.root);
     const store = new CloudStore(
       id,
@@ -23529,7 +24012,10 @@ var SyncStudio = class extends import_obsidian13.Plugin {
           this.t,
           () => p.role === "subscriber" ? [s.reference, s.local] : [s.local, s.reference],
           () => {
-          }
+          },
+          void 0,
+          false,
+          this.accounts.list().find((a) => a.id === p.cloud?.account)?.label
         ).open();
     });
   }
@@ -23643,7 +24129,8 @@ var SyncStudio = class extends import_obsidian13.Plugin {
           const picked = intent === "release" ? new Map(plan2.ops.map((o) => [o.path, "skip"])) : choices;
           void this.scheduler.serial(() => this.deliver(p, plan2, picked, release)).catch((e) => this.report(e, p.id));
         },
-        intent === "release"
+        intent === "release",
+        this.accounts.list().find((a) => a.id === p.cloud?.account)?.label
       )
     );
     this.showNext();

@@ -1,13 +1,19 @@
+import { plainContent } from "./content-scope";
 import { PluginFilters } from "./plugin-filters";
 import { placeControl, templateControl, libraryPage } from "./library-editor";
-import { deletionPolicy, applyPolicy, detachEdited } from "./task-library";
+import {
+  deletionPolicy,
+  applyPolicy,
+  detachEdited,
+  endpointLabels,
+} from "./task-library";
 import { inspectPath } from "./path-inspector";
 import { contentEditor } from "./content-editor";
 import { AccountsView } from "./oauth-ui";
 import { connectionFields } from "./connection-fields";
 import { RemoteFolderBrowser } from "./remote-browser";
 
-import { scopeEditor } from "./scope-editor";
+import { restrictionSummary, scopeEditor } from "./scope-editor";
 import { legacyConfig } from "./config-scope";
 import { PluginSettingTab, Setting, Platform, type App } from "obsidian";
 import type SyncStudio from "./main";
@@ -25,43 +31,20 @@ export class Editor extends PluginSettingTab {
   }
   private summary(p: Profile) {
     const rs = this.plugin,
-      t = rs.t,
-      local =
-        p.scope === "settings" ? this.app.vault.configDir : p.local || "/";
+      t = rs.t;
     const account =
       p.cloud && rs.accounts.list().find((a) => a.id === p.cloud!.account);
-    const remote = [
-      p.cloud
-        ? t(p.cloud.engine + "Private")
-        : p.remote
-          ? t(p.remote.engine)
-          : "",
+    const [from, to] = endpointLabels(
+      p,
+      this.app.vault.configDir,
+      t,
       account?.label,
-      p.cloud?.root ?? p.remote?.url,
-      p.reference || "/",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    const [from, to] =
-      p.role === "publisher" ? [local, remote] : [remote, local];
+    );
     const c = p.config ?? legacyConfig();
-    const limits =
-      [
-        c.codeAllow,
-        c.codeDeny,
-        c.dataAllow,
-        c.dataDeny,
-        c.include,
-        c.exclude,
-        c.overlay,
-      ].filter((x) => x.trim()).length + (c.pluginLimits?.length ?? 0);
+    const limits = restrictionSummary(c, t);
     const scope =
       p.scope === "settings"
-        ? [
-            t("settings"),
-            ...c.categories.map((k) => t("cat_" + k)),
-            limits ? t("modifiedSet") + " · " + limits : "",
-          ]
+        ? [t("settings"), ...c.categories.map((k) => t("cat_" + k)), limits]
         : [
             t(p.content?.base === "selected" ? "onlySelected" : "allExcept"),
             ...(p.content?.rules ?? [])
@@ -157,11 +140,13 @@ export class Editor extends PluginSettingTab {
             ...rs.config,
             mode: v === "silent" ? "silent" : "plan",
           });
+          this.display();
         }),
     );
     new Setting(el).setName(t("pause")).addToggle((c) =>
       c.setValue(rs.config.paused).onChange(async (paused) => {
         await rs.save({ ...rs.config, paused });
+        this.display();
       }),
     );
     new Setting(el)
@@ -327,6 +312,7 @@ export class Editor extends PluginSettingTab {
               Object.assign(p, { [field]: v });
               if (
                 [
+                  "firstPlan",
                   "startup",
                   "fileEvents",
                   "onFocus",
@@ -354,10 +340,21 @@ export class Editor extends PluginSettingTab {
               v,
               t(field === "conflict" && v === "target" ? "targetVersion" : v),
             );
-          d.setValue(String(p[field]))
+          d.setValue(
+            field === "scope" && p.scope === "content" && p.content?.config
+              ? "contentFiles"
+              : String(p[field]),
+          )
             .setDisabled(disabled)
             .onChange((v) => {
-              Object.assign(p, { [field]: v });
+              if (field === "scope") {
+                p.scope = v === "settings" ? "settings" : "content";
+                if (p.scope === "content")
+                  p.content = {
+                    ...(p.content ?? plainContent()),
+                    config: v === "contentFiles",
+                  };
+              } else Object.assign(p, { [field]: v });
               if (p.mirror === "full") {
                 p.conflict = "source";
                 p.deletions = true;
@@ -429,7 +426,7 @@ export class Editor extends PluginSettingTab {
     }
     templateControl(el, rs, p, () => this.display());
     el = section("composition");
-    choice("scope", "scope", ["content", "settings"]);
+    choice("scope", "scope", ["content", "settings", "contentFiles"]);
     el.createEl("p", {
       text: t(
         p.scope === "settings" ? "settingsProcessing" : "contentProcessing",
@@ -511,10 +508,16 @@ export class Editor extends PluginSettingTab {
       toggle("silentDeletionSafeguard", "silentDeletionSafeguard").setDesc(
         t("silentDeletionSafeguardHelp"),
       );
-      num("maxDeleteCount", "maxDeleteCount");
-      num("maxDeletePercent", "maxDeletePercent");
-      num("deleteGrace", "deleteGrace");
-      num("shrinkPercent", "shrinkPercent");
+      if (
+        (p.inheritMode ? rs.config.mode : p.mode) !== "silent" ||
+        p.silentDeletionSafeguard ||
+        p.firstPlan
+      ) {
+        num("maxDeleteCount", "maxDeleteCount");
+        num("maxDeletePercent", "maxDeletePercent");
+        num("deleteGrace", "deleteGrace");
+        num("shrinkPercent", "shrinkPercent");
+      }
       choice("trash", "trash", ["plugin", "vault", "system", "permanent"]);
       if (p.trash === "plugin") num("trashDays", "trashDays");
     }
@@ -545,6 +548,15 @@ export class Editor extends PluginSettingTab {
     }
     el = section("diagnostics");
     el.createEl("p", { text: t("diagnosisHelp") });
+    // Imported profiles and edits to a subsequently hidden field can still fail validation.
+    for (const problem of validate(
+      p,
+      Platform.isDesktopApp,
+      false,
+      this.app.vault.configDir,
+    ))
+      if (!fields.has(problem.field) && typeof p[problem.field] === "number")
+        num(problem.field, problem.field);
     inspectPath(el, rs, p);
     new Setting(el).setName(t("draftPreview")).addButton((b) =>
       b.setButtonText(t("dry")).onClick(async () => {
@@ -574,22 +586,33 @@ export class Editor extends PluginSettingTab {
         .forEach((n) => n.remove());
       error.empty();
       for (const err of errors) {
-        const row =
+        const field =
           fields.get(err.field) ??
           fields.get(err.field === "config" ? "scope" : "access");
-        row?.settingEl.createEl("small", {
+        const row =
+          (err.code === "overlaySyntax" &&
+            root.querySelector<HTMLElement>(".sync-studio-overlay")) ||
+          field?.settingEl;
+        row?.createEl("small", {
           text: t(err.code),
           cls: "sync-studio-field-error",
         });
         const panel =
-          [...panels].find(
-            ([, el]) => row && el.contains(row.settingEl),
-          )?.[0] ?? "endpoints";
+          [...panels].find(([, el]) => row && el.contains(row))?.[0] ??
+          "endpoints";
         error.createEl("button", {
           text: t(panel) + " · " + t(err.code),
         }).onclick = () => {
           this.section = panel;
           this.display();
+          if (err.code === "overlaySyntax") {
+            const overlay = root.querySelector<HTMLElement>(
+              ".sync-studio-overlay",
+            );
+            const details = overlay?.closest("details");
+            if (details) details.open = true;
+            overlay?.querySelector("textarea")?.focus();
+          }
         };
       }
       return !errors.length;

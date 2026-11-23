@@ -7,6 +7,26 @@ import {
 } from "./config-scope";
 import type { Profile } from "./model";
 type Tr = (key: string) => string;
+export function restrictionSummary(c: ConfigScope, t: Tr) {
+  const masks = (value: string) =>
+    value.split(/[,\n]/).filter((v) => v.trim()).length;
+  return [
+    [t("cfg_include"), masks(c.include)],
+    [t("cfg_exclude"), masks(c.exclude)],
+    [
+      t("pluginPatterns"),
+      [c.codeAllow, c.codeDeny, c.dataAllow, c.dataDeny].reduce(
+        (n, v) => n + masks(v),
+        0,
+      ),
+    ],
+    [t("pluginFiles"), c.pluginLimits?.length ?? 0],
+    [t("jsonRules"), c.overlay.split("\n").filter((v) => v.trim()).length],
+  ]
+    .filter(([, n]) => n)
+    .map(([label, n]) => label + " · " + n)
+    .join(" / ");
+}
 export function scopeEditor(
   el: HTMLElement,
   p: Profile,
@@ -26,17 +46,7 @@ export function scopeEditor(
     ) ?? "custom";
   const base = new Setting(el).setName(t("scopePreset"));
   const note = () => {
-    const n =
-      [
-        c.codeAllow,
-        c.codeDeny,
-        c.dataAllow,
-        c.dataDeny,
-        c.include,
-        c.exclude,
-        c.overlay,
-      ].filter((v) => v.trim()).length + (c.pluginLimits?.length ?? 0);
-    base.setDesc(n ? t("modifiedSet") + " · " + n : "");
+    base.setDesc(restrictionSummary(c, t));
   };
   note();
   base.addDropdown((d) => {
@@ -82,13 +92,16 @@ export function scopeEditor(
       | "exclude"
       | "overlay",
   ) =>
-    new Setting(details).setName(t("cfg_" + k)).addTextArea((a) =>
-      a.setValue(c[k]).onChange((v) => {
-        c[k] = v;
-        note();
-        validate();
-      }),
-    );
+    new Setting(details)
+      .setClass("sync-studio-" + k)
+      .setName(t("cfg_" + k))
+      .addTextArea((a) =>
+        a.setValue(c[k]).onChange((v) => {
+          c[k] = v;
+          note();
+          validate();
+        }),
+      );
   for (const k of [
     "codeAllow",
     "codeDeny",

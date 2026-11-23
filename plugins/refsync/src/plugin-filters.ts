@@ -89,6 +89,8 @@ export class PluginFilters extends Modal {
           });
           const box = label.createEl("input", { type: "checkbox" });
           box.checked = limits.get(id)?.has(k) ?? true;
+          if (!this.config.categories.includes(k))
+            label.title = t("categoryOff");
           box.onchange = () => change(id, k, box.checked);
         }
       }

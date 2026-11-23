@@ -1,3 +1,4 @@
+import { processChunks, type ChunkSource } from "./transfer";
 import type { ConfigScope } from "./config-scope";
 import { selected } from "./classifier";
 import {
@@ -31,11 +32,80 @@ export async function ensure(adapter: DataAdapter, dir: string) {
     if ((await adapter.stat(dir))?.type !== "folder") throw e;
   }
 }
+function desktopFile(
+  adapter: DataAdapter,
+  path: string,
+  size: number,
+): ChunkSource | undefined {
+  if (!(adapter instanceof FileSystemAdapter)) return undefined;
+  const fs: typeof import("node:fs/promises") = require("node:fs/promises");
+  const full = adapter.getFullPath(path);
+  return {
+    size,
+    async read(offset, length) {
+      const h = await fs.open(full, "r");
+      try {
+        if ((await h.stat()).size !== size) throw Error("referenceChanged");
+        const buffer = new Uint8Array(length);
+        let done = 0;
+        while (done < length) {
+          const { bytesRead } = await h.read(
+            buffer,
+            done,
+            length - done,
+            offset + done,
+          );
+          if (!bytesRead) throw Error("incomplete");
+          done += bytesRead;
+        }
+        return buffer.buffer;
+      } finally {
+        await h.close();
+      }
+    },
+  };
+}
 export class VaultArtifacts implements ArtifactStore {
   constructor(
     private adapter: DataAdapter,
     readonly root: string,
-  ) {}
+  ) {
+    if (adapter instanceof FileSystemAdapter) {
+      this.putChunks = async (p, file, progress) => {
+        const path = this.path(p);
+        await ensure(adapter, parent(path));
+        const fs: typeof import("node:fs/promises") = require("node:fs/promises");
+        const full = adapter.getFullPath(path);
+        const tmp = full + ".tmp-" + crypto.randomUUID();
+        const space = await fs.statfs(adapter.getFullPath(parent(path)));
+        if (space.bavail * space.bsize < file.size) throw Error("diskSpace");
+        const h = await fs.open(tmp, "wx");
+        try {
+          let digest;
+          try {
+            digest = await processChunks(
+              file,
+              async (bytes) => {
+                await h.writeFile(new Uint8Array(bytes));
+              },
+              progress,
+            );
+          } finally {
+            await h.close();
+          }
+          if (await adapter.exists(path)) throw Error("state");
+          await fs.rename(tmp, full);
+          return digest;
+        } finally {
+          await fs.rm(tmp, { force: true });
+        }
+      };
+    }
+  }
+  readonly putChunks?: ArtifactStore["putChunks"];
+  chunkSource(p: string, size: number) {
+    return desktopFile(this.adapter, this.path(p), size);
+  }
   private path(p: string) {
     return join(this.root, checked(p));
   }
@@ -141,6 +211,9 @@ export class LocalProvider implements StorageProvider {
   async stat(p: string) {
     if (!this.root && !p) return { type: "folder" as const, size: 0, mtime: 0 };
     return this.vault.adapter.stat(this.path(p));
+  }
+  chunkSource(p: string, size: number) {
+    return desktopFile(this.vault.adapter, this.path(p), size);
   }
   async scanStat(p: string) {
     const a = this.vault.adapter;

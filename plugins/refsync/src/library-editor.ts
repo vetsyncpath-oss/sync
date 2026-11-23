@@ -389,9 +389,28 @@ export function libraryPage(
     if (!lib.places.length) el.createEl("p", { text: t("locationsHelp") });
     for (const v of lib.places) {
       const users = uses(rs, v.id);
-      const row = new Setting(el)
-        .setName(v.name)
-        .setDesc([placeTitle(v, t), ...users.map((p) => p.name)].join(" · "));
+      const key = "refsync:place-check:" + v.id;
+      const identity = JSON.stringify(v.endpoint);
+      const row = new Setting(el).setName(v.name);
+      const describe = () => {
+        const last = rs.app.loadLocalStorage(key);
+        row.setDesc(
+          [
+            placeTitle(v, t),
+            ...users.map((p) => p.name),
+            last?.identity === identity
+              ? t(last.status) + " · " + new Date(last.at).toLocaleString()
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        );
+      };
+      const record = (status: string) => {
+        rs.app.saveLocalStorage(key, { identity, status, at: Date.now() });
+        describe();
+      };
+      describe();
       row.addButton((b) =>
         b.setButtonText(t("checkAccess")).onClick(async () => {
           b.setDisabled(true);
@@ -406,8 +425,9 @@ export function libraryPage(
             await s.list(
               v.endpoint.reference === "/" ? "" : v.endpoint.reference,
             );
-            b.setButtonText(t("accessible"));
+            record("accessible");
           } catch (e) {
+            record("accessFailed");
             rs.report(e);
           } finally {
             b.setDisabled(false);

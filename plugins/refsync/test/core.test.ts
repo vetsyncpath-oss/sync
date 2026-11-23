@@ -1830,3 +1830,33 @@ test("per-plugin file switches narrow config categories and survive template imp
   assert.ok(!inScope("plugins/reader/icon.png", c, false));
   assert.ok(inScope("plugins/other/main.js", c, false));
 });
+
+test("path diagnostics detect colliding files, directory ancestors and type mismatches without downloading", async () => {
+  const { collisionNames } = await import("../src/path-collision");
+  const { RunBudget } = await import("../src/runtime");
+  const { source, target } = fixture();
+  source.folders.add("Books");
+  target.folders.add("books");
+  assert.deepEqual(
+    await collisionNames([source, target], "Books/a.pdf", new RunBudget()),
+    ["Books/", "books/"],
+  );
+  target.folders.delete("books");
+  target.folders.add("Books");
+  source.data.set("Books/Note.md", bytes("a"));
+  target.data.set("Books/note.md", bytes("b"));
+  assert.deepEqual(
+    await collisionNames([source, target], "Books/Note.md", new RunBudget()),
+    ["Books/Note.md", "Books/note.md"],
+  );
+  target.data.clear();
+  target.folders.add("Books/Note.md");
+  assert.deepEqual(
+    await collisionNames([source, target], "Books/Note.md", new RunBudget()),
+    ["Books/Note.md", "Books/Note.md/"],
+  );
+  assert.deepEqual(
+    await collisionNames([source, target], "new/note", new RunBudget()),
+    [],
+  );
+});

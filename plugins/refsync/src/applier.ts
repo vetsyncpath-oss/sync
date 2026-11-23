@@ -1,3 +1,4 @@
+import { chunkSize, processChunks } from "./transfer";
 import {
   manifestBytes,
   manifestPath,
@@ -66,7 +67,9 @@ export class Applier {
           // A crash before recording the post-image precedes the remote mutation.
           if (!(await this.journal.disk.has(expected))) return;
           const current = stat
-            ? await hash(await budget.io(() => target.download(p)))
+            ? await hash(
+                await budget.io((progress) => target.download(p, progress)),
+              )
             : null;
           if (current === saved) return;
           if (current !== (await this.journal.json<string | null>(expected)))
@@ -79,9 +82,14 @@ export class Applier {
           if ((await hash(bytes)) !== saved) throw Error("backup");
           if (
             !stat ||
-            (await hash(await budget.io(() => target.download(p)))) !== saved
+            (await hash(
+              await budget.io((progress) => target.download(p, progress)),
+            )) !== saved
           )
-            await budget.io(() => target.upload(p, bytes), false);
+            await budget.io(
+              (progress) => target.upload(p, bytes, undefined, progress),
+              false,
+            );
         }
       };
       if (target.withFilePaused) await target.withFilePaused(p, perform);
@@ -275,14 +283,42 @@ export class Applier {
           continue;
         }
         if (stageBatch && op.action === "ack") {
-          const bytes = await budget.io(() => source.download(p));
+          const bytes = await budget.io((progress) =>
+            source.download(p, progress),
+          );
           if ((await hash(bytes)) !== (s.rawHash ?? s.hash))
             throw Error("referenceChanged");
         }
-        if (op.action === "write" || op.action === "both") {
+        const chunkFile =
+          op.action === "write" &&
+          profile.scope === "content" &&
+          profile.role === "publisher" &&
+          target.uploadChunks &&
+          this.journal.disk.putChunks &&
+          s.size > chunkSize &&
+          p.toLowerCase() !==
+            configDir.toLowerCase() + "/community-plugins.json"
+            ? source.chunkSource?.(p, s.size)
+            : undefined;
+        if (chunkFile) {
+          const stagePath = id + "/stage/" + steps.length;
+          const digest = await this.journal.disk.putChunks!(
+            stagePath,
+            chunkFile,
+            checkpoint,
+          );
+          if (digest !== (s.rawHash ?? s.hash)) throw Error("referenceChanged");
+          steps.push({
+            path: p,
+            action: "write",
+            mtime: s.mtime,
+            size: s.size,
+            digest,
+          });
+        } else if (op.action === "write" || op.action === "both") {
           let bytes: Bytes;
           try {
-            bytes = await budget.io(() => source.download(p));
+            bytes = await budget.io((progress) => source.download(p, progress));
           } catch (e) {
             if (batch || !transient(e)) throw e;
             plan.deferred.push({ path: p, reason: "locked" });
@@ -421,7 +457,9 @@ export class Applier {
               const stat = await budget.io(() => target.stat(step.path));
               if (stat?.type === "folder") throw Error("collision");
               const old = stat
-                ? await budget.io(() => target.download(step.path))
+                ? await budget.io((progress) =>
+                    target.download(step.path, progress),
+                  )
                 : null;
               const copy = displaced.get(step.path);
               if (copy && stat) throw Error("collision");
@@ -454,9 +492,46 @@ export class Applier {
                     if (await target.stat(step.path))
                       await target.delete(step.path);
                   }, false);
+              } else if (
+                step.size !== undefined &&
+                target.uploadChunks &&
+                step.digest
+              ) {
+                const file = this.journal.disk.chunkSource?.(
+                  id + "/stage/" + i,
+                  step.size,
+                );
+                if (
+                  !file ||
+                  (await budget.io((progress) =>
+                    processChunks(file, undefined, progress),
+                  )) !== step.digest
+                )
+                  throw Error("incomplete");
+                if (t.cloud)
+                  await this.journal.disk.putNew(
+                    id + "/after/" + i,
+                    manifestBytes(step.digest),
+                  );
+                await budget.io(
+                  (progress) =>
+                    target.uploadChunks!(
+                      step.path,
+                      file,
+                      step.digest!,
+                      step.mtime,
+                      () => {
+                        progress();
+                        checkpoint();
+                      },
+                    ),
+                  false,
+                );
               } else {
                 const bytes = copy
-                  ? await budget.io(() => target.download(copy))
+                  ? await budget.io((progress) =>
+                      target.download(copy, progress),
+                    )
                   : publish && i === steps.length - 1
                     ? await publication!.build()
                     : await this.journal.disk.read(id + "/stage/" + i);
@@ -488,7 +563,8 @@ export class Applier {
                     manifestBytes(await hash(outgoing)),
                   );
                 await budget.io(
-                  () => target.upload(step.path, outgoing, step.mtime),
+                  (progress) =>
+                    target.upload(step.path, outgoing, step.mtime, progress),
                   false,
                 );
               }

@@ -1,3 +1,4 @@
+import { chunkSize, processChunks } from "./transfer";
 import {
   type ConfigScope,
   legacyConfig,
@@ -242,14 +243,28 @@ export async function scan(
             continue;
           }
           if (options.stats) options.stats.read++;
-          const bytes = await budget.io(() => provider.download(p));
-          if (bytes.byteLength !== stat.size) throw Error("incomplete");
-          const rawHash = await hash(bytes);
+          const file =
+            !policy && stat.size > chunkSize
+              ? provider.chunkSource?.(p, stat.size)
+              : undefined;
+          let rawHash, semantic;
+          if (file)
+            rawHash = await budget.io((progress) =>
+              processChunks(file, undefined, progress),
+            );
+          else {
+            const bytes = await budget.io((progress) =>
+              provider.download(p, progress),
+            );
+            if (bytes.byteLength !== stat.size) throw Error("incomplete");
+            rawHash = await hash(bytes);
+            if (policy) semantic = await settingsHash(name, bytes, policy);
+          }
           if (!policy && stat.version)
             options.cache?.put(cacheKey, stat.version, rawHash);
           snap.files.set(p, {
             rawHash,
-            hash: policy ? await settingsHash(name, bytes, policy) : rawHash,
+            hash: semantic ?? rawHash,
             size: stat.size,
             mtime: stat.mtime,
             kind,

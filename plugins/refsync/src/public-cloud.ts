@@ -1,3 +1,4 @@
+import { chunkSize } from "./transfer";
 import {
   fileName,
   rootItem,
@@ -143,16 +144,43 @@ export class GoogleTree implements RemoteTree {
     } while (token);
     return result;
   }
-  async read(f: RemoteItem) {
-    return check(
-      await this.http(
-        "https://www.googleapis.com/drive/v3/files/" +
-          f.key +
-          "?alt=media&supportsAllDrives=true",
-        "GET",
-        this.headers(f.key, f.resourceKey),
-      ),
-    ).arrayBuffer;
+  async read(f: RemoteItem, progress?: () => void) {
+    const url =
+      "https://www.googleapis.com/drive/v3/files/" +
+      f.key +
+      "?alt=media&supportsAllDrives=true";
+    const headers = this.headers(f.key, f.resourceKey);
+    if (f.size <= chunkSize || !(f.sha256 || f.md5))
+      return check(await this.http(url, "GET", headers)).arrayBuffer;
+    let result: Uint8Array<ArrayBuffer> | undefined;
+    for (let start = 0; start < f.size; start += chunkSize) {
+      const end = Math.min(start + chunkSize, f.size) - 1;
+      const reply = check(
+        await this.http(url, "GET", {
+          ...headers,
+          Range: "bytes=" + start + "-" + end,
+        }),
+      );
+      if (
+        reply.status === 200 &&
+        !start &&
+        reply.arrayBuffer.byteLength === f.size
+      )
+        return reply.arrayBuffer;
+      const range = Object.entries(reply.headers).find(
+        ([k]) => k.toLowerCase() === "content-range",
+      )?.[1];
+      if (
+        reply.status !== 206 ||
+        range !== "bytes " + start + "-" + end + "/" + f.size ||
+        reply.arrayBuffer.byteLength !== end - start + 1
+      )
+        throw Error("incomplete");
+      result ??= new Uint8Array(f.size);
+      result.set(new Uint8Array(reply.arrayBuffer), start);
+      progress?.();
+    }
+    return result!.buffer;
   }
 }
 export class YandexTree implements RemoteTree {

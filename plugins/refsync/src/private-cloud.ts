@@ -1,3 +1,5 @@
+import { sleep } from "./runtime";
+import { chunkSize, fromBuffer, type ChunkSource } from "./transfer";
 import {
   type Transport,
   type Reply,
@@ -15,7 +17,14 @@ import {
   fileName,
   sizeOf,
 } from "./public-store";
-import { hash, checked, parent, join, type Bytes } from "./model";
+import {
+  hash,
+  checked,
+  parent,
+  join,
+  type Bytes,
+  type StorageProvider,
+} from "./model";
 import type { CloudEngine } from "./accounts";
 export interface CloudLocation {
   engine: CloudEngine;
@@ -50,6 +59,7 @@ interface MutableTree extends RemoteTree {
     old: RemoteItem | null,
     bytes: Bytes,
     mtime?: number,
+    progress?: () => void,
   ): Promise<void>;
   remove(item: RemoteItem): Promise<void>;
   relocate(
@@ -63,11 +73,38 @@ const body = (obj: unknown) =>
   new TextEncoder().encode(JSON.stringify(obj)).buffer;
 const jsonHeader = { "Content-Type": "application/json" };
 const api = "https://www.googleapis.com/drive/v3/files";
+export interface DriveSessions {
+  get(key: string): string | null;
+  set(key: string, value: string | null): void;
+}
+function sessionUrl(raw: string) {
+  const url = new URL(raw);
+  if (
+    url.origin !== "https://www.googleapis.com" ||
+    !url.pathname.startsWith("/upload/drive/v3/") ||
+    url.username ||
+    url.password
+  )
+    throw Error("publicUrl");
+  return url.href;
+}
+function acknowledged(reply: Reply, size: number) {
+  const range = Object.entries(reply.headers).find(
+    ([k]) => k.toLowerCase() === "range",
+  )?.[1];
+  if (!range) return 0;
+  const match = /^bytes=0-(\d+)$/.exec(range);
+  const offset = match ? Number(match[1]) + 1 : NaN;
+  if (!Number.isSafeInteger(offset) || offset <= 0 || offset >= size)
+    throw Error("incomplete");
+  return offset;
+}
 export class DriveTree extends GoogleTree implements MutableTree {
   constructor(
     private send: Transport,
     id: string,
     private cursor: DriveCursor = { token: "", revision: "" },
+    private sessions?: DriveSessions,
   ) {
     super(send, id, null, "");
   }
@@ -94,6 +131,167 @@ export class DriveTree extends GoogleTree implements MutableTree {
     old: RemoteItem | null,
     bytes: Bytes,
     mtime?: number,
+    progress?: () => void,
+  ) {
+    const digest =
+      this.sessions && bytes.byteLength > chunkSize ? await hash(bytes) : "";
+    await this.writeChunks(
+      dir,
+      name,
+      old,
+      fromBuffer(bytes),
+      digest,
+      mtime,
+      progress,
+    );
+  }
+  async writeChunks(
+    dir: RemoteItem,
+    name: string,
+    old: RemoteItem | null,
+    file: ChunkSource,
+    digest: string,
+    mtime?: number,
+    progress?: () => void,
+  ) {
+    const { size } = file;
+    const key =
+      this.sessions && size > chunkSize
+        ? await hash(body([dir.key, name]))
+        : "";
+    const signature = JSON.stringify([
+      old?.key,
+      old?.sha256 ?? old?.md5,
+      old?.mtime,
+      size,
+      digest,
+      mtime,
+    ]);
+    const saved = key && this.sessions?.get(key);
+    let session = "",
+      offset = 0;
+    if (saved) {
+      let record;
+      try {
+        record = JSON.parse(saved);
+      } catch {
+        /* Replace invalid local state. */
+      }
+      if (record?.signature === signature && record.expires > Date.now()) {
+        session = sessionUrl(record.url);
+        const status = await this.send(
+          session,
+          "PUT",
+          { "Content-Range": "bytes */" + size },
+          new ArrayBuffer(0),
+        );
+        if (status.status === 308) offset = acknowledged(status, size);
+        else if (status.status === 404 || status.status === 410) session = "";
+        else {
+          check(status);
+          this.sessions!.set(key, null);
+          return;
+        }
+        progress?.();
+      }
+    }
+    if (!session) {
+      session = await this.startUpload(dir, name, old, size, mtime);
+      if (key)
+        this.sessions!.set(
+          key,
+          JSON.stringify({
+            url: session,
+            signature,
+            expires: Date.now() + 7 * 86400000,
+          }),
+        );
+      progress?.();
+    }
+    let failures = 0;
+    do {
+      const end = Math.min(size, offset + chunkSize);
+      const headers: Record<string, string> = {
+        "Content-Type": "application/octet-stream",
+      };
+      if (size) headers["Content-Range"] = `bytes ${offset}-${end - 1}/${size}`;
+      const bytes = await file.read(offset, end - offset);
+      if (bytes.byteLength !== end - offset) throw Error("referenceChanged");
+      let response;
+      try {
+        response = await this.send(session, "PUT", headers, bytes);
+      } catch (e) {
+        if (!(e instanceof Error) || e.message !== "remoteNetwork") throw e;
+      }
+      if (
+        !response ||
+        response.status === 429 ||
+        [500, 502, 503, 504].includes(response.status)
+      ) {
+        if (++failures > 3) {
+          if (response) check(response);
+          throw Error("remoteNetwork");
+        }
+        const hint =
+          response &&
+          Object.entries(response.headers).find(
+            ([key]) => key.toLowerCase() === "retry-after",
+          )?.[1];
+        const wait = hint
+          ? /^\d+$/.test(hint)
+            ? Number(hint) * 1000
+            : Date.parse(hint) - Date.now()
+          : 0;
+        if (wait > 30000) {
+          if (response) check(response);
+          throw Error("remoteNetwork");
+        }
+        await sleep(
+          Math.max(250 * 2 ** (failures - 1), Number.isFinite(wait) ? wait : 0),
+        );
+        progress?.();
+        // The last PUT may have reached Drive even when its reply was lost.
+        const status = await this.send(
+          session,
+          "PUT",
+          { "Content-Range": "bytes */" + size },
+          new ArrayBuffer(0),
+        );
+        if (status.status !== 308) {
+          check(status);
+          if (key) this.sessions!.set(key, null);
+          return;
+        }
+        const remoteOffset = acknowledged(status, size);
+        if (remoteOffset < offset || remoteOffset > end)
+          throw Error("incomplete");
+        if (remoteOffset > offset) failures = 0;
+        offset = remoteOffset;
+        continue;
+      }
+      if (response.status !== 308) {
+        if (key && (response.status === 404 || response.status === 410))
+          this.sessions!.set(key, null);
+        check(response);
+        if (end !== size) throw Error("incomplete");
+        if (key) this.sessions!.set(key, null);
+        progress?.();
+        return;
+      }
+      const next = acknowledged(response, size);
+      if (next <= offset || next > end) throw Error("incomplete");
+      offset = next;
+      failures = 0;
+      progress?.();
+    } while (offset < size);
+    throw Error("incomplete");
+  }
+  private async startUpload(
+    dir: RemoteItem,
+    name: string,
+    old: RemoteItem | null,
+    size: number,
+    mtime?: number,
   ) {
     const url =
       "https://www.googleapis.com/upload/drive/v3/files" +
@@ -106,7 +304,7 @@ export class DriveTree extends GoogleTree implements MutableTree {
         {
           ...jsonHeader,
           "X-Upload-Content-Type": "application/octet-stream",
-          "X-Upload-Content-Length": String(bytes.byteLength),
+          "X-Upload-Content-Length": String(size),
         },
         body({
           name,
@@ -121,42 +319,7 @@ export class DriveTree extends GoogleTree implements MutableTree {
       ([k]) => k.toLowerCase() === "location",
     )?.[1];
     if (!raw) throw Error("incomplete");
-    const session = new URL(raw);
-    if (
-      session.origin !== "https://www.googleapis.com" ||
-      !session.pathname.startsWith("/upload/drive/v3/")
-    )
-      throw Error("publicUrl");
-    const size = bytes.byteLength,
-      chunk = 8 * 1024 * 1024;
-    let offset = 0;
-    do {
-      const end = Math.min(size, offset + chunk),
-        headers: Record<string, string> = {
-          "Content-Type": "application/octet-stream",
-        };
-      if (size) headers["Content-Range"] = `bytes ${offset}-${end - 1}/${size}`;
-      const res = await this.send(
-        session.href,
-        "PUT",
-        headers,
-        bytes.slice(offset, end),
-      );
-      if (res.status !== 308) {
-        check(res);
-        if (end !== size) throw Error("incomplete");
-        return;
-      }
-      const range = Object.entries(res.headers).find(
-        ([k]) => k.toLowerCase() === "range",
-      )?.[1];
-      const last = range && /^bytes=0-(\d+)$/.exec(range);
-      const next = last ? Number(last[1]) + 1 : 0;
-      if (next <= offset || next > end || next >= size)
-        throw Error("incomplete");
-      offset = next;
-    } while (offset < size);
-    throw Error("incomplete");
+    return sessionUrl(raw);
   }
   async remove(item: RemoteItem) {
     check(
@@ -345,6 +508,16 @@ export class CloudStore extends PublicStore {
     this.capabilities.readOnly = readOnly;
     this.capabilities.canRemoveEmptyDirs = !readOnly && completeFolderAccess;
     this.capabilities.supportsChecksum = true;
+    if (mutable instanceof DriveTree)
+      this.uploadChunks = (path, file, digest, mtime, progress) =>
+        this.writeVerified(
+          path,
+          file.size,
+          digest,
+          (dir, name, old) =>
+            mutable.writeChunks(dir, name, old, file, digest, mtime, progress),
+          progress,
+        );
   }
 
   private async change(fn: () => Promise<void>) {
@@ -373,20 +546,55 @@ export class CloudStore extends PublicStore {
       await this.ensureDir(path);
     });
   }
-  override async upload(path: string, bytes: Bytes, mtime?: number) {
+  readonly uploadChunks?: StorageProvider["uploadChunks"];
+  override async upload(
+    path: string,
+    bytes: Bytes,
+    mtime?: number,
+    progress?: () => void,
+  ) {
+    const digest = await hash(bytes);
+    if (this.uploadChunks)
+      return this.uploadChunks(
+        path,
+        fromBuffer(bytes),
+        digest,
+        mtime,
+        progress ?? (() => {}),
+      );
+    return this.writeVerified(
+      path,
+      bytes.byteLength,
+      digest,
+      (dir, name, old) =>
+        this.mutable.write(dir, name, old, bytes, mtime, progress),
+      progress,
+    );
+  }
+  private async writeVerified(
+    path: string,
+    size: number,
+    digest: string,
+    write: (
+      dir: RemoteItem,
+      name: string,
+      old: RemoteItem | null,
+    ) => Promise<void>,
+    progress?: () => void,
+  ) {
     checked(path);
     await this.change(async () => {
       const dir = await this.ensureDir(parent(path)),
         old = await this.find(path);
       if (old && old.type !== "file") throw Error("collision");
-      await this.mutable.write(dir, path.split("/").at(-1)!, old, bytes, mtime);
+      await write(dir, path.split("/").at(-1)!, old);
       this.reset();
       const saved = await this.find(path);
       if (
         saved?.type !== "file" ||
-        saved.size !== bytes.byteLength ||
-        (saved.sha256 ?? (await hash(await this.download(path)))) !==
-          (await hash(bytes))
+        saved.size !== size ||
+        (saved.sha256 ?? (await hash(await this.download(path, progress)))) !==
+          digest
       )
         throw Error("referenceChanged");
     });

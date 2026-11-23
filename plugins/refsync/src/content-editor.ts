@@ -54,7 +54,7 @@ export function contentEditor(
         refresh();
       }),
     );
-  toggle("config", t("configFolder") + " · " + app.vault.configDir);
+
   toggle("hidden", t("otherHidden"));
   const row = new Setting(el)
     .setName(t("folderSelection"))

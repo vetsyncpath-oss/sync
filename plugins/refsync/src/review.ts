@@ -1,3 +1,4 @@
+import { endpointLabels } from "./task-library";
 import { project, parseOverlay } from "./json-overlay";
 import { needsReload } from "./verify-settings";
 import { Modal, Setting, type App } from "obsidian";
@@ -20,6 +21,7 @@ export class Review extends Modal {
     private closed: () => void,
     private apply?: (choices: Choices, held: Set<string>) => void,
     private releaseOnly = false,
+    private accountLabel?: string,
   ) {
     super(app);
   }
@@ -28,6 +30,17 @@ export class Review extends Modal {
     this.titleEl.setText(
       this.tr(this.apply ? "preview" : "dry") + " · " + this.p.name,
     );
+    const [from, to] = endpointLabels(
+      this.p,
+      this.app.vault.configDir,
+      this.tr,
+      this.accountLabel,
+    );
+    this.contentEl.createEl("p", { text: from + " → " + to });
+    if (this.p.deletions)
+      this.contentEl.createEl("p", {
+        text: this.tr("deletionSide") + " · " + to,
+      });
     if (
       this.p.scope === "settings" &&
       this.plan.ops.some(
@@ -237,8 +250,16 @@ export class Review extends Modal {
     popup.open();
     const out = popup.contentEl.createEl("pre");
     out.style.whiteSpace = "pre-wrap";
+    const [from, to] = endpointLabels(
+      this.p,
+      this.app.vault.configDir,
+      this.tr,
+      this.accountLabel,
+    );
     const meta = [
-      this.tr("target") +
+      this.tr("destSide") +
+        " · " +
+        to +
         " · " +
         (op.target
           ? op.target.size +
@@ -247,7 +268,9 @@ export class Review extends Modal {
             " · " +
             op.target.hash
           : "—"),
-      this.tr("reference") +
+      this.tr("srcSide") +
+        " · " +
+        from +
         " · " +
         (op.source
           ? op.source.size +

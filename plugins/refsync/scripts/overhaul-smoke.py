@@ -69,7 +69,16 @@ def run(page):
       button(el,"schedule").click();if(!editor.draft.onFocus)row(el,t("onFocus")).querySelector(".checkbox-container").click();
       button(el,"composition").click();select(el,"scope","settings");
       if(editor.draft.onFocus||editor.draft.onOnline||editor.draft.fileEvents)throw Error("settings retained hidden triggers");
-      button(el,"cancel").click();app.setting.close();
+      button(el,"cancel").click();
+      await vault.create(src+"/Projects/Name.md","remote case");
+      await vault.create(dst+"/Projects/name.md","local case");
+      button(el,"profiles").click();button(row(el,p.name),"edit").click();
+      select(el,"role","publisher"); button(el,"diagnostics").click();
+      const lookup=row(el,t("whyPath"));enter(lookup.querySelector("input"),"Projects/Name.md");button(lookup,"checkPath").click();
+      await until(()=>el.textContent.includes(t("collision")));
+      button(row(el,t("draftPreview")),"dry").click(); const check=await modal("export");
+      if(!check.textContent.includes(dst+" → "+src)||!check.textContent.includes(t("deletionSide")+" · "+src))throw Error("publisher destination");
+      button(check,"close").click();button(el,"cancel").click();app.setting.close();
       return "Editor: local folder browser, shared location, selected-only preview, policy changes, template, path diagnosis and silent mirror passed";
     }""")
     print(result)

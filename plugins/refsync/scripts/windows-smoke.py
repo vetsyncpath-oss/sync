@@ -209,5 +209,19 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             }"""))
             import runpy
             runpy.run_path(str(root / "scripts/oauth-smoke.py"))["run"](page,browser)
+            def restart_drive_fixture():
+                global app, browser
+                subprocess.run(["taskkill","/PID",str(app.pid),"/T","/F"],check=True,capture_output=True)
+                app.wait(timeout=20)
+                app = subprocess.Popen(app.args,env=env)
+                deadline=time.monotonic()+80
+                while True:
+                    try:
+                        browser=playwright.chromium.connect_over_cdp("http://127.0.0.1:19224",timeout=2000)
+                        return browser.contexts[0].pages[0]
+                    except Exception:
+                        if time.monotonic()>deadline: raise
+                        time.sleep(1)
+            runpy.run_path(str(root / "scripts/drive-resume-smoke.py"))["run"](page,vault,restart_drive_fixture,2700)
     finally:
         subprocess.run(["taskkill","/PID",str(app.pid),"/T","/F"],capture_output=True)

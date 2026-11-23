@@ -154,6 +154,28 @@ export function detachEdited(p: Profile, library: Library) {
       delete p[k];
   }
 }
+export function endpointLabels(
+  p: Profile,
+  configDir: string,
+  t: (key: string) => string,
+  account?: string,
+) {
+  const local = (p.scope === "settings" ? configDir : p.local) || "/";
+  const remote = [
+    p.cloud
+      ? t(p.cloud.engine + "Private")
+      : p.remote
+        ? t(p.remote.engine)
+        : "",
+    account,
+    p.cloud?.root ?? p.remote?.url,
+    p.remote?.engine === "git" ? p.remote.branch : "",
+    p.reference || "/",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return p.role === "publisher" ? [local, remote] : [remote, local];
+}
 export const deletionPolicy = (p: Profile) =>
   p.mirror === "full" ? "full" : p.deletions ? "tracked" : "copyOnly";
 export function applyPolicy(p: Profile, value: string) {

@@ -1,3 +1,4 @@
+import { collisionNames } from "./path-collision";
 import { Setting, Platform } from "obsidian";
 import type Studio from "./main";
 import type { Profile } from "./model";
@@ -92,6 +93,14 @@ export function inspectPath(el: HTMLElement, rs: Studio, p: Profile) {
             }
           }),
         );
+        if (findings.some((v) => v.endsWith(" · " + t("included")))) {
+          const matches = await collisionNames(sides, key, budget);
+          if (matches.length) {
+            if (key === path)
+              result.setText(t("collision") + " · " + matches.join(" / "));
+            return;
+          }
+        }
         if (key === path) result.setText(findings.join("  |  "));
       } catch (e) {
         result.setText(t(e instanceof Error ? e.message : "failed"));

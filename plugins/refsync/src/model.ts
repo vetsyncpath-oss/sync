@@ -132,8 +132,24 @@ export interface StorageProvider {
       })
     | null
   >;
-  download(path: string): Promise<Bytes>;
-  upload(path: string, data: Bytes, mtime?: number): Promise<void>;
+  chunkSource?(
+    path: string,
+    size: number,
+  ): import("./transfer").ChunkSource | undefined;
+  uploadChunks?(
+    path: string,
+    file: import("./transfer").ChunkSource,
+    digest: string,
+    mtime: number | undefined,
+    progress: () => void,
+  ): Promise<void>;
+  download(path: string, progress?: () => void): Promise<Bytes>;
+  upload(
+    path: string,
+    data: Bytes,
+    mtime?: number,
+    progress?: () => void,
+  ): Promise<void>;
   delete(path: string): Promise<void>;
   move(from: string, to: string): Promise<void>;
   mkdir(path: string): Promise<void>;

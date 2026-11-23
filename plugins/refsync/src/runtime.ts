@@ -49,27 +49,40 @@ export class RunBudget {
     this.fence.check();
     if (Date.now() >= this.deadline) throw Error("watchdog");
   }
-  async io<T>(work: () => Promise<T>, read = true): Promise<T> {
+  async io<T>(
+    work: (progress: () => void) => Promise<T>,
+    read = true,
+  ): Promise<T> {
     for (let i = 0; ; i++) {
       this.check();
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let running = true;
       try {
-        const operation = work();
-        return await Promise.race([
-          operation,
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () => {
-                if (!read) this.fence.quarantine(operation);
-                reject(Error(read ? "readTimeout" : "settling"));
-              },
-              Math.min(this.operationMs, this.deadline - Date.now()),
-            );
-          }),
-        ]);
+        let operation!: Promise<T>;
+        let expire!: () => void;
+        const timeout = new Promise<never>((_, reject) => {
+          expire = () => {
+            running = false;
+            if (!read) this.fence.quarantine(operation);
+            reject(Error(read ? "readTimeout" : "settling"));
+          };
+        });
+        const progress = () => {
+          if (!running) throw Error(read ? "readTimeout" : "settling");
+          this.check();
+          clearTimeout(timer);
+          timer = setTimeout(
+            expire,
+            Math.min(this.operationMs, this.deadline - Date.now()),
+          );
+        };
+        operation = Promise.resolve().then(() => work(progress));
+        progress();
+        return await Promise.race([operation, timeout]);
       } catch (e) {
         if (!transient(e) || i >= this.backoff.length) throw e;
       } finally {
+        running = false;
         clearTimeout(timer);
       }
       await sleep(this.backoff[i]);

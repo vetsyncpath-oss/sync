@@ -342,3 +342,126 @@ test("Drive folder cleanup lists all children and requires visibility into the w
   assert.equal(await full.removeEmptyDir("Sub"), true);
   assert.ok(trashed);
 });
+
+test("Drive resumes only matching bytes, probes an uncertain PUT and renews expired sessions", async () => {
+  const sessions = new Map<string, string>();
+  const port = {
+    get: (key: string) => sessions.get(key) ?? null,
+    set: (key: string, v: string | null) => {
+      if (v) sessions.set(key, v);
+      else sessions.delete(key);
+    },
+  };
+  const dir = {
+    name: "",
+    key: "root",
+    type: "folder" as const,
+    size: 0,
+    mtime: 0,
+  };
+  const data = new Uint8Array(8388609);
+  let starts = 0,
+    crash = true,
+    expired = false,
+    acknowledged = 0,
+    lost = false;
+  const offsets: number[] = [];
+  const send: Transport = async (url, method, headers, bytes) => {
+    if (method === "POST") {
+      starts++;
+      acknowledged = 0;
+      return result({}, 200, {
+        location:
+          "https://www.googleapis.com/upload/drive/v3/files?upload_id=" +
+          starts,
+      });
+    }
+    assert.equal(method, "PUT");
+    const range = headers!["Content-Range"];
+    if (range.startsWith("bytes */")) {
+      if (expired) {
+        expired = false;
+        return result({}, 410);
+      }
+      if (acknowledged === data.length) return result({});
+      return result(
+        {},
+        308,
+        acknowledged ? { range: "bytes=0-" + (acknowledged - 1) } : {},
+      );
+    }
+    const offset = Number(/^bytes (\d+)-/.exec(range)![1]);
+    offsets.push(offset);
+    assert.equal(offset, acknowledged);
+    if (crash && offset) throw Error("disconnect");
+    acknowledged += bytes!.byteLength;
+    if (lost && offset === 0) {
+      lost = false;
+      throw Error("remoteNetwork");
+    }
+    return acknowledged === data.length
+      ? result({})
+      : result({}, 308, { range: "bytes=0-" + (acknowledged - 1) });
+  };
+  const write = () =>
+    new DriveTree(send, "root", undefined, port).write(
+      dir,
+      "book",
+      null,
+      data.buffer,
+    );
+  await assert.rejects(write(), /disconnect/);
+  assert.equal(sessions.size, 1);
+  crash = false;
+  await write();
+  assert.equal(starts, 1);
+  assert.equal(offsets.at(-1), 8388608);
+  assert.equal(sessions.size, 0);
+  crash = true;
+  await assert.rejects(write(), /disconnect/);
+  data[0] = 1;
+  crash = false;
+  await write();
+  assert.equal(starts, 3);
+  crash = true;
+  await assert.rejects(write(), /disconnect/);
+  expired = true;
+  crash = false;
+  await write();
+  assert.equal(starts, 5);
+  lost = true;
+  await write();
+  assert.deepEqual(offsets.slice(-2), [0, 8388608]);
+});
+
+test("Drive reads large objects by exact ranges and rejects inconsistent replies", async () => {
+  let wrong = false;
+  const size = 8388609,
+    ranges: string[] = [];
+  const send: Transport = async (_url, _method, h) => {
+    const span = h!.Range;
+    ranges.push(span);
+    const [_, start, end] = /^bytes=(\d+)-(\d+)$/.exec(span)!;
+    return {
+      status: 206,
+      headers: {
+        "Content-Range":
+          "bytes " + (wrong ? "1" : start) + "-" + end + "/" + size,
+      },
+      arrayBuffer: new ArrayBuffer(Number(end) - Number(start) + 1),
+    };
+  };
+  const tree = new DriveTree(send, "root");
+  const item = {
+    name: "book",
+    key: "f",
+    type: "file" as const,
+    size,
+    mtime: 0,
+    sha256: "f".repeat(64),
+  };
+  assert.equal((await tree.read(item)).byteLength, size);
+  assert.deepEqual(ranges, ["bytes=0-8388607", "bytes=8388608-8388608"]);
+  wrong = true;
+  await assert.rejects(tree.read(item), /incomplete/);
+});

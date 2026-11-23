@@ -62,6 +62,15 @@ export class StateStore {
   }
 }
 export interface ArtifactStore {
+  putChunks?(
+    path: string,
+    file: import("./transfer").ChunkSource,
+    progress: () => void,
+  ): Promise<string>;
+  chunkSource?(
+    path: string,
+    size: number,
+  ): import("./transfer").ChunkSource | undefined;
   putNew(path: string, data: Bytes): Promise<void>;
   read(path: string): Promise<Bytes>;
   has(path: string): Promise<boolean>;
@@ -72,7 +81,22 @@ export class TimedArtifacts implements ArtifactStore {
   constructor(
     private disk: ArtifactStore,
     private fence: MutationFence,
-  ) {}
+  ) {
+    if (disk.putChunks)
+      this.putChunks = (p, file, progress) =>
+        new RunBudget(undefined, 90000, [], this.fence).io(
+          (pulse) =>
+            disk.putChunks!(p, file, () => {
+              pulse();
+              progress();
+            }),
+          false,
+        );
+  }
+  readonly putChunks?: ArtifactStore["putChunks"];
+  chunkSource(p: string, size: number) {
+    return this.disk.chunkSource?.(p, size);
+  }
   private io<T>(work: () => Promise<T>, read = true) {
     return new RunBudget(undefined, undefined, [], this.fence).io(work, read);
   }
@@ -97,6 +121,7 @@ export interface Intent {
   path: string;
   action: "write" | "delete" | "mkdir" | "rmdir";
   mtime?: number;
+  size?: number;
   digest?: string;
 }
 export interface Transaction {

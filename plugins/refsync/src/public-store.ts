@@ -14,7 +14,7 @@ export interface RemoteItem {
 export interface RemoteTree {
   root: () => Promise<RemoteItem>;
   children: (dir: RemoteItem) => Promise<RemoteItem[]>;
-  read: (item: RemoteItem) => Promise<Bytes>;
+  read: (item: RemoteItem, progress?: () => void) => Promise<Bytes>;
   revision?: () => Promise<string | null>;
   size?: (item: RemoteItem) => Promise<number>;
 }
@@ -128,10 +128,10 @@ export class PublicStore implements StorageProvider {
       version: v.sha256 ?? v.md5,
     };
   }
-  async download(path: string) {
+  async download(path: string, progress?: () => void) {
     const v = await this.find(path);
     if (v?.type !== "file") throw Error("incomplete");
-    const bytes = await this.tree.read(v);
+    const bytes = await this.tree.read(v, progress);
     if (
       (v.size >= 0 && bytes.byteLength !== v.size) ||
       (v.sha256 && (await hash(bytes)) !== v.sha256) ||

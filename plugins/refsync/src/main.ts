@@ -629,7 +629,26 @@ export default class SyncStudio extends Plugin {
     if (c.engine === "google") {
       const cursor = this.driveCursors.get(id) ?? { token: "", revision: "" };
       this.driveCursors.set(id, cursor);
-      tree = new DriveTree(transport, c.root, cursor);
+      const sessionKey = (path: string) =>
+        "refsync-drive-" +
+        bytesToHex(
+          sha256(
+            new TextEncoder().encode(JSON.stringify([c.account, c.root, path])),
+          ),
+        ).slice(0, 48);
+      tree = new DriveTree(transport, c.root, cursor, {
+        get: (path) =>
+          this.app.secretStorage?.getSecret(sessionKey(path)) ||
+          this.app.loadLocalStorage(sessionKey(path)) ||
+          null,
+        set: (path, value) => {
+          const key = sessionKey(path);
+          if (this.app.secretStorage) {
+            this.app.secretStorage.setSecret(key, value ?? "");
+            this.app.saveLocalStorage(key, null);
+          } else this.app.saveLocalStorage(key, value);
+        },
+      });
     } else tree = new DiskTree(transport, send, c.root);
     const store = new CloudStore(
       id,
@@ -691,6 +710,9 @@ export default class SyncStudio extends Plugin {
               ? [s.reference, s.local]
               : [s.local, s.reference],
           () => {},
+          undefined,
+          false,
+          this.accounts.list().find((a) => a.id === p.cloud?.account)?.label,
         ).open();
     });
   }
@@ -851,6 +873,7 @@ export default class SyncStudio extends Plugin {
                 .catch((e) => this.report(e, p.id));
             },
         intent === "release",
+        this.accounts.list().find((a) => a.id === p.cloud?.account)?.label,
       ),
     );
     this.showNext();
