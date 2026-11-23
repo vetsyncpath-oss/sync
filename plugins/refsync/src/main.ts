@@ -585,16 +585,21 @@ export default class RefSync extends Plugin {
     this.statusLabel = p.name;
     const v = this.stores(p);
     const firstKey = this.firstKey(p),
-      first = p.firstPlan && !this.app.loadLocalStorage(firstKey);
-    if (
-      (intent === "run" || intent === "auto") &&
-      (p.inheritMode ? this.config.mode : p.mode) === "silent" &&
-      !first
-    ) {
+      first = p.firstPlan && !this.app.loadLocalStorage(firstKey),
+      silent =
+        (p.inheritMode ? this.config.mode : p.mode) === "silent" && !first;
+    if ((intent === "run" || intent === "auto") && silent) {
       await this.deliver(p);
       return;
     }
-    const { plan } = await this.engine.run(p, v.reference, v.local, true);
+    const { plan } = await this.engine.run(
+      p,
+      v.reference,
+      v.local,
+      true,
+      undefined,
+      { mode: intent === "dry" && silent ? "silent" : "plan" },
+    );
     if (!this.live) return;
     if (
       intent === "auto" &&
@@ -683,6 +688,7 @@ export default class RefSync extends Plugin {
       false,
       approved,
       {
+        mode: approved ? "plan" : "silent",
         choices,
         release,
         active,

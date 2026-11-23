@@ -346,6 +346,9 @@ export class Editor extends PluginSettingTab {
         this.display();
       });
     });
+    toggle("silentDeletionSafeguard", "silentDeletionSafeguard").setDesc(
+      t("silentDeletionSafeguardHelp"),
+    );
     toggle("firstPlan", "firstPlan");
     if (p.scope === "settings") {
       toggle("strictDrift", "strictDrift");

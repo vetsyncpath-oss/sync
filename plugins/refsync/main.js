@@ -10776,6 +10776,7 @@ var defaults = {
   conflict: "source",
   backup: true,
   emptyGuard: true,
+  silentDeletionSafeguard: true,
   mode: "plan",
   firstPlan: false,
   fileEvents: false,
@@ -12090,6 +12091,7 @@ function validate(p, desktop, readOnly, configDir) {
     "deletions",
     "backup",
     "emptyGuard",
+    "silentDeletionSafeguard",
     "firstPlan",
     "fileEvents",
     "watch",
@@ -12238,7 +12240,7 @@ var resolveConflict = (policy, s, t) => {
 };
 
 // src/planner.ts
-function plan(p, src, dst, base, resolve = resolveConflict) {
+function plan(p, src, dst, base, resolve = resolveConflict, mode = "plan") {
   if (!src.complete || !dst.complete) throw Error("incomplete");
   const skipped = new Map([...src.skipped ?? [], ...dst.skipped ?? []]);
   const names = /* @__PURE__ */ new Map();
@@ -12288,8 +12290,8 @@ function plan(p, src, dst, base, resolve = resolveConflict) {
     const action = conflict && t && p.mirror !== "full" ? resolve(p.conflict, s, t) : "write";
     ops.push({ path, action, source: s, target: t, conflict });
   }
-  const protect = p.emptyGuard && (src.files.size === 0 || base.size > 0 && src.files.size < base.size * (1 - p.shrinkPercent / 100)) || deletes.length > p.maxDeleteCount || deletes.length > Math.max(p.deleteGrace, dst.files.size * p.maxDeletePercent / 100);
-  if (!protect) ops.push(...deletes);
+  const protect = (mode !== "silent" || p.silentDeletionSafeguard !== false) && (p.emptyGuard && (src.files.size === 0 || base.size > 0 && src.files.size < base.size * (1 - p.shrinkPercent / 100)) || deletes.length > p.maxDeleteCount || deletes.length > Math.max(p.deleteGrace, dst.files.size * p.maxDeletePercent / 100));
+  if (!protect) for (const deletion of deletes) ops.push(deletion);
   ops.sort(
     (a, b) => priority(a.path) - priority(b.path) || a.path.localeCompare(b.path)
   );
@@ -12415,7 +12417,14 @@ var SyncEngine = class {
         if (i.status === "rejected") throw i.reason;
         return i.value;
       });
-      let result = plan(p, s, t, this.applier.state.get(key));
+      let result = plan(
+        p,
+        s,
+        t,
+        this.applier.state.get(key),
+        void 0,
+        options.mode
+      );
       let changed = 0;
       if (approved)
         result = selectPlan(
@@ -12563,6 +12572,8 @@ var ru = {
   inherit: "Использовать глобальный режим",
   plan: "План с подтверждением",
   silent: "Тихий",
+  silentDeletionSafeguard: "Защита от массовых удалений в тихом режиме",
+  silentDeletionSafeguardHelp: "Если выключить, тихий запуск выполнит все удаления по правилам профиля, даже при пустом эталоне или превышении порогов.",
   firstPlan: "Показывать план перед первой доставкой",
   mirrorMode: "Зеркалирование",
   preserve: "Сохранять локальные файлы",
@@ -12753,6 +12764,8 @@ var en = {
   inherit: "Use global mode",
   plan: "Review plan",
   silent: "Silent",
+  silentDeletionSafeguard: "Mass deletion safeguard in silent mode",
+  silentDeletionSafeguardHelp: "Turn off to apply every deletion selected by the profile during silent runs, even when the source is empty or the thresholds are exceeded.",
   firstPlan: "Review before first delivery",
   mirrorMode: "Mirroring",
   preserve: "Preserve local files",
@@ -19369,6 +19382,9 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
         this.display();
       });
     });
+    toggle("silentDeletionSafeguard", "silentDeletionSafeguard").setDesc(
+      t("silentDeletionSafeguardHelp")
+    );
     toggle("firstPlan", "firstPlan");
     if (p.scope === "settings") {
       toggle("strictDrift", "strictDrift");
@@ -19914,12 +19930,19 @@ var RefSync = class extends import_obsidian6.Plugin {
       );
     this.statusLabel = p.name;
     const v = this.stores(p);
-    const firstKey = this.firstKey(p), first = p.firstPlan && !this.app.loadLocalStorage(firstKey);
-    if ((intent === "run" || intent === "auto") && (p.inheritMode ? this.config.mode : p.mode) === "silent" && !first) {
+    const firstKey = this.firstKey(p), first = p.firstPlan && !this.app.loadLocalStorage(firstKey), silent = (p.inheritMode ? this.config.mode : p.mode) === "silent" && !first;
+    if ((intent === "run" || intent === "auto") && silent) {
       await this.deliver(p);
       return;
     }
-    const { plan: plan2 } = await this.engine.run(p, v.reference, v.local, true);
+    const { plan: plan2 } = await this.engine.run(
+      p,
+      v.reference,
+      v.local,
+      true,
+      void 0,
+      { mode: intent === "dry" && silent ? "silent" : "plan" }
+    );
     if (!this.live) return;
     if (intent === "auto" && !plan2.ops.some((o) => o.action !== "ack") && !plan2.held.length && !plan2.deferred.length)
       return;
@@ -19977,6 +20000,7 @@ var RefSync = class extends import_obsidian6.Plugin {
       false,
       approved,
       {
+        mode: approved ? "plan" : "silent",
         choices,
         release,
         active,

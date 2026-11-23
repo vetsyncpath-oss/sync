@@ -940,3 +940,125 @@ test("public mirror aborts before any mutation on a broken page, or if a deletio
     assert.equal(disk.data.size, 0);
   }
 });
+
+test("the silent deletion safeguard defaults on for new and upgraded profiles", () => {
+  assert.equal(newProfile().silentDeletionSafeguard, true);
+  for (const raw of [
+    { profile: { id: "old" } },
+    { profiles: [{ id: "old" }] },
+  ]) {
+    assert.equal(loadProfiles(raw).profiles[0].silentDeletionSafeguard, true);
+  }
+  const p = { ...defaults, silentDeletionSafeguard: false };
+  assert.equal(
+    loadProfiles({ profiles: [p] }).profiles[0].silentDeletionSafeguard,
+    false,
+  );
+  assert.equal(newProfile(p).silentDeletionSafeguard, false);
+});
+
+test("silent opt-out releases every eligible deletion for each mass deletion trigger", () => {
+  const source = snap({ a: "a" }),
+    target = snap({ a: "a", b: "b", c: "c" });
+  const profile = {
+    ...defaults,
+    mirror: "full" as const,
+    deletions: true,
+    maxDeleteCount: 10,
+    maxDeletePercent: 100,
+    deleteGrace: 0,
+  };
+  for (const [src, priorSize, settings] of [
+    [source, 1, { maxDeleteCount: 1 }],
+    [source, 1, { maxDeletePercent: 25 }],
+    [source, 5, { shrinkPercent: 40 }],
+    [snap({}), 0, {}],
+  ] as const) {
+    const base = { ...fresh(), size: priorSize };
+    const p = { ...profile, ...settings };
+    const eligible = [...target.files.keys()].filter(
+      (path) => !src.files.has(path),
+    );
+    for (const mode of ["silent", "plan"] as const) {
+      for (const safeguard of [true, false]) {
+        const result = plan(
+          { ...p, silentDeletionSafeguard: safeguard },
+          src,
+          target,
+          base,
+          undefined,
+          mode,
+        );
+        const guarded = mode === "plan" || safeguard;
+        assert.deepEqual(result.held, guarded ? eligible : []);
+        assert.deepEqual(
+          result.ops
+            .filter((op) => op.action === "delete")
+            .map((op) => op.path),
+          guarded ? [] : eligible,
+        );
+      }
+    }
+  }
+});
+
+test("silent deletion opt-out honors preserve mode, filters, and incomplete sources", async () => {
+  const { engine, source, target } = fixture();
+  const profile = {
+    ...defaults,
+    deletions: true,
+    silentDeletionSafeguard: false,
+    exclude: "keep.*",
+    maxDeleteCount: 0,
+    maxDeletePercent: 0,
+    deleteGrace: 0,
+  };
+  const silent = { mode: "silent" as const };
+  source.data.set("delivered.md", bytes("delivered"));
+  target.data.set("local.md", bytes("local"));
+  target.data.set("keep.md", bytes("keep"));
+  await engine.run(profile, source, target, false, undefined, silent);
+  source.data.clear();
+  const disabled = await engine.run(
+    { ...profile, deletions: false },
+    source,
+    target,
+    true,
+    undefined,
+    silent,
+  );
+  assert.equal(disabled.plan.ops.length, 0);
+  const dry = await engine.run(
+    profile,
+    source,
+    target,
+    true,
+    undefined,
+    silent,
+  );
+  assert.deepEqual(
+    dry.plan.ops.map((op) => [op.action, op.path]),
+    [["delete", "delivered.md"]],
+  );
+  assert.equal(target.data.size, 3);
+  await engine.run(profile, source, target, false, undefined, silent);
+  assert.deepEqual([...target.data.keys()].sort(), ["keep.md", "local.md"]);
+  const bad = fixture();
+  bad.target.data.set("local.md", bytes("local"));
+  bad.source.list = async () => {
+    throw Error("incomplete");
+  };
+  await assert.rejects(
+    bad.engine.run(
+      { ...profile, mirror: "full" },
+      bad.source,
+      bad.target,
+      false,
+      undefined,
+      silent,
+    ),
+    /incomplete/,
+  );
+  assert.equal(bad.target.data.size, 1);
+  assert.equal(bad.disk.data.size, 0);
+});

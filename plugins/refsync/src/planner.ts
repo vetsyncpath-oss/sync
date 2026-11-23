@@ -1,6 +1,7 @@
 import { resolveConflict, type ConflictResolver } from "./conflict-resolver";
 import { priority } from "./classifier";
 import {
+  type Mode,
   type Snapshot,
   type Profile,
   type Baseline,
@@ -30,6 +31,7 @@ export function plan(
   dst: Snapshot,
   base: Baseline,
   resolve: ConflictResolver = resolveConflict,
+  mode: Mode = "plan",
 ): Plan {
   if (!src.complete || !dst.complete) throw Error("incomplete");
   const skipped = new Map([...(src.skipped ?? []), ...(dst.skipped ?? [])]);
@@ -108,14 +110,15 @@ export function plan(
     ops.push({ path, action, source: s, target: t, conflict });
   }
   const protect =
-    (p.emptyGuard &&
+    (mode !== "silent" || p.silentDeletionSafeguard !== false) &&
+    ((p.emptyGuard &&
       (src.files.size === 0 ||
         (base.size > 0 &&
           src.files.size < base.size * (1 - p.shrinkPercent / 100)))) ||
-    deletes.length > p.maxDeleteCount ||
-    deletes.length >
-      Math.max(p.deleteGrace, (dst.files.size * p.maxDeletePercent) / 100);
-  if (!protect) ops.push(...deletes);
+      deletes.length > p.maxDeleteCount ||
+      deletes.length >
+        Math.max(p.deleteGrace, (dst.files.size * p.maxDeletePercent) / 100));
+  if (!protect) for (const deletion of deletes) ops.push(deletion);
   ops.sort(
     (a, b) =>
       priority(a.path) - priority(b.path) || a.path.localeCompare(b.path),

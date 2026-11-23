@@ -77,6 +77,32 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
               await rs.execute(q.id,'run');if(!(await v.adapter.read(local+'/README')).includes('Hello World'))throw Error('Git apply');
               return 'Public GitHub HTTPS: preview, shallow fetch and delivery in Windows Obsidian passed';
             }"""))
+            print(page.evaluate("""async()=>{
+              const rs=app.plugins.plugins.refsync,v=app.vault,a=v.adapter;
+              const reference='Пустой эталон',local='Проверка удалений';
+              await v.createFolder(reference);await v.createFolder(local);
+              const path=local+'/тест.md';await v.create(path,'keep until silent opt-out');
+              const p={...rs.config.profiles[0],id:'silent-deletions',scope:'content',access:'local',
+                reference,local,enabled:true,inheritMode:true,mode:'plan',mirror:'full',deletions:true,
+                conflict:'source',maxDeleteCount:0,maxDeletePercent:0,deleteGrace:0,firstPlan:false,
+                fileEvents:false,startup:false,intervalMinutes:0,onFocus:false,onOnline:false};
+              await rs.save({...rs.config,mode:'silent'});await rs.put(p);
+              await rs.execute(p.id,'auto');if(!await a.exists(path))throw Error('default safeguard');
+              const off={...p,silentDeletionSafeguard:false};await rs.put(off);
+              await rs.execute(p.id,'dry');
+              if(!rs.activeReview?.plan.ops.some(o=>o.action==='delete')||!await a.exists(path))throw Error('dry preview');
+              rs.activeReview.close();
+              for(const q of [{...off,inheritMode:false,mode:'plan'},{...off,firstPlan:true,id:'review-first'}]){
+                await rs.put(q);await rs.execute(q.id,'run');
+                if(!rs.activeReview?.plan.held.includes('тест.md')||!await a.exists(path))throw Error('review safeguard');
+                rs.activeReview.close();
+              }
+              await rs.put(off);await rs.execute(off.id,'auto');if(await a.exists(path))throw Error('inherited silent safeguard off');
+              await v.create(path,'manual silent');
+              await rs.save({...rs.config,mode:'plan'});await rs.put({...off,inheritMode:false,mode:'silent'});
+              await rs.execute(off.id,'run');if(await a.exists(path))throw Error('explicit silent safeguard off');
+              return 'Windows Obsidian: silent safeguard default, preview, inheritance, reviewed runs and unlimited silent deletes passed';
+            }"""))
             # Deliver a harmless fixture plugin, then let Obsidian itself activate it at startup.
             page.evaluate("""async()=>{
               const rs=app.plugins.plugins.refsync,v=app.vault,a=v.adapter;

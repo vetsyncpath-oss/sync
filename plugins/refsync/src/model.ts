@@ -39,6 +39,7 @@ export interface Profile {
   conflict: Policy;
   backup: boolean;
   emptyGuard: boolean;
+  silentDeletionSafeguard: boolean;
   mode: Mode;
   firstPlan: boolean;
   fileEvents: boolean;
@@ -77,6 +78,7 @@ export const defaults: Profile = {
   conflict: "source",
   backup: true,
   emptyGuard: true,
+  silentDeletionSafeguard: true,
   mode: "plan",
   firstPlan: false,
   fileEvents: false,

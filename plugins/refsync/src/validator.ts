@@ -102,6 +102,7 @@ export function validate(
     "deletions",
     "backup",
     "emptyGuard",
+    "silentDeletionSafeguard",
     "firstPlan",
     "fileEvents",
     "watch",

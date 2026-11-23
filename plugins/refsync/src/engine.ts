@@ -3,7 +3,12 @@ import { parseOverlay } from "./json-overlay";
 import { pathFilter } from "./filters";
 import { selectPlan, type Choices } from "./selection";
 import { RunBudget, sleep, transient } from "./runtime";
-import { type Profile, type Snapshot, type StorageProvider } from "./model";
+import {
+  type Mode,
+  type Profile,
+  type Snapshot,
+  type StorageProvider,
+} from "./model";
 import { validate } from "./validator";
 import { scan } from "./scanner";
 import { plan, type Plan } from "./planner";
@@ -52,6 +57,7 @@ export class SyncEngine {
     preview: boolean,
     approved?: Plan,
     options: {
+      mode?: Mode;
       choices?: Choices;
       release?: ReadonlySet<string>;
       quiet?: (path: string) => boolean;
@@ -150,7 +156,14 @@ export class SyncEngine {
         if (i.status === "rejected") throw i.reason;
         return i.value;
       });
-      let result = plan(p, s, t, this.applier.state.get(key));
+      let result = plan(
+        p,
+        s,
+        t,
+        this.applier.state.get(key),
+        undefined,
+        options.mode,
+      );
       let changed = 0;
       if (approved)
         result = selectPlan(
