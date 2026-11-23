@@ -1,3 +1,4 @@
+import type { TransferPulse } from "./transfer";
 import { chunkSize } from "./transfer";
 import {
   fileName,
@@ -144,7 +145,7 @@ export class GoogleTree implements RemoteTree {
     } while (token);
     return result;
   }
-  async read(f: RemoteItem, progress?: () => void) {
+  async read(f: RemoteItem, progress?: TransferPulse) {
     const url =
       "https://www.googleapis.com/drive/v3/files/" +
       f.key +
@@ -178,7 +179,7 @@ export class GoogleTree implements RemoteTree {
         throw Error("incomplete");
       result ??= new Uint8Array(f.size);
       result.set(new Uint8Array(reply.arrayBuffer), start);
-      progress?.();
+      progress?.(end + 1, f.size);
     }
     return result!.buffer;
   }

@@ -1,3 +1,4 @@
+import type { TransferPulse } from "./transfer";
 import { hash, join, fold, type Bytes, type StorageProvider } from "./model";
 import { md5 } from "@noble/hashes/legacy";
 import { bytesToHex } from "@noble/hashes/utils";
@@ -14,7 +15,7 @@ export interface RemoteItem {
 export interface RemoteTree {
   root: () => Promise<RemoteItem>;
   children: (dir: RemoteItem) => Promise<RemoteItem[]>;
-  read: (item: RemoteItem, progress?: () => void) => Promise<Bytes>;
+  read: (item: RemoteItem, progress?: TransferPulse) => Promise<Bytes>;
   revision?: () => Promise<string | null>;
   size?: (item: RemoteItem) => Promise<number>;
 }
@@ -128,7 +129,7 @@ export class PublicStore implements StorageProvider {
       version: v.sha256 ?? v.md5,
     };
   }
-  async download(path: string, progress?: () => void) {
+  async download(path: string, progress?: TransferPulse) {
     const v = await this.find(path);
     if (v?.type !== "file") throw Error("incomplete");
     const bytes = await this.tree.read(v, progress);

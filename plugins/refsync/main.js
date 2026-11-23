@@ -10738,114 +10738,7 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 init_git_buffer();
 
-// src/drive-sessions.ts
-init_git_buffer();
-var DeviceDriveSessions = class {
-  database;
-  key;
-  open() {
-    if (!this.database)
-      this.database = new Promise((resolve, reject) => {
-        const request = indexedDB.open("sync-studio-drive-transfers", 1);
-        request.onupgradeneeded = () => {
-          request.result.createObjectStore("keys");
-          request.result.createObjectStore("sessions");
-        };
-        request.onsuccess = () => {
-          const db = request.result;
-          db.onversionchange = () => {
-            db.close();
-            this.database = void 0;
-            this.key = void 0;
-          };
-          resolve(db);
-        };
-        request.onerror = () => {
-          this.database = void 0;
-          reject(request.error);
-        };
-      });
-    return this.database;
-  }
-  encryptionKey() {
-    this.key ??= this.loadKey().catch((error) => {
-      this.key = void 0;
-      throw error;
-    });
-    return this.key;
-  }
-  async loadKey() {
-    const db = await this.open();
-    const candidate = await crypto.subtle.generateKey(
-      { name: "AES-GCM", length: 256 },
-      false,
-      ["encrypt", "decrypt"]
-    );
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction("keys", "readwrite", { durability: "strict" });
-      const store = tx.objectStore("keys");
-      const read = store.get("device");
-      let selected2;
-      read.onsuccess = () => {
-        selected2 = read.result ?? candidate;
-        if (!read.result) store.put(selected2, "device");
-      };
-      tx.oncomplete = () => resolve(selected2);
-      tx.onabort = () => reject(tx.error ?? Error("state"));
-    });
-  }
-  async get(id) {
-    const db = await this.open();
-    const entry = await new Promise((resolve, reject) => {
-      const request = db.transaction("sessions").objectStore("sessions").get(id);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    if (!entry) return null;
-    if (entry.expires <= Date.now()) {
-      await this.set(id, null);
-      return null;
-    }
-    const bytes = await crypto.subtle.decrypt(
-      {
-        name: "AES-GCM",
-        iv: entry.iv,
-        additionalData: new TextEncoder().encode(id)
-      },
-      await this.encryptionKey(),
-      entry.cipher
-    );
-    return new TextDecoder().decode(bytes);
-  }
-  async set(id, value) {
-    const db = await this.open();
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const entry = value === null ? null : {
-      iv,
-      expires: Date.now() + 7 * 864e5,
-      cipher: await crypto.subtle.encrypt(
-        {
-          name: "AES-GCM",
-          iv,
-          additionalData: new TextEncoder().encode(id)
-        },
-        await this.encryptionKey(),
-        new TextEncoder().encode(value)
-      )
-    };
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction("sessions", "readwrite", {
-        durability: "strict"
-      }), store = tx.objectStore("sessions");
-      if (entry) store.put(entry, id);
-      else store.delete(id);
-      tx.oncomplete = () => resolve();
-      tx.onabort = () => reject(tx.error ?? Error("state"));
-    });
-  }
-};
-
-// node_modules/@noble/hashes/esm/sha256.js
+// src/transfer.ts
 init_git_buffer();
 
 // node_modules/@noble/hashes/esm/sha2.js
@@ -11189,12 +11082,33 @@ var SHA256 = class extends HashMD {
 };
 var sha256 = /* @__PURE__ */ createHasher(() => new SHA256());
 
-// node_modules/@noble/hashes/esm/sha256.js
-var sha2562 = sha256;
+// src/transfer.ts
+function byteCount(done, total) {
+  const format = (v) => (v / 1048576).toLocaleString(void 0, { maximumFractionDigits: 1 });
+  return format(done) + " / " + format(total) + " MiB";
+}
+var chunkSize = 8 * 1024 * 1024;
+function fromBuffer(bytes) {
+  return {
+    size: bytes.byteLength,
+    read: async (offset, length) => bytes.slice(offset, offset + length)
+  };
+}
+async function processChunks(file, consume, progress) {
+  const digest2 = sha256.create();
+  for (let offset = 0; offset < file.size; offset += chunkSize) {
+    const length = Math.min(chunkSize, file.size - offset);
+    const bytes = await file.read(offset, length);
+    if (bytes.byteLength !== length) throw Error("referenceChanged");
+    digest2.update(new Uint8Array(bytes));
+    await consume?.(bytes);
+    progress?.();
+  }
+  return bytesToHex(digest2.digest());
+}
 
-// src/config-scope.ts
+// src/webdav.ts
 init_git_buffer();
-var import_posix = __toESM(require_posix());
 
 // src/model.ts
 init_git_buffer();
@@ -11273,7 +11187,1373 @@ async function hash(b) {
   ).join("");
 }
 
+// src/webdav.ts
+function davRoot(d) {
+  if (!d || typeof d.user !== "string" || /[:\r\n]/.test(d.user) || typeof d.url !== "string")
+    throw Error("davLocation");
+  let u;
+  try {
+    u = new URL(d.url);
+  } catch {
+    throw Error("davLocation");
+  }
+  const loopback = ["127.0.0.1", "[::1]", "localhost"].includes(u.hostname);
+  if (!(u.protocol === "https:" || loopback && u.protocol === "http:") || u.username || u.password || u.search || u.hash)
+    throw Error("davLocation");
+  u.pathname = u.pathname.replace(/\/*$/, "/");
+  return u.href;
+}
+function davId(d, prefix) {
+  return JSON.stringify([
+    "webdav",
+    davRoot(d),
+    d.user,
+    prefix && prefix !== "/" ? checked(prefix) : ""
+  ]);
+}
+var ns = "DAV:";
+var child = (el, name) => Array.from(el.children).filter(
+  (c) => c.namespaceURI === ns && c.localName === name
+);
+var propfind = fromBuffer(
+  new TextEncoder().encode(
+    '<D:propfind xmlns:D="DAV:"><D:prop><D:resourcetype/><D:getcontentlength/><D:getlastmodified/><D:getetag/></D:prop></D:propfind>'
+  ).buffer
+);
+function segments(url) {
+  return url.pathname.replace(/\/$/, "").split("/").map((s) => {
+    const v = decodeURIComponent(s);
+    if (/[/\\\0]/.test(v) || v === "." || v === "..")
+      throw Error("remoteName");
+    return v;
+  });
+}
+function multistatus(xml, url, path, depth) {
+  const doc = new DOMParser().parseFromString(
+    new TextDecoder().decode(xml),
+    "application/xml"
+  );
+  const root = doc.documentElement;
+  if (doc.doctype || root.namespaceURI !== ns || root.localName !== "multistatus")
+    throw Error("incomplete");
+  const prefix = segments(url), found = /* @__PURE__ */ new Map();
+  for (const entry of child(root, "response")) {
+    const href = child(entry, "href")[0]?.textContent;
+    if (!href) throw Error("incomplete");
+    const u = new URL(href, url);
+    const parts = segments(u);
+    if (u.origin !== url.origin || u.search || u.hash || prefix.some((s, i) => parts[i] !== s) || parts.length < prefix.length || parts.length > prefix.length + depth)
+      throw Error("incomplete");
+    const relative = join(path, parts.slice(prefix.length).join("/"));
+    if (found.has(relative)) throw Error("collision");
+    const props = child(entry, "propstat").filter(
+      (e) => /^HTTP\/\S+ 200\b/.test(
+        child(e, "status")[0]?.textContent?.trim() ?? ""
+      )
+    ).flatMap((e) => child(e, "prop"));
+    const prop = (k) => props.flatMap((p) => child(p, k))[0];
+    const kind = prop("resourcetype");
+    if (!kind || child(entry, "status").some(
+      (s) => !/^HTTP\/\S+ 2\d\d\b/.test(s.textContent?.trim() ?? "")
+    ))
+      throw Error("incomplete");
+    const folder = child(kind, "collection").length > 0;
+    if (kind.children.length && !folder) throw Error("incomplete");
+    const length = prop("getcontentlength")?.textContent?.trim();
+    if (!folder && (!length || !/^\d+$/.test(length) || !Number.isSafeInteger(Number(length))))
+      throw Error("incomplete");
+    const raw = prop("getetag")?.textContent?.trim();
+    const etag = raw && /^[!#-~]+$/.test(raw) && !/["\\]/.test(raw) && !raw.startsWith("W/") ? '"' + raw + '"' : raw;
+    found.set(relative, {
+      path: relative,
+      type: folder ? "folder" : "file",
+      size: folder ? 0 : Number(length),
+      mtime: Date.parse(prop("getlastmodified")?.textContent ?? "") || 0,
+      etag
+    });
+  }
+  if (!found.has(path)) throw Error("incomplete");
+  return found;
+}
+function lockDeadline(xml, token2, start) {
+  const doc = new DOMParser().parseFromString(
+    new TextDecoder().decode(xml),
+    "application/xml"
+  );
+  const root = doc.documentElement;
+  if (doc.doctype || root.namespaceURI !== ns || root.localName !== "prop")
+    return 0;
+  for (const discovery of child(root, "lockdiscovery"))
+    for (const lock2 of child(discovery, "activelock")) {
+      const has = (outer, inner) => child(lock2, outer).some((el) => child(el, inner).length > 0);
+      const own = child(lock2, "locktoken").some(
+        (el) => child(el, "href").some(
+          (h) => "<" + h.textContent?.trim() + ">" === token2
+        )
+      );
+      if (!own || !has("lockscope", "exclusive") || !has("locktype", "write") || child(lock2, "depth")[0]?.textContent?.trim().toLowerCase() !== "infinity")
+        continue;
+      const timeout = child(lock2, "timeout")[0]?.textContent?.trim() ?? "";
+      if (timeout.toLowerCase() === "infinite") return Infinity;
+      const seconds = /^Second-(\d+)$/i.exec(timeout);
+      if (seconds) return start + 1e3 * Number(seconds[1]);
+    }
+  return 0;
+}
+function success(status, allowed) {
+  if (allowed.includes(status)) return;
+  if (status === 401 || status === 403) throw Error("publicDenied");
+  if (status === 404) throw Error("missingRoot");
+  if (status === 412 || status === 409) throw Error("referenceChanged");
+  if (status === 423) throw Error("locked");
+  if (status === 507) throw Error("diskSpace");
+  throw Error("remoteHttp");
+}
+var DavStore = class {
+  constructor(location2, prefix, readOnly, password) {
+    this.location = location2;
+    this.password = password;
+    this.id = davId(location2, prefix);
+    this.base = new URL(davRoot(location2));
+    if (prefix && prefix !== "/")
+      this.base.pathname += prefix.split("/").map(encodeURIComponent).join("/") + "/";
+    this.capabilities = {
+      readOnly,
+      supportsChecksum: false,
+      supportsChangesFeed: false,
+      maxFileSize: Infinity,
+      rateLimits: null
+    };
+  }
+  id;
+  capabilities;
+  meta = /* @__PURE__ */ new Map();
+  observed = /* @__PURE__ */ new Map();
+  base;
+  url(path, folder = false) {
+    const u = new URL(this.base);
+    if (path)
+      u.pathname += checked(path).split("/").map(encodeURIComponent).join("/") + (folder ? "/" : "");
+    return u;
+  }
+  async request(method, u, headers = {}, body2, pulse, hashOnly = false) {
+    const http = u.protocol === "https:" ? require("node:https") : require("node:http");
+    const password = this.location.user ? await this.password() : null;
+    if (this.location.user && !password) throw Error("davPassword");
+    if (this.location.user)
+      headers = {
+        ...headers,
+        Authorization: "Basic " + import_buffer.Buffer.from(this.location.user + ":" + password, "utf8").toString(
+          "base64"
+        )
+      };
+    if (body2 || ["MKCOL", "UNLOCK", "DELETE", "MOVE"].includes(method))
+      headers["Content-Length"] = String(body2?.size ?? 0);
+    return new Promise((resolve, reject) => {
+      let replied = false;
+      const req = http.request(u, { method, headers }, async (res) => {
+        replied = true;
+        try {
+          const chunks = [];
+          const hasher = hashOnly ? require("node:crypto").createHash("sha256") : void 0;
+          let done = 0;
+          const total = Number(res.headers["content-length"]);
+          for await (const chunk of res) {
+            done += chunk.length;
+            if (method !== "GET" && done > 16 * 1024 * 1024)
+              throw Error("incomplete");
+            if (hasher) hasher.update(chunk);
+            else chunks.push(chunk);
+            if (method === "GET")
+              pulse?.(done, Number.isFinite(total) ? total : void 0);
+          }
+          if (!res.complete) throw Error("incomplete");
+          const data = import_buffer.Buffer.concat(chunks);
+          const bytes = data.byteOffset === 0 && data.byteLength === data.buffer.byteLength ? data.buffer : Uint8Array.from(data).buffer;
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            bytes,
+            length: done,
+            digest: hasher?.digest("hex")
+          });
+        } catch (e) {
+          req.destroy();
+          reject(e);
+        }
+      });
+      req.setTimeout(9e4, () => req.destroy(Error("readTimeout")));
+      req.on("error", () => reject(Error("remoteNetwork")));
+      void (async () => {
+        if (body2)
+          for (let offset = 0; offset < body2.size; offset += chunkSize) {
+            const n = Math.min(chunkSize, body2.size - offset), bytes = await body2.read(offset, n);
+            if (replied || req.destroyed) break;
+            if (bytes.byteLength !== n) throw Error("referenceChanged");
+            await new Promise(
+              (ok, fail) => req.write(new Uint8Array(bytes), (e) => e ? fail(e) : ok())
+            );
+            if (method === "PUT") pulse?.(offset + n, body2.size);
+          }
+        req.end();
+      })().catch((e) => {
+        req.destroy();
+        reject(e);
+      });
+    });
+  }
+  async properties(path, depth) {
+    const url = this.url(path, depth === 1);
+    const get = (u) => this.request(
+      "PROPFIND",
+      u,
+      {
+        Depth: String(depth),
+        "Content-Type": "application/xml; charset=utf-8"
+      },
+      propfind
+    );
+    let response = await get(url);
+    if ([301, 307, 308].includes(response.status) && response.headers.location && !url.pathname.endsWith("/")) {
+      const canonical = new URL(response.headers.location, url);
+      if (canonical.href !== url.href + "/") throw Error("davLocation");
+      url.pathname += "/";
+      response = await get(url);
+    }
+    if (response.status === 404 && !depth) return null;
+    success(response.status, [207]);
+    return multistatus(response.bytes, url, path, depth);
+  }
+  reset() {
+    this.meta.clear();
+    this.observed.clear();
+  }
+  async list(path) {
+    const rows = await this.properties(path, 1);
+    if (rows?.get(path)?.type !== "folder") throw Error("missingRoot");
+    const files = [], folders = [];
+    for (const row of rows.values()) {
+      this.meta.set(row.path, row);
+      if (row.path !== path)
+        (row.type === "folder" ? folders : files).push(row.path);
+    }
+    return { files, folders };
+  }
+  async stat(path) {
+    const meta = (await this.properties(path, 0))?.get(path) ?? null;
+    this.observed.set(path, meta);
+    return meta && { ...meta, version: this.strong(meta) };
+  }
+  async scanStat(path) {
+    const meta = this.meta.get(path);
+    return meta ? { ...meta, version: this.strong(meta) } : this.stat(path);
+  }
+  strong(meta) {
+    return meta.etag && /^"[^"\r\n]*"$/.test(meta.etag) ? meta.etag : void 0;
+  }
+  async readFile(path, pulse, hashOnly = false) {
+    const known = this.observed.get(path) ?? this.meta.get(path);
+    const tag = known && this.strong(known);
+    const reply = await this.request(
+      "GET",
+      this.url(path),
+      tag ? { "If-Match": tag } : {},
+      void 0,
+      pulse,
+      hashOnly
+    );
+    success(reply.status, [200]);
+    if (known && reply.length !== known.size) throw Error("referenceChanged");
+    return reply;
+  }
+  async download(path, pulse) {
+    return (await this.readFile(path, pulse)).bytes;
+  }
+  async readDigest(path, size, pulse) {
+    const reply = await this.readFile(path, pulse, true);
+    if (reply.length !== size || !reply.digest) throw Error("incomplete");
+    return reply.digest;
+  }
+  writable(path) {
+    if (this.capabilities.readOnly || !path) throw Error("readonly");
+    checked(path);
+  }
+  async condition(path) {
+    const current = this.observed.has(path) ? this.observed.get(path) : await this.stat(path);
+    if (!current) return { "If-None-Match": "*" };
+    const etag = this.strong(current);
+    if (current.type !== "file" || !etag) throw Error("davCondition");
+    return { "If-Match": etag };
+  }
+  async uploadChunks(path, file, digest2, _mtime, pulse) {
+    this.writable(path);
+    const url = this.url(path);
+    const response = await this.request(
+      "PUT",
+      url,
+      {
+        ...await this.condition(path),
+        "Content-Type": "application/octet-stream"
+      },
+      file,
+      pulse
+    );
+    success(response.status, [200, 201, 204]);
+    this.reset();
+    const saved = await this.stat(path);
+    if (!saved || saved.size !== file.size) throw Error("referenceChanged");
+    if (await this.readDigest(path, file.size, () => pulse?.()) !== digest2)
+      throw Error("referenceChanged");
+  }
+  async upload(path, data, mtime, pulse) {
+    await this.uploadChunks(
+      path,
+      fromBuffer(data),
+      await hash(data),
+      mtime,
+      pulse
+    );
+  }
+  async mkdir(path) {
+    this.writable(path);
+    const url = this.url(path, true);
+    const response = await this.request("MKCOL", url);
+    this.reset();
+    if (response.status === 409 && path.includes("/")) {
+      await this.mkdir(path.slice(0, path.lastIndexOf("/")));
+      const retry = await this.request("MKCOL", url);
+      if (retry.status === 201) return;
+      if (retry.status === 405 && (await this.stat(path))?.type === "folder")
+        return;
+      success(retry.status, [201]);
+    }
+    if (response.status === 405 && (await this.stat(path))?.type === "folder")
+      return;
+    success(response.status, [201]);
+  }
+  async delete(path) {
+    this.writable(path);
+    const condition = await this.condition(path);
+    if (!condition["If-Match"]) throw Error("referenceChanged");
+    success(
+      (await this.request("DELETE", this.url(path), condition)).status,
+      [200, 204]
+    );
+    this.reset();
+  }
+  async removeEmptyDir(path) {
+    this.writable(path);
+    const url = this.url(path, true);
+    const xml = '<D:lockinfo xmlns:D="DAV:"><D:lockscope><D:exclusive/></D:lockscope><D:locktype><D:write/></D:locktype></D:lockinfo>';
+    const start = performance.now();
+    const locked = await this.request(
+      "LOCK",
+      url,
+      {
+        "If-Match": "*",
+        Depth: "infinity",
+        Timeout: "Second-300",
+        "Content-Type": "application/xml"
+      },
+      fromBuffer(new TextEncoder().encode(xml).buffer)
+    );
+    if ([403, 404, 405, 412, 423, 501].includes(locked.status)) return false;
+    success(locked.status, [200, 201]);
+    const header = locked.headers["lock-token"];
+    const token2 = typeof header === "string" && /^[a-z][a-z0-9+.-]*:[^<>\s]+$/i.test(header) ? "<" + header + ">" : header;
+    if (typeof token2 !== "string" || !/^<[^<>\s]+>$/.test(token2))
+      throw Error("incomplete");
+    let removed = false;
+    try {
+      if (locked.status !== 200) return false;
+      const until = lockDeadline(locked.bytes, token2, start);
+      if (performance.now() >= until) return false;
+      const list = await this.list(path);
+      if (list.files.length || list.folders.length || performance.now() >= until)
+        return false;
+      success(
+        (await this.request("DELETE", url, { If: "(" + token2 + ")" })).status,
+        [200, 204]
+      );
+      removed = true;
+      this.reset();
+      return true;
+    } finally {
+      if (!removed) await this.request("UNLOCK", url, { "Lock-Token": token2 });
+    }
+  }
+  async move(from, to) {
+    this.writable(from);
+    this.writable(to);
+    const condition = await this.condition(from);
+    if (!condition["If-Match"]) throw Error("referenceChanged");
+    success(
+      (await this.request("MOVE", this.url(from), {
+        ...condition,
+        Destination: this.url(to).href,
+        Overwrite: "F"
+      })).status,
+      [201, 204]
+    );
+    this.reset();
+  }
+  async confirmAbsent(paths) {
+    const listings = /* @__PURE__ */ new Map();
+    for (const p of paths) {
+      let dir = "";
+      for (const part of checked(p).split("/")) {
+        let names = listings.get(dir);
+        if (!names) {
+          names = /* @__PURE__ */ new Map();
+          const listing = await this.list(dir);
+          for (const path of [...listing.files, ...listing.folders]) {
+            const key = fold(path).replace(/[. ]+$/, "");
+            const found = names.get(key);
+            if (found) found.push(path);
+            else names.set(key, [path]);
+          }
+          listings.set(dir, names);
+        }
+        const next = join(dir, part);
+        const matches2 = names.get(fold(next)) ?? [];
+        if (!matches2.length) break;
+        if (matches2.length !== 1 || matches2[0] !== next || next === p)
+          throw Error("referenceChanged");
+        dir = next;
+      }
+    }
+  }
+  async getRevision() {
+    return null;
+  }
+};
+
+// src/access-check.ts
+init_git_buffer();
+
+// src/i18n.ts
+init_git_buffer();
+var ru = {
+  categoryRule: "Исключено категориями настроек",
+  pluginRule: "Исключено правилами для этого плагина",
+  baseScope: "Исходный охват",
+  onlyHelp: "Отметьте нужные папки или отдельные файлы. Остальные и новые соседи исключены. Новые файлы внутри выбранной папки включаются.",
+  allHelp: "Включены все разрешённые пути. Исключения применяются к выбранным файлам и папкам вместе с их содержимым.",
+  allExcept: "Всё, кроме исключений",
+  onlySelected: "Только выбранное",
+  minutesUnit: "мин",
+  inactive: "Выключен",
+  places: "Расположения",
+  templates: "Шаблоны",
+  endpoints: "Расположения и направление",
+  composition: "Состав",
+  taskRules: "Правила",
+  schedule: "Запуск",
+  diagnostics: "Диагностика",
+  localBookmark: "Сохранённая локальная папка",
+  remoteBookmark: "Сохранённая папка подключения",
+  customLocation: "Указать расположение",
+  saveLocation: "Запомнить расположение",
+  replacePlace: "Изменить расположение и пути связанных профилей?",
+  useTemplate: "Применить шаблон",
+  saveTaskTemplate: "Сохранить правила задачи",
+  saveScopeTemplate: "Сохранить набор фильтров",
+  templateName: "Название шаблона",
+  replaceTemplate: "Обновить существующий шаблон?",
+  locationsHelp: "Сохраните локальную или облачную папку один раз и выбирайте её в профилях.",
+  checkAccess: "Проверить доступ",
+  accessible: "Папка доступна",
+  rename: "Переименовать",
+  unlinkHelp: "Убрать расположение из библиотеки? Профили сохранят свои пути.",
+  copyJson: "Скопировать JSON",
+  exportJson: "Экспорт JSON",
+  importJson: "Импорт шаблона из JSON",
+  createTask: "Создать профиль",
+  userTemplates: "Мои шаблоны",
+  copyNotes: "Копировать заметки Markdown",
+  publishSelection: "Публиковать выбранное",
+  mirrorTask: "Зеркало папки",
+  appearanceTask: "Перенести оформление Obsidian",
+  pluginDataTask: "Перенести настройки плагинов",
+  manualTask: "Только ручной запуск",
+  copyOnly: "Добавлять и обновлять без удалений",
+  tracked: "Удалять исчезнувшие из источника ранее доставленные файлы и папки",
+  browseLocal: "Выбрать локальную папку",
+  settingsProcessing: "Действующая папка настроек Obsidian. Применяются категории, локальные поля JSON, правила для плагинов и перезагрузки.",
+  contentProcessing: "В этом профиле содержимое папки настроек можно включить как файлы. Для выборочной доставки настроек и сохранения локальных полей JSON выберите охват «Настройки».",
+  draftPreview: "Операции по текущему черновику",
+  createNow: "Создать эти папки сейчас?",
+  whyPath: "Проверить путь",
+  whyPathHelp: "Введите путь относительно папки профиля. Проверка учитывает правила и метаданные обеих сторон.",
+  checkPath: "Проверить",
+  pathAbsent: "Путь отсутствует",
+  folderRule: "Исключено выбором папок и файлов",
+  settingsRule: "Исключено категориями или фильтрами настроек",
+  maskRule: "Исключено масками путей",
+  sizeRule: "Превышено ограничение размера",
+  hiddenOff: "Скрытые файлы исключены",
+  configOff: "Папка настроек исключена",
+  included: "Входит в охват",
+  modifiedSet: "Действуют дополнительные фильтры и правила",
+  contentPatterns: "Маски включения и исключения",
+  scopeTemplates: "Шаблоны состава",
+  taskTemplates: "Шаблоны задачи",
+  advancedFilters: "Маски путей, ID и локальные поля JSON",
+  pluginFiles: "Файлы отдельных плагинов",
+  pluginPartsHelp: "Выберите разрешённые части каждого плагина. Общие категории и маски также действуют. Список включённых в Obsidian плагинов настраивается отдельной категорией.",
+  newPlace: "Новое расположение",
+  editPlace: "Изменить расположение",
+  markdownType: "Заметки Markdown",
+  imageType: "Изображения",
+  allTypes: "Любые типы",
+  fileType: "Типы файлов",
+  customTypes: "Свои маски",
+  includedCategory: "Категория",
+  settingsPaths: "Правила путей и плагинов",
+  protectedList: "Сохранён локальный список включённых плагинов",
+  mixedRules: "Есть исключения или включения внутри",
+  diagnosisHelp: "Проверка использует несохранённые настройки профиля.",
+  history: "Журнал операций",
+  everything: "Включать настройки и скрытые файлы",
+  contentHelp: "Включает настройки Obsidian и скрытые файлы. Выбранные исключения сохраняются. Служебные каталоги, корзина, файлы сеанса и сам Sync Studio защищены.",
+  configFolder: "Включать папку настроек Obsidian",
+  otherHidden: "Включать другие скрытые папки и файлы",
+  folderSelection: "Папки и плагины профиля",
+  pluginsPicker: "Выбрать плагины",
+  foldersPicker: "Выбрать папки и файлы",
+  loadingFolders: "Чтение списка папок…",
+  folderPartial: "Часть папок недоступна. Показаны доступные папки и сохранённые правила.",
+  noneFound: "Ничего не найдено",
+  checkMatches: "Включить найденные",
+  uncheckMatches: "Исключить найденные",
+  useSelection: "Применить выбор к профилю",
+  readCount: "прочитано",
+  reuseCount: "по метаданным",
+  filesCount: "файлов",
+  foldersCount: "папок",
+  refreshLog: "Обновить",
+  fullCheck: "Диагностика · полная проверка файлов",
+  checkedRun: "Сравнение завершено",
+  verified: "Настройки проверены",
+  holdVerify: "Расхождение настроек",
+  historyEmpty: "Записей пока нет",
+  duration: "Время, с",
+  undoPause: "После отката профиль будет выключен. Его можно включить в настройках.",
+  switchMode: "Переключить режим подтверждения / тихий",
+  mkdir: "Создать папку",
+  rmdir: "Удалить пустую папку",
+  folderRetained: "Папка сохранена: содержит другие объекты или доступ к содержимому ограничен",
+  publishHint: "При применении издатель записывает .sync-manifest.json в корень облачной папки. По нему подписчики проверяют завершение публикации.",
+  accounts: "Аккаунты",
+  googlePrivate: "Google Диск · OAuth",
+  yandexPrivate: "Яндекс Диск · OAuth",
+  selectAccount: "Выберите подключённый аккаунт",
+  addAccount: "Подключить аккаунт",
+  signIn: "Войти через браузер",
+  signOut: "Выйти",
+  accountActive: "Подключён",
+  refreshDue: "Токен обновится при обращении",
+  loginRequired: "Требуется повторный вход в аккаунт",
+  logoutHint: "Выйти на этом устройстве? Профили этого аккаунта будут ждать повторного входа.",
+  fullAccess: "Доступ ко всему Диску",
+  appAccess: "Область приложения",
+  scopeHint: "По умолчанию доступны файлы этого приложения Google или папка приложения Яндекса.",
+  clientImport: "Импорт JSON OAuth-клиента Google",
+  clientPaste: "Вставить JSON OAuth-клиента Google",
+  clientJson: "Проверьте JSON клиента Desktop app или Web application",
+  clientReady: "JSON-клиент загружен",
+  clientId: "Укажите Client ID приложения",
+  redirect: "Адрес возврата OAuth (redirect URI)",
+  loopbackHint: "Для клиента Desktop app оставьте поле пустым. Для Web application укажите свой зарегистрированный HTTPS-адрес.",
+  redirectHint: "Укажите зарегистрированный адрес возврата. Для ручного входа подойдёт ваш HTTPS-адрес.",
+  reopenLogin: "Открыть страницу входа",
+  callbackPaste: "Вставить код или полный адрес после входа",
+  connect: "Завершить вход",
+  retryLogin: "Начать вход заново",
+  oauthExpired: "Срок действия кода или сеанса истёк. Войдите заново.",
+  oauthDenied: "Доступ отклонён пользователем",
+  oauthResponse: "Адрес возврата или state не соответствует этому входу",
+  oauthExchange: "Сервис отклонил обмен кода или обновление токена. Проверьте клиент и redirect URI.",
+  oauthIdentity: "Сервис не подтвердил выбранную учётную запись",
+  driveRoot: "ID или ссылка на корневую папку Google Диска",
+  cloudLocation: "Проверьте аккаунт, корневую папку и путь",
+  cloud: "Облачный аккаунт",
+  manifestInvalid: "Публикация не завершена или манифест повреждён. Повторите после завершения публикации.",
+  manifestMismatch: "Файлы источника расходятся с манифестом. Проверьте папку и охват публикации.",
+  cloudRecovery: "Восстановление облачной операции ожидает доступа к аккаунту или устранения расхождения версий",
+  engine: "Подключение",
+  vaultSource: "Папка в хранилище",
+  google: "Google Диск",
+  yandex: "Яндекс Диск",
+  git: "Git по HTTPS",
+  remote: "Публичная ссылка или ключ источника",
+  branch: "Ветка Git (пусто — ветка по умолчанию)",
+  deviceKey: "API-ключ Google Drive для этого устройства",
+  subfolder: "Папка внутри источника (/ — корень)",
+  browse: "Обзор папок источника",
+  upFolder: "На уровень выше",
+  openFolder: "Открыть",
+  useFolder: "Выбрать эту папку",
+  publicUrl: "Проверьте публичную ссылку или ключ источника",
+  gitBranch: "Некорректное имя ветки Git",
+  googleKey: "Введите и сохраните API-ключ Google Drive",
+  publicQuota: "Исчерпана квота API. Повторите позже.",
+  publicDenied: "Сервис отклонил доступ. Проверьте общий доступ и ключ.",
+  remoteHttp: "Ошибка сервиса при чтении источника",
+  remoteNetwork: "Не удалось подключиться к источнику",
+  remoteName: "Источник вернул неоднозначное имя файла",
+  gitRead: "Не удалось получить Git-репозиторий. Проверьте HTTPS-ссылку, ветку и подключение.",
+  maxDeleteCount: "Порог удалений, файлов и папок",
+  maxDeletePercent: "Порог удалений, % от цели",
+  shrinkPercent: "Порог уменьшения источника, %",
+  deleteGrace: "Минимум объектов для процентного порога удалений",
+  scopePreset: "Набор настроек",
+  preset_full: "Основные настройки и плагины",
+  preset_noData: "Настройки и код плагинов",
+  preset_look: "Оформление и темы",
+  preset_plugins: "Код и список плагинов",
+  preset_custom: "Свой набор",
+  cat_core: "Основные настройки",
+  cat_appearance: "Оформление",
+  cat_themes: "Темы",
+  cat_snippets: "CSS-сниппеты",
+  cat_community: "Список включённых плагинов",
+  cat_code: "Код, манифесты и стили плагинов",
+  cat_data: "Данные плагинов",
+  cat_extras: "Прочие файлы плагинов",
+  existingCode: "Выбранные данные или список плагинов рассчитаны на уже установленный код.",
+  cfg_codeAllow: "Разрешённые ID для файлов плагинов (glob через запятую)",
+  cfg_codeDeny: "Исключённые ID для файлов плагинов",
+  cfg_dataAllow: "Разрешённые ID для data.json",
+  cfg_dataDeny: "Исключённые ID для data.json",
+  cfg_include: "Дополнительные файлы настроек (glob)",
+  cfg_exclude: "Исключить пути (glob)",
+  cfg_overlay: "Локальные ключи JSON, по строке: plugins/*/data.json => accounts[*].token",
+  mobileFilter: "Исключать desktop-only плагины на мобильных устройствах",
+  strategy: "Стратегия применения",
+  batch: "Пакет с полным предварительным чтением",
+  changes: "Только изменения",
+  reloadPolicy: "Перезагрузка Obsidian",
+  reload_now: "Сразу после применения",
+  reload_next: "При следующем запуске",
+  reload_idle: "При простое",
+  reload_never: "Только отметка в строке состояния",
+  idleDelay: "Простой до перезагрузки, секунд",
+  reloadNeeded: "Изменения требуют перезагрузки",
+  repairFailed: "Проверка настроек завершилась с расхождениями",
+  invalidConfig: "Некорректные параметры настроек",
+  overlaySyntax: "Ожидается шаблон файла => путь JSON, по правилу на строке",
+  reloadUnavailable: "Команда перезагрузки недоступна",
+  strictDrift: "Восстанавливать настройки при локальных изменениях",
+  badPath: "Недопустимое имя Windows",
+  profiles: "Профили",
+  defaultMode: "Режим по умолчанию",
+  pause: "Приостановить синхронизацию",
+  paused: "Пауза",
+  add: "Добавить профиль",
+  syncAll: "Запустить все активные профили",
+  enabled: "Включён",
+  edit: "Редактировать профиль",
+  duplicate: "Дублировать",
+  down: "Ниже",
+  up: "Выше",
+  current: "Текущий профиль",
+  select: "Сделать текущим",
+  name: "Имя профиля",
+  mode: "Режим работы",
+  inherit: "Использовать глобальный режим",
+  plan: "План с подтверждением",
+  silent: "Тихий",
+  silentDeletionSafeguard: "Защита от массовых удалений в тихом режиме",
+  silentDeletionSafeguardHelp: "Если выключить, тихий запуск выполнит все удаления по правилам профиля, даже при пустом источнике или превышении порогов.",
+  firstPlan: "Показывать план перед первой доставкой",
+  mirrorMode: "Зеркалирование",
+  preserve: "Сохранять локальные файлы",
+  full: "Полное зеркало",
+  source: "Предпочесть источник",
+  targetVersion: "Предпочесть версию цели",
+  newer: "Предпочесть более новый файл",
+  deletions: "Применять удаления из источника",
+  trash: "Способ удаления",
+  plugin: "Корзина Sync Studio",
+  vault: "Корзина хранилища",
+  system: "Системная корзина",
+  permanent: "Удалить файл с резервной копией",
+  trashDays: "Хранить в корзине Sync Studio, дней",
+  include: "Включать пути (glob через запятую)",
+  exclude: "Исключать пути (glob через запятую)",
+  maxMiB: "Максимальный размер в МиБ (0 — любой)",
+  startup: "При запуске Obsidian",
+  startupSeconds: "Задержка после запуска, секунд",
+  intervalMinutes: "Интервал в минутах (0 — вручную и по событиям)",
+  onFocus: "При возврате фокуса",
+  onOnline: "При появлении сети",
+  fileEvents: "При изменениях файлов",
+  debounceSeconds: "Объединять события за период, секунд",
+  quietSeconds: "Окно тишины редактора, секунд",
+  maxDeferrals: "Сколько раз отложить открытый файл",
+  remove: "Удалить профиль",
+  removeText: "Удалить профиль из списка? Файлы в обеих папках сохранятся.",
+  confirmAction: "Подтвердить",
+  release: "Разрешить выбранные отложенные удаления",
+  search: "Поиск по пути",
+  all: "Все действия",
+  toggleVisible: "Изменить выбор в фильтре",
+  selected: "Выбрано",
+  deferred: "Отложено файлов",
+  diff: "Сравнить",
+  export: "Копировать план JSON",
+  close: "Закрыть",
+  applySelected: "Применить выбранное",
+  trashUnavailable: "Системная корзина недоступна",
+  watchdog: "Истекло время прохода",
+  readTimeout: "Истекло время чтения файла",
+  stopped: "Запуск остановлен",
+  editing: "Открытый файл недавно изменён",
+  unstable: "Исходный файл меняется",
+  locked: "Файл занят",
+  settling: "Ожидается завершение предыдущей записи. Следующий запуск восстановит журнал.",
+  idle: "Готов",
+  scan: "Сравнение",
+  apply: "Применение",
+  recover: "Восстановление",
+  done: "Готово",
+  partial: "Частично",
+  error: "Ошибка",
+  title: "Sync Studio · локальный профиль",
+  preview: "Показать план",
+  sync: "Синхронизировать",
+  undo: "Откатить последнюю доставку",
+  cancel: "Отмена",
+  confirm: "Откатить",
+  reference: "Папка подключения",
+  target: "Локальная папка",
+  scope: "Охват",
+  content: "Контент",
+  settings: "Настройки",
+  save: "Сохранить",
+  role: "Направление",
+  subscriber: "Получать в локальную папку",
+  publisher: "Публиковать из локальной папки",
+  saved: "Сохранено",
+  instructions: "Создайте две отдельные папки. Для настроек локальным корнем служит каталог конфигурации Obsidian. Исходные папки должны существовать.",
+  init: "Создать недостающие папки",
+  none: "Изменений нет",
+  held: "Защита отложила удаления",
+  undoText: "Восстановить файлы из резервной копии последней доставки этого профиля?",
+  write: "Доставить",
+  delete: "В корзину",
+  retain: "Оставить версию цели",
+  both: "Сохранить обе версии",
+  log: "Журнал",
+  conflict: "Конфликт",
+  invalid: "Недопустимое значение",
+  readonly: "Источник доступен только для чтения",
+  mirror: "Полное зеркало требует доставки источника и удалений",
+  configConflict: "Для настроек используется источник с бэкапом",
+  configEvents: "События файлов отключены для настроек",
+  mobile: "Недоступно на мобильном устройстве",
+  guard: "Требуются бэкап и защита от пустого источника",
+  overlap: "Папки пересекаются",
+  protected: "Служебный путь исключён",
+  path: "Непереносимый или некорректный путь",
+  missingRoot: "Папка не найдена",
+  incomplete: "Неполное чтение файлов",
+  contentFiles: "Контент и папка настроек как обычные файлы",
+  categoryOff: "Общая категория выключена. Для передачи нужно включить её или задать подходящую маску включения.",
+  pluginPatterns: "Маски ID плагинов",
+  jsonRules: "Правила JSON",
+  accessFailed: "Ошибка проверки доступа",
+  webdav: "WebDAV",
+  savePassword: "Сохранить пароль",
+  davLocation: "Укажите HTTPS-адрес корневой папки WebDAV без пароля и параметров ссылки",
+  davDesktop: "WebDAV доступен в настольном Obsidian",
+  davUrl: "Корневой URL WebDAV",
+  davUser: "Имя пользователя (пусто для анонимного доступа)",
+  davPasswordLabel: "Пароль приложения WebDAV",
+  davSecretHelp: "Сохраняется на этом устройстве для данного адреса и пользователя. Пустое значение удаляет пароль.",
+  davPassword: "Сохраните пароль WebDAV на этом устройстве",
+  davCondition: "Для безопасной замены и удаления сервер должен предоставлять сильный ETag",
+  probeTitle: "Права в папке подключения",
+  probeHelp: "Проверка записи создаёт, читает, изменяет и удаляет временный файл в выбранной папке.",
+  probeWriteButton: "Проверить запись временным файлом",
+  probeList: "Просмотр папки",
+  probeCreate: "Создание",
+  probeRead: "Чтение файла",
+  probeReplace: "Замена",
+  probeDelete: "Удаление",
+  probeRemaining: "Проверьте временный файл:",
+  transferUpload: "Отправка",
+  transferDownload: "Получение",
+  transferResumed: "Продолжено с",
+  diskSpace: "Недостаточно места для временной копии",
+  deletionSide: "Удаления на стороне назначения",
+  srcSide: "Источник",
+  destSide: "Назначение",
+  collision: "Коллизия путей",
+  indexPending: "Файл ещё не готов в индексе",
+  referenceChanged: "Источник изменился, повторите сравнение",
+  busy: "Выполняется другой запуск",
+  noBackup: "Нет завершённой доставки для отката",
+  backup: "Повреждён бэкап",
+  state: "Ошибка локального состояния",
+  journal: "Повреждён журнал",
+  failed: "Операция не завершена",
+  previewFirst: "Сначала проверьте список. Применение повторно сверяет источник.",
+  dry: "Просмотр изменений",
+  unknown: "Неизвестное состояние"
+};
+var en = {
+  categoryRule: "Excluded by settings categories",
+  pluginRule: "Excluded by rules for this plugin",
+  baseScope: "Starting selection",
+  onlyHelp: "Select folders or individual files. Other entries and new siblings are excluded. New files inside a selected folder are included.",
+  allHelp: "All eligible paths are included. Exclusions apply to selected files and entire folders.",
+  allExcept: "All except exclusions",
+  onlySelected: "Selected items only",
+  minutesUnit: "min",
+  inactive: "Disabled",
+  places: "Locations",
+  templates: "Templates",
+  endpoints: "Locations and direction",
+  composition: "Contents",
+  taskRules: "Rules",
+  schedule: "Run settings",
+  diagnostics: "Diagnostics",
+  localBookmark: "Saved local folder",
+  remoteBookmark: "Saved connection folder",
+  customLocation: "Custom location",
+  saveLocation: "Save location",
+  replacePlace: "Update this location and the paths of its linked profiles?",
+  useTemplate: "Apply template",
+  saveTaskTemplate: "Save task template",
+  saveScopeTemplate: "Save scope template",
+  templateName: "Template name",
+  replaceTemplate: "Update existing template?",
+  locationsHelp: "Save a local or cloud folder once and reuse it across profiles.",
+  checkAccess: "Check access",
+  accessible: "Folder available",
+  rename: "Rename",
+  unlinkHelp: "Remove this location from the library? Profiles will keep their paths.",
+  copyJson: "Copy JSON",
+  exportJson: "Export JSON",
+  importJson: "Import template JSON",
+  createTask: "Create profile",
+  userTemplates: "My templates",
+  copyNotes: "Copy Markdown notes",
+  publishSelection: "Publish selected files",
+  mirrorTask: "Mirror a folder",
+  appearanceTask: "Transfer Obsidian appearance",
+  pluginDataTask: "Transfer plugin settings",
+  manualTask: "Manual runs only",
+  copyOnly: "Add and update without deletions",
+  tracked: "Remove previously delivered files and folders missing from the source",
+  browseLocal: "Browse local folder",
+  settingsProcessing: "Uses the active Obsidian configuration folder with categories, local JSON fields, plugin rules and reload settings.",
+  contentProcessing: "This profile can include configuration as files. Choose Settings for category selection and preservation of local JSON fields.",
+  draftPreview: "Operations for this draft",
+  createNow: "Create these folders now?",
+  whyPath: "Inspect a path",
+  whyPathHelp: "Enter a path relative to the profile root to inspect its rules and metadata on both sides.",
+  checkPath: "Check",
+  pathAbsent: "Path absent",
+  folderRule: "Excluded by folder and file selection",
+  settingsRule: "Excluded by settings categories or filters",
+  maskRule: "Excluded by path patterns",
+  sizeRule: "Exceeds the size limit",
+  hiddenOff: "Hidden files excluded",
+  configOff: "Configuration folder excluded",
+  included: "Included",
+  modifiedSet: "Additional filters and rules apply",
+  contentPatterns: "Include and exclude patterns",
+  scopeTemplates: "Scope templates",
+  taskTemplates: "Task templates",
+  advancedFilters: "Path patterns, plugin IDs and local JSON fields",
+  pluginFiles: "Files per plugin",
+  pluginPartsHelp: "Choose the allowed parts of each plugin. Global categories and patterns also apply. The enabled-plugin list has its own category.",
+  newPlace: "New location",
+  editPlace: "Edit location",
+  markdownType: "Markdown notes",
+  imageType: "Images",
+  allTypes: "Any file type",
+  fileType: "File types",
+  customTypes: "Custom patterns",
+  includedCategory: "Category",
+  settingsPaths: "Path and plugin rules",
+  protectedList: "Enabled plugins list is preserved",
+  mixedRules: "Contains selection overrides",
+  diagnosisHelp: "Uses the current unsaved profile settings.",
+  history: "Operation history",
+  everything: "Include configuration and hidden files",
+  contentHelp: "Includes Obsidian settings and hidden files. Folder exclusions still apply. Internal folders, trash, session files and Sync Studio are protected.",
+  configFolder: "Include Obsidian configuration folder",
+  otherHidden: "Include other hidden folders and files",
+  folderSelection: "Profile folders and plugins",
+  pluginsPicker: "Choose plugins",
+  foldersPicker: "Choose folders and files",
+  loadingFolders: "Reading folders…",
+  folderPartial: "Some folders are unavailable. Showing available folders and saved rules.",
+  noneFound: "No matches",
+  checkMatches: "Include matches",
+  uncheckMatches: "Exclude matches",
+  useSelection: "Use selection in profile",
+  readCount: "read",
+  reuseCount: "from metadata",
+  filesCount: "files",
+  foldersCount: "folders",
+  refreshLog: "Refresh",
+  fullCheck: "Diagnostics · full file verification",
+  checkedRun: "Comparison completed",
+  verified: "Settings verified",
+  holdVerify: "Settings mismatch",
+  historyEmpty: "No operations recorded yet",
+  duration: "Seconds",
+  undoPause: "Undo disables this profile. Enable it again in settings.",
+  switchMode: "Toggle review / silent mode",
+  mkdir: "Create folder",
+  rmdir: "Remove empty folder",
+  folderRetained: "Folder retained: it contains other items or access to its contents is limited",
+  publishHint: "Applying this profile writes .sync-manifest.json at the cloud folder root so subscribers can verify publication.",
+  accounts: "Accounts",
+  googlePrivate: "Google Drive · OAuth",
+  yandexPrivate: "Yandex Disk · OAuth",
+  selectAccount: "Select a connected account",
+  addAccount: "Connect an account",
+  signIn: "Sign in with browser",
+  signOut: "Sign out",
+  accountActive: "Connected",
+  refreshDue: "Token refresh due on next request",
+  loginRequired: "Sign in to the account again",
+  logoutHint: "Sign out on this device? Profiles using this account will wait for sign-in.",
+  fullAccess: "Full drive access",
+  appAccess: "Application scope",
+  scopeHint: "Defaults to app-authorized files on Google or the application folder on Yandex.",
+  clientImport: "Import Google OAuth client JSON",
+  clientPaste: "Paste Google OAuth client JSON",
+  clientJson: "Check the Desktop app or Web application client JSON",
+  clientReady: "Client JSON loaded",
+  clientId: "Enter the application client ID",
+  redirect: "OAuth redirect URI",
+  loopbackHint: "Leave empty for a Desktop app client. For a Web application enter your registered HTTPS redirect URI.",
+  redirectHint: "Use the registered callback address. Your own HTTPS redirect supports manual completion.",
+  reopenLogin: "Open sign-in page",
+  callbackPaste: "Paste the code or full redirected URL",
+  connect: "Complete sign-in",
+  retryLogin: "Restart sign-in",
+  oauthExpired: "Code or session expired. Start sign-in again.",
+  oauthDenied: "Authorization was declined",
+  oauthResponse: "Callback or state does not match this sign-in",
+  oauthExchange: "Token exchange or refresh failed. Check the client and redirect URI.",
+  oauthIdentity: "Provider did not confirm the selected account",
+  driveRoot: "Google Drive base folder ID or link",
+  cloudLocation: "Check the account, root folder and path",
+  cloud: "Cloud account",
+  manifestInvalid: "Publication is in progress or its manifest is invalid. Retry after publication.",
+  manifestMismatch: "Files differ from the manifest. Check the folder and publishing scope.",
+  cloudRecovery: "Cloud recovery requires account access or resolution of a conflicting file version",
+  engine: "Connection",
+  vaultSource: "Vault folder",
+  google: "Google Drive",
+  yandex: "Yandex Disk",
+  git: "Git over HTTPS",
+  remote: "Public URL or source key",
+  branch: "Git branch (leave empty for the default)",
+  deviceKey: "Google Drive API key for this device",
+  subfolder: "Folder within source (/ for root)",
+  browse: "Browse source folders",
+  upFolder: "Parent folder",
+  openFolder: "Open",
+  useFolder: "Choose this folder",
+  publicUrl: "Check the public link or source key",
+  gitBranch: "Invalid Git branch name",
+  googleKey: "Enter and save your Google Drive API key",
+  publicQuota: "API quota reached. Try again later.",
+  publicDenied: "Access denied. Check sharing and the API key.",
+  remoteHttp: "Service error while reading source",
+  remoteNetwork: "Cannot connect to source",
+  remoteName: "Source returned an ambiguous file name",
+  gitRead: "Cannot fetch repository. Check the HTTPS URL, branch and connection.",
+  maxDeleteCount: "Deletion threshold (files)",
+  maxDeletePercent: "Deletion threshold (% of target)",
+  shrinkPercent: "Source shrink threshold (%)",
+  deleteGrace: "Deletion count floor for percentage threshold",
+  scopePreset: "Settings preset",
+  preset_full: "Standard settings and plugins",
+  preset_noData: "Settings and plugin code",
+  preset_look: "Appearance and themes",
+  preset_plugins: "Plugin code and list",
+  preset_custom: "Custom selection",
+  cat_core: "Core settings",
+  cat_appearance: "Appearance",
+  cat_themes: "Themes",
+  cat_snippets: "CSS snippets",
+  cat_community: "Enabled community plugins",
+  cat_code: "Plugin code, manifests and styles",
+  cat_data: "Plugin data",
+  cat_extras: "Other plugin files",
+  existingCode: "The selected data or enabled list depends on already installed plugins.",
+  cfg_codeAllow: "Allowed plugin IDs for files (comma-separated globs)",
+  cfg_codeDeny: "Excluded plugin IDs for files",
+  cfg_dataAllow: "Allowed plugin IDs for data.json",
+  cfg_dataDeny: "Excluded plugin IDs for data.json",
+  cfg_include: "Additional settings paths (globs)",
+  cfg_exclude: "Exclude settings paths (globs)",
+  cfg_overlay: "Keep local JSON keys, one per line: plugins/*/data.json => accounts[*].token",
+  mobileFilter: "Exclude desktop-only plugins on mobile",
+  strategy: "Application strategy",
+  batch: "Batch with complete preflight",
+  changes: "Changed files only",
+  reloadPolicy: "Reload Obsidian",
+  reload_now: "Immediately after delivery",
+  reload_next: "At next launch",
+  reload_idle: "When idle",
+  reload_never: "Status indicator only",
+  idleDelay: "Idle time before reload (seconds)",
+  reloadNeeded: "Reload required",
+  repairFailed: "Settings verification found unresolved differences",
+  invalidConfig: "Invalid settings configuration",
+  overlaySyntax: "Expected one file glob => JSON path per line",
+  reloadUnavailable: "Reload command unavailable",
+  strictDrift: "Restore settings after local changes",
+  badPath: "Invalid Windows path",
+  profiles: "Profiles",
+  defaultMode: "Default mode",
+  pause: "Pause sync",
+  paused: "Paused",
+  add: "New profile",
+  syncAll: "Run all enabled profiles",
+  enabled: "Enabled",
+  edit: "Edit profile",
+  duplicate: "Duplicate",
+  down: "Move down",
+  up: "Move up",
+  current: "Current profile",
+  select: "Make current",
+  name: "Profile name",
+  mode: "Run mode",
+  inherit: "Use global mode",
+  plan: "Review plan",
+  silent: "Silent",
+  silentDeletionSafeguard: "Mass deletion safeguard in silent mode",
+  silentDeletionSafeguardHelp: "Turn off to apply every deletion selected by the profile during silent runs, even when the source is empty or the thresholds are exceeded.",
+  firstPlan: "Review before first delivery",
+  mirrorMode: "Mirroring",
+  preserve: "Preserve local files",
+  full: "Full mirror",
+  source: "Prefer source",
+  targetVersion: "Prefer target",
+  newer: "Prefer newer file",
+  deletions: "Propagate source deletions",
+  trash: "Deletion destination",
+  plugin: "Sync Studio trash",
+  vault: "Vault trash",
+  system: "System trash",
+  permanent: "Delete file with backup",
+  trashDays: "Sync Studio trash retention (days)",
+  include: "Include paths (comma-separated globs)",
+  exclude: "Exclude paths (comma-separated globs)",
+  maxMiB: "Maximum MiB (0 for unlimited)",
+  startup: "On Obsidian startup",
+  startupSeconds: "Startup delay (seconds)",
+  intervalMinutes: "Interval in minutes (0 for event or manual runs)",
+  onFocus: "On window focus",
+  onOnline: "When online",
+  fileEvents: "On file changes",
+  debounceSeconds: "Event debounce (seconds)",
+  quietSeconds: "Editor quiet window (seconds)",
+  maxDeferrals: "Maximum editor deferrals",
+  remove: "Remove profile",
+  removeText: "Remove the profile? Files in both folders will be kept.",
+  confirmAction: "Confirm",
+  release: "Allow selected held deletions",
+  search: "Search paths",
+  all: "All actions",
+  toggleVisible: "Toggle filtered items",
+  selected: "Selected",
+  deferred: "Files deferred",
+  diff: "Diff",
+  export: "Copy plan JSON",
+  close: "Close",
+  applySelected: "Apply selected",
+  trashUnavailable: "System trash unavailable",
+  watchdog: "Run deadline exceeded",
+  readTimeout: "File read timed out",
+  stopped: "Run stopped",
+  editing: "Recently edited open file",
+  unstable: "Source file is changing",
+  locked: "File is busy",
+  settling: "A previous write is settling. The next run will recover the journal.",
+  idle: "Ready",
+  scan: "Scanning",
+  apply: "Applying",
+  recover: "Recovering",
+  done: "Done",
+  partial: "Partial",
+  error: "Error",
+  title: "Sync Studio · local profile",
+  preview: "Show plan",
+  sync: "Synchronize",
+  undo: "Roll back last delivery",
+  cancel: "Cancel",
+  confirm: "Restore",
+  reference: "Connection folder",
+  target: "Local folder",
+  scope: "Scope",
+  content: "Content",
+  settings: "Settings",
+  save: "Save",
+  role: "Role",
+  subscriber: "Subscriber",
+  publisher: "Publisher",
+  saved: "Saved",
+  instructions: "Create two separate folders. For settings, the local root is the Obsidian configuration folder. Both roots must exist.",
+  init: "Create missing folders",
+  none: "No changes",
+  held: "Deletions held by safeguards",
+  undoText: "Restore files from the last delivery of this profile?",
+  write: "Deliver",
+  delete: "Trash",
+  retain: "Keep target",
+  both: "Keep both",
+  log: "Log",
+  conflict: "Conflict",
+  invalid: "Invalid value",
+  readonly: "Read-only source",
+  mirror: "Full mirror requires source preference and deletions",
+  configConflict: "Settings use source and backup",
+  configEvents: "File events disabled for settings",
+  mobile: "Unavailable on mobile",
+  guard: "Backup and empty-source guard required",
+  overlap: "Folders overlap",
+  protected: "Protected path",
+  path: "Invalid or non-portable path",
+  missingRoot: "Folder missing",
+  incomplete: "Incomplete listing or read",
+  contentFiles: "Content and configuration folder as ordinary files",
+  categoryOff: "The category is off. Enable it or add a matching inclusion pattern to transfer this part.",
+  pluginPatterns: "Plugin ID patterns",
+  jsonRules: "JSON rules",
+  accessFailed: "Access check failed",
+  webdav: "WebDAV",
+  savePassword: "Save password",
+  davLocation: "Enter an HTTPS WebDAV folder URL without credentials or query parameters",
+  davDesktop: "WebDAV requires desktop Obsidian",
+  davUrl: "WebDAV root URL",
+  davUser: "Username (empty for anonymous access)",
+  davPasswordLabel: "WebDAV app password",
+  davSecretHelp: "Saved on this device for this URL and username. Save an empty value to remove the password.",
+  davPassword: "Save the WebDAV password on this device",
+  davCondition: "Safe replacement and deletion require a strong ETag from this server",
+  probeTitle: "Connection folder permissions",
+  probeHelp: "The write check creates, reads, replaces and removes a temporary file in the chosen folder.",
+  probeWriteButton: "Test writes with a temporary file",
+  probeList: "List folder",
+  probeCreate: "Create",
+  probeRead: "Read file",
+  probeReplace: "Replace",
+  probeDelete: "Delete",
+  probeRemaining: "Check temporary file:",
+  transferUpload: "Upload",
+  transferDownload: "Download",
+  transferResumed: "Resumed from",
+  diskSpace: "Insufficient disk space for staging",
+  deletionSide: "Deletions at destination",
+  srcSide: "Source",
+  destSide: "Destination",
+  collision: "Path collision",
+  indexPending: "File not ready in vault index",
+  referenceChanged: "Source changed, scan again",
+  busy: "Another run is active",
+  noBackup: "No completed delivery to restore",
+  backup: "Damaged backup",
+  state: "Invalid local state",
+  journal: "Invalid journal",
+  failed: "Operation failed",
+  previewFirst: "Review the list first. Apply checks the source again.",
+  dry: "Preview changes",
+  unknown: "Unknown state"
+};
+function errorKey(message) {
+  return Object.hasOwn(ru, message) ? message : "failed";
+}
+function translator(locale) {
+  const dict = locale.startsWith("ru") ? ru : en;
+  return (k) => Object.hasOwn(dict, k) ? dict[k] : dict.failed;
+}
+
+// src/access-check.ts
+async function testAccess(store, write) {
+  const result = { steps: [] };
+  const name = "sync-studio-check-" + crypto.randomUUID() + ".txt";
+  const encode3 = (n) => new TextEncoder().encode(name + " " + n).buffer;
+  const one = encode3(1), two = encode3(2);
+  let step = "probeList", attempted = false;
+  try {
+    await store.list("");
+    result.steps.push(step);
+    if (!write) return result;
+    step = "probeCreate";
+    if (await store.stat(name)) throw Error("collision");
+    attempted = true;
+    await store.upload(name, one);
+    result.steps.push(step);
+    step = "probeRead";
+    if (await hash(await store.download(name)) !== await hash(one))
+      throw Error("referenceChanged");
+    result.steps.push(step);
+    step = "probeReplace";
+    await store.upload(name, two);
+    if (await hash(await store.download(name)) !== await hash(two))
+      throw Error("referenceChanged");
+    result.steps.push(step);
+    step = "probeDelete";
+    await store.delete(name);
+    store.reset?.();
+    if (await store.stat(name)) throw Error("incomplete");
+    attempted = false;
+    result.steps.push(step);
+  } catch (e) {
+    result.failed = step;
+    result.error = e instanceof Error ? errorKey(e.message) : "failed";
+    if (attempted)
+      try {
+        store.reset?.();
+        if (await store.stat(name)) {
+          const digest2 = await hash(await store.download(name));
+          if (digest2 !== await hash(one) && digest2 !== await hash(two))
+            throw Error("referenceChanged");
+          await store.delete(name);
+          store.reset?.();
+          if (await store.stat(name)) throw Error("incomplete");
+        }
+      } catch {
+        result.leftover = name;
+      }
+  }
+  return result;
+}
+function describeAccess(result, t) {
+  return [
+    ...result.steps.map((s) => "✓ " + t(s)),
+    ...result.failed ? ["× " + t(result.failed) + " · " + t(result.error ?? "failed")] : [],
+    ...result.leftover ? [t("probeRemaining") + " " + result.leftover] : []
+  ].join(" · ");
+}
+
+// src/drive-sessions.ts
+init_git_buffer();
+var DeviceDriveSessions = class {
+  database;
+  key;
+  open() {
+    if (!this.database)
+      this.database = new Promise((resolve, reject) => {
+        const request = indexedDB.open("sync-studio-drive-transfers", 1);
+        request.onupgradeneeded = () => {
+          request.result.createObjectStore("keys");
+          request.result.createObjectStore("sessions");
+        };
+        request.onsuccess = () => {
+          const db = request.result;
+          db.onversionchange = () => {
+            db.close();
+            this.database = void 0;
+            this.key = void 0;
+          };
+          resolve(db);
+        };
+        request.onerror = () => {
+          this.database = void 0;
+          reject(request.error);
+        };
+      });
+    return this.database;
+  }
+  encryptionKey() {
+    this.key ??= this.loadKey().catch((error) => {
+      this.key = void 0;
+      throw error;
+    });
+    return this.key;
+  }
+  async loadKey() {
+    const db = await this.open();
+    const candidate = await crypto.subtle.generateKey(
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"]
+    );
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("keys", "readwrite", { durability: "strict" });
+      const store = tx.objectStore("keys");
+      const read = store.get("device");
+      let selected2;
+      read.onsuccess = () => {
+        selected2 = read.result ?? candidate;
+        if (!read.result) store.put(selected2, "device");
+      };
+      tx.oncomplete = () => resolve(selected2);
+      tx.onabort = () => reject(tx.error ?? Error("state"));
+    });
+  }
+  async get(id) {
+    const db = await this.open();
+    const entry = await new Promise((resolve, reject) => {
+      const request = db.transaction("sessions").objectStore("sessions").get(id);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    if (!entry) return null;
+    if (entry.expires <= Date.now()) {
+      await this.set(id, null);
+      return null;
+    }
+    const bytes = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: entry.iv,
+        additionalData: new TextEncoder().encode(id)
+      },
+      await this.encryptionKey(),
+      entry.cipher
+    );
+    return new TextDecoder().decode(bytes);
+  }
+  async set(id, value, expires = Date.now() + 7 * 864e5) {
+    const db = await this.open();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const entry = value === null ? null : {
+      iv,
+      expires,
+      cipher: await crypto.subtle.encrypt(
+        {
+          name: "AES-GCM",
+          iv,
+          additionalData: new TextEncoder().encode(id)
+        },
+        await this.encryptionKey(),
+        new TextEncoder().encode(value)
+      )
+    };
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("sessions", "readwrite", {
+        durability: "strict"
+      }), store = tx.objectStore("sessions");
+      if (entry) store.put(entry, id);
+      else store.delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error ?? Error("state"));
+    });
+  }
+};
+
+// node_modules/@noble/hashes/esm/sha256.js
+init_git_buffer();
+var sha2562 = sha256;
+
 // src/config-scope.ts
+init_git_buffer();
+var import_posix = __toESM(require_posix());
 var categories = [
   "core",
   "appearance",
@@ -11841,28 +13121,6 @@ init_git_buffer();
 // src/private-cloud.ts
 init_git_buffer();
 
-// src/transfer.ts
-init_git_buffer();
-var chunkSize = 8 * 1024 * 1024;
-function fromBuffer(bytes) {
-  return {
-    size: bytes.byteLength,
-    read: async (offset, length) => bytes.slice(offset, offset + length)
-  };
-}
-async function processChunks(file, consume, progress) {
-  const digest2 = sha256.create();
-  for (let offset = 0; offset < file.size; offset += chunkSize) {
-    const length = Math.min(chunkSize, file.size - offset);
-    const bytes = await file.read(offset, length);
-    if (bytes.byteLength !== length) throw Error("referenceChanged");
-    digest2.update(new Uint8Array(bytes));
-    await consume?.(bytes);
-    progress?.();
-  }
-  return bytesToHex(digest2.digest());
-}
-
 // src/public-cloud.ts
 init_git_buffer();
 
@@ -12219,7 +13477,7 @@ var GoogleTree = class {
         throw Error("incomplete");
       result ??= new Uint8Array(f.size);
       result.set(new Uint8Array(reply.arrayBuffer), start);
-      progress?.();
+      progress?.(end + 1, f.size);
     }
     return result.buffer;
   }
@@ -12385,9 +13643,10 @@ var DriveTree = class extends GoogleTree {
         else {
           check(status);
           await this.sessions.set(key, null);
+          progress?.(size, size);
           return;
         }
-        progress?.();
+        progress?.(offset, size, offset > 0);
       }
     }
     if (!session) {
@@ -12444,6 +13703,7 @@ var DriveTree = class extends GoogleTree {
         if (status.status !== 308) {
           check(status);
           if (key) await this.sessions.set(key, null);
+          progress?.(size, size);
           return;
         }
         const remoteOffset = acknowledged(status, size);
@@ -12451,6 +13711,7 @@ var DriveTree = class extends GoogleTree {
           throw Error("incomplete");
         if (remoteOffset > offset) failures = 0;
         offset = remoteOffset;
+        progress?.(offset, size);
         continue;
       }
       if (response.status !== 308) {
@@ -12459,14 +13720,14 @@ var DriveTree = class extends GoogleTree {
         check(response);
         if (end !== size) throw Error("incomplete");
         if (key) await this.sessions.set(key, null);
-        progress?.();
+        progress?.(size, size);
         return;
       }
       const next = acknowledged(response, size);
       if (next <= offset || next > end) throw Error("incomplete");
       offset = next;
       failures = 0;
-      progress?.();
+      progress?.(offset, size);
     } while (offset < size);
     throw Error("incomplete");
   }
@@ -12699,7 +13960,7 @@ var CloudStore = class extends PublicStore {
       await write(dir, path.split("/").at(-1), old);
       this.reset();
       const saved = await this.find(path);
-      if (saved?.type !== "file" || saved.size !== size || (saved.sha256 ?? await hash(await this.download(path, progress))) !== digest2)
+      if (saved?.type !== "file" || saved.size !== size || (saved.sha256 ?? await hash(await this.download(path, () => progress?.()))) !== digest2)
         throw Error("referenceChanged");
     });
   }
@@ -12824,6 +14085,7 @@ function location(remote) {
 function referenceId(p) {
   if (p.access === "local")
     return "vault:" + (p.reference === "/" ? "" : p.reference);
+  if (p.access === "webdav" && p.dav) return davId(p.dav, p.reference);
   if (p.access === "oauth" && p.cloud) return cloudId(p.cloud, p.reference);
   if (p.access !== "public" || !p.remote) throw Error("publicUrl");
   return JSON.stringify([
@@ -12882,7 +14144,7 @@ function validate(p, desktop, readOnly, configDir) {
     trash: ["plugin", "vault", "system", "permanent"],
     role: ["subscriber", "publisher"],
     scope: ["settings", "content"],
-    access: ["local", "public", "oauth"],
+    access: ["local", "public", "oauth", "webdav"],
     mirror: ["full", "preserve"],
     conflict: ["source", "target", "both", "newer"],
     mode: ["plan", "silent"]
@@ -12892,6 +14154,15 @@ function validate(p, desktop, readOnly, configDir) {
   for (const key of ["local", "reference"])
     if (typeof p[key] !== "string" || p[key] !== "/" && p[key] !== "" && !safe(p[key]))
       err(key, "path");
+  if (p.access === "webdav") {
+    try {
+      if (!p.dav) throw Error();
+      davId(p.dav, p.reference);
+    } catch {
+      err("dav", "davLocation");
+    }
+    if (!desktop) err("access", "davDesktop");
+  }
   if (p.access === "oauth") {
     try {
       if (!p.cloud) throw Error();
@@ -13037,6 +14308,12 @@ function loadLibrary(raw) {
 function endpoint(p, s) {
   if (s === "local" || p.access === "local")
     return { access: "local", reference: p[s] || "/" };
+  if (p.access === "webdav")
+    return {
+      access: "webdav",
+      reference: p.reference,
+      dav: structuredClone(p.dav)
+    };
   return p.access === "oauth" ? {
     access: "oauth",
     reference: p.reference,
@@ -13050,7 +14327,8 @@ function endpoint(p, s) {
 function validEndpoint(e) {
   if (!e || typeof e.reference !== "string" || e.reference !== "/" && !safe(e.reference))
     throw Error("path");
-  if (e.access === "oauth" && e.cloud) cloudId(e.cloud, e.reference);
+  if (e.access === "webdav" && e.dav) davId(e.dav, e.reference);
+  else if (e.access === "oauth" && e.cloud) cloudId(e.cloud, e.reference);
   else if (e.access === "public" && e.remote) location(e.remote);
   else if (e.access !== "local") throw Error("invalid");
 }
@@ -13062,6 +14340,7 @@ function bindPlace(p, s, place) {
     if (e.access !== "local" || p.scope === "settings") throw Error("invalid");
     p.local = e.reference;
   } else {
+    delete p.dav;
     delete p.remote;
     delete p.cloud;
     Object.assign(p, structuredClone(e));
@@ -13080,8 +14359,9 @@ function endpointLabels(p, configDir, t, account) {
   const local = (p.scope === "settings" ? configDir : p.local) || "/";
   const remote = [
     p.cloud ? t(p.cloud.engine + "Private") : p.remote ? t(p.remote.engine) : "",
-    account,
-    p.cloud?.root ?? p.remote?.url,
+    p.dav ? t("webdav") : "",
+    p.dav?.user ?? account,
+    p.dav?.url ?? p.cloud?.root ?? p.remote?.url,
     p.remote?.engine === "git" ? p.remote.branch : "",
     p.reference || "/"
   ].filter(Boolean).join(" · ");
@@ -13338,11 +14618,11 @@ var Applier = class {
     const budget = new RunBudget(void 0, void 0, void 0, this.fence);
     for (let i = end - 1; i >= start; i--) {
       const p = t.steps[i].path, armed = t.id + "/armed/" + i;
-      if (t.cloud && await this.journal.disk.has(t.id + "/restored/" + i) || !await this.journal.disk.has(armed) || await this.journal.disk.has(t.id + "/skipped/" + i))
+      if ((t.cloud || t.dav) && await this.journal.disk.has(t.id + "/restored/" + i) || !await this.journal.disk.has(armed) || await this.journal.disk.has(t.id + "/skipped/" + i))
         continue;
       const perform = async () => {
         const saved = await this.journal.json(armed);
-        if (t.cloud) target.reset?.();
+        if (t.cloud || t.dav) target.reset?.();
         const stat = await budget.io(() => target.stat(p));
         if (t.steps[i].action === "mkdir" || t.steps[i].action === "rmdir") {
           if (stat && stat.type !== "folder") throw Error("collision");
@@ -13353,7 +14633,7 @@ var Applier = class {
           return;
         }
         if (stat?.type === "folder") throw Error("collision");
-        if (t.cloud) {
+        if (t.cloud || t.dav) {
           const expected = t.id + "/after/" + i;
           if (!await this.journal.disk.has(expected)) return;
           const current = stat ? await hash(
@@ -13379,7 +14659,7 @@ var Applier = class {
       };
       if (target.withFilePaused) await target.withFilePaused(p, perform);
       else await perform();
-      if (t.cloud) await this.journal.mark(t.id + "/restored/" + i);
+      if (t.cloud || t.dav) await this.journal.mark(t.id + "/restored/" + i);
     }
   }
   async recover(resolve) {
@@ -13389,7 +14669,7 @@ var Applier = class {
       try {
         await this.recoverTransaction(t, resolve);
       } catch (e) {
-        if (!t.cloud) throw e;
+        if (!(t.cloud || t.dav)) throw e;
         this.pendingTargets.add(JSON.parse(t.key)[3]);
       }
     }
@@ -13445,13 +14725,19 @@ var Applier = class {
     await this.journal.mark(t.id + "/undo-done");
     this.needsRecovery = false;
   }
-  async apply(profile, plan2, source, target, key, targetPath, budget = new RunBudget(void 0, void 0, void 0, this.fence), progress, active, projection, publication, checkReference, operations, configDir = ".obsidian", self = "refsync") {
+  async apply(profile, plan2, source, target, key, targetPath, budget = new RunBudget(void 0, void 0, void 0, this.fence), progress, active, projection, publication, checkReference, operations, configDir = ".obsidian", self = "refsync", transfer) {
     this.fence.check();
     if (this.needsRecovery || this.pendingTargets.has(target.id))
       throw Error("journal");
     const checkpoint = () => {
       budget.check();
       if (active && !active()) throw Error("stopped");
+    };
+    const pulseFor = (path, direction, heartbeat) => (n, total, resumed) => {
+      heartbeat();
+      checkpoint();
+      if (n !== void 0 && total !== void 0 && total >= 1048576)
+        transfer?.(path, direction, n, total, !!resumed);
     };
     const cfg = profile.config ?? legacyConfig();
     const batch = profile.scope === "settings" && cfg.strategy === "batch";
@@ -13518,7 +14804,7 @@ var Applier = class {
         }
         if (stageBatch && op.action === "ack") {
           const bytes = await budget.io(
-            (progress2) => source.download(p, progress2)
+            (progress2) => source.download(p, pulseFor(p, "transferDownload", progress2))
           );
           if (await hash(bytes) !== (s.rawHash ?? s.hash))
             throw Error("referenceChanged");
@@ -13542,7 +14828,9 @@ var Applier = class {
         } else if (op.action === "write" || op.action === "both") {
           let bytes;
           try {
-            bytes = await budget.io((progress2) => source.download(p, progress2));
+            bytes = await budget.io(
+              (progress2) => source.download(p, pulseFor(p, "transferDownload", progress2))
+            );
           } catch (e) {
             if (batch || !transient(e)) throw e;
             plan2.deferred.push({ path: p, reason: "locked" });
@@ -13595,6 +14883,7 @@ var Applier = class {
       id,
       key,
       target: targetPath,
+      dav: profile.access === "webdav" && profile.role === "publisher" ? profile.dav : void 0,
       cloud: profile.access === "oauth" && profile.role === "publisher" ? profile.cloud : void 0,
       scope: profile.scope,
       content: profile.content,
@@ -13655,7 +14944,7 @@ var Applier = class {
               continue;
             }
             const perform = async () => {
-              if (t.cloud) target.reset?.();
+              if (t.cloud || t.dav) target.reset?.();
               const stat = await budget.io(() => target.stat(step.path));
               if (stat?.type === "folder") throw Error("collision");
               const old = stat ? await budget.io(
@@ -13663,7 +14952,7 @@ var Applier = class {
               ) : null;
               const copy = displaced.get(step.path);
               if (copy && stat) throw Error("collision");
-              if (t.cloud || profile.scope === "content") {
+              if (t.cloud || t.dav || profile.scope === "content") {
                 const expected = step.path === manifestPath && i === steps.length - 1 ? steps[0].digest : expectedTarget.get(step.path);
                 if (expected !== void 0 && (old ? await hash(old) : null) !== expected)
                   throw Error("referenceChanged");
@@ -13672,7 +14961,7 @@ var Applier = class {
                 throw Error("referenceChanged");
               await this.journal.backup(id, i, old);
               if (step.action === "delete") {
-                if (t.cloud)
+                if (t.cloud || t.dav)
                   await this.journal.disk.putNew(
                     id + "/after/" + i,
                     manifestBytes(null)
@@ -13691,7 +14980,7 @@ var Applier = class {
                   (progress2) => processChunks(file, void 0, progress2)
                 ) !== step.digest)
                   throw Error("incomplete");
-                if (t.cloud)
+                if (t.cloud || t.dav)
                   await this.journal.disk.putNew(
                     id + "/after/" + i,
                     manifestBytes(step.digest)
@@ -13702,10 +14991,7 @@ var Applier = class {
                     file,
                     step.digest,
                     step.mtime,
-                    () => {
-                      progress2();
-                      checkpoint();
-                    }
+                    pulseFor(step.path, "transferUpload", progress2)
                   ),
                   false
                 );
@@ -13728,13 +15014,18 @@ var Applier = class {
                   old,
                   profile.role === "subscriber"
                 ) : bytes;
-                if (t.cloud)
+                if (t.cloud || t.dav)
                   await this.journal.disk.putNew(
                     id + "/after/" + i,
                     manifestBytes(await hash(outgoing))
                   );
                 await budget.io(
-                  (progress2) => target.upload(step.path, outgoing, step.mtime, progress2),
+                  (progress2) => target.upload(
+                    step.path,
+                    outgoing,
+                    step.mtime,
+                    pulseFor(step.path, "transferUpload", progress2)
+                  ),
                   false
                 );
               }
@@ -14602,7 +15893,11 @@ async function scan(provider, scope, configDir, self, skipHotTarget = false, bud
           if (options.stats) options.stats.read++;
           const file = !policy && stat.size > chunkSize ? provider.chunkSource?.(p, stat.size) : void 0;
           let rawHash, semantic;
-          if (file)
+          if (!policy && provider.readDigest)
+            rawHash = await budget.io(
+              (progress) => provider.readDigest(p, stat.size, progress)
+            );
+          else if (file)
             rawHash = await budget.io(
               (progress) => processChunks(file, void 0, progress)
             );
@@ -14725,9 +16020,9 @@ var SyncEngine = class {
         blocked: !this.desktop && cfg.platformFilter ? await mobileExcluded(source, target, budget) : []
       } : void 0;
       const filter = p.scope === "content" ? pathFilter(p) : () => true;
-      const managed = p.access === "oauth" || p.access === "public" && p.remote?.engine !== "git";
+      const managed = p.access === "oauth" || p.access === "webdav" || p.access === "public" && p.remote?.engine !== "git";
       const manifest = managed ? await budget.io(() => readManifest(reference)) : null;
-      const publication = p.access === "oauth" && p.role === "publisher" ? {
+      const publication = (p.access === "oauth" || p.access === "webdav") && p.role === "publisher" ? {
         missing: !manifest,
         build: async () => {
           reference.reset?.();
@@ -14920,7 +16215,8 @@ var SyncEngine = class {
           } : void 0,
           operations,
           this.configDir,
-          this.self
+          this.self,
+          options.transfer
         );
       }
       this.status.set(
@@ -14930,706 +16226,6 @@ var SyncEngine = class {
     });
   }
 };
-
-// src/i18n.ts
-init_git_buffer();
-var ru = {
-  categoryRule: "Исключено категориями настроек",
-  pluginRule: "Исключено правилами для этого плагина",
-  baseScope: "Исходный охват",
-  onlyHelp: "Отметьте нужные папки или отдельные файлы. Остальные и новые соседи исключены. Новые файлы внутри выбранной папки включаются.",
-  allHelp: "Включены все разрешённые пути. Исключения применяются к выбранным файлам и папкам вместе с их содержимым.",
-  allExcept: "Всё, кроме исключений",
-  onlySelected: "Только выбранное",
-  minutesUnit: "мин",
-  inactive: "Выключен",
-  places: "Расположения",
-  templates: "Шаблоны",
-  endpoints: "Расположения и направление",
-  composition: "Состав",
-  taskRules: "Правила",
-  schedule: "Запуск",
-  diagnostics: "Диагностика",
-  localBookmark: "Сохранённая локальная папка",
-  remoteBookmark: "Сохранённая папка подключения",
-  customLocation: "Указать расположение",
-  saveLocation: "Запомнить расположение",
-  replacePlace: "Изменить расположение и пути связанных профилей?",
-  useTemplate: "Применить шаблон",
-  saveTaskTemplate: "Сохранить правила задачи",
-  saveScopeTemplate: "Сохранить набор фильтров",
-  templateName: "Название шаблона",
-  replaceTemplate: "Обновить существующий шаблон?",
-  locationsHelp: "Сохраните локальную или облачную папку один раз и выбирайте её в профилях.",
-  checkAccess: "Проверить доступ",
-  accessible: "Папка доступна",
-  rename: "Переименовать",
-  unlinkHelp: "Убрать расположение из библиотеки? Профили сохранят свои пути.",
-  copyJson: "Скопировать JSON",
-  exportJson: "Экспорт JSON",
-  importJson: "Импорт шаблона из JSON",
-  createTask: "Создать профиль",
-  userTemplates: "Мои шаблоны",
-  copyNotes: "Копировать заметки Markdown",
-  publishSelection: "Публиковать выбранное",
-  mirrorTask: "Зеркало папки",
-  appearanceTask: "Перенести оформление Obsidian",
-  pluginDataTask: "Перенести настройки плагинов",
-  manualTask: "Только ручной запуск",
-  copyOnly: "Добавлять и обновлять без удалений",
-  tracked: "Удалять исчезнувшие из источника ранее доставленные файлы и папки",
-  browseLocal: "Выбрать локальную папку",
-  settingsProcessing: "Действующая папка настроек Obsidian. Применяются категории, локальные поля JSON, правила для плагинов и перезагрузки.",
-  contentProcessing: "В этом профиле содержимое папки настроек можно включить как файлы. Для выборочной доставки настроек и сохранения локальных полей JSON выберите охват «Настройки».",
-  draftPreview: "Операции по текущему черновику",
-  createNow: "Создать эти папки сейчас?",
-  whyPath: "Проверить путь",
-  whyPathHelp: "Введите путь относительно папки профиля. Проверка учитывает правила и метаданные обеих сторон.",
-  checkPath: "Проверить",
-  pathAbsent: "Путь отсутствует",
-  folderRule: "Исключено выбором папок и файлов",
-  settingsRule: "Исключено категориями или фильтрами настроек",
-  maskRule: "Исключено масками путей",
-  sizeRule: "Превышено ограничение размера",
-  hiddenOff: "Скрытые файлы исключены",
-  configOff: "Папка настроек исключена",
-  included: "Входит в охват",
-  modifiedSet: "Действуют дополнительные фильтры и правила",
-  advancedFilters: "Маски путей, ID и локальные поля JSON",
-  pluginFiles: "Файлы отдельных плагинов",
-  pluginPartsHelp: "Выберите разрешённые части каждого плагина. Общие категории и маски также действуют. Список включённых в Obsidian плагинов настраивается отдельной категорией.",
-  newPlace: "Новое расположение",
-  editPlace: "Изменить расположение",
-  markdownType: "Заметки Markdown",
-  imageType: "Изображения",
-  allTypes: "Любые типы",
-  fileType: "Типы файлов",
-  customTypes: "Свои маски",
-  includedCategory: "Категория",
-  settingsPaths: "Правила путей и плагинов",
-  protectedList: "Сохранён локальный список включённых плагинов",
-  mixedRules: "Есть исключения или включения внутри",
-  diagnosisHelp: "Проверка использует несохранённые настройки профиля.",
-  history: "Журнал операций",
-  everything: "Включать настройки и скрытые файлы",
-  contentHelp: "Включает настройки Obsidian и скрытые файлы. Выбранные исключения сохраняются. Служебные каталоги, корзина, файлы сеанса и сам Sync Studio защищены.",
-  configFolder: "Включать папку настроек Obsidian",
-  otherHidden: "Включать другие скрытые папки и файлы",
-  folderSelection: "Папки и плагины профиля",
-  pluginsPicker: "Выбрать плагины",
-  foldersPicker: "Выбрать папки и файлы",
-  loadingFolders: "Чтение списка папок…",
-  folderPartial: "Часть папок недоступна. Показаны доступные папки и сохранённые правила.",
-  noneFound: "Ничего не найдено",
-  checkMatches: "Включить найденные",
-  uncheckMatches: "Исключить найденные",
-  useSelection: "Применить выбор к профилю",
-  readCount: "прочитано",
-  reuseCount: "по метаданным",
-  filesCount: "файлов",
-  foldersCount: "папок",
-  refreshLog: "Обновить",
-  fullCheck: "Диагностика · полная проверка файлов",
-  checkedRun: "Сравнение завершено",
-  verified: "Настройки проверены",
-  holdVerify: "Расхождение настроек",
-  historyEmpty: "Записей пока нет",
-  duration: "Время, с",
-  undoPause: "После отката профиль будет выключен. Его можно включить в настройках.",
-  switchMode: "Переключить режим подтверждения / тихий",
-  mkdir: "Создать папку",
-  rmdir: "Удалить пустую папку",
-  folderRetained: "Папка сохранена: содержит другие объекты или доступ к содержимому ограничен",
-  publishHint: "При применении издатель записывает .sync-manifest.json в корень облачной папки. По нему подписчики проверяют завершение публикации.",
-  accounts: "Аккаунты",
-  googlePrivate: "Google Диск · OAuth",
-  yandexPrivate: "Яндекс Диск · OAuth",
-  selectAccount: "Выберите подключённый аккаунт",
-  addAccount: "Подключить аккаунт",
-  signIn: "Войти через браузер",
-  signOut: "Выйти",
-  accountActive: "Подключён",
-  refreshDue: "Токен обновится при обращении",
-  loginRequired: "Требуется повторный вход в аккаунт",
-  logoutHint: "Выйти на этом устройстве? Профили этого аккаунта будут ждать повторного входа.",
-  fullAccess: "Доступ ко всему Диску",
-  appAccess: "Область приложения",
-  scopeHint: "По умолчанию доступны файлы этого приложения Google или папка приложения Яндекса.",
-  clientImport: "Импорт JSON OAuth-клиента Google",
-  clientPaste: "Вставить JSON OAuth-клиента Google",
-  clientJson: "Проверьте JSON клиента Desktop app или Web application",
-  clientReady: "JSON-клиент загружен",
-  clientId: "Укажите Client ID приложения",
-  redirect: "Адрес возврата OAuth (redirect URI)",
-  loopbackHint: "Для клиента Desktop app оставьте поле пустым. Для Web application укажите свой зарегистрированный HTTPS-адрес.",
-  redirectHint: "Укажите зарегистрированный адрес возврата. Для ручного входа подойдёт ваш HTTPS-адрес.",
-  reopenLogin: "Открыть страницу входа",
-  callbackPaste: "Вставить код или полный адрес после входа",
-  connect: "Завершить вход",
-  retryLogin: "Начать вход заново",
-  oauthExpired: "Срок действия кода или сеанса истёк. Войдите заново.",
-  oauthDenied: "Доступ отклонён пользователем",
-  oauthResponse: "Адрес возврата или state не соответствует этому входу",
-  oauthExchange: "Сервис отклонил обмен кода или обновление токена. Проверьте клиент и redirect URI.",
-  oauthIdentity: "Сервис не подтвердил выбранную учётную запись",
-  driveRoot: "ID или ссылка на корневую папку Google Диска",
-  cloudLocation: "Проверьте аккаунт, корневую папку и путь",
-  cloud: "Облачный аккаунт",
-  manifestInvalid: "Публикация не завершена или манифест повреждён. Повторите после завершения публикации.",
-  manifestMismatch: "Файлы источника расходятся с манифестом. Проверьте папку и охват публикации.",
-  cloudRecovery: "Восстановление облачной операции ожидает доступа к аккаунту или устранения расхождения версий",
-  engine: "Подключение",
-  vaultSource: "Папка в хранилище",
-  google: "Google Диск",
-  yandex: "Яндекс Диск",
-  git: "Git по HTTPS",
-  remote: "Публичная ссылка или ключ источника",
-  branch: "Ветка Git (пусто — ветка по умолчанию)",
-  deviceKey: "API-ключ Google Drive для этого устройства",
-  subfolder: "Папка внутри источника (/ — корень)",
-  browse: "Обзор папок источника",
-  upFolder: "На уровень выше",
-  openFolder: "Открыть",
-  useFolder: "Выбрать эту папку",
-  publicUrl: "Проверьте публичную ссылку или ключ источника",
-  gitBranch: "Некорректное имя ветки Git",
-  googleKey: "Введите и сохраните API-ключ Google Drive",
-  publicQuota: "Исчерпана квота API. Повторите позже.",
-  publicDenied: "Сервис отклонил доступ. Проверьте общий доступ и ключ.",
-  remoteHttp: "Ошибка сервиса при чтении источника",
-  remoteNetwork: "Не удалось подключиться к источнику",
-  remoteName: "Источник вернул неоднозначное имя файла",
-  gitRead: "Не удалось получить Git-репозиторий. Проверьте HTTPS-ссылку, ветку и подключение.",
-  maxDeleteCount: "Порог удалений, файлов и папок",
-  maxDeletePercent: "Порог удалений, % от цели",
-  shrinkPercent: "Порог уменьшения источника, %",
-  deleteGrace: "Минимум объектов для процентного порога удалений",
-  scopePreset: "Набор настроек",
-  preset_full: "Основные настройки и плагины",
-  preset_noData: "Настройки и код плагинов",
-  preset_look: "Оформление и темы",
-  preset_plugins: "Код и список плагинов",
-  preset_custom: "Свой набор",
-  cat_core: "Основные настройки",
-  cat_appearance: "Оформление",
-  cat_themes: "Темы",
-  cat_snippets: "CSS-сниппеты",
-  cat_community: "Список включённых плагинов",
-  cat_code: "Код, манифесты и стили плагинов",
-  cat_data: "Данные плагинов",
-  cat_extras: "Прочие файлы плагинов",
-  existingCode: "Выбранные данные или список плагинов рассчитаны на уже установленный код.",
-  cfg_codeAllow: "Разрешённые ID для файлов плагинов (glob через запятую)",
-  cfg_codeDeny: "Исключённые ID для файлов плагинов",
-  cfg_dataAllow: "Разрешённые ID для data.json",
-  cfg_dataDeny: "Исключённые ID для data.json",
-  cfg_include: "Дополнительные файлы настроек (glob)",
-  cfg_exclude: "Исключить пути (glob)",
-  cfg_overlay: "Локальные ключи JSON, по строке: plugins/*/data.json => accounts[*].token",
-  mobileFilter: "Исключать desktop-only плагины на мобильных устройствах",
-  strategy: "Стратегия применения",
-  batch: "Пакет с полным предварительным чтением",
-  changes: "Только изменения",
-  reloadPolicy: "Перезагрузка Obsidian",
-  reload_now: "Сразу после применения",
-  reload_next: "При следующем запуске",
-  reload_idle: "При простое",
-  reload_never: "Только отметка в строке состояния",
-  idleDelay: "Простой до перезагрузки, секунд",
-  reloadNeeded: "Изменения требуют перезагрузки",
-  repairFailed: "Проверка настроек завершилась с расхождениями",
-  invalidConfig: "Некорректные параметры настроек",
-  overlaySyntax: "Ожидается шаблон файла => путь JSON, по правилу на строке",
-  reloadUnavailable: "Команда перезагрузки недоступна",
-  strictDrift: "Восстанавливать настройки при локальных изменениях",
-  badPath: "Недопустимое имя Windows",
-  profiles: "Профили",
-  defaultMode: "Режим по умолчанию",
-  pause: "Приостановить синхронизацию",
-  paused: "Пауза",
-  add: "Добавить профиль",
-  syncAll: "Запустить все активные профили",
-  enabled: "Включён",
-  edit: "Редактировать профиль",
-  duplicate: "Дублировать",
-  down: "Ниже",
-  up: "Выше",
-  current: "Текущий профиль",
-  select: "Сделать текущим",
-  name: "Имя профиля",
-  mode: "Режим работы",
-  inherit: "Использовать глобальный режим",
-  plan: "План с подтверждением",
-  silent: "Тихий",
-  silentDeletionSafeguard: "Защита от массовых удалений в тихом режиме",
-  silentDeletionSafeguardHelp: "Если выключить, тихий запуск выполнит все удаления по правилам профиля, даже при пустом источнике или превышении порогов.",
-  firstPlan: "Показывать план перед первой доставкой",
-  mirrorMode: "Зеркалирование",
-  preserve: "Сохранять локальные файлы",
-  full: "Полное зеркало",
-  source: "Предпочесть источник",
-  targetVersion: "Предпочесть версию цели",
-  newer: "Предпочесть более новый файл",
-  deletions: "Применять удаления из источника",
-  trash: "Способ удаления",
-  plugin: "Корзина Sync Studio",
-  vault: "Корзина хранилища",
-  system: "Системная корзина",
-  permanent: "Удалить файл с резервной копией",
-  trashDays: "Хранить в корзине Sync Studio, дней",
-  include: "Включать пути (glob через запятую)",
-  exclude: "Исключать пути (glob через запятую)",
-  maxMiB: "Максимальный размер в МиБ (0 — любой)",
-  startup: "При запуске Obsidian",
-  startupSeconds: "Задержка после запуска, секунд",
-  intervalMinutes: "Интервал в минутах (0 — вручную и по событиям)",
-  onFocus: "При возврате фокуса",
-  onOnline: "При появлении сети",
-  fileEvents: "При изменениях файлов",
-  debounceSeconds: "Объединять события за период, секунд",
-  quietSeconds: "Окно тишины редактора, секунд",
-  maxDeferrals: "Сколько раз отложить открытый файл",
-  remove: "Удалить профиль",
-  removeText: "Удалить профиль из списка? Файлы в обеих папках сохранятся.",
-  confirmAction: "Подтвердить",
-  release: "Разрешить выбранные отложенные удаления",
-  search: "Поиск по пути",
-  all: "Все действия",
-  toggleVisible: "Изменить выбор в фильтре",
-  selected: "Выбрано",
-  deferred: "Отложено файлов",
-  diff: "Сравнить",
-  export: "Копировать план JSON",
-  close: "Закрыть",
-  applySelected: "Применить выбранное",
-  trashUnavailable: "Системная корзина недоступна",
-  watchdog: "Истекло время прохода",
-  readTimeout: "Истекло время чтения файла",
-  stopped: "Запуск остановлен",
-  editing: "Открытый файл недавно изменён",
-  unstable: "Исходный файл меняется",
-  locked: "Файл занят",
-  settling: "Ожидается завершение предыдущей записи. Следующий запуск восстановит журнал.",
-  idle: "Готов",
-  scan: "Сравнение",
-  apply: "Применение",
-  recover: "Восстановление",
-  done: "Готово",
-  partial: "Частично",
-  error: "Ошибка",
-  title: "Sync Studio · локальный профиль",
-  preview: "Показать план",
-  sync: "Синхронизировать",
-  undo: "Откатить последнюю доставку",
-  cancel: "Отмена",
-  confirm: "Откатить",
-  reference: "Папка подключения",
-  target: "Локальная папка",
-  scope: "Охват",
-  content: "Контент",
-  settings: "Настройки",
-  save: "Сохранить",
-  role: "Направление",
-  subscriber: "Получать в локальную папку",
-  publisher: "Публиковать из локальной папки",
-  saved: "Сохранено",
-  instructions: "Создайте две отдельные папки. Для настроек локальным корнем служит каталог конфигурации Obsidian. Исходные папки должны существовать.",
-  init: "Создать недостающие папки",
-  none: "Изменений нет",
-  held: "Защита отложила удаления",
-  undoText: "Восстановить файлы из резервной копии последней доставки этого профиля?",
-  write: "Доставить",
-  delete: "В корзину",
-  retain: "Оставить версию цели",
-  both: "Сохранить обе версии",
-  log: "Журнал",
-  conflict: "Конфликт",
-  invalid: "Недопустимое значение",
-  readonly: "Источник доступен только для чтения",
-  mirror: "Полное зеркало требует доставки источника и удалений",
-  configConflict: "Для настроек используется источник с бэкапом",
-  configEvents: "События файлов отключены для настроек",
-  mobile: "Недоступно на мобильном устройстве",
-  guard: "Требуются бэкап и защита от пустого источника",
-  overlap: "Папки пересекаются",
-  protected: "Служебный путь исключён",
-  path: "Непереносимый или некорректный путь",
-  missingRoot: "Папка не найдена",
-  incomplete: "Неполное чтение файлов",
-  contentFiles: "Контент и папка настроек как обычные файлы",
-  categoryOff: "Общая категория выключена. Для передачи нужно включить её или задать подходящую маску включения.",
-  pluginPatterns: "Маски ID плагинов",
-  jsonRules: "Правила JSON",
-  accessFailed: "Ошибка проверки доступа",
-  diskSpace: "Недостаточно места для временной копии",
-  deletionSide: "Удаления на стороне назначения",
-  srcSide: "Источник",
-  destSide: "Назначение",
-  collision: "Коллизия путей",
-  indexPending: "Файл ещё не готов в индексе",
-  referenceChanged: "Источник изменился, повторите сравнение",
-  busy: "Выполняется другой запуск",
-  noBackup: "Нет завершённой доставки для отката",
-  backup: "Повреждён бэкап",
-  state: "Ошибка локального состояния",
-  journal: "Повреждён журнал",
-  failed: "Операция не завершена",
-  previewFirst: "Сначала проверьте список. Применение повторно сверяет источник.",
-  dry: "Просмотр изменений",
-  unknown: "Неизвестное состояние"
-};
-var en = {
-  categoryRule: "Excluded by settings categories",
-  pluginRule: "Excluded by rules for this plugin",
-  baseScope: "Starting selection",
-  onlyHelp: "Select folders or individual files. Other entries and new siblings are excluded. New files inside a selected folder are included.",
-  allHelp: "All eligible paths are included. Exclusions apply to selected files and entire folders.",
-  allExcept: "All except exclusions",
-  onlySelected: "Selected items only",
-  minutesUnit: "min",
-  inactive: "Disabled",
-  places: "Locations",
-  templates: "Templates",
-  endpoints: "Locations and direction",
-  composition: "Contents",
-  taskRules: "Rules",
-  schedule: "Run settings",
-  diagnostics: "Diagnostics",
-  localBookmark: "Saved local folder",
-  remoteBookmark: "Saved connection folder",
-  customLocation: "Custom location",
-  saveLocation: "Save location",
-  replacePlace: "Update this location and the paths of its linked profiles?",
-  useTemplate: "Apply template",
-  saveTaskTemplate: "Save task template",
-  saveScopeTemplate: "Save scope template",
-  templateName: "Template name",
-  replaceTemplate: "Update existing template?",
-  locationsHelp: "Save a local or cloud folder once and reuse it across profiles.",
-  checkAccess: "Check access",
-  accessible: "Folder available",
-  rename: "Rename",
-  unlinkHelp: "Remove this location from the library? Profiles will keep their paths.",
-  copyJson: "Copy JSON",
-  exportJson: "Export JSON",
-  importJson: "Import template JSON",
-  createTask: "Create profile",
-  userTemplates: "My templates",
-  copyNotes: "Copy Markdown notes",
-  publishSelection: "Publish selected files",
-  mirrorTask: "Mirror a folder",
-  appearanceTask: "Transfer Obsidian appearance",
-  pluginDataTask: "Transfer plugin settings",
-  manualTask: "Manual runs only",
-  copyOnly: "Add and update without deletions",
-  tracked: "Remove previously delivered files and folders missing from the source",
-  browseLocal: "Browse local folder",
-  settingsProcessing: "Uses the active Obsidian configuration folder with categories, local JSON fields, plugin rules and reload settings.",
-  contentProcessing: "This profile can include configuration as files. Choose Settings for category selection and preservation of local JSON fields.",
-  draftPreview: "Operations for this draft",
-  createNow: "Create these folders now?",
-  whyPath: "Inspect a path",
-  whyPathHelp: "Enter a path relative to the profile root to inspect its rules and metadata on both sides.",
-  checkPath: "Check",
-  pathAbsent: "Path absent",
-  folderRule: "Excluded by folder and file selection",
-  settingsRule: "Excluded by settings categories or filters",
-  maskRule: "Excluded by path patterns",
-  sizeRule: "Exceeds the size limit",
-  hiddenOff: "Hidden files excluded",
-  configOff: "Configuration folder excluded",
-  included: "Included",
-  modifiedSet: "Additional filters and rules apply",
-  advancedFilters: "Path patterns, plugin IDs and local JSON fields",
-  pluginFiles: "Files per plugin",
-  pluginPartsHelp: "Choose the allowed parts of each plugin. Global categories and patterns also apply. The enabled-plugin list has its own category.",
-  newPlace: "New location",
-  editPlace: "Edit location",
-  markdownType: "Markdown notes",
-  imageType: "Images",
-  allTypes: "Any file type",
-  fileType: "File types",
-  customTypes: "Custom patterns",
-  includedCategory: "Category",
-  settingsPaths: "Path and plugin rules",
-  protectedList: "Enabled plugins list is preserved",
-  mixedRules: "Contains selection overrides",
-  diagnosisHelp: "Uses the current unsaved profile settings.",
-  history: "Operation history",
-  everything: "Include configuration and hidden files",
-  contentHelp: "Includes Obsidian settings and hidden files. Folder exclusions still apply. Internal folders, trash, session files and Sync Studio are protected.",
-  configFolder: "Include Obsidian configuration folder",
-  otherHidden: "Include other hidden folders and files",
-  folderSelection: "Profile folders and plugins",
-  pluginsPicker: "Choose plugins",
-  foldersPicker: "Choose folders and files",
-  loadingFolders: "Reading folders…",
-  folderPartial: "Some folders are unavailable. Showing available folders and saved rules.",
-  noneFound: "No matches",
-  checkMatches: "Include matches",
-  uncheckMatches: "Exclude matches",
-  useSelection: "Use selection in profile",
-  readCount: "read",
-  reuseCount: "from metadata",
-  filesCount: "files",
-  foldersCount: "folders",
-  refreshLog: "Refresh",
-  fullCheck: "Diagnostics · full file verification",
-  checkedRun: "Comparison completed",
-  verified: "Settings verified",
-  holdVerify: "Settings mismatch",
-  historyEmpty: "No operations recorded yet",
-  duration: "Seconds",
-  undoPause: "Undo disables this profile. Enable it again in settings.",
-  switchMode: "Toggle review / silent mode",
-  mkdir: "Create folder",
-  rmdir: "Remove empty folder",
-  folderRetained: "Folder retained: it contains other items or access to its contents is limited",
-  publishHint: "Applying this profile writes .sync-manifest.json at the cloud folder root so subscribers can verify publication.",
-  accounts: "Accounts",
-  googlePrivate: "Google Drive · OAuth",
-  yandexPrivate: "Yandex Disk · OAuth",
-  selectAccount: "Select a connected account",
-  addAccount: "Connect an account",
-  signIn: "Sign in with browser",
-  signOut: "Sign out",
-  accountActive: "Connected",
-  refreshDue: "Token refresh due on next request",
-  loginRequired: "Sign in to the account again",
-  logoutHint: "Sign out on this device? Profiles using this account will wait for sign-in.",
-  fullAccess: "Full drive access",
-  appAccess: "Application scope",
-  scopeHint: "Defaults to app-authorized files on Google or the application folder on Yandex.",
-  clientImport: "Import Google OAuth client JSON",
-  clientPaste: "Paste Google OAuth client JSON",
-  clientJson: "Check the Desktop app or Web application client JSON",
-  clientReady: "Client JSON loaded",
-  clientId: "Enter the application client ID",
-  redirect: "OAuth redirect URI",
-  loopbackHint: "Leave empty for a Desktop app client. For a Web application enter your registered HTTPS redirect URI.",
-  redirectHint: "Use the registered callback address. Your own HTTPS redirect supports manual completion.",
-  reopenLogin: "Open sign-in page",
-  callbackPaste: "Paste the code or full redirected URL",
-  connect: "Complete sign-in",
-  retryLogin: "Restart sign-in",
-  oauthExpired: "Code or session expired. Start sign-in again.",
-  oauthDenied: "Authorization was declined",
-  oauthResponse: "Callback or state does not match this sign-in",
-  oauthExchange: "Token exchange or refresh failed. Check the client and redirect URI.",
-  oauthIdentity: "Provider did not confirm the selected account",
-  driveRoot: "Google Drive base folder ID or link",
-  cloudLocation: "Check the account, root folder and path",
-  cloud: "Cloud account",
-  manifestInvalid: "Publication is in progress or its manifest is invalid. Retry after publication.",
-  manifestMismatch: "Files differ from the manifest. Check the folder and publishing scope.",
-  cloudRecovery: "Cloud recovery requires account access or resolution of a conflicting file version",
-  engine: "Connection",
-  vaultSource: "Vault folder",
-  google: "Google Drive",
-  yandex: "Yandex Disk",
-  git: "Git over HTTPS",
-  remote: "Public URL or source key",
-  branch: "Git branch (leave empty for the default)",
-  deviceKey: "Google Drive API key for this device",
-  subfolder: "Folder within source (/ for root)",
-  browse: "Browse source folders",
-  upFolder: "Parent folder",
-  openFolder: "Open",
-  useFolder: "Choose this folder",
-  publicUrl: "Check the public link or source key",
-  gitBranch: "Invalid Git branch name",
-  googleKey: "Enter and save your Google Drive API key",
-  publicQuota: "API quota reached. Try again later.",
-  publicDenied: "Access denied. Check sharing and the API key.",
-  remoteHttp: "Service error while reading source",
-  remoteNetwork: "Cannot connect to source",
-  remoteName: "Source returned an ambiguous file name",
-  gitRead: "Cannot fetch repository. Check the HTTPS URL, branch and connection.",
-  maxDeleteCount: "Deletion threshold (files)",
-  maxDeletePercent: "Deletion threshold (% of target)",
-  shrinkPercent: "Source shrink threshold (%)",
-  deleteGrace: "Deletion count floor for percentage threshold",
-  scopePreset: "Settings preset",
-  preset_full: "Standard settings and plugins",
-  preset_noData: "Settings and plugin code",
-  preset_look: "Appearance and themes",
-  preset_plugins: "Plugin code and list",
-  preset_custom: "Custom selection",
-  cat_core: "Core settings",
-  cat_appearance: "Appearance",
-  cat_themes: "Themes",
-  cat_snippets: "CSS snippets",
-  cat_community: "Enabled community plugins",
-  cat_code: "Plugin code, manifests and styles",
-  cat_data: "Plugin data",
-  cat_extras: "Other plugin files",
-  existingCode: "The selected data or enabled list depends on already installed plugins.",
-  cfg_codeAllow: "Allowed plugin IDs for files (comma-separated globs)",
-  cfg_codeDeny: "Excluded plugin IDs for files",
-  cfg_dataAllow: "Allowed plugin IDs for data.json",
-  cfg_dataDeny: "Excluded plugin IDs for data.json",
-  cfg_include: "Additional settings paths (globs)",
-  cfg_exclude: "Exclude settings paths (globs)",
-  cfg_overlay: "Keep local JSON keys, one per line: plugins/*/data.json => accounts[*].token",
-  mobileFilter: "Exclude desktop-only plugins on mobile",
-  strategy: "Application strategy",
-  batch: "Batch with complete preflight",
-  changes: "Changed files only",
-  reloadPolicy: "Reload Obsidian",
-  reload_now: "Immediately after delivery",
-  reload_next: "At next launch",
-  reload_idle: "When idle",
-  reload_never: "Status indicator only",
-  idleDelay: "Idle time before reload (seconds)",
-  reloadNeeded: "Reload required",
-  repairFailed: "Settings verification found unresolved differences",
-  invalidConfig: "Invalid settings configuration",
-  overlaySyntax: "Expected one file glob => JSON path per line",
-  reloadUnavailable: "Reload command unavailable",
-  strictDrift: "Restore settings after local changes",
-  badPath: "Invalid Windows path",
-  profiles: "Profiles",
-  defaultMode: "Default mode",
-  pause: "Pause sync",
-  paused: "Paused",
-  add: "New profile",
-  syncAll: "Run all enabled profiles",
-  enabled: "Enabled",
-  edit: "Edit profile",
-  duplicate: "Duplicate",
-  down: "Move down",
-  up: "Move up",
-  current: "Current profile",
-  select: "Make current",
-  name: "Profile name",
-  mode: "Run mode",
-  inherit: "Use global mode",
-  plan: "Review plan",
-  silent: "Silent",
-  silentDeletionSafeguard: "Mass deletion safeguard in silent mode",
-  silentDeletionSafeguardHelp: "Turn off to apply every deletion selected by the profile during silent runs, even when the source is empty or the thresholds are exceeded.",
-  firstPlan: "Review before first delivery",
-  mirrorMode: "Mirroring",
-  preserve: "Preserve local files",
-  full: "Full mirror",
-  source: "Prefer source",
-  targetVersion: "Prefer target",
-  newer: "Prefer newer file",
-  deletions: "Propagate source deletions",
-  trash: "Deletion destination",
-  plugin: "Sync Studio trash",
-  vault: "Vault trash",
-  system: "System trash",
-  permanent: "Delete file with backup",
-  trashDays: "Sync Studio trash retention (days)",
-  include: "Include paths (comma-separated globs)",
-  exclude: "Exclude paths (comma-separated globs)",
-  maxMiB: "Maximum MiB (0 for unlimited)",
-  startup: "On Obsidian startup",
-  startupSeconds: "Startup delay (seconds)",
-  intervalMinutes: "Interval in minutes (0 for event or manual runs)",
-  onFocus: "On window focus",
-  onOnline: "When online",
-  fileEvents: "On file changes",
-  debounceSeconds: "Event debounce (seconds)",
-  quietSeconds: "Editor quiet window (seconds)",
-  maxDeferrals: "Maximum editor deferrals",
-  remove: "Remove profile",
-  removeText: "Remove the profile? Files in both folders will be kept.",
-  confirmAction: "Confirm",
-  release: "Allow selected held deletions",
-  search: "Search paths",
-  all: "All actions",
-  toggleVisible: "Toggle filtered items",
-  selected: "Selected",
-  deferred: "Files deferred",
-  diff: "Diff",
-  export: "Copy plan JSON",
-  close: "Close",
-  applySelected: "Apply selected",
-  trashUnavailable: "System trash unavailable",
-  watchdog: "Run deadline exceeded",
-  readTimeout: "File read timed out",
-  stopped: "Run stopped",
-  editing: "Recently edited open file",
-  unstable: "Source file is changing",
-  locked: "File is busy",
-  settling: "A previous write is settling. The next run will recover the journal.",
-  idle: "Ready",
-  scan: "Scanning",
-  apply: "Applying",
-  recover: "Recovering",
-  done: "Done",
-  partial: "Partial",
-  error: "Error",
-  title: "Sync Studio · local profile",
-  preview: "Show plan",
-  sync: "Synchronize",
-  undo: "Roll back last delivery",
-  cancel: "Cancel",
-  confirm: "Restore",
-  reference: "Connection folder",
-  target: "Local folder",
-  scope: "Scope",
-  content: "Content",
-  settings: "Settings",
-  save: "Save",
-  role: "Role",
-  subscriber: "Subscriber",
-  publisher: "Publisher",
-  saved: "Saved",
-  instructions: "Create two separate folders. For settings, the local root is the Obsidian configuration folder. Both roots must exist.",
-  init: "Create missing folders",
-  none: "No changes",
-  held: "Deletions held by safeguards",
-  undoText: "Restore files from the last delivery of this profile?",
-  write: "Deliver",
-  delete: "Trash",
-  retain: "Keep target",
-  both: "Keep both",
-  log: "Log",
-  conflict: "Conflict",
-  invalid: "Invalid value",
-  readonly: "Read-only source",
-  mirror: "Full mirror requires source preference and deletions",
-  configConflict: "Settings use source and backup",
-  configEvents: "File events disabled for settings",
-  mobile: "Unavailable on mobile",
-  guard: "Backup and empty-source guard required",
-  overlap: "Folders overlap",
-  protected: "Protected path",
-  path: "Invalid or non-portable path",
-  missingRoot: "Folder missing",
-  incomplete: "Incomplete listing or read",
-  contentFiles: "Content and configuration folder as ordinary files",
-  categoryOff: "The category is off. Enable it or add a matching inclusion pattern to transfer this part.",
-  pluginPatterns: "Plugin ID patterns",
-  jsonRules: "JSON rules",
-  accessFailed: "Access check failed",
-  diskSpace: "Insufficient disk space for staging",
-  deletionSide: "Deletions at destination",
-  srcSide: "Source",
-  destSide: "Destination",
-  collision: "Path collision",
-  indexPending: "File not ready in vault index",
-  referenceChanged: "Source changed, scan again",
-  busy: "Another run is active",
-  noBackup: "No completed delivery to restore",
-  backup: "Damaged backup",
-  state: "Invalid local state",
-  journal: "Invalid journal",
-  failed: "Operation failed",
-  previewFirst: "Review the list first. Apply checks the source again.",
-  dry: "Preview changes",
-  unknown: "Unknown state"
-};
-function errorKey(message) {
-  return Object.hasOwn(ru, message) ? message : "failed";
-}
-function translator(locale) {
-  const dict = locale.startsWith("ru") ? ru : en;
-  return (k) => Object.hasOwn(dict, k) ? dict[k] : dict.failed;
-}
 
 // src/review.ts
 init_git_buffer();
@@ -15927,7 +16523,7 @@ var Review = class extends import_obsidian2.Modal {
       (o) => ["write", "delete"].includes(o.action) && needsReload(o.path)
     ))
       this.contentEl.createEl("p", { text: this.tr("reloadNeeded") });
-    if (this.p.access === "oauth" && this.p.role === "publisher")
+    if ((this.p.access === "oauth" || this.p.access === "webdav") && this.p.role === "publisher")
       this.contentEl.createEl("p", { text: this.tr("publishHint") });
     const metrics = this.contentEl.createEl("p"), toolbar = new import_obsidian2.Setting(this.contentEl);
     toolbar.addSearch(
@@ -21554,7 +22150,7 @@ var HistoryView = class extends import_obsidian3.ItemView {
               [
                 r.code ? t(r.code) : "",
                 r.path ?? "",
-                typeof r.count === "number" ? String(r.count) : "",
+                r.bytes !== void 0 ? byteCount(r.bytes, r.totalBytes) : typeof r.count === "number" ? String(r.count) : "",
                 r.stats ? this.studio.scanLabel(r.stats) : "",
                 r.ms === void 0 ? "" : t("duration") + " " + (r.ms / 1e3).toFixed(1)
               ].filter(Boolean).join(" · ")
@@ -22038,6 +22634,7 @@ function connectionFields(el, rs, p, redraw, validateForm, fieldRow) {
   fieldRow("access").setName(t("engine")).addDropdown((d) => {
     for (const k of [
       "vaultSource",
+      ...import_obsidian6.Platform.isDesktopApp || p.access === "webdav" ? ["webdav"] : [],
       "google",
       "yandex",
       "git",
@@ -22046,10 +22643,16 @@ function connectionFields(el, rs, p, redraw, validateForm, fieldRow) {
     ])
       d.addOption(k, t(k));
     d.setValue(
-      p.access === "oauth" ? p.cloud?.engine + "Private" : p.remote?.engine ?? "vaultSource"
+      p.access === "webdav" ? "webdav" : p.access === "oauth" ? p.cloud?.engine + "Private" : p.remote?.engine ?? "vaultSource"
     ).onChange((v) => {
       delete p.cloud;
-      if (v.endsWith("Private")) {
+      delete p.dav;
+      if (v === "webdav") {
+        p.access = "webdav";
+        p.dav = { url: "", user: "" };
+        delete p.remote;
+        p.reference = "/";
+      } else if (v.endsWith("Private")) {
         const engine = v === "googlePrivate" ? "google" : "yandex";
         const a = rs.accounts.list().find((a2) => a2.engine === engine && !a2.needsLogin);
         delete p.remote;
@@ -22078,6 +22681,39 @@ function connectionFields(el, rs, p, redraw, validateForm, fieldRow) {
     });
   });
   const remote = p.access === "public" ? p.remote : void 0;
+  if (p.access === "webdav" && p.dav) {
+    const dav = p.dav;
+    fieldRow("dav").setName(t("davUrl")).addText(
+      (c) => c.setPlaceholder("https://server.example/dav/").setValue(dav.url).onChange((v) => {
+        dav.url = v.trim();
+        validateForm();
+      })
+    );
+    new import_obsidian6.Setting(el).setName(t("davUser")).addText(
+      (c) => c.setValue(dav.user).onChange((v) => {
+        dav.user = v.trim();
+        validateForm();
+      })
+    );
+    let password = "";
+    const secret = new import_obsidian6.Setting(el).setName(t("davPasswordLabel")).setDesc(t("davSecretHelp"));
+    secret.addText((c) => {
+      c.inputEl.type = "password";
+      c.inputEl.autocomplete = "new-password";
+      c.onChange((v) => password = v);
+    }).addButton(
+      (b) => b.setButtonText(t("savePassword")).onClick(async () => {
+        try {
+          await rs.saveDavPassword(dav, password);
+          password = "";
+          secret.settingEl.querySelector("input").value = "";
+          b.setButtonText(t("saved"));
+        } catch (e) {
+          rs.report(e);
+        }
+      })
+    );
+  }
   if (remote) {
     fieldRow("remote").setName(t("remote")).setDesc(t("readonly")).addText(
       (c) => c.setValue(remote.url).onChange((v) => {
@@ -22247,9 +22883,9 @@ function placeTitle(p, t) {
   const e = p.endpoint;
   return [
     t(
-      e.cloud ? e.cloud.engine + "Private" : e.remote?.engine ?? "vaultSource"
+      e.dav ? "webdav" : e.cloud ? e.cloud.engine + "Private" : e.remote?.engine ?? "vaultSource"
     ),
-    e.cloud?.root ?? e.remote?.url,
+    e.dav?.url ?? e.cloud?.root ?? e.remote?.url,
     e.reference
   ].filter(Boolean).join(" · ");
 }
@@ -22429,49 +23065,44 @@ function placeControl(el, rs, p, side, refresh) {
     })
   );
 }
-function templateControl(el, rs, p, refresh) {
+function templateControl(el, rs, p, kind, refresh) {
   const t = rs.t;
-  const row = new import_obsidian8.Setting(el).setName(t("templates"));
-  if (rs.config.library.templates.length)
+  const row = new import_obsidian8.Setting(el).setName(
+    t(kind === "scope" ? "scopeTemplates" : "taskTemplates")
+  );
+  const templates = rs.config.library.templates.filter((v) => v.kind === kind);
+  if (templates.length)
     row.addDropdown((d) => {
       d.addOption("", t("useTemplate"));
-      for (const v of rs.config.library.templates) d.addOption(v.id, v.name);
+      for (const v of templates) d.addOption(v.id, v.name);
       d.onChange((id) => {
-        const v = rs.config.library.templates.find((v2) => v2.id === id);
+        const v = templates.find((v2) => v2.id === id);
         if (v) {
           applyTemplate(p, v);
           refresh();
         }
       });
     });
-  for (const kind of ["task", "scope"])
-    row.addButton(
-      (b) => b.setButtonText(
-        t(kind === "task" ? "saveTaskTemplate" : "saveScopeTemplate")
-      ).onClick(() => {
-        new InputDialog(
-          rs.app,
-          t,
-          t("templateName"),
-          p.name,
-          async (name) => {
-            const template = makeTemplate(p, name, kind);
-            readTemplate(serializeTemplate(template));
-            const existing = rs.config.library.templates.find(
-              (v) => v.name === name
-            );
-            const write = async () => {
-              if (existing) template.id = existing.id;
-              await saveTemplate(rs, template);
-              refresh();
-            };
-            if (existing)
-              rs.confirm(t("replaceTemplate") + " · " + name, write);
-            else await write();
-          }
-        ).open();
-      })
-    );
+  row.addButton(
+    (b) => b.setButtonText(
+      t(kind === "task" ? "saveTaskTemplate" : "saveScopeTemplate")
+    ).onClick(() => {
+      new InputDialog(rs.app, t, t("templateName"), p.name, async (name) => {
+        const template = makeTemplate(p, name, kind);
+        readTemplate(serializeTemplate(template));
+        const existing = rs.config.library.templates.find(
+          (v) => v.name === name
+        );
+        const write = async () => {
+          if (existing) template.id = existing.id;
+          await saveTemplate(rs, template);
+          refresh();
+        };
+        if (existing) rs.confirm(t("replaceTemplate") + " · " + name, write);
+        else await write();
+      }).open();
+    })
+  );
 }
 var saveTemplate = (rs, v) => rs.save({
   ...rs.config,
@@ -22501,38 +23132,17 @@ function libraryPage(el, rs, section, refresh, edit) {
           [
             placeTitle(v, t),
             ...users.map((p) => p.name),
-            last?.identity === identity ? t(last.status) + " · " + new Date(last.at).toLocaleString() : ""
+            last?.identity === identity ? (last.result ? describeAccess(last.result, t) : t(last.status)) + " · " + new Date(last.at).toLocaleString() : ""
           ].filter(Boolean).join(" · ")
         );
       };
-      const record3 = (status) => {
-        rs.app.saveLocalStorage(key, { identity, status, at: Date.now() });
-        describe();
-      };
       describe();
-      row.addButton(
-        (b) => b.setButtonText(t("checkAccess")).onClick(async () => {
-          b.setDisabled(true);
-          try {
-            const p = rs.newProfile();
-            bindPlace(p, "reference", v);
-            const s = rs.browseStore(p, "reference");
-            const stat = await s.stat(
-              v.endpoint.reference === "/" ? "" : v.endpoint.reference
-            );
-            if (stat?.type !== "folder") throw Error("missingRoot");
-            await s.list(
-              v.endpoint.reference === "/" ? "" : v.endpoint.reference
-            );
-            record3("accessible");
-          } catch (e) {
-            record3("accessFailed");
-            rs.report(e);
-          } finally {
-            b.setDisabled(false);
-          }
-        })
-      );
+      const draft = rs.newProfile();
+      bindPlace(draft, "reference", v);
+      accessButtons(row, rs, draft, (result) => {
+        rs.app.saveLocalStorage(key, { identity, result, at: Date.now() });
+        describe();
+      });
       row.addButton(
         (b) => b.setButtonText(t("editPlace")).onClick(() => new PlaceEditor(rs, refresh, v).open())
       );
@@ -22634,6 +23244,25 @@ function libraryPage(el, rs, section, refresh, edit) {
       )
     );
   }
+}
+function accessButtons(row, rs, p, show) {
+  for (const write of p.access === "public" ? [false] : [false, true])
+    row.addButton(
+      (b) => b.setButtonText(rs.t(write ? "probeWriteButton" : "checkAccess")).onClick(async () => {
+        b.setDisabled(true);
+        try {
+          show(await rs.probeConnection(structuredClone(p), write));
+        } catch (e) {
+          show({
+            steps: [],
+            failed: "probeList",
+            error: e instanceof Error ? errorKey(e.message) : "failed"
+          });
+        } finally {
+          b.setDisabled(false);
+        }
+      })
+    );
 }
 
 // src/path-inspector.ts
@@ -23301,7 +23930,7 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
     choice("role", "role", ["subscriber", "publisher"], !!remote);
     text(
       "reference",
-      remote || p.access === "oauth" ? "subfolder" : "reference"
+      remote || p.access === "webdav" || p.access === "oauth" ? "subfolder" : "reference"
     );
     const browse = (side) => new import_obsidian12.Setting(el).addButton(
       (b) => b.setButtonText(t(side === "local" ? "browseLocal" : "browse")).onClick(() => {
@@ -23329,8 +23958,9 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
       text("local", "target");
       browse("local");
     }
-    templateControl(el, rs, p, () => this.display());
+    templateControl(el, rs, p, "task", () => this.display());
     el = section("composition");
+    templateControl(el, rs, p, "scope", () => this.display());
     choice("scope", "scope", ["content", "settings", "contentFiles"]);
     el.createEl("p", {
       text: t(
@@ -23375,6 +24005,7 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
           Object.entries(types).find(([, v]) => v === p.include)?.[0] ?? "customTypes"
         ).onChange((k) => {
           if (k === "customTypes") {
+            patterns.open = true;
             fields.get("include")?.settingEl.querySelector("input")?.focus();
             return;
           }
@@ -23382,8 +24013,13 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
           this.display();
         });
       });
-      text("include", "include");
-      text("exclude", "exclude");
+      const patterns = el.createEl("details");
+      patterns.createEl("summary", { text: t("contentPatterns") });
+      patterns.open = !!p.exclude || !Object.values(types).includes(p.include);
+      patterns.append(
+        text("include", "include").settingEl,
+        text("exclude", "exclude").settingEl
+      );
       num2("maxMiB", "maxMiB");
     }
     el = section("taskRules");
@@ -23449,6 +24085,14 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
     ))
       if (!fields.has(problem.field) && typeof p[problem.field] === "number")
         num2(problem.field, problem.field);
+    const probe = new import_obsidian12.Setting(el).setName(t("probeTitle")).setDesc(t("probeHelp"));
+    const probeResult = el.createEl("p", { attr: { role: "status" } });
+    accessButtons(
+      probe,
+      rs,
+      p,
+      (result) => probeResult.setText(describeAccess(result, t))
+    );
     inspectPath(el, rs, p);
     new import_obsidian12.Setting(el).setName(t("draftPreview")).addButton(
       (b) => b.setButtonText(t("dry")).onClick(async () => {
@@ -23511,7 +24155,7 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
           for (const dir of dirs)
             if (dir && dir !== "/" && !await this.app.vault.adapter.exists(dir))
               missing.push(dir);
-          const cloud = p.access === "oauth" && p.role === "publisher" && p.reference && p.reference !== "/" && !await rs.accountReference(p, "", true).stat(p.reference);
+          const cloud = (p.access === "oauth" || p.access === "webdav") && p.role === "publisher" && p.reference && p.reference !== "/" && !await rs.accountReference(p, "", true).stat(p.reference);
           if (!cloud && !missing.length) {
             b.setButtonText(t("accessible"));
             return;
@@ -23519,7 +24163,7 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
           rs.confirm(
             t("createNow") + " · " + [
               ...missing,
-              ...cloud ? [p.cloud?.engine + " / " + p.reference] : []
+              ...cloud ? [(p.dav?.url ?? p.cloud?.engine) + " / " + p.reference] : []
             ].join(", "),
             async () => {
               if (cloud) await rs.accountReference(p, "").mkdir(p.reference);
@@ -23999,6 +24643,10 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   }
   recoveryTarget(t) {
     const dest = JSON.parse(t.key)[3];
+    if (t.dav) {
+      if (dest !== davId(t.dav, t.target)) throw Error("journal");
+      return this.davStore(t.dav, t.target, false);
+    }
     if (t.cloud) {
       if (dest !== cloudId(t.cloud, t.target)) throw Error("journal");
       return this.cloudStore(t.cloud, t.target, false);
@@ -24079,9 +24727,56 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     store.capabilities.supportsChangesFeed = c.engine === "google";
     return store;
   }
+  davSecretKey(d) {
+    return "refsync-dav-" + bytesToHex(
+      sha2562(
+        new TextEncoder().encode(
+          JSON.stringify([
+            this.engine.applier.state.device,
+            davRoot(d),
+            d.user
+          ])
+        )
+      )
+    ).slice(0, 48);
+  }
+  async saveDavPassword(d, value) {
+    const key = this.davSecretKey(d);
+    if (this.app.secretStorage) this.app.secretStorage.setSecret(key, value);
+    await this.driveSessions.set(
+      key,
+      this.app.secretStorage ? null : value || null,
+      Number.MAX_SAFE_INTEGER
+    );
+  }
+  davStore(d, prefix, ro) {
+    if (!import_obsidian13.Platform.isDesktopApp) throw Error("davDesktop");
+    const key = this.davSecretKey(d);
+    return new DavStore(
+      d,
+      prefix,
+      ro,
+      async () => this.app.secretStorage?.getSecret(key) || await this.driveSessions.get(key)
+    );
+  }
   accountReference(p, prefix = p.reference, readOnly = p.role === "subscriber") {
+    if (p.access === "webdav" && p.dav)
+      return this.davStore(p.dav, prefix, readOnly);
     if (p.access !== "oauth" || !p.cloud) throw Error("cloudLocation");
     return this.cloudStore(p.cloud, prefix, readOnly);
+  }
+  async probeConnection(p, write) {
+    return this.scheduler.serial(async () => {
+      const store = p.access === "local" ? new LocalProvider(
+        this.app.vault,
+        p.reference === "/" ? "" : p.reference,
+        this.manifest.id,
+        "content",
+        !write,
+        { trash: "permanent", trashDays: 0 }
+      ) : p.access === "public" ? this.publicReference({ ...p, role: "subscriber" }) : this.accountReference(p, p.reference, !write);
+      return testAccess(store, write);
+    });
   }
   browseStore(p, side) {
     if (side === "local" || p.access === "local")
@@ -24092,7 +24787,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         "content",
         true
       );
-    return p.access === "oauth" ? this.accountReference(p, "", true) : this.publicReference(p, "");
+    return p.access === "oauth" || p.access === "webdav" ? this.accountReference(p, "", true) : this.publicReference(p, "");
   }
   async previewDraft(draft) {
     const p = structuredClone(draft);
@@ -24127,7 +24822,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     return [s.local, s.reference];
   }
   stores(p) {
-    if (!["local", "public", "oauth"].includes(p.access))
+    if (!["local", "public", "oauth", "webdav"].includes(p.access))
       throw Error("invalid");
     const make = (path, ro) => new LocalProvider(
       this.app.vault,
@@ -24145,7 +24840,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       p.content
     );
     return {
-      reference: p.access === "oauth" ? this.accountReference(p) : p.access === "public" ? this.publicReference(p) : make(p.reference, p.role === "subscriber"),
+      reference: p.access === "oauth" || p.access === "webdav" ? this.accountReference(p) : p.access === "public" ? this.publicReference(p) : make(p.reference, p.role === "subscriber"),
       local: make(
         p.scope === "settings" ? this.app.vault.configDir : p.local,
         p.role === "publisher"
@@ -24263,6 +24958,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       (leaf) => leaf.view instanceof import_obsidian13.MarkdownView && leaf.view.file?.path === join(p.local, path)
     );
     const started = Date.now();
+    const reported = /* @__PURE__ */ new Set();
     const result = await this.engine.run(
       p,
       v.reference,
@@ -24281,6 +24977,28 @@ var SyncStudio = class extends import_obsidian13.Plugin {
           this.engine.applier.fence
         ),
         scanning: (s) => this.scanProgress(p, s),
+        transfer: (path, direction, done, total, resumed) => {
+          const k = JSON.stringify([path, direction, resumed]);
+          if ((resumed || done === total) && !reported.has(k)) {
+            reported.add(k);
+            void this.log(resumed ? "transferResumed" : direction, 0, p.id, {
+              path,
+              bytes: done,
+              totalBytes: total
+            }).catch(() => {
+            });
+          }
+          if (!resumed && done !== total && performance.now() - this.lastPaint < 250)
+            return;
+          this.lastPaint = performance.now();
+          this.statusLabel = [
+            p.name,
+            this.t(resumed ? "transferResumed" : direction),
+            path,
+            byteCount(done, total)
+          ].join(" · ");
+          this.paint();
+        },
         quiet: (path) => this.quiet.check(p, path, isOpen(path)),
         progress: (done, total) => {
           if (done !== total && performance.now() - this.lastPaint < 250)

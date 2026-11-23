@@ -2,6 +2,23 @@ import { sha256 } from "@noble/hashes/sha2";
 import { bytesToHex } from "@noble/hashes/utils";
 import type { Bytes } from "./model";
 
+export type TransferPulse = (
+  done?: number,
+  total?: number,
+  resumed?: boolean,
+) => void;
+export type TransferObserver = (
+  path: string,
+  direction: "transferUpload" | "transferDownload",
+  done: number,
+  total: number,
+  resumed: boolean,
+) => void;
+export function byteCount(done: number, total: number) {
+  const format = (v: number) =>
+    (v / 1048576).toLocaleString(undefined, { maximumFractionDigits: 1 });
+  return format(done) + " / " + format(total) + " MiB";
+}
 export const chunkSize = 8 * 1024 * 1024;
 export interface ChunkSource {
   size: number;

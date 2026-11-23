@@ -1,3 +1,4 @@
+import { davId } from "./webdav";
 import { defaults, safe, type Profile } from "./model";
 import { cloudId } from "./private-cloud";
 import { location } from "./public-location";
@@ -7,7 +8,7 @@ import { validate } from "./validator";
 type Side = "local" | "reference";
 export type Endpoint = Pick<
   Profile,
-  "access" | "reference" | "remote" | "cloud"
+  "access" | "reference" | "remote" | "cloud" | "dav"
 >;
 export interface Place {
   id: string;
@@ -103,6 +104,12 @@ export function loadLibrary(raw: unknown): Library {
 export function endpoint(p: Profile, s: Side): Endpoint {
   if (s === "local" || p.access === "local")
     return { access: "local", reference: p[s] || "/" };
+  if (p.access === "webdav")
+    return {
+      access: "webdav",
+      reference: p.reference,
+      dav: structuredClone(p.dav),
+    };
   return p.access === "oauth"
     ? {
         access: "oauth",
@@ -122,7 +129,8 @@ export function validEndpoint(e: Endpoint) {
     (e.reference !== "/" && !safe(e.reference))
   )
     throw Error("path");
-  if (e.access === "oauth" && e.cloud) cloudId(e.cloud, e.reference);
+  if (e.access === "webdav" && e.dav) davId(e.dav, e.reference);
+  else if (e.access === "oauth" && e.cloud) cloudId(e.cloud, e.reference);
   else if (e.access === "public" && e.remote) location(e.remote);
   else if (e.access !== "local") throw Error("invalid");
 }
@@ -135,6 +143,7 @@ export function bindPlace(p: Profile, s: Side, place: Place) {
     if (e.access !== "local" || p.scope === "settings") throw Error("invalid");
     p.local = e.reference;
   } else {
+    delete p.dav;
     delete p.remote;
     delete p.cloud;
     Object.assign(p, structuredClone(e));
@@ -167,8 +176,9 @@ export function endpointLabels(
       : p.remote
         ? t(p.remote.engine)
         : "",
-    account,
-    p.cloud?.root ?? p.remote?.url,
+    p.dav ? t("webdav") : "",
+    p.dav?.user ?? account,
+    p.dav?.url ?? p.cloud?.root ?? p.remote?.url,
     p.remote?.engine === "git" ? p.remote.branch : "",
     p.reference || "/",
   ]

@@ -1860,3 +1860,56 @@ test("path diagnostics detect colliding files, directory ancestors and type mism
     [],
   );
 });
+
+import { davRoot, davId } from "../src/webdav";
+import { testAccess } from "../src/access-check";
+
+test("WebDAV validates endpoint identities, desktop profiles and portable templates", () => {
+  const dav = { url: "https://dav.example/collection", user: "alice" };
+  assert.equal(davRoot(dav), dav.url + "/");
+  assert.equal(davId(dav, "/"), davId({ ...dav, url: dav.url + "/" }, ""));
+  assert.notEqual(davId(dav, "/"), davId({ ...dav, user: "bob" }, "/"));
+  for (const url of [
+    "http://dav.example/files",
+    "https://alice:secret@dav.example/files",
+    "https://dav.example/files?token=1",
+  ]) {
+    assert.throws(() => davRoot({ ...dav, url }), /davLocation/);
+  }
+  assert.throws(() => davId(dav, "../other"), /path/);
+  const p = { ...newProfile(), access: "webdav" as const, dav, reference: "/" };
+  assert.deepEqual(validate(p, true, false, ".obsidian"), []);
+  assert.ok(
+    validate(p, false, false, ".obsidian").some(
+      (err) => err.code === "davDesktop",
+    ),
+  );
+  const json = serializeTemplate(makeTemplate(p, "Sample", "task"));
+  assert.ok(!json.includes("dav.example") && !json.includes("alice"));
+});
+
+test("manual connection checks report failed steps and preserve third-party changes", async () => {
+  const store = new Memory("access");
+  assert.deepEqual(await testAccess(store, false), { steps: ["probeList"] });
+  assert.deepEqual((await testAccess(store, true)).steps, [
+    "probeList",
+    "probeCreate",
+    "probeRead",
+    "probeReplace",
+    "probeDelete",
+  ]);
+  assert.equal(store.data.size, 0);
+  const original = store.upload.bind(store);
+  let writes = 0;
+  store.upload = async (path, data) => {
+    if (++writes === 2) {
+      await original(path, bytes("external edit"));
+      throw Error("referenceChanged");
+    }
+    await original(path, data);
+  };
+  const result = await testAccess(store, true);
+  assert.equal(result.failed, "probeReplace");
+  assert.equal(result.error, "referenceChanged");
+  assert.equal(text(store.data.get(result.leftover!)!), "external edit");
+});

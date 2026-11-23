@@ -89,7 +89,11 @@ export class DeviceDriveSessions {
     return new TextDecoder().decode(bytes);
   }
 
-  async set(id: string, value: string | null) {
+  async set(
+    id: string,
+    value: string | null,
+    expires = Date.now() + 7 * 86400000,
+  ) {
     const db = await this.open();
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const entry =
@@ -97,7 +101,7 @@ export class DeviceDriveSessions {
         ? null
         : {
             iv,
-            expires: Date.now() + 7 * 86400000,
+            expires,
             cipher: await crypto.subtle.encrypt(
               {
                 name: "AES-GCM",

@@ -125,6 +125,7 @@ export interface Intent {
   digest?: string;
 }
 export interface Transaction {
+  dav?: import("./webdav").DavLocation;
   cloud?: import("./private-cloud").CloudLocation;
   content?: import("./content-scope").ContentScope;
   createdAt?: number;

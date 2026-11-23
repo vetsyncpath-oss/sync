@@ -1,3 +1,4 @@
+import { byteCount } from "./transfer";
 import { ItemView, Setting, type WorkspaceLeaf } from "obsidian";
 import type SyncStudio from "./main";
 export const historyView = "sync-studio-history";
@@ -53,7 +54,11 @@ export class HistoryView extends ItemView {
               [
                 r.code ? t(r.code) : "",
                 r.path ?? "",
-                typeof r.count === "number" ? String(r.count) : "",
+                r.bytes !== undefined
+                  ? byteCount(r.bytes, r.totalBytes)
+                  : typeof r.count === "number"
+                    ? String(r.count)
+                    : "",
                 r.stats ? this.studio.scanLabel(r.stats) : "",
                 r.ms === undefined
                   ? ""

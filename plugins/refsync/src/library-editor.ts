@@ -1,3 +1,5 @@
+import { errorKey } from "./i18n";
+import { describeAccess, type AccessResult } from "./access-check";
 import { Modal, Setting, Platform, type App } from "obsidian";
 import { connectionFields } from "./connection-fields";
 import { RemoteFolderBrowser } from "./remote-browser";
@@ -79,11 +81,13 @@ export function placeTitle(p: Place, t: Tr) {
   const e = p.endpoint;
   return [
     t(
-      e.cloud
-        ? e.cloud.engine + "Private"
-        : (e.remote?.engine ?? "vaultSource"),
+      e.dav
+        ? "webdav"
+        : e.cloud
+          ? e.cloud.engine + "Private"
+          : (e.remote?.engine ?? "vaultSource"),
     ),
-    e.cloud?.root ?? e.remote?.url,
+    e.dav?.url ?? e.cloud?.root ?? e.remote?.url,
     e.reference,
   ]
     .filter(Boolean)
@@ -312,52 +316,48 @@ export function templateControl(
   el: HTMLElement,
   rs: Studio,
   p: Profile,
+  kind: TaskTemplate["kind"],
   refresh: () => void,
 ) {
   const t = rs.t;
-  const row = new Setting(el).setName(t("templates"));
-  if (rs.config.library.templates.length)
+  const row = new Setting(el).setName(
+    t(kind === "scope" ? "scopeTemplates" : "taskTemplates"),
+  );
+  const templates = rs.config.library.templates.filter((v) => v.kind === kind);
+  if (templates.length)
     row.addDropdown((d) => {
       d.addOption("", t("useTemplate"));
-      for (const v of rs.config.library.templates) d.addOption(v.id, v.name);
+      for (const v of templates) d.addOption(v.id, v.name);
       d.onChange((id) => {
-        const v = rs.config.library.templates.find((v) => v.id === id);
+        const v = templates.find((v) => v.id === id);
         if (v) {
           applyTemplate(p, v);
           refresh();
         }
       });
     });
-  for (const kind of ["task", "scope"] as const)
-    row.addButton((b) =>
-      b
-        .setButtonText(
-          t(kind === "task" ? "saveTaskTemplate" : "saveScopeTemplate"),
-        )
-        .onClick(() => {
-          new InputDialog(
-            rs.app,
-            t,
-            t("templateName"),
-            p.name,
-            async (name) => {
-              const template = makeTemplate(p, name, kind);
-              readTemplate(serializeTemplate(template));
-              const existing = rs.config.library.templates.find(
-                (v) => v.name === name,
-              );
-              const write = async () => {
-                if (existing) template.id = existing.id;
-                await saveTemplate(rs, template);
-                refresh();
-              };
-              if (existing)
-                rs.confirm(t("replaceTemplate") + " · " + name, write);
-              else await write();
-            },
-          ).open();
-        }),
-    );
+  row.addButton((b) =>
+    b
+      .setButtonText(
+        t(kind === "task" ? "saveTaskTemplate" : "saveScopeTemplate"),
+      )
+      .onClick(() => {
+        new InputDialog(rs.app, t, t("templateName"), p.name, async (name) => {
+          const template = makeTemplate(p, name, kind);
+          readTemplate(serializeTemplate(template));
+          const existing = rs.config.library.templates.find(
+            (v) => v.name === name,
+          );
+          const write = async () => {
+            if (existing) template.id = existing.id;
+            await saveTemplate(rs, template);
+            refresh();
+          };
+          if (existing) rs.confirm(t("replaceTemplate") + " · " + name, write);
+          else await write();
+        }).open();
+      }),
+  );
 }
 const saveTemplate = (rs: Studio, v: TaskTemplate) =>
   rs.save({
@@ -399,41 +399,24 @@ export function libraryPage(
             placeTitle(v, t),
             ...users.map((p) => p.name),
             last?.identity === identity
-              ? t(last.status) + " · " + new Date(last.at).toLocaleString()
+              ? (last.result
+                  ? describeAccess(last.result, t)
+                  : t(last.status)) +
+                " · " +
+                new Date(last.at).toLocaleString()
               : "",
           ]
             .filter(Boolean)
             .join(" · "),
         );
       };
-      const record = (status: string) => {
-        rs.app.saveLocalStorage(key, { identity, status, at: Date.now() });
-        describe();
-      };
       describe();
-      row.addButton((b) =>
-        b.setButtonText(t("checkAccess")).onClick(async () => {
-          b.setDisabled(true);
-          try {
-            const p = rs.newProfile();
-            bindPlace(p, "reference", v);
-            const s = rs.browseStore(p, "reference");
-            const stat = await s.stat(
-              v.endpoint.reference === "/" ? "" : v.endpoint.reference,
-            );
-            if (stat?.type !== "folder") throw Error("missingRoot");
-            await s.list(
-              v.endpoint.reference === "/" ? "" : v.endpoint.reference,
-            );
-            record("accessible");
-          } catch (e) {
-            record("accessFailed");
-            rs.report(e);
-          } finally {
-            b.setDisabled(false);
-          }
-        }),
-      );
+      const draft = rs.newProfile();
+      bindPlace(draft, "reference", v);
+      accessButtons(row, rs, draft, (result) => {
+        rs.app.saveLocalStorage(key, { identity, result, at: Date.now() });
+        describe();
+      });
       row.addButton((b) =>
         b
           .setButtonText(t("editPlace"))
@@ -543,4 +526,31 @@ export function libraryPage(
       ),
     );
   }
+}
+
+export function accessButtons(
+  row: Setting,
+  rs: Studio,
+  p: Profile,
+  show: (r: AccessResult) => void,
+) {
+  for (const write of p.access === "public" ? [false] : [false, true])
+    row.addButton((b) =>
+      b
+        .setButtonText(rs.t(write ? "probeWriteButton" : "checkAccess"))
+        .onClick(async () => {
+          b.setDisabled(true);
+          try {
+            show(await rs.probeConnection(structuredClone(p), write));
+          } catch (e) {
+            show({
+              steps: [],
+              failed: "probeList",
+              error: e instanceof Error ? errorKey(e.message) : "failed",
+            });
+          } finally {
+            b.setDisabled(false);
+          }
+        }),
+    );
 }

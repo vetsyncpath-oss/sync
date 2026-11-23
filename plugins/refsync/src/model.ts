@@ -1,3 +1,4 @@
+import type { TransferPulse } from "./transfer";
 import type { ConfigScope } from "./config-scope";
 export type Direction = "SourceToTarget";
 export type Role = "subscriber" | "publisher";
@@ -8,6 +9,7 @@ export type Volatility = "H" | "S" | "V";
 export interface Profile {
   localPlace?: string;
   referencePlace?: string;
+  dav?: import("./webdav").DavLocation;
   cloud?: import("./private-cloud").CloudLocation;
   remote?: import("./public-location").PublicSource;
   content?: import("./content-scope").ContentScope;
@@ -35,7 +37,7 @@ export interface Profile {
   trashDays: number;
   role: Role;
   scope: Scope;
-  access: "local" | "public" | "oauth" | "token";
+  access: "local" | "public" | "oauth" | "webdav" | "token";
   local: string;
   reference: string;
   mirror: "full" | "preserve";
@@ -132,6 +134,11 @@ export interface StorageProvider {
       })
     | null
   >;
+  readDigest?(
+    path: string,
+    size: number,
+    progress: () => void,
+  ): Promise<string>;
   chunkSource?(
     path: string,
     size: number,
@@ -141,14 +148,14 @@ export interface StorageProvider {
     file: import("./transfer").ChunkSource,
     digest: string,
     mtime: number | undefined,
-    progress: () => void,
+    progress: TransferPulse,
   ): Promise<void>;
-  download(path: string, progress?: () => void): Promise<Bytes>;
+  download(path: string, progress?: TransferPulse): Promise<Bytes>;
   upload(
     path: string,
     data: Bytes,
     mtime?: number,
-    progress?: () => void,
+    progress?: TransferPulse,
   ): Promise<void>;
   delete(path: string): Promise<void>;
   move(from: string, to: string): Promise<void>;

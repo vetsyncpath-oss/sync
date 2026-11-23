@@ -51,9 +51,14 @@ def run(page):
       if(!preview.textContent.includes("removed.md")||preview.textContent.includes("private.md"))throw Error("wrong preview");
       if(!(await vault.adapter.exists(dst+"/Projects/removed.md")) || rs.config.profiles.find(x=>x.id===p.id).mirror==="full")throw Error("preview mutated draft or vault");
       button(preview,"close").click();
-      button(el,"endpoints").click();
+      button(el,"composition").click();
+      select(el,"fileType","customTypes");
+      if(!row(el,t("include")).closest("details").open)throw Error("hidden custom pattern");
       button(el,"saveScopeTemplate").click();const input=await modal("save");enter(input.querySelector("input"),"Projects only");button(input,"save").click();
       await until(()=>rs.config.library.templates.some(v=>v.name==="Projects only"));
+      select(el,"baseScope","all");
+      select(el,"scopeTemplates",rs.config.library.templates.find(v=>v.name==="Projects only").id);
+      if(editor.draft.content.base!=="selected")throw Error("scope template not applied");
       button(el,"save").click();await rs.saves;app.setting.close();
       await rs.execute(p.id,"run");const f=path=>vault.adapter.exists(dst+"/"+path);
       if(!await f("Projects/from-source.md")||await f("Projects/removed.md")||!await f("Archive/private.md")||await f("root.md"))throw Error("scoped mirror mismatch");

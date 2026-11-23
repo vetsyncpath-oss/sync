@@ -44,14 +44,15 @@ export class Applier {
       const p = t.steps[i].path,
         armed = t.id + "/armed/" + i;
       if (
-        (t.cloud && (await this.journal.disk.has(t.id + "/restored/" + i))) ||
+        ((t.cloud || t.dav) &&
+          (await this.journal.disk.has(t.id + "/restored/" + i))) ||
         !(await this.journal.disk.has(armed)) ||
         (await this.journal.disk.has(t.id + "/skipped/" + i))
       )
         continue;
       const perform = async () => {
         const saved = await this.journal.json<string | null>(armed);
-        if (t.cloud) target.reset?.();
+        if (t.cloud || t.dav) target.reset?.();
         const stat = await budget.io(() => target.stat(p));
         if (t.steps[i].action === "mkdir" || t.steps[i].action === "rmdir") {
           if (stat && stat.type !== "folder") throw Error("collision");
@@ -62,7 +63,7 @@ export class Applier {
           return;
         }
         if (stat?.type === "folder") throw Error("collision");
-        if (t.cloud) {
+        if (t.cloud || t.dav) {
           const expected = t.id + "/after/" + i;
           // A crash before recording the post-image precedes the remote mutation.
           if (!(await this.journal.disk.has(expected))) return;
@@ -94,7 +95,7 @@ export class Applier {
       };
       if (target.withFilePaused) await target.withFilePaused(p, perform);
       else await perform();
-      if (t.cloud) await this.journal.mark(t.id + "/restored/" + i);
+      if (t.cloud || t.dav) await this.journal.mark(t.id + "/restored/" + i);
     }
   }
   async recover(resolve: (t: Transaction) => StorageProvider): Promise<void> {
@@ -104,7 +105,7 @@ export class Applier {
       try {
         await this.recoverTransaction(t, resolve);
       } catch (e) {
-        if (!t.cloud) throw e;
+        if (!(t.cloud || t.dav)) throw e;
         this.pendingTargets.add(JSON.parse(t.key)[3]);
       }
     }
@@ -194,6 +195,7 @@ export class Applier {
     operations?: { path: string; action: string }[],
     configDir = ".obsidian",
     self = "refsync",
+    transfer?: import("./transfer").TransferObserver,
   ): Promise<number> {
     this.fence.check();
     if (this.needsRecovery || this.pendingTargets.has(target.id))
@@ -202,6 +204,18 @@ export class Applier {
       budget.check();
       if (active && !active()) throw Error("stopped");
     };
+    const pulseFor =
+      (
+        path: string,
+        direction: "transferUpload" | "transferDownload",
+        heartbeat: () => void,
+      ): import("./transfer").TransferPulse =>
+      (n, total, resumed) => {
+        heartbeat();
+        checkpoint();
+        if (n !== undefined && total !== undefined && total >= 1048576)
+          transfer?.(path, direction, n, total, !!resumed);
+      };
     const cfg = profile.config ?? legacyConfig();
     const batch = profile.scope === "settings" && cfg.strategy === "batch";
     if (
@@ -284,7 +298,7 @@ export class Applier {
         }
         if (stageBatch && op.action === "ack") {
           const bytes = await budget.io((progress) =>
-            source.download(p, progress),
+            source.download(p, pulseFor(p, "transferDownload", progress)),
           );
           if ((await hash(bytes)) !== (s.rawHash ?? s.hash))
             throw Error("referenceChanged");
@@ -318,7 +332,9 @@ export class Applier {
         } else if (op.action === "write" || op.action === "both") {
           let bytes: Bytes;
           try {
-            bytes = await budget.io((progress) => source.download(p, progress));
+            bytes = await budget.io((progress) =>
+              source.download(p, pulseFor(p, "transferDownload", progress)),
+            );
           } catch (e) {
             if (batch || !transient(e)) throw e;
             plan.deferred.push({ path: p, reason: "locked" });
@@ -386,6 +402,10 @@ export class Applier {
       id,
       key,
       target: targetPath,
+      dav:
+        profile.access === "webdav" && profile.role === "publisher"
+          ? profile.dav
+          : undefined,
       cloud:
         profile.access === "oauth" && profile.role === "publisher"
           ? profile.cloud
@@ -453,7 +473,7 @@ export class Applier {
               continue;
             }
             const perform = async () => {
-              if (t.cloud) target.reset?.();
+              if (t.cloud || t.dav) target.reset?.();
               const stat = await budget.io(() => target.stat(step.path));
               if (stat?.type === "folder") throw Error("collision");
               const old = stat
@@ -463,7 +483,7 @@ export class Applier {
                 : null;
               const copy = displaced.get(step.path);
               if (copy && stat) throw Error("collision");
-              if (t.cloud || profile.scope === "content") {
+              if (t.cloud || t.dav || profile.scope === "content") {
                 const expected =
                   step.path === manifestPath && i === steps.length - 1
                     ? steps[0].digest
@@ -482,7 +502,7 @@ export class Applier {
                 throw Error("referenceChanged");
               await this.journal.backup(id, i, old);
               if (step.action === "delete") {
-                if (t.cloud)
+                if (t.cloud || t.dav)
                   await this.journal.disk.putNew(
                     id + "/after/" + i,
                     manifestBytes(null),
@@ -508,7 +528,7 @@ export class Applier {
                   )) !== step.digest
                 )
                   throw Error("incomplete");
-                if (t.cloud)
+                if (t.cloud || t.dav)
                   await this.journal.disk.putNew(
                     id + "/after/" + i,
                     manifestBytes(step.digest),
@@ -520,10 +540,7 @@ export class Applier {
                       file,
                       step.digest!,
                       step.mtime,
-                      () => {
-                        progress();
-                        checkpoint();
-                      },
+                      pulseFor(step.path, "transferUpload", progress),
                     ),
                   false,
                 );
@@ -557,14 +574,19 @@ export class Applier {
                           profile.role === "subscriber",
                         )
                       : bytes;
-                if (t.cloud)
+                if (t.cloud || t.dav)
                   await this.journal.disk.putNew(
                     id + "/after/" + i,
                     manifestBytes(await hash(outgoing)),
                   );
                 await budget.io(
                   (progress) =>
-                    target.upload(step.path, outgoing, step.mtime, progress),
+                    target.upload(
+                      step.path,
+                      outgoing,
+                      step.mtime,
+                      pulseFor(step.path, "transferUpload", progress),
+                    ),
                   false,
                 );
               }

@@ -11,6 +11,8 @@ await build({
     "obsidian",
     "electron",
     "node:http",
+    "node:https",
+    "node:crypto",
     "node:fs/promises",
     "node:path",
   ],

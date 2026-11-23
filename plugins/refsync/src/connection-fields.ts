@@ -1,4 +1,4 @@
-import { Setting } from "obsidian";
+import { Platform, Setting } from "obsidian";
 import type Studio from "./main";
 import type { Profile } from "./model";
 import type { PublicSource } from "./public-location";
@@ -18,6 +18,7 @@ export function connectionFields(
     .addDropdown((d) => {
       for (const k of [
         "vaultSource",
+        ...(Platform.isDesktopApp || p.access === "webdav" ? ["webdav"] : []),
         "google",
         "yandex",
         "git",
@@ -26,12 +27,20 @@ export function connectionFields(
       ])
         d.addOption(k, t(k));
       d.setValue(
-        p.access === "oauth"
-          ? p.cloud?.engine + "Private"
-          : (p.remote?.engine ?? "vaultSource"),
+        p.access === "webdav"
+          ? "webdav"
+          : p.access === "oauth"
+            ? p.cloud?.engine + "Private"
+            : (p.remote?.engine ?? "vaultSource"),
       ).onChange((v) => {
         delete p.cloud;
-        if (v.endsWith("Private")) {
+        delete p.dav;
+        if (v === "webdav") {
+          p.access = "webdav";
+          p.dav = { url: "", user: "" };
+          delete p.remote;
+          p.reference = "/";
+        } else if (v.endsWith("Private")) {
           const engine = v === "googlePrivate" ? "google" : "yandex";
           const a = rs.accounts
             .list()
@@ -63,6 +72,48 @@ export function connectionFields(
     });
   const remote = p.access === "public" ? p.remote : undefined;
 
+  if (p.access === "webdav" && p.dav) {
+    const dav = p.dav;
+    fieldRow("dav")
+      .setName(t("davUrl"))
+      .addText((c) =>
+        c
+          .setPlaceholder("https://server.example/dav/")
+          .setValue(dav.url)
+          .onChange((v) => {
+            dav.url = v.trim();
+            validateForm();
+          }),
+      );
+    new Setting(el).setName(t("davUser")).addText((c) =>
+      c.setValue(dav.user).onChange((v) => {
+        dav.user = v.trim();
+        validateForm();
+      }),
+    );
+    let password = "";
+    const secret = new Setting(el)
+      .setName(t("davPasswordLabel"))
+      .setDesc(t("davSecretHelp"));
+    secret
+      .addText((c) => {
+        c.inputEl.type = "password";
+        c.inputEl.autocomplete = "new-password";
+        c.onChange((v) => (password = v));
+      })
+      .addButton((b) =>
+        b.setButtonText(t("savePassword")).onClick(async () => {
+          try {
+            await rs.saveDavPassword(dav, password);
+            password = "";
+            secret.settingEl.querySelector("input")!.value = "";
+            b.setButtonText(t("saved"));
+          } catch (e) {
+            rs.report(e);
+          }
+        }),
+      );
+  }
   if (remote) {
     fieldRow("remote")
       .setName(t("remote"))

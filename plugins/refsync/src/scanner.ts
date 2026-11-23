@@ -248,7 +248,11 @@ export async function scan(
               ? provider.chunkSource?.(p, stat.size)
               : undefined;
           let rawHash, semantic;
-          if (file)
+          if (!policy && provider.readDigest)
+            rawHash = await budget.io((progress) =>
+              provider.readDigest!(p, stat.size, progress),
+            );
+          else if (file)
             rawHash = await budget.io((progress) =>
               processChunks(file, undefined, progress),
             );

@@ -1,3 +1,4 @@
+import type { TransferPulse } from "./transfer";
 import { sleep } from "./runtime";
 import { chunkSize, fromBuffer, type ChunkSource } from "./transfer";
 import {
@@ -59,7 +60,7 @@ interface MutableTree extends RemoteTree {
     old: RemoteItem | null,
     bytes: Bytes,
     mtime?: number,
-    progress?: () => void,
+    progress?: TransferPulse,
   ): Promise<void>;
   remove(item: RemoteItem): Promise<void>;
   relocate(
@@ -131,7 +132,7 @@ export class DriveTree extends GoogleTree implements MutableTree {
     old: RemoteItem | null,
     bytes: Bytes,
     mtime?: number,
-    progress?: () => void,
+    progress?: TransferPulse,
   ) {
     const digest =
       this.sessions && bytes.byteLength > chunkSize ? await hash(bytes) : "";
@@ -152,7 +153,7 @@ export class DriveTree extends GoogleTree implements MutableTree {
     file: ChunkSource,
     digest: string,
     mtime?: number,
-    progress?: () => void,
+    progress?: TransferPulse,
   ) {
     const { size } = file;
     const key =
@@ -190,9 +191,10 @@ export class DriveTree extends GoogleTree implements MutableTree {
         else {
           check(status);
           await this.sessions!.set(key, null);
+          progress?.(size, size);
           return;
         }
-        progress?.();
+        progress?.(offset, size, offset > 0);
       }
     }
     if (!session) {
@@ -260,6 +262,7 @@ export class DriveTree extends GoogleTree implements MutableTree {
         if (status.status !== 308) {
           check(status);
           if (key) await this.sessions!.set(key, null);
+          progress?.(size, size);
           return;
         }
         const remoteOffset = acknowledged(status, size);
@@ -267,6 +270,7 @@ export class DriveTree extends GoogleTree implements MutableTree {
           throw Error("incomplete");
         if (remoteOffset > offset) failures = 0;
         offset = remoteOffset;
+        progress?.(offset, size);
         continue;
       }
       if (response.status !== 308) {
@@ -275,14 +279,14 @@ export class DriveTree extends GoogleTree implements MutableTree {
         check(response);
         if (end !== size) throw Error("incomplete");
         if (key) await this.sessions!.set(key, null);
-        progress?.();
+        progress?.(size, size);
         return;
       }
       const next = acknowledged(response, size);
       if (next <= offset || next > end) throw Error("incomplete");
       offset = next;
       failures = 0;
-      progress?.();
+      progress?.(offset, size);
     } while (offset < size);
     throw Error("incomplete");
   }
@@ -551,7 +555,7 @@ export class CloudStore extends PublicStore {
     path: string,
     bytes: Bytes,
     mtime?: number,
-    progress?: () => void,
+    progress?: TransferPulse,
   ) {
     const digest = await hash(bytes);
     if (this.uploadChunks)
@@ -580,7 +584,7 @@ export class CloudStore extends PublicStore {
       name: string,
       old: RemoteItem | null,
     ) => Promise<void>,
-    progress?: () => void,
+    progress?: TransferPulse,
   ) {
     checked(path);
     await this.change(async () => {
@@ -593,7 +597,8 @@ export class CloudStore extends PublicStore {
       if (
         saved?.type !== "file" ||
         saved.size !== size ||
-        (saved.sha256 ?? (await hash(await this.download(path, progress)))) !==
+        (saved.sha256 ??
+          (await hash(await this.download(path, () => progress?.())))) !==
           digest
       )
         throw Error("referenceChanged");

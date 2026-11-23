@@ -1,3 +1,6 @@
+import { byteCount } from "./transfer";
+import { DavStore, davId, davRoot, type DavLocation } from "./webdav";
+import { testAccess } from "./access-check";
 import { DeviceDriveSessions } from "./drive-sessions";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
@@ -564,6 +567,10 @@ export default class SyncStudio extends Plugin {
   }
   private recoveryTarget(t: Transaction): StorageProvider {
     const dest = JSON.parse(t.key)[3];
+    if (t.dav) {
+      if (dest !== davId(t.dav, t.target)) throw Error("journal");
+      return this.davStore(t.dav, t.target, false);
+    }
     if (t.cloud) {
       if (dest !== cloudId(t.cloud, t.target)) throw Error("journal");
       return this.cloudStore(t.cloud, t.target, false);
@@ -653,13 +660,70 @@ export default class SyncStudio extends Plugin {
     store.capabilities.supportsChangesFeed = c.engine === "google";
     return store;
   }
+  private davSecretKey(d: DavLocation) {
+    return (
+      "refsync-dav-" +
+      bytesToHex(
+        sha256(
+          new TextEncoder().encode(
+            JSON.stringify([
+              this.engine.applier.state.device,
+              davRoot(d),
+              d.user,
+            ]),
+          ),
+        ),
+      ).slice(0, 48)
+    );
+  }
+  async saveDavPassword(d: DavLocation, value: string) {
+    const key = this.davSecretKey(d);
+    if (this.app.secretStorage) this.app.secretStorage.setSecret(key, value);
+    await this.driveSessions.set(
+      key,
+      this.app.secretStorage ? null : value || null,
+      Number.MAX_SAFE_INTEGER,
+    );
+  }
+  private davStore(d: DavLocation, prefix: string, ro: boolean) {
+    if (!Platform.isDesktopApp) throw Error("davDesktop");
+    const key = this.davSecretKey(d);
+    return new DavStore(
+      d,
+      prefix,
+      ro,
+      async () =>
+        this.app.secretStorage?.getSecret(key) ||
+        (await this.driveSessions.get(key)),
+    );
+  }
   accountReference(
     p: Profile,
     prefix = p.reference,
     readOnly = p.role === "subscriber",
   ) {
+    if (p.access === "webdav" && p.dav)
+      return this.davStore(p.dav, prefix, readOnly);
     if (p.access !== "oauth" || !p.cloud) throw Error("cloudLocation");
     return this.cloudStore(p.cloud, prefix, readOnly);
+  }
+  async probeConnection(p: Profile, write: boolean) {
+    return this.scheduler.serial(async () => {
+      const store =
+        p.access === "local"
+          ? new LocalProvider(
+              this.app.vault,
+              p.reference === "/" ? "" : p.reference,
+              this.manifest.id,
+              "content",
+              !write,
+              { trash: "permanent", trashDays: 0 },
+            )
+          : p.access === "public"
+            ? this.publicReference({ ...p, role: "subscriber" })
+            : this.accountReference(p, p.reference, !write);
+      return testAccess(store, write);
+    });
   }
   browseStore(p: Profile, side: "reference" | "local") {
     if (side === "local" || p.access === "local")
@@ -670,7 +734,7 @@ export default class SyncStudio extends Plugin {
         "content",
         true,
       );
-    return p.access === "oauth"
+    return p.access === "oauth" || p.access === "webdav"
       ? this.accountReference(p, "", true)
       : this.publicReference(p, "");
   }
@@ -714,7 +778,7 @@ export default class SyncStudio extends Plugin {
     return [s.local, s.reference];
   }
   private stores(p: Profile) {
-    if (!["local", "public", "oauth"].includes(p.access))
+    if (!["local", "public", "oauth", "webdav"].includes(p.access))
       throw Error("invalid");
     const make = (path: string, ro: boolean) =>
       new LocalProvider(
@@ -740,7 +804,7 @@ export default class SyncStudio extends Plugin {
       );
     return {
       reference:
-        p.access === "oauth"
+        p.access === "oauth" || p.access === "webdav"
           ? this.accountReference(p)
           : p.access === "public"
             ? this.publicReference(p)
@@ -918,6 +982,7 @@ export default class SyncStudio extends Plugin {
             leaf.view.file?.path === join(p.local, path),
         );
     const started = Date.now();
+    const reported = new Set<string>();
     const result = await this.engine.run(
       p,
       v.reference,
@@ -936,6 +1001,31 @@ export default class SyncStudio extends Plugin {
           this.engine.applier.fence,
         ),
         scanning: (s) => this.scanProgress(p, s),
+        transfer: (path, direction, done, total, resumed) => {
+          const k = JSON.stringify([path, direction, resumed]);
+          if ((resumed || done === total) && !reported.has(k)) {
+            reported.add(k);
+            void this.log(resumed ? "transferResumed" : direction, 0, p.id, {
+              path,
+              bytes: done,
+              totalBytes: total,
+            }).catch(() => {});
+          }
+          if (
+            !resumed &&
+            done !== total &&
+            performance.now() - this.lastPaint < 250
+          )
+            return;
+          this.lastPaint = performance.now();
+          this.statusLabel = [
+            p.name,
+            this.t(resumed ? "transferResumed" : direction),
+            path,
+            byteCount(done, total),
+          ].join(" · ");
+          this.paint();
+        },
         quiet: (path) => this.quiet.check(p, path, isOpen(path)),
         progress: (done, total) => {
           if (done !== total && performance.now() - this.lastPaint < 250)

@@ -209,6 +209,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             }"""))
             import runpy
             runpy.run_path(str(root / "scripts/oauth-smoke.py"))["run"](page,browser)
+            runpy.run_path(str(root / "scripts/webdav-smoke.py"))["run"](page,vault)
             def restart_drive_fixture():
                 global app, browser
                 subprocess.run(["taskkill","/PID",str(app.pid),"/T","/F"],check=True,capture_output=True)

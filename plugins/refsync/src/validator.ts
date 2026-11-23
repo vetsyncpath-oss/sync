@@ -1,3 +1,4 @@
+import { davId } from "./webdav";
 import { validContent } from "./content-scope";
 import { cloudId } from "./private-cloud";
 import { location } from "./public-location";
@@ -70,7 +71,7 @@ export function validate(
     trash: ["plugin", "vault", "system", "permanent"],
     role: ["subscriber", "publisher"],
     scope: ["settings", "content"],
-    access: ["local", "public", "oauth"],
+    access: ["local", "public", "oauth", "webdav"],
     mirror: ["full", "preserve"],
     conflict: ["source", "target", "both", "newer"],
     mode: ["plan", "silent"],
@@ -83,6 +84,15 @@ export function validate(
       (p[key] !== "/" && p[key] !== "" && !safe(p[key]))
     )
       err(key, "path");
+  if (p.access === "webdav") {
+    try {
+      if (!p.dav) throw Error();
+      davId(p.dav, p.reference);
+    } catch {
+      err("dav", "davLocation");
+    }
+    if (!desktop) err("access", "davDesktop");
+  }
   if (p.access === "oauth") {
     try {
       if (!p.cloud) throw Error();

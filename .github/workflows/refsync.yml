@@ -50,7 +50,7 @@ jobs:
       - name: Test packaged plugin in Windows Obsidian
         if: runner.os == 'Windows'
         run: |
-          python -m pip install playwright==1.56.0
+          python -m pip install playwright==1.56.0 wsgidav==4.3.3 cheroot==11.1.2
           python scripts/windows-smoke.py 2>&1 | Tee-Object -Variable smoke
           if ($LASTEXITCODE -ne 0) {
             Write-Output "::error::$(($smoke | Select-Object -Last 14) -join ' ')"

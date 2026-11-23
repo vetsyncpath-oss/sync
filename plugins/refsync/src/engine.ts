@@ -79,6 +79,7 @@ export class SyncEngine {
       budget?: RunBudget;
       thorough?: boolean;
       scanning?: (stats: ScanStats) => void;
+      transfer?: import("./transfer").TransferObserver;
       progress?: (done: number, total: number) => void;
       active?: () => boolean;
     } = {},
@@ -139,12 +140,14 @@ export class SyncEngine {
       const filter = p.scope === "content" ? pathFilter(p) : () => true;
       const managed =
         p.access === "oauth" ||
+        p.access === "webdav" ||
         (p.access === "public" && p.remote?.engine !== "git");
       const manifest = managed
         ? await budget.io(() => readManifest(reference))
         : null;
       const publication =
-        p.access === "oauth" && p.role === "publisher"
+        (p.access === "oauth" || p.access === "webdav") &&
+        p.role === "publisher"
           ? {
               missing: !manifest,
               build: async () => {
@@ -402,6 +405,7 @@ export class SyncEngine {
           operations,
           this.configDir,
           this.self,
+          options.transfer,
         );
       }
       this.status.set(

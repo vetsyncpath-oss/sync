@@ -1,6 +1,12 @@
 import { plainContent } from "./content-scope";
 import { PluginFilters } from "./plugin-filters";
-import { placeControl, templateControl, libraryPage } from "./library-editor";
+import { describeAccess } from "./access-check";
+import {
+  accessButtons,
+  placeControl,
+  templateControl,
+  libraryPage,
+} from "./library-editor";
 import {
   deletionPolicy,
   applyPolicy,
@@ -393,7 +399,9 @@ export class Editor extends PluginSettingTab {
     choice("role", "role", ["subscriber", "publisher"], !!remote);
     text(
       "reference",
-      remote || p.access === "oauth" ? "subfolder" : "reference",
+      remote || p.access === "webdav" || p.access === "oauth"
+        ? "subfolder"
+        : "reference",
     );
     const browse = (side: "local" | "reference") =>
       new Setting(el).addButton((b) =>
@@ -424,8 +432,9 @@ export class Editor extends PluginSettingTab {
       text("local", "target");
       browse("local");
     }
-    templateControl(el, rs, p, () => this.display());
+    templateControl(el, rs, p, "task", () => this.display());
     el = section("composition");
+    templateControl(el, rs, p, "scope", () => this.display());
     choice("scope", "scope", ["content", "settings", "contentFiles"]);
     el.createEl("p", {
       text: t(
@@ -474,6 +483,7 @@ export class Editor extends PluginSettingTab {
             "customTypes",
         ).onChange((k) => {
           if (k === "customTypes") {
+            patterns.open = true;
             fields.get("include")?.settingEl.querySelector("input")?.focus();
             return;
           }
@@ -481,8 +491,13 @@ export class Editor extends PluginSettingTab {
           this.display();
         });
       });
-      text("include", "include");
-      text("exclude", "exclude");
+      const patterns = el.createEl("details");
+      patterns.createEl("summary", { text: t("contentPatterns") });
+      patterns.open = !!p.exclude || !Object.values(types).includes(p.include);
+      patterns.append(
+        text("include", "include").settingEl,
+        text("exclude", "exclude").settingEl,
+      );
       num("maxMiB", "maxMiB");
     }
     el = section("taskRules");
@@ -557,6 +572,13 @@ export class Editor extends PluginSettingTab {
     ))
       if (!fields.has(problem.field) && typeof p[problem.field] === "number")
         num(problem.field, problem.field);
+    const probe = new Setting(el)
+      .setName(t("probeTitle"))
+      .setDesc(t("probeHelp"));
+    const probeResult = el.createEl("p", { attr: { role: "status" } });
+    accessButtons(probe, rs, p, (result) =>
+      probeResult.setText(describeAccess(result, t)),
+    );
     inspectPath(el, rs, p);
     new Setting(el).setName(t("draftPreview")).addButton((b) =>
       b.setButtonText(t("dry")).onClick(async () => {
@@ -634,7 +656,7 @@ export class Editor extends PluginSettingTab {
             )
               missing.push(dir);
           const cloud =
-            p.access === "oauth" &&
+            (p.access === "oauth" || p.access === "webdav") &&
             p.role === "publisher" &&
             p.reference &&
             p.reference !== "/" &&
@@ -648,7 +670,9 @@ export class Editor extends PluginSettingTab {
               " · " +
               [
                 ...missing,
-                ...(cloud ? [p.cloud?.engine + " / " + p.reference] : []),
+                ...(cloud
+                  ? [(p.dav?.url ?? p.cloud?.engine) + " / " + p.reference]
+                  : []),
               ].join(", "),
             async () => {
               if (cloud) await rs.accountReference(p, "").mkdir(p.reference);
