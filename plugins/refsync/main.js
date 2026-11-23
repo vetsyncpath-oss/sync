@@ -14068,7 +14068,7 @@ var SyncEngine = class {
         }
       } : void 0;
       const scanSource = async () => {
-        const revision = p.role === "subscriber" && p.access !== "local" ? await budget.io(() => source.getRevision()) : null;
+        const revision = p.role === "subscriber" && p.access !== "local" && !manifest ? await budget.io(() => source.getRevision()) : null;
         const cacheKey = revision && JSON.stringify([
           source.id,
           revision,
@@ -14197,8 +14197,10 @@ var SyncEngine = class {
             if (!op.source || !(op.action === "write" || op.action === "both"))
               continue;
             try {
-              const now = await budget.io(() => source.stat(op.path));
-              if (!now || Math.trunc(now.mtime) !== Math.trunc(op.source.mtime) || now?.size !== op.source.size)
+              const now = await budget.io(
+                () => source.scanStat ? source.scanStat(op.path) : source.stat(op.path)
+              );
+              if (!now || now.mtime !== op.source.mtime || now?.size !== op.source.size)
                 result.deferred.push({ path: op.path, reason: "unstable" });
             } catch (e) {
               if (!transient(e)) throw e;

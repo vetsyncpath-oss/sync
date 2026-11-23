@@ -167,7 +167,7 @@ export class SyncEngine {
           : undefined;
       const scanSource = async () => {
         const revision =
-          p.role === "subscriber" && p.access !== "local"
+          p.role === "subscriber" && p.access !== "local" && !manifest
             ? await budget.io(() => source.getRevision())
             : null;
         const cacheKey =
@@ -332,10 +332,14 @@ export class SyncEngine {
             if (!op.source || !(op.action === "write" || op.action === "both"))
               continue;
             try {
-              const now = await budget.io(() => source.stat(op.path));
+              const now = await budget.io(() =>
+                source.scanStat
+                  ? source.scanStat(op.path)
+                  : source.stat(op.path),
+              );
               if (
                 !now ||
-                Math.trunc(now.mtime) !== Math.trunc(op.source.mtime) ||
+                now.mtime !== op.source.mtime ||
                 now?.size !== op.source.size
               )
                 result.deferred.push({ path: op.path, reason: "unstable" });

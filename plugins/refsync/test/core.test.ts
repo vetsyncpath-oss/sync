@@ -1615,3 +1615,29 @@ test("a healthy run continues after five minutes and a stalled read identifies t
       e.path === "stalled.md",
   );
 });
+
+test("manifest subscriptions verify the live listing without an account-wide changes feed", async () => {
+  const { source, target, engine } = fixture();
+  source.data.set("note.md", bytes("one"));
+  const manifest = await buildManifest(
+    await scan(source, "content", ".obsidian", "refsync"),
+    "fixture",
+  );
+  source.data.set(manifestPath, manifest);
+  source.getRevision = async () => {
+    throw Error("changes feed unavailable");
+  };
+  const p: Profile = {
+    ...defaults,
+    access: "oauth",
+    reference: "/",
+    cloud: { engine: "google", account: "0".repeat(64), root: "root" },
+  };
+  await engine.run(p, source, target, true);
+  source.data.set("note.md", bytes("two"));
+  await assert.rejects(
+    engine.run(p, source, target, false),
+    /manifestMismatch/,
+  );
+  assert.equal(target.data.size, 0);
+});
