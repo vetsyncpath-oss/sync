@@ -1,3 +1,4 @@
+import { DeviceDriveSessions } from "./drive-sessions";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { legacyConfig } from "./config-scope";
@@ -121,6 +122,7 @@ export default class SyncStudio extends Plugin {
   config!: Configuration;
   t = translator(navigator.language);
   private engine!: SyncEngine;
+  private driveSessions = new DeviceDriveSessions();
   private ready!: Promise<void>;
   private logDir = "";
   private scheduler!: Scheduler;
@@ -630,24 +632,15 @@ export default class SyncStudio extends Plugin {
       const cursor = this.driveCursors.get(id) ?? { token: "", revision: "" };
       this.driveCursors.set(id, cursor);
       const sessionKey = (path: string) =>
-        "refsync-drive-" +
-        bytesToHex(
-          sha256(
-            new TextEncoder().encode(JSON.stringify([c.account, c.root, path])),
-          ),
-        ).slice(0, 48);
+        JSON.stringify([
+          this.engine.applier.state.device,
+          c.account,
+          c.root,
+          path,
+        ]);
       tree = new DriveTree(transport, c.root, cursor, {
-        get: (path) =>
-          this.app.secretStorage?.getSecret(sessionKey(path)) ||
-          this.app.loadLocalStorage(sessionKey(path)) ||
-          null,
-        set: (path, value) => {
-          const key = sessionKey(path);
-          if (this.app.secretStorage) {
-            this.app.secretStorage.setSecret(key, value ?? "");
-            this.app.saveLocalStorage(key, null);
-          } else this.app.saveLocalStorage(key, value);
-        },
+        get: (path) => this.driveSessions.get(sessionKey(path)),
+        set: (path, value) => this.driveSessions.set(sessionKey(path), value),
       });
     } else tree = new DiskTree(transport, send, c.root);
     const store = new CloudStore(

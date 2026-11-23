@@ -10738,6 +10738,113 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 init_git_buffer();
 
+// src/drive-sessions.ts
+init_git_buffer();
+var DeviceDriveSessions = class {
+  database;
+  key;
+  open() {
+    if (!this.database)
+      this.database = new Promise((resolve, reject) => {
+        const request = indexedDB.open("sync-studio-drive-transfers", 1);
+        request.onupgradeneeded = () => {
+          request.result.createObjectStore("keys");
+          request.result.createObjectStore("sessions");
+        };
+        request.onsuccess = () => {
+          const db = request.result;
+          db.onversionchange = () => {
+            db.close();
+            this.database = void 0;
+            this.key = void 0;
+          };
+          resolve(db);
+        };
+        request.onerror = () => {
+          this.database = void 0;
+          reject(request.error);
+        };
+      });
+    return this.database;
+  }
+  encryptionKey() {
+    this.key ??= this.loadKey().catch((error) => {
+      this.key = void 0;
+      throw error;
+    });
+    return this.key;
+  }
+  async loadKey() {
+    const db = await this.open();
+    const candidate = await crypto.subtle.generateKey(
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"]
+    );
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("keys", "readwrite", { durability: "strict" });
+      const store = tx.objectStore("keys");
+      const read = store.get("device");
+      let selected2;
+      read.onsuccess = () => {
+        selected2 = read.result ?? candidate;
+        if (!read.result) store.put(selected2, "device");
+      };
+      tx.oncomplete = () => resolve(selected2);
+      tx.onabort = () => reject(tx.error ?? Error("state"));
+    });
+  }
+  async get(id) {
+    const db = await this.open();
+    const entry = await new Promise((resolve, reject) => {
+      const request = db.transaction("sessions").objectStore("sessions").get(id);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    if (!entry) return null;
+    if (entry.expires <= Date.now()) {
+      await this.set(id, null);
+      return null;
+    }
+    const bytes = await crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: entry.iv,
+        additionalData: new TextEncoder().encode(id)
+      },
+      await this.encryptionKey(),
+      entry.cipher
+    );
+    return new TextDecoder().decode(bytes);
+  }
+  async set(id, value) {
+    const db = await this.open();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const entry = value === null ? null : {
+      iv,
+      expires: Date.now() + 7 * 864e5,
+      cipher: await crypto.subtle.encrypt(
+        {
+          name: "AES-GCM",
+          iv,
+          additionalData: new TextEncoder().encode(id)
+        },
+        await this.encryptionKey(),
+        new TextEncoder().encode(value)
+      )
+    };
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("sessions", "readwrite", {
+        durability: "strict"
+      }), store = tx.objectStore("sessions");
+      if (entry) store.put(entry, id);
+      else store.delete(id);
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error ?? Error("state"));
+    });
+  }
+};
+
 // node_modules/@noble/hashes/esm/sha256.js
 init_git_buffer();
 
@@ -12257,7 +12364,7 @@ var DriveTree = class extends GoogleTree {
       digest2,
       mtime
     ]);
-    const saved = key && this.sessions?.get(key);
+    const saved = key && await this.sessions?.get(key);
     let session = "", offset = 0;
     if (saved) {
       let record3;
@@ -12277,7 +12384,7 @@ var DriveTree = class extends GoogleTree {
         else if (status.status === 404 || status.status === 410) session = "";
         else {
           check(status);
-          this.sessions.set(key, null);
+          await this.sessions.set(key, null);
           return;
         }
         progress?.();
@@ -12286,7 +12393,7 @@ var DriveTree = class extends GoogleTree {
     if (!session) {
       session = await this.startUpload(dir, name, old, size, mtime);
       if (key)
-        this.sessions.set(
+        await this.sessions.set(
           key,
           JSON.stringify({
             url: session,
@@ -12336,7 +12443,7 @@ var DriveTree = class extends GoogleTree {
         );
         if (status.status !== 308) {
           check(status);
-          if (key) this.sessions.set(key, null);
+          if (key) await this.sessions.set(key, null);
           return;
         }
         const remoteOffset = acknowledged(status, size);
@@ -12348,10 +12455,10 @@ var DriveTree = class extends GoogleTree {
       }
       if (response.status !== 308) {
         if (key && (response.status === 404 || response.status === 410))
-          this.sessions.set(key, null);
+          await this.sessions.set(key, null);
         check(response);
         if (end !== size) throw Error("incomplete");
-        if (key) this.sessions.set(key, null);
+        if (key) await this.sessions.set(key, null);
         progress?.();
         return;
       }
@@ -23519,6 +23626,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   config;
   t = translator(navigator.language);
   engine;
+  driveSessions = new DeviceDriveSessions();
   ready;
   logDir = "";
   scheduler;
@@ -23950,20 +24058,15 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     if (c.engine === "google") {
       const cursor = this.driveCursors.get(id) ?? { token: "", revision: "" };
       this.driveCursors.set(id, cursor);
-      const sessionKey = (path) => "refsync-drive-" + bytesToHex(
-        sha2562(
-          new TextEncoder().encode(JSON.stringify([c.account, c.root, path]))
-        )
-      ).slice(0, 48);
+      const sessionKey = (path) => JSON.stringify([
+        this.engine.applier.state.device,
+        c.account,
+        c.root,
+        path
+      ]);
       tree = new DriveTree(transport, c.root, cursor, {
-        get: (path) => this.app.secretStorage?.getSecret(sessionKey(path)) || this.app.loadLocalStorage(sessionKey(path)) || null,
-        set: (path, value) => {
-          const key = sessionKey(path);
-          if (this.app.secretStorage) {
-            this.app.secretStorage.setSecret(key, value ?? "");
-            this.app.saveLocalStorage(key, null);
-          } else this.app.saveLocalStorage(key, value);
-        }
+        get: (path) => this.driveSessions.get(sessionKey(path)),
+        set: (path, value) => this.driveSessions.set(sessionKey(path), value)
       });
     } else tree = new DiskTree(transport, send, c.root);
     const store = new CloudStore(

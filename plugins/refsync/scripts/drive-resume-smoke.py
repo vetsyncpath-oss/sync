@@ -63,6 +63,12 @@ def attempt(page, folder, retry, delay_ms):
       };
       const p={...rs.newProfile(),id:'drive-large-smoke',scope:'content',access:'oauth',role:'publisher',reference:'/',local:prefix,cloud:{engine:'google',root:'root',account},enabled:true,startup:false,onFocus:false,onOnline:false,fileEvents:false,intervalMinutes:0,inheritMode:false,mode:'silent'};
       const store=rs.stores(p);
+      let lookup='unset',saved='unset';
+      const port=store.reference.mutable.sessions;
+      const fingerprint=v=>v?crypto.createHash('sha256').update(JSON.parse(v).signature).digest('hex').slice(0,12):'missing';
+      const get=port.get,set=port.set;
+      port.get=async id=>{const v=await get(id);lookup=fingerprint(v);return v;};
+      port.set=async (id,v)=>{if(v)saved=fingerprint(v);await set(id,v);};
       // Fail the test if source staging or scanning downloads the entire book.
       const download=store.local.download.bind(store.local);
       store.local.download=(p,...args)=>{if(p===book)throw Error('full-book read');return download(p,...args);};
@@ -71,7 +77,7 @@ def attempt(page, folder, retry, delay_ms):
         if(!retry) throw Error('disconnect missing');
       } catch(e){if(retry || e.message!=='fixtureDisconnect')throw e;}
       const uploaded=Object.values(meta.files).find(f=>f.name===book);
-      return {firstOffset,queried,starts,sha:uploaded?.sha256Checksum??'',offset:meta.sessions.find(s=>s.name===book)?.offset};
+      return {firstOffset,queried,starts,lookup,saved,sha:uploaded?.sha256Checksum??'',offset:meta.sessions.find(s=>s.name===book)?.offset};
     }""", {"folder":str(folder), "retry":retry, "delay":delay_ms})
 
 
@@ -88,9 +94,10 @@ def run(page, vault, restart, delay_ms=0):
                 stream.write(block)
         first = attempt(page, cloud, False, 0)
         assert first["offset"] == 2 * CHUNK and first["starts"] == 1, first
+        assert first["saved"] != "unset", first
         page = restart()
         result = attempt(page, cloud, True, delay_ms)
-        assert result["queried"] and result["starts"] == 0, result
+        assert result["lookup"] == first["saved"] and result["queried"] and result["starts"] == 0, (first,result)
         assert result["firstOffset"] == 2 * CHUNK and result["sha"] == digest.hexdigest(), result
         with book.open('rb') as stream:
             assert hashlib.file_digest(stream,'sha256').hexdigest() == digest.hexdigest()

@@ -74,8 +74,8 @@ const body = (obj: unknown) =>
 const jsonHeader = { "Content-Type": "application/json" };
 const api = "https://www.googleapis.com/drive/v3/files";
 export interface DriveSessions {
-  get(key: string): string | null;
-  set(key: string, value: string | null): void;
+  get(key: string): string | null | Promise<string | null>;
+  set(key: string, value: string | null): void | Promise<void>;
 }
 function sessionUrl(raw: string) {
   const url = new URL(raw);
@@ -167,7 +167,7 @@ export class DriveTree extends GoogleTree implements MutableTree {
       digest,
       mtime,
     ]);
-    const saved = key && this.sessions?.get(key);
+    const saved = key && (await this.sessions?.get(key));
     let session = "",
       offset = 0;
     if (saved) {
@@ -189,7 +189,7 @@ export class DriveTree extends GoogleTree implements MutableTree {
         else if (status.status === 404 || status.status === 410) session = "";
         else {
           check(status);
-          this.sessions!.set(key, null);
+          await this.sessions!.set(key, null);
           return;
         }
         progress?.();
@@ -198,7 +198,7 @@ export class DriveTree extends GoogleTree implements MutableTree {
     if (!session) {
       session = await this.startUpload(dir, name, old, size, mtime);
       if (key)
-        this.sessions!.set(
+        await this.sessions!.set(
           key,
           JSON.stringify({
             url: session,
@@ -259,7 +259,7 @@ export class DriveTree extends GoogleTree implements MutableTree {
         );
         if (status.status !== 308) {
           check(status);
-          if (key) this.sessions!.set(key, null);
+          if (key) await this.sessions!.set(key, null);
           return;
         }
         const remoteOffset = acknowledged(status, size);
@@ -271,10 +271,10 @@ export class DriveTree extends GoogleTree implements MutableTree {
       }
       if (response.status !== 308) {
         if (key && (response.status === 404 || response.status === 410))
-          this.sessions!.set(key, null);
+          await this.sessions!.set(key, null);
         check(response);
         if (end !== size) throw Error("incomplete");
-        if (key) this.sessions!.set(key, null);
+        if (key) await this.sessions!.set(key, null);
         progress?.();
         return;
       }
