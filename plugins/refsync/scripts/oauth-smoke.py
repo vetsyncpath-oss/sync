@@ -76,7 +76,7 @@ def run(page, browser):
         print(page.evaluate("""async()=>{
           const rs=app.plugins.plugins.refsync,v=app.vault,dir='Облачная публикация',to='Подписка OAuth',name='заметка.md';
           const a=rs.accounts.list().find(a=>a.subject==='test-subject');
-          const p={...rs.config.profiles[0],id:'oauth-fixture',scope:'content',role:'publisher',access:'oauth',cloud:{account:a.id,engine:'google',root:'root'},
+          const p={...rs.newProfile(),id:'oauth-fixture',scope:'content',role:'publisher',access:'oauth',cloud:{account:a.id,engine:'google',root:'root'},
             reference:'/',local:dir,enabled:true,inheritMode:false,mode:'silent',startup:false,firstPlan:false,intervalMinutes:0,onFocus:false,onOnline:false,fileEvents:false};
           await v.createFolder(dir);await v.createFolder(to);await v.create(dir+'/'+name,'fixture');await rs.put(p);await rs.execute(p.id,'run');
           if(![...window.m5Files.values()].some(f=>f.name==='.sync-manifest.json'&&JSON.parse(new TextDecoder().decode(f.bytes)).files.length===1))throw Error('manifest');

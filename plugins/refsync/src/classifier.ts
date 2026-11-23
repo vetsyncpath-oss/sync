@@ -1,3 +1,4 @@
+import { contentPath, type ContentScope } from "./content-scope";
 import { inScope, legacyConfig, type ConfigScope } from "./config-scope";
 import { fold, join, under, type Scope, type Volatility } from "./model";
 export function volatility(p: string, scope: Scope): Volatility {
@@ -19,6 +20,7 @@ export function selected(
   self: string,
   directory: boolean,
   config: ConfigScope = legacyConfig(),
+  content?: ContentScope,
 ): boolean {
   const f = fold(p);
   if (
@@ -32,11 +34,7 @@ export function selected(
   )
     return false;
   if (scope === "content")
-    return (
-      !under(f, fold(configDir)) &&
-      !p.split("/").some((s) => s.startsWith(".")) &&
-      !/(?:\.tmp$|(?:^|\/)(?:thumbs\.db|desktop\.ini)$)/i.test(p)
-    );
+    return contentPath(p, configDir, self, directory, content);
   if (
     volatility(p, scope) === "V" ||
     p.split("/").some((s) => s.startsWith("."))

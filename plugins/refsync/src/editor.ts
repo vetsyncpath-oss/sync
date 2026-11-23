@@ -1,13 +1,14 @@
+import { contentEditor } from "./content-editor";
 import { AccountsView } from "./oauth-ui";
 import { location } from "./public-location";
 import { RemoteFolderBrowser } from "./remote-browser";
 import type { PublicSource } from "./public-location";
 import { scopeEditor } from "./scope-editor";
-import { legacyConfig, preset } from "./config-scope";
+import { legacyConfig } from "./config-scope";
 import { PluginSettingTab, Setting, Platform, type App } from "obsidian";
 import type SyncStudio from "./main";
 import { checked, type Profile } from "./model";
-import { newProfile } from "./profiles";
+
 import { validate } from "./validator";
 export class Editor extends PluginSettingTab {
   private draft?: Profile;
@@ -30,6 +31,9 @@ export class Editor extends PluginSettingTab {
       return;
     }
     el.createEl("h2", { text: t("profiles") });
+    new Setting(el).addButton((b) =>
+      b.setButtonText(t("history")).onClick(() => rs.openHistory()),
+    );
     new Setting(el).addButton((b) =>
       b
         .setButtonText(t("accounts"))
@@ -60,7 +64,7 @@ export class Editor extends PluginSettingTab {
           .setButtonText(t("add"))
           .setCta()
           .onClick(() => {
-            this.draft = newProfile();
+            this.draft = rs.newProfile();
             this.display();
           }),
       )
@@ -117,7 +121,7 @@ export class Editor extends PluginSettingTab {
           .setIcon("copy")
           .setTooltip(t("duplicate"))
           .onClick(() => {
-            this.draft = newProfile(p);
+            this.draft = rs.newProfile(p);
             this.display();
           }),
       );
@@ -152,6 +156,11 @@ export class Editor extends PluginSettingTab {
         )
         .addButton((b) =>
           b.setButtonText(t("dry")).onClick(() => rs.request(p.id, "dry")),
+        )
+        .addButton((b) =>
+          b
+            .setButtonText(t("fullCheck"))
+            .onClick(() => rs.request(p.id, "diagnose")),
         )
         .addButton((b) =>
           b
@@ -227,7 +236,7 @@ export class Editor extends PluginSettingTab {
               if (field === "scope" && !p.config) {
                 p.config = {
                   ...legacyConfig(),
-                  categories: preset("full"),
+                  categories: legacyConfig().categories,
                   legacyThemes: false,
                   strategy: "batch",
                 };
@@ -386,24 +395,27 @@ export class Editor extends PluginSettingTab {
     );
     if (remote || p.access === "oauth")
       new Setting(el).addButton((b) =>
-        b.setButtonText(t("browse")).onClick(() => {
-          try {
-            new RemoteFolderBrowser(
-              this.app,
-              p.access === "oauth"
-                ? rs.accountReference(p, "", true)
-                : rs.publicReference(p, ""),
-              t,
-              (path) => {
-                p.reference = path;
-                this.display();
-              },
-            ).open();
-          } catch (e) {
-            rs.report(e, p.id);
-          }
-        }),
+        b.setButtonText(t("history")).onClick(() => rs.openHistory()),
       );
+    new Setting(el).addButton((b) =>
+      b.setButtonText(t("browse")).onClick(() => {
+        try {
+          new RemoteFolderBrowser(
+            this.app,
+            p.access === "oauth"
+              ? rs.accountReference(p, "", true)
+              : rs.publicReference(p, ""),
+            t,
+            (path) => {
+              p.reference = path;
+              this.display();
+            },
+          ).open();
+        } catch (e) {
+          rs.report(e, p.id);
+        }
+      }),
+    );
     if (p.scope === "settings")
       new Setting(el).setName(t("target")).setDesc(this.app.vault.configDir);
     else text("local", "target");
@@ -452,6 +464,15 @@ export class Editor extends PluginSettingTab {
       num("intervalMinutes", "intervalMinutes");
     }
     if (p.scope === "content") {
+      contentEditor(
+        el,
+        p,
+        this.app,
+        rs.manifest.id,
+        t,
+        () => rs.folderSources(p),
+        () => this.display(),
+      );
       text("include", "include");
       text("exclude", "exclude");
       num("maxMiB", "maxMiB");

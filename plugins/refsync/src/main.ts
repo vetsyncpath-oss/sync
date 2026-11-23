@@ -18,7 +18,7 @@ import {
   type App,
 } from "obsidian";
 import { join, hash, type Profile, type StorageProvider } from "./model";
-import { loadProfiles, type Configuration } from "./profiles";
+import { loadProfiles, newProfile, type Configuration } from "./profiles";
 import { Applier } from "./applier";
 import {
   StateStore,
@@ -55,6 +55,9 @@ import {
   type CloudLocation,
   type DriveCursor,
 } from "./private-cloud";
+import { DeviceDatabase } from "./device-database";
+import { HistoryView, historyView } from "./history";
+import { DigestCache, PathIssue, type ScanStats } from "./scanner";
 import { Editor } from "./editor";
 
 const send: Transport = async (url, method = "GET", headers = {}, body) => {
@@ -76,7 +79,7 @@ const send: Transport = async (url, method = "GET", headers = {}, body) => {
   }
 };
 
-type Intent = "dry" | "run" | "auto" | "release";
+type Intent = "diagnose" | "dry" | "run" | "auto" | "release";
 const icons: Record<Phase, string> = {
   idle: "refresh-cw",
   scan: "search",
@@ -161,13 +164,18 @@ export default class SyncStudio extends Plugin {
       await this.log(
         r.unresolved.length ? "verify-failed" : "verified",
         r.repaired,
-        this.config.current,
+        r.profile,
         r,
       );
-      if (r.unresolved.length)
+      const profile = this.config.profiles.find((p) => p.id === r.profile);
+      if (
+        r.unresolved.length &&
+        profile &&
+        (profile.inheritMode ? this.config.mode : profile.mode) !== "silent"
+      )
         this.notices.send(
           "verify",
-          this.t("repairFailed") + " · " + r.unresolved.join(", "),
+          this.t("repairFailed") + " · " + r.unresolved.length,
         );
     }
   }
@@ -245,10 +253,14 @@ export default class SyncStudio extends Plugin {
       this.oauthCallback?.(callback + "?" + new URLSearchParams(params));
     });
     const deviceKey = (k: string) => this.manifest.id + ":" + k;
-    const state = new StateStore({
-      get: (k) => this.app.loadLocalStorage(deviceKey(k)),
-      set: (k, v) => this.app.saveLocalStorage(deviceKey(k), v),
-    });
+    const db = new DeviceDatabase();
+    const state = new StateStore(
+      {
+        get: (k) => this.app.loadLocalStorage(deviceKey(k)),
+        set: (k, v) => this.app.saveLocalStorage(deviceKey(k), v),
+      },
+      db,
+    );
     this.logDir = join(
       this.app.vault.configDir,
       "plugins/" + this.manifest.id + "/runtime",
@@ -269,9 +281,10 @@ export default class SyncStudio extends Plugin {
       this.app.vault.configDir,
       this.manifest.id,
       Platform.isDesktopApp,
+      new DigestCache(db, state.device),
     );
     this.scheduler = new Scheduler(
-      (id) => this.execute(id, "auto"),
+      (id) => this.execute(id, "auto").catch((e) => this.report(e, id)),
       (e) => this.report(e),
     );
     this.ribbon = this.addRibbonIcon("refresh-cw", "Sync Studio", (e) =>
@@ -290,11 +303,14 @@ export default class SyncStudio extends Plugin {
       };
     }
     this.register(status.subscribe(() => this.paint()));
+    this.registerView(historyView, (leaf) => new HistoryView(leaf, this));
     this.addSettingTab(new Editor(this.app, this));
     const current = (intent: Intent) =>
       this.request(this.config.current, intent);
     const cmd = (id: string, label: string, fn: () => void) =>
       this.addCommand({ id, name: this.t(label), callback: fn });
+    cmd("history", "history", () => void this.openHistory());
+    cmd("full-check", "fullCheck", () => current("diagnose"));
     cmd("dry-run", "dry", () => current("dry"));
     cmd("deliver", "sync", () => current("run"));
     cmd("sync-all", "syncAll", () => this.runAll());
@@ -303,7 +319,7 @@ export default class SyncStudio extends Plugin {
     cmd("resolve-deletions", "release", () => current("release"));
     cmd(
       "toggle-silent",
-      "defaultMode",
+      "switchMode",
       () =>
         void this.save({
           ...this.config,
@@ -358,6 +374,7 @@ export default class SyncStudio extends Plugin {
       this.scheduler?.stop(),
       this.startupRecovery,
       this.saves,
+      this.logs,
     ]).then(() => {});
     this.quiet.clear();
     this.own.clear();
@@ -391,6 +408,7 @@ export default class SyncStudio extends Plugin {
         i.setTitle(this.t("reloadNeeded")).onClick(() => this.promptReload()),
       );
     for (const [k, f] of [
+      ["history", () => this.openHistory()],
       ["preview", () => this.request(this.config.current, "dry")],
       ["sync", () => this.request(this.config.current, "run")],
       ["syncAll", () => this.runAll()],
@@ -416,6 +434,9 @@ export default class SyncStudio extends Plugin {
     const write = this.saves.then(() => this.saveData(config));
     this.saves = write.catch((e) => this.report(e));
     return write;
+  }
+  newProfile(copy?: Profile) {
+    return newProfile(copy);
   }
   put(p: Profile, select = false) {
     const old = this.config.profiles.some((q) => q.id === p.id);
@@ -460,7 +481,10 @@ export default class SyncStudio extends Plugin {
         if (now - this.lastPrune >= 86400000) {
           this.lastPrune = now;
           void this.scheduler
-            .serial(() => this.pruneTrash())
+            .serial(async () => {
+              await this.pruneTrash();
+              await this.engine.applier.prune();
+            })
             .catch((e) => this.report(e));
         }
         for (const [k, v] of this.own) if (v.expires < now) this.own.delete(k);
@@ -479,7 +503,7 @@ export default class SyncStudio extends Plugin {
     );
     const event = (path: string, removed: boolean) => {
       for (const p of contents())
-        if (eventPath(p, path))
+        if (eventPath(p, path, this.app.vault.configDir, this.manifest.id))
           void this.fileEvent(p, path, removed).catch((e) =>
             this.report(e, p.id),
           );
@@ -551,6 +575,7 @@ export default class SyncStudio extends Plugin {
         ? (path, write) =>
             withPluginData(this.app, this.manifest.id, path, write)
         : undefined,
+      t.content,
     );
   }
   googleKey() {
@@ -618,6 +643,10 @@ export default class SyncStudio extends Plugin {
     if (p.access !== "oauth" || !p.cloud) throw Error("cloudLocation");
     return this.cloudStore(p.cloud, prefix, readOnly);
   }
+  folderSources(p: Profile) {
+    const s = this.stores(p);
+    return [s.local, s.reference];
+  }
   private stores(p: Profile) {
     if (!["local", "public", "oauth"].includes(p.access))
       throw Error("invalid");
@@ -641,6 +670,7 @@ export default class SyncStudio extends Plugin {
           ? (file, write) =>
               withPluginData(this.app, this.manifest.id, file, write)
           : undefined,
+        p.content,
       );
     return {
       reference:
@@ -668,7 +698,12 @@ export default class SyncStudio extends Plugin {
     await this.ready;
     const p = this.config.profiles.find((x) => x.id === id);
     if (!p || !this.live) return;
-    if (intent !== "dry" && (!p.enabled || this.config.paused)) return;
+    if (
+      intent !== "dry" &&
+      intent !== "diagnose" &&
+      (!p.enabled || this.config.paused)
+    )
+      return;
     if (
       intent === "auto" &&
       (this.openIds.has(id) ||
@@ -682,6 +717,7 @@ export default class SyncStudio extends Plugin {
       await this.engine.exclusive(() =>
         this.engine.applier.recover((t) => this.recoveryTarget(t)),
       );
+    this.lastScan = undefined;
     this.statusLabel = p.name;
     const v = this.stores(p);
     if (this.engine.applier.pendingTargets.has(v.reference.id)) {
@@ -699,15 +735,35 @@ export default class SyncStudio extends Plugin {
       await this.deliver(p);
       return;
     }
-    const { plan } = await this.engine.run(
+    const started = Date.now();
+    const { plan, stats } = await this.engine.run(
       p,
       v.reference,
       v.local,
       true,
       undefined,
-      { mode: intent === "dry" && silent ? "silent" : "plan" },
+      {
+        mode:
+          (intent === "dry" || intent === "diagnose") && silent
+            ? "silent"
+            : "plan",
+        thorough: intent === "diagnose",
+        active: () =>
+          this.live &&
+          (intent === "dry" || intent === "diagnose" || !this.config.paused),
+        scanning: (s) => this.scanProgress(p, s),
+      },
     );
     if (!this.live) return;
+    this.statusLabel = p.name;
+    this.paint();
+    if (intent === "diagnose" || intent === "dry")
+      await this.log("checkedRun", plan.count, id, {
+        stats,
+        deferred: plan.deferred,
+        held: plan.held,
+        ms: Date.now() - started,
+      });
     if (
       intent === "auto" &&
       !plan.ops.some((o) => o.action !== "ack") &&
@@ -732,7 +788,7 @@ export default class SyncStudio extends Plugin {
         this.t,
         endpoints,
         close,
-        intent === "dry"
+        intent === "dry" || intent === "diagnose"
           ? undefined
           : (choices, release) => {
               const picked =
@@ -777,7 +833,13 @@ export default class SyncStudio extends Plugin {
       this.live &&
       !this.config.paused &&
       p.enabled &&
-      this.config.profiles.includes(p);
+      this.config.profiles.some(
+        (q) =>
+          q.id === p.id &&
+          q.enabled &&
+          (q === p ||
+            JSON.stringify({ ...q, name: p.name }) === JSON.stringify(p)),
+      );
     if (!active()) return;
     const v = this.stores(p);
     const isOpen = (path: string) =>
@@ -788,6 +850,7 @@ export default class SyncStudio extends Plugin {
             leaf.view instanceof MarkdownView &&
             leaf.view.file?.path === join(p.local, path),
         );
+    const started = Date.now();
     const result = await this.engine.run(
       p,
       v.reference,
@@ -805,8 +868,12 @@ export default class SyncStudio extends Plugin {
           undefined,
           this.engine.applier.fence,
         ),
+        scanning: (s) => this.scanProgress(p, s),
         quiet: (path) => this.quiet.check(p, path, isOpen(path)),
         progress: (done, total) => {
+          if (done !== total && performance.now() - this.lastPaint < 250)
+            return;
+          this.lastPaint = performance.now();
           this.statusLabel = p.name + " · " + done + "/" + total;
           this.paint();
         },
@@ -816,11 +883,16 @@ export default class SyncStudio extends Plugin {
     this.statusLabel = p.name;
     this.paint();
     const { held, deferred } = result.plan;
+    for (let i = 0; i < result.operations.length; i += 128)
+      await this.log("operations", 0, p.id, {
+        operations: result.operations.slice(i, i + 128),
+      });
+
     await this.log(
       held.length || deferred.length ? "partial" : "done",
       result.changed,
       p.id,
-      { held, deferred },
+      { held, deferred, stats: result.stats, ms: Date.now() - started },
     );
     if (p.scope === "settings" && p.role === "subscriber" && result.changed) {
       const cfg = p.config ?? legacyConfig(),
@@ -882,26 +954,82 @@ export default class SyncStudio extends Plugin {
   private confirmUndo() {
     const p = this.config.profiles.find((p) => p.id === this.config.current);
     if (!p) return;
-    this.confirm(this.t("undoText") + " · " + p.name, () =>
-      this.scheduler.serial(async () => {
-        await this.ready;
-        const v = this.stores(p),
-          [source, target] =
-            p.role === "subscriber"
-              ? [v.reference, v.local]
-              : [v.local, v.reference];
-        await this.engine.exclusive(() =>
-          this.engine.applier.undo(
-            JSON.stringify([p.id, p.scope, source.id, target.id]),
-            target,
-            (t) => this.recoveryTarget(t),
-          ),
-        );
-        await this.log("undo", 1, p.id);
-      }),
+    this.confirm(
+      this.t("undoText") + " · " + p.name + " · " + this.t("undoPause"),
+      () =>
+        this.scheduler.serial(async () => {
+          await this.ready;
+          const local =
+            "vault:" +
+            (p.scope === "settings"
+              ? this.app.vault.configDir
+              : p.local === "/"
+                ? ""
+                : p.local);
+          const remote = referenceId(p),
+            ends = p.role === "subscriber" ? [remote, local] : [local, remote];
+          await this.engine.exclusive(() =>
+            this.engine.applier.undo(
+              JSON.stringify([p.id, p.scope, ...ends]),
+              undefined,
+              (t) => this.recoveryTarget(t),
+            ),
+          );
+          await this.put({ ...p, enabled: false });
+          await this.log("undo", 1, p.id);
+        }),
     );
   }
-  private async log(
+  private lastScan?: { profile: string; stats: ScanStats };
+  private lastPaint = 0;
+  scanLabel(s: ScanStats) {
+    return [
+      [this.t("filesCount"), s.files],
+      [this.t("foldersCount"), s.folders],
+      [this.t("readCount"), s.read],
+      [this.t("reuseCount"), s.reused],
+    ]
+      .map((x) => x.join(" "))
+      .join(" · ");
+  }
+  private scanProgress(p: Profile, s: ScanStats) {
+    this.lastScan = { profile: p.id, stats: s };
+    this.statusLabel = p.name + " · " + this.scanLabel(s);
+    this.paint();
+  }
+  async openHistory() {
+    const w = this.app.workspace;
+    let leaf = w.getLeavesOfType(historyView)[0];
+    if (!leaf) {
+      leaf = w.getLeaf("tab");
+      await leaf.setViewState({ type: historyView, active: true });
+    }
+    await w.revealLeaf(leaf);
+  }
+  async historyFiles() {
+    await this.logs;
+    const a = this.app.vault.adapter,
+      out: string[] = [];
+    for (const name of ["events.jsonl", "events.jsonl.1"]) {
+      const path = join(this.logDir, name);
+      if (await a.exists(path)) out.push(await a.read(path));
+    }
+    return out;
+  }
+  private logs = Promise.resolve();
+  private log(
+    event: string,
+    count: number,
+    profile: string,
+    details: object = {},
+  ) {
+    const write = this.logs.then(() =>
+      this.appendLog(event, count, profile, details),
+    );
+    this.logs = write.catch(() => {});
+    return write;
+  }
+  private async appendLog(
     event: string,
     count: number,
     profile: string,
@@ -911,7 +1039,7 @@ export default class SyncStudio extends Plugin {
     if (!(await a.exists(this.logDir))) await a.mkdir(this.logDir);
     const f = join(this.logDir, "events.jsonl"),
       prev = f + ".1";
-    if (((await a.stat(f))?.size ?? 0) > 262144) {
+    if (((await a.stat(f))?.size ?? 0) > 2097152) {
       if (await a.exists(prev)) await a.remove(prev);
       await a.rename(f, prev);
     }
@@ -924,7 +1052,12 @@ export default class SyncStudio extends Plugin {
   report(e: unknown, id = this.config?.current ?? "") {
     if (!this.live) return;
     const code = e instanceof Error ? errorKey(e.message) : "failed";
+    this.engine?.status.set("error");
     this.notices.send(id + ":" + code, "Sync Studio · " + this.t(code));
-    void this.log("error", 0, id, { code }).catch(() => {});
+    void this.log("error", 0, id, {
+      code,
+      stats: this.lastScan?.profile === id ? this.lastScan.stats : undefined,
+      path: e instanceof PathIssue ? e.path : undefined,
+    }).catch(() => {});
   }
 }

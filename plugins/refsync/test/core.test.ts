@@ -272,8 +272,8 @@ test("planner conflict matrix, new/tie timestamps and seen versions", () => {
   b.entries.p.seen = "older";
   assert.equal(
     plan({ ...defaults, scope: "settings", conflict: "target" }, s, t, b).ops[0]
-      .conflict,
-    false,
+      .action,
+    "retain",
   );
 });
 test("preserve/mirror deletions, empty and truncated source protections", () => {
@@ -771,7 +771,7 @@ test("M2 migration retains the old settings scope and manual triggers", () => {
   assert.equal(m.profiles[0].intervalMinutes, 0);
   assert.ok(!m.profiles[0].startup);
 });
-test("settings category, code/data filters, semantic baseline, restart repair and raw undo", async () => {
+test("settings category, code/data filters, semantic baseline, read-only restart check and raw undo", async () => {
   const { source, target, engine, applier, journal } = fixture();
   const config = {
     ...legacyConfig(),
@@ -815,9 +815,10 @@ test("settings category, code/data filters, semantic baseline, restart repair an
     () => target,
     () => config,
   );
-  assert.equal(fix[0].repaired, 1);
+  assert.equal(fix[0].repaired, 0);
+  assert.deepEqual(fix[0].unresolved, [data]);
   assert.deepEqual(JSON.parse(text(await target.download(data))), {
-    value: 2,
+    value: 1,
     device: "updated",
   });
   assert.deepEqual(
@@ -1461,4 +1462,156 @@ test("crash recovery rebuilds removed directories and keeps later user contents 
   assert.equal(text(target.data.get("New/personal.md")!), "keep");
   await engine.applier.recover(() => target);
   assert.ok(await journal.disk.has(id + "/rolled-back"));
+});
+
+import { plainContent, setFolders, folderIncluded } from "../src/content-scope";
+test("content settings, hidden files and bulk folder/plugin exclusions in full mirror", async () => {
+  const { engine, source, target } = fixture(),
+    cfg = engine.configDir,
+    plugins = cfg + "/plugins";
+  let content = { ...plainContent(), config: true, hidden: true };
+  content = setFolders(content, ["Local", plugins + "/private"], false);
+  for (const side of [source, target])
+    for (const path of [
+      cfg,
+      plugins,
+      plugins + "/private",
+      plugins + "/shared",
+      plugins + "/refsync",
+      "Local",
+      ".hidden",
+      ".git",
+    ])
+      side.folders.add(path);
+  for (const path of [
+    "note.md",
+    ".env",
+    ".hidden/a",
+    cfg + "/app.json",
+    plugins + "/shared/main.js",
+  ])
+    source.data.set(path, bytes("copy"));
+  for (const path of [
+    plugins + "/refsync/main.js",
+    plugins + "/private/data.json",
+    "Local/keep",
+    ".git/config",
+    cfg + "/workspace.json",
+    cfg + "/community-plugins.json",
+  ])
+    target.data.set(path, bytes("keep"));
+  const p: Profile = {
+    ...defaults,
+    content,
+    mirror: "full",
+    deletions: true,
+    silentDeletionSafeguard: false,
+  };
+  const r = await engine.run(p, source, target, false, undefined, {
+    mode: "silent",
+  });
+  assert.equal(r.operations.length, r.changed);
+  for (const path of source.data.keys())
+    assert.equal(text(target.data.get(path)!), "copy");
+  for (const [path, b] of target.data)
+    if (!source.data.has(path)) assert.equal(text(b), "keep");
+  assert.ok(!folderIncluded(plugins + "/private", content));
+  assert.ok(
+    folderIncluded(
+      plugins + "/private",
+      setFolders(content, [plugins + "/private"], true),
+    ),
+  );
+  assert.deepEqual(loadProfiles(null).profiles, []);
+});
+test("large disjoint mirror, warm comparison, same-size edit and full diagnosis", async () => {
+  const { engine, source, target } = fixture(),
+    n = 3000;
+  const versions = new WeakMap<Bytes, string>();
+  for (const store of [source, target]) {
+    const stat = store.stat.bind(store);
+    store.stat = async (path: string) => {
+      const s = await stat(path),
+        b = store.data.get(path);
+      if (!s || !b) return s;
+      if (!versions.has(b)) versions.set(b, crypto.randomUUID());
+      return { ...s, version: versions.get(b) };
+    };
+  }
+  for (let i = 0; i < n; i++) {
+    source.data.set("new" + i, bytes("aaa"));
+    target.data.set("old" + i, bytes("bbb"));
+  }
+  const p: Profile = {
+    ...defaults,
+    mirror: "full",
+    deletions: true,
+    silentDeletionSafeguard: false,
+  };
+  const check = (thorough = false) =>
+    engine.run(p, source, target, true, undefined, {
+      mode: "silent",
+      thorough,
+    });
+  const cold = await check();
+  assert.equal(cold.plan.ops.length, 2 * n);
+  assert.equal(cold.stats.read, 2 * n);
+  const warm = await check();
+  assert.equal(warm.stats.read, 0);
+  assert.equal(warm.stats.reused, 2 * n);
+  source.data.set("new0", bytes("ccc"));
+  assert.equal((await check()).stats.read, 1);
+  assert.equal((await check(true)).stats.read, 2 * n);
+});
+test("keeping content configuration in a renamed folder preserves Sync Studio membership", async () => {
+  const { engine, source, target } = fixture(),
+    cfg = engine.configDir;
+  for (const s of [source, target]) s.folders.add(cfg);
+  source.data.set(cfg + "/community-plugins.json", bytes('["reader"]'));
+  const p = { ...defaults, content: { ...plainContent(), config: true } };
+  await engine.run(p, source, target, false);
+  assert.deepEqual(
+    JSON.parse(text(target.data.get(cfg + "/community-plugins.json")!)),
+    ["reader", "refsync"],
+  );
+  assert.equal((await engine.run(p, source, target, false)).changed, 0);
+});
+test("journal housekeeping keeps latest undo and incomplete recovery", async () => {
+  const { engine, source, target, journal, applier } = fixture();
+  source.data.set("a", bytes("one"));
+  await engine.run(defaults, source, target, false);
+  const first = (await journal.transactions())[0].id;
+  source.data.set("a", bytes("two"));
+  await engine.run(defaults, source, target, false);
+  const tx = (await journal.transactions()).find((t) => t.id !== first)!;
+  const pending = { ...tx, id: crypto.randomUUID() };
+  await journal.begin(pending);
+  await applier.prune();
+  assert.deepEqual(
+    (await journal.transactions()).map((t) => t.id).sort(),
+    [tx.id, pending.id].sort(),
+  );
+});
+
+test("a healthy run continues after five minutes and a stalled read identifies the path", async () => {
+  const now = Date.now,
+    start = now(),
+    budget = new RunBudget(undefined, 15, []);
+  try {
+    Date.now = () => start + 600000;
+    assert.equal(await budget.io(async () => 42), 42);
+  } finally {
+    Date.now = now;
+  }
+  const { source } = fixture();
+  source.data.set("stalled.md", bytes("data"));
+  source.download = () => new Promise(() => {});
+  await assert.rejects(
+    scan(source, "content", ".obsidian", "refsync", false, budget),
+    (e) =>
+      e instanceof Error &&
+      e.message === "readTimeout" &&
+      "path" in e &&
+      e.path === "stalled.md",
+  );
 });

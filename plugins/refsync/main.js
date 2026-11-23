@@ -2143,7 +2143,7 @@ var require_scan = __commonJS({
       const tokens = [];
       const parts = [];
       let str = input;
-      let index = -1;
+      let index2 = -1;
       let start = 0;
       let lastIndex = 0;
       let isBrace = false;
@@ -2160,13 +2160,13 @@ var require_scan = __commonJS({
       let prev;
       let code;
       let token2 = { value: "", depth: 0, isGlob: false };
-      const eos = () => index >= length;
-      const peek = () => str.charCodeAt(index + 1);
+      const eos = () => index2 >= length;
+      const peek = () => str.charCodeAt(index2 + 1);
       const advance = () => {
         prev = code;
-        return str.charCodeAt(++index);
+        return str.charCodeAt(++index2);
       };
-      while (index < length) {
+      while (index2 < length) {
         code = advance();
         let next;
         if (code === CHAR_BACKWARD_SLASH) {
@@ -2223,15 +2223,15 @@ var require_scan = __commonJS({
           break;
         }
         if (code === CHAR_FORWARD_SLASH) {
-          slashes.push(index);
+          slashes.push(index2);
           tokens.push(token2);
           token2 = { value: "", depth: 0, isGlob: false };
           if (finished === true) continue;
-          if (prev === CHAR_DOT && index === start + 1) {
+          if (prev === CHAR_DOT && index2 === start + 1) {
             start += 2;
             continue;
           }
-          lastIndex = index + 1;
+          lastIndex = index2 + 1;
           continue;
         }
         if (opts.noext !== true) {
@@ -2240,7 +2240,7 @@ var require_scan = __commonJS({
             isGlob = token2.isGlob = true;
             isExtglob = token2.isExtglob = true;
             finished = true;
-            if (code === CHAR_EXCLAMATION_MARK && index === start) {
+            if (code === CHAR_EXCLAMATION_MARK && index2 === start) {
               negatedExtglob = true;
             }
             if (scanToEnd === true) {
@@ -2301,7 +2301,7 @@ var require_scan = __commonJS({
           }
           break;
         }
-        if (opts.nonegate !== true && code === CHAR_EXCLAMATION_MARK && index === start) {
+        if (opts.nonegate !== true && code === CHAR_EXCLAMATION_MARK && index2 === start) {
           negated = token2.negated = true;
           start++;
           continue;
@@ -2612,10 +2612,10 @@ var require_parse = __commonJS({
       return `${source}*`;
     };
     var getStarExtglobSequenceChars = (pattern) => {
-      let index = 0;
+      let index2 = 0;
       const chars = [];
-      while (index < pattern.length) {
-        const match = parseRepeatedExtglob(pattern.slice(index), false);
+      while (index2 < pattern.length) {
+        const match = parseRepeatedExtglob(pattern.slice(index2), false);
         if (!match || match.type !== "*") {
           return;
         }
@@ -2628,7 +2628,7 @@ var require_parse = __commonJS({
           return;
         }
         chars.push(branch);
-        index += match.end + 1;
+        index2 += match.end + 1;
       }
       if (chars.length < 1) {
         return;
@@ -2864,7 +2864,7 @@ var require_parse = __commonJS({
       };
       if (opts.fastpaths !== false && !/(^[*!]|[/()[\]{}"])/.test(input)) {
         let backslashes = false;
-        let output = input.replace(REGEX_SPECIAL_CHARS_BACKREF, (m, esc, chars, first, rest, index) => {
+        let output = input.replace(REGEX_SPECIAL_CHARS_BACKREF, (m, esc, chars, first, rest, index2) => {
           if (first === "\\") {
             backslashes = true;
             return m;
@@ -2873,7 +2873,7 @@ var require_parse = __commonJS({
             if (esc) {
               return esc + first + (rest ? QMARK.repeat(rest.length) : "");
             }
-            if (index === 0) {
+            if (index2 === 0) {
               return qmarkNoDot + (rest ? QMARK.repeat(rest.length) : "");
             }
             return QMARK.repeat(chars.length);
@@ -10136,7 +10136,7 @@ var require_ignore = __commonJS({
         // Zero, one or several directories
         // should not use '*', or it will be replaced by the next replacer
         // Check if it is not the last `'/**'`
-        (_, index, str) => index + 6 < str.length ? "(?:\\/[^\\/]+)*" : "\\/.+"
+        (_, index2, str) => index2 + 6 < str.length ? "(?:\\/[^\\/]+)*" : "\\/.+"
       ],
       // normal intermediate wildcards
       [
@@ -11117,7 +11117,7 @@ var defaults = {
   scope: "content",
   access: "local",
   local: "Sync Studio-copy",
-  reference: "Sync Studio-reference",
+  reference: "Sync Studio-source",
   mirror: "preserve",
   deletions: false,
   conflict: "source",
@@ -11376,6 +11376,86 @@ function deliveryBytes(path, bytes, policy, local, keepSelf = false) {
 
 // src/runtime.ts
 init_git_buffer();
+
+// src/content-scope.ts
+init_git_buffer();
+var plainContent = () => ({
+  config: false,
+  hidden: false,
+  rules: []
+});
+function validContent(c) {
+  return c && typeof c.config === "boolean" && typeof c.hidden === "boolean" && Array.isArray(c.rules) && c.rules.every(
+    (r) => r && typeof r.path === "string" && safe(r.path) && typeof r.include === "boolean"
+  );
+}
+var compiled = /* @__PURE__ */ new WeakMap();
+function index(c) {
+  let i = compiled.get(c);
+  if (!i) {
+    i = { rules: /* @__PURE__ */ new Map(), parents: /* @__PURE__ */ new Set() };
+    for (const r of c.rules) {
+      const key = fold(r.path);
+      i.rules.set(key, r.include);
+      if (r.include)
+        for (let d = parent(key); d; d = parent(d)) i.parents.add(d);
+    }
+    compiled.set(c, i);
+  }
+  return i;
+}
+function folderIncluded(path, c) {
+  const { rules } = index(c);
+  for (let d = fold(path); d; d = parent(d)) {
+    const included = rules.get(d);
+    if (included !== void 0) return included;
+  }
+  return true;
+}
+function contentPath(path, configDir, self, directory, c) {
+  const f = fold(path), cfg = fold(configDir);
+  if (f.split("/").some(
+    (x) => [
+      ".git",
+      ".trash",
+      ".sync-trash",
+      "node_modules",
+      ".sync-manifest.json"
+    ].includes(x)
+  ) || /(?:\.tmp$|(?:^|\/)(?:thumbs\.db|desktop\.ini)$)/i.test(f) || under(f, cfg + "/plugins/" + fold(self)))
+    return false;
+  const settings = under(f, cfg);
+  if (settings && !c?.config) return false;
+  const relative = settings ? f.slice(cfg.length + 1) : f;
+  if (settings && /^(?:workspace(?:-mobile)?\.json$|cache(?:\/|$))|\.lock$/.test(relative))
+    return false;
+  if (!c?.hidden && relative.split("/").some((s) => s.startsWith(".")))
+    return false;
+  if (!c) return true;
+  if (settings && relative === "community-plugins.json" && c.rules.some(
+    (r) => !r.include && (under(fold(r.path), cfg + "/plugins") || under(cfg + "/plugins", fold(r.path)))
+  ))
+    return false;
+  return folderIncluded(f, c) || directory && index(c).parents.has(f);
+}
+function setFolders(c, paths, include) {
+  const targets = new Set(paths.map(fold));
+  const rules = c.rules.filter((r) => {
+    for (let d = fold(r.path); d; d = parent(d))
+      if (targets.has(d)) return false;
+    return true;
+  });
+  const base = { ...c, rules };
+  return {
+    ...base,
+    rules: [
+      ...rules,
+      ...paths.filter((p) => folderIncluded(p, base) !== include).map((path) => ({ path, include }))
+    ]
+  };
+}
+
+// src/runtime.ts
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function transient(e) {
   if (!e || typeof e !== "object") return false;
@@ -11408,7 +11488,7 @@ var MutationFence = class _MutationFence {
   }
 };
 var RunBudget = class {
-  constructor(deadline = Date.now() + 3e5, operationMs = 15e3, backoff = [250, 500, 1e3], fence = new MutationFence()) {
+  constructor(deadline = Infinity, operationMs = 15e3, backoff = [250, 500, 1e3], fence = new MutationFence()) {
     this.deadline = deadline;
     this.operationMs = operationMs;
     this.backoff = backoff;
@@ -11533,11 +11613,19 @@ var Scheduler = class {
     return this.tail;
   }
 };
-function eventPath(p, path) {
-  if (!p.enabled || p.scope !== "content" || !p.fileEvents || path.split("/").some((s) => s.startsWith(".")))
-    return false;
+function eventPath(p, path, configDir = ".obsidian", self = "refsync") {
+  if (!p.enabled || p.scope !== "content" || !p.fileEvents) return false;
   return (p.access === "local" ? [p.reference, p.local] : [p.local]).some(
-    (root) => under(path, root === "/" ? "" : root)
+    (root) => {
+      const base = root === "/" ? "" : root;
+      return under(path, base) && contentPath(
+        base ? path.slice(base.length + 1) : path,
+        configDir,
+        self,
+        true,
+        p.content
+      );
+    }
   );
 }
 
@@ -11545,7 +11633,10 @@ function eventPath(p, path) {
 var needsReload = (p) => !["snippets", "data"].includes(category(p) ?? "core");
 async function verifySettings(journal, target, current, budget = new RunBudget()) {
   const reports = [], covered = /* @__PURE__ */ new Set();
-  const transactions = (await journal.transactions()).filter((t) => t.settings?.local).sort((a, b) => b.settings.at - a.settings.at);
+  const transactions = [];
+  for await (const t of journal.walk())
+    if (t.settings?.local) transactions.push(t);
+  transactions.sort((a, b) => b.settings.at - a.settings.at);
   for (const t of transactions) {
     if (!await journal.disk.has(t.id + "/done") || await journal.disk.has(t.id + "/rolled-back"))
       continue;
@@ -11561,7 +11652,12 @@ async function verifySettings(journal, target, current, budget = new RunBudget()
     }
     if (undone || !cfg || await journal.disk.has(t.id + "/verified") || await journal.disk.has(t.id + "/verify-failed"))
       continue;
-    const store = target(t), report = { id: t.id, repaired: 0, unresolved: [] };
+    const store = target(t), report = {
+      id: t.id,
+      profile: JSON.parse(t.key)[0],
+      repaired: 0,
+      unresolved: []
+    };
     const read = async (path) => await budget.io(() => store.stat(path)) ? await budget.io(() => store.download(path)) : null;
     const equivalent = async (path, local, expected, projection) => {
       if (!local || !expected) return local === expected;
@@ -11575,40 +11671,13 @@ async function verifySettings(journal, target, current, budget = new RunBudget()
       const step = t.steps[i], path = step.path, expected = step.action === "delete" ? null : await journal.disk.read(t.id + "/stage/" + i);
       if (expected && await hash(expected) !== step.digest)
         throw Error("incomplete");
-      let ok = await equivalent(path, await read(path), expected, policy);
-      for (let attempt = 1; !ok && attempt <= 2; attempt++) {
-        const marker = t.id + "/verify/" + i + "/" + attempt;
-        if (await journal.disk.has(marker)) continue;
-        await journal.mark(marker);
-        const fix = async () => {
-          const old = await read(path);
-          if (expected) {
-            await budget.io(
-              () => store.upload(
-                path,
-                deliveryBytes(path, expected, policy, old, true),
-                step.mtime
-              ),
-              false
-            );
-          } else if (old) await budget.io(() => store.delete(path), false);
-        };
-        try {
-          if (store.withFilePaused) await store.withFilePaused(path, fix);
-          else await fix();
-          report.repaired++;
-        } catch (e) {
-          budget.fence.check();
-          if (attempt === 2) break;
-        }
-        ok = await equivalent(path, await read(path), expected, policy);
-      }
+      const ok = await equivalent(path, await read(path), expected, policy);
       if (!ok) report.unresolved.push(path);
     }
     await journal.mark(
       t.id + (report.unresolved.length ? "/verify-failed" : "/verified")
     );
-    if (!report.unresolved.length) {
+    {
       await journal.disk.removeTree(t.id + "/stage");
       await journal.disk.removeTree(t.id + "/unchanged");
     }
@@ -11625,7 +11694,7 @@ function canAutoReload(history, now = Date.now()) {
 }
 
 // src/main.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/profiles.ts
 init_git_buffer();
@@ -11657,16 +11726,7 @@ function loadProfiles(raw) {
         ...raw.profile
       }
     ];
-  } else
-    profiles = [
-      {
-        ...defaults,
-        startup: false,
-        onFocus: false,
-        onOnline: false,
-        intervalMinutes: 0
-      }
-    ];
+  }
   for (const p of profiles) {
     if (p.scope === "settings" && p.config === void 0) {
       p.config = legacyConfig();
@@ -11691,7 +11751,7 @@ function newProfile(copy) {
     id,
     name: "Sync Studio " + tag,
     local: "Sync Studio-copy-" + tag,
-    reference: "Sync Studio-reference-" + tag,
+    reference: "Sync Studio-source-" + tag,
     enabled: false,
     fileEvents: true
   };
@@ -11835,7 +11895,7 @@ var Applier = class {
   async recover(resolve) {
     this.fence.check();
     this.pendingTargets.clear();
-    for (const t of await this.journal.transactions()) {
+    for await (const t of this.journal.walk(true)) {
       try {
         await this.recoverTransaction(t, resolve);
       } catch (e) {
@@ -11845,16 +11905,34 @@ var Applier = class {
     }
     this.needsRecovery = false;
   }
+  async prune() {
+    this.fence.check();
+    if (this.needsRecovery) return;
+    const latest = /* @__PURE__ */ new Map();
+    for await (const t of this.journal.walk()) {
+      const has = (marker) => this.journal.disk.has(t.id + "/" + marker);
+      if (await has("undo-start") && !await has("undo-done")) continue;
+      if (!await has("rolled-back") && !await has("undo-done")) {
+        if (!await has("done")) continue;
+        if (t.settings?.local && !await has("verified") && !await has("verify-failed"))
+          continue;
+        if (!latest.has(t.key))
+          latest.set(t.key, (await this.state.load(t.key)).lastRun);
+        if (latest.get(t.key) === t.id) continue;
+      }
+      await this.journal.disk.removeTree(t.id);
+    }
+  }
   async recoverTransaction(t, resolve) {
     if (await this.journal.disk.has(t.id + "/undo-start") && !await this.journal.disk.has(t.id + "/undo-done")) {
       await this.restore(t, resolve(t));
-      this.state.put(t.key, t.before);
+      await this.state.commit(t.key, t.before);
       await this.journal.mark(t.id + "/undo-done");
       return;
     }
     if (await this.journal.disk.has(t.id + "/done") || await this.journal.disk.has(t.id + "/rolled-back"))
       return;
-    if (this.state.get(t.key).lastRun === t.id) {
+    if ((await this.state.load(t.key)).lastRun === t.id) {
       await this.journal.mark(t.id + "/done");
       return;
     }
@@ -11864,18 +11942,20 @@ var Applier = class {
   async undo(key, target, resolve) {
     this.fence.check();
     this.needsRecovery = true;
-    const last = this.state.get(key).lastRun;
+    const last = (await this.state.load(key)).lastRun;
     const t = (await this.journal.transactions()).find(
       (v) => v.key === key && v.id === last
     );
     if (!t) throw Error("noBackup");
     await this.journal.mark(t.id + "/undo-start");
-    await this.restore(t, resolve ? resolve(t) : target);
-    this.state.put(key, t.before);
+    const store = resolve ? resolve(t) : target;
+    if (!store) throw Error("journal");
+    await this.restore(t, store);
+    await this.state.commit(key, t.before);
     await this.journal.mark(t.id + "/undo-done");
     this.needsRecovery = false;
   }
-  async apply(profile, plan2, source, target, key, targetPath, budget = new RunBudget(void 0, void 0, void 0, this.fence), progress, active, projection, publication, checkReference) {
+  async apply(profile, plan2, source, target, key, targetPath, budget = new RunBudget(void 0, void 0, void 0, this.fence), progress, active, projection, publication, checkReference, operations, configDir = ".obsidian", self = "refsync") {
     this.fence.check();
     if (this.needsRecovery || this.pendingTargets.has(target.id))
       throw Error("journal");
@@ -11885,9 +11965,9 @@ var Applier = class {
     };
     const cfg = profile.config ?? legacyConfig();
     const batch = profile.scope === "settings" && cfg.strategy === "batch";
-    if (batch && plan2.deferred.some((x) => x.reason === "locked"))
+    if (batch && plan2.deferred.some((x) => ["locked", "invalidConfig"].includes(x.reason)))
       throw Error("incomplete");
-    const previous = this.state.get(key);
+    const previous = await this.state.load(key);
     const next = {
       ...fresh(),
       size: plan2.held.length ? previous.size : plan2.count,
@@ -11923,7 +12003,7 @@ var Applier = class {
           steps.push({ path: p, action: op.action });
           continue;
         }
-        if (publish && op.path !== manifestPath) {
+        if ((publish || profile.scope === "content") && op.path !== manifestPath) {
           if (op.target?.rawHash || op.target?.hash)
             expectedTarget.set(p, op.target.rawHash ?? op.target.hash);
           else if (!op.target && op.action === "write")
@@ -11950,10 +12030,6 @@ var Applier = class {
           const bytes = await budget.io(() => source.download(p));
           if (await hash(bytes) !== (s.rawHash ?? s.hash))
             throw Error("referenceChanged");
-          await this.journal.disk.putNew(
-            id + "/unchanged/" + await hash(new TextEncoder().encode(p).buffer),
-            projection ? deliveryBytes(p, bytes, projection) : bytes
-          );
         }
         if (op.action === "write" || op.action === "both") {
           let bytes;
@@ -12003,7 +12079,7 @@ var Applier = class {
     }
     if (publish) steps.push({ path: manifestPath, action: "write" });
     if (!steps.length) {
-      this.state.put(key, next);
+      await this.state.commit(key, next);
       return 0;
     }
     const t = {
@@ -12013,6 +12089,8 @@ var Applier = class {
       target: targetPath,
       cloud: profile.access === "oauth" && profile.role === "publisher" ? profile.cloud : void 0,
       scope: profile.scope,
+      content: profile.content,
+      createdAt: Date.now(),
       settings: projection ? {
         config: cfg,
         projection,
@@ -12064,6 +12142,7 @@ var Applier = class {
                 continue;
               }
               await this.journal.mark(id + "/applied/" + i);
+              operations?.push({ path: step.path, action: step.action });
               changed++;
               continue;
             }
@@ -12074,11 +12153,13 @@ var Applier = class {
               const old = stat ? await budget.io(() => target.download(step.path)) : null;
               const copy = displaced.get(step.path);
               if (copy && stat) throw Error("collision");
-              if (t.cloud) {
+              if (t.cloud || profile.scope === "content") {
                 const expected = step.path === manifestPath && i === steps.length - 1 ? steps[0].digest : expectedTarget.get(step.path);
                 if (expected !== void 0 && (old ? await hash(old) : null) !== expected)
                   throw Error("referenceChanged");
               }
+              if (step.action === "delete" && !source.confirmAbsent && await budget.io(() => source.stat(step.path)))
+                throw Error("referenceChanged");
               await this.journal.backup(id, i, old);
               if (step.action === "delete") {
                 if (t.cloud)
@@ -12101,6 +12182,12 @@ var Applier = class {
                   projection,
                   old,
                   profile.role === "subscriber"
+                ) : profile.scope === "content" && step.path.toLowerCase() === configDir.toLowerCase() + "/community-plugins.json" ? deliveryBytes(
+                  "community-plugins.json",
+                  bytes,
+                  { rules: [], blocked: [], self },
+                  old,
+                  profile.role === "subscriber"
                 ) : bytes;
                 if (t.cloud)
                   await this.journal.disk.putNew(
@@ -12119,6 +12206,11 @@ var Applier = class {
             await this.journal.mark(id + "/applied/" + i);
           }
           if (steps[start].path !== manifestPath && !["mkdir", "rmdir"].includes(steps[start].action)) {
+            for (let i = start; i < end; i++)
+              operations?.push({
+                path: steps[i].path,
+                action: steps[i].action
+              });
             changed += end - start;
             if (steps[start].action === "write")
               for (let d = parent(path); d && !folders.has(d); d = parent(d))
@@ -12144,7 +12236,7 @@ var Applier = class {
       }
       next.folders = [...folders];
       if (changed || publish) next.lastRun = id;
-      this.state.put(key, next);
+      await this.state.commit(key, next);
     } catch (e) {
       budget.fence.check();
       this.fence.check();
@@ -12154,6 +12246,7 @@ var Applier = class {
       throw e;
     }
     await this.journal.mark(id + "/done");
+    if (!t.settings?.local) await this.journal.disk.removeTree(id + "/stage");
     this.needsRecovery = false;
     return changed;
   }
@@ -12162,13 +12255,29 @@ var Applier = class {
 // src/state.ts
 init_git_buffer();
 var StateStore = class {
-  constructor(port) {
+  constructor(port, db) {
     this.port = port;
+    this.db = db;
     const current = port.get("device");
     this.device = typeof current === "string" && /^[a-f0-9-]{36}$/.test(current) ? current : crypto.randomUUID();
     port.set("device", this.device);
   }
   device;
+  async load(key) {
+    return await this.db?.get(this.device + ":" + key) ?? this.get(key);
+  }
+  async commit(key, b) {
+    if (!this.db) {
+      this.put(key, b);
+      return;
+    }
+    await this.db.put(this.device + ":" + key, b);
+    try {
+      if (this.port.get("state:" + this.device + ":" + key) != null)
+        this.port.set("state:" + this.device + ":" + key, null);
+    } catch {
+    }
+  }
   get(key) {
     const raw = this.port.get("state:" + this.device + ":" + key);
     if (raw == null) return fresh();
@@ -12225,14 +12334,15 @@ var ApplyJournal = class {
       enc(bytes === null ? null : await hash(bytes))
     );
   }
-  async transactions() {
-    const out = [];
+  async *walk(pendingOnly = false) {
     for (const id of await this.disk.dirs()) {
       if (!/^[0-9a-f-]{36}$/.test(id)) continue;
       if (!await this.disk.has(id + "/intent.json")) {
         await this.disk.removeTree(id);
         continue;
       }
+      if (pendingOnly && (await this.disk.has(id + "/rolled-back") || await this.disk.has(id + "/done") && (!await this.disk.has(id + "/undo-start") || await this.disk.has(id + "/undo-done"))))
+        continue;
       const t = await this.json(id + "/intent.json");
       if (t.version !== 1 || t.id !== id || !Array.isArray(t.steps) || !["content", "settings"].includes(t.scope))
         throw Error("journal");
@@ -12241,8 +12351,12 @@ var ApplyJournal = class {
         if (!["write", "delete", "mkdir", "rmdir"].includes(step.action))
           throw Error("journal");
       }
-      out.push(t);
+      yield t;
     }
+  }
+  async transactions() {
+    const out = [];
+    for await (const t of this.walk()) out.push(t);
     return out;
   }
 };
@@ -12259,14 +12373,14 @@ function volatility(p, scope) {
     return "V";
   return /^(?:[^/]+\.json|plugins\/[^/]+\/data\.json)$/.test(p) ? "H" : "S";
 }
-function selected(p, scope, configDir, self, directory, config = legacyConfig()) {
+function selected(p, scope, configDir, self, directory, config = legacyConfig(), content) {
   const f = fold(p);
   if (f.split("/").some(
     (s) => [".git", ".trash", ".sync-trash", "node_modules"].includes(s)
   ) || scope === "settings" && under(f, fold("plugins/" + self)) || under(f, fold(join(configDir, "plugins/" + self))))
     return false;
   if (scope === "content")
-    return !under(f, fold(configDir)) && !p.split("/").some((s) => s.startsWith(".")) && !/(?:\.tmp$|(?:^|\/)(?:thumbs\.db|desktop\.ini)$)/i.test(p);
+    return contentPath(p, configDir, self, directory, content);
   if (volatility(p, scope) === "V" || p.split("/").some((s) => s.startsWith(".")))
     return false;
   return inScope(p, config, directory);
@@ -12327,7 +12441,7 @@ var LocalProvider = class {
   constructor(vault, root, self, scope, readOnly = false, policy = {
     trash: "vault",
     trashDays: 30
-  }, ownWrite, config, withFilePaused) {
+  }, ownWrite, config, withFilePaused, content) {
     this.vault = vault;
     this.root = root;
     this.self = self;
@@ -12336,6 +12450,7 @@ var LocalProvider = class {
     this.ownWrite = ownWrite;
     this.config = config;
     this.withFilePaused = withFilePaused;
+    this.content = content;
     if (root) checked(root);
     if (under(fold(root), fold(join(vault.configDir, "plugins/" + self))))
       throw Error("protected");
@@ -12363,7 +12478,8 @@ var LocalProvider = class {
       this.vault.configDir,
       this.self,
       directory,
-      this.config
+      this.config,
+      this.content
     ))
       throw Error("protected");
     const path = this.path(p);
@@ -12385,6 +12501,18 @@ var LocalProvider = class {
   async stat(p) {
     if (!this.root && !p) return { type: "folder", size: 0, mtime: 0 };
     return this.vault.adapter.stat(this.path(p));
+  }
+  async scanStat(p) {
+    const a = this.vault.adapter;
+    if (!(a instanceof import_obsidian.FileSystemAdapter)) return this.stat(p);
+    const fs = require("node:fs/promises");
+    const s = await fs.stat(a.getFullPath(this.path(p)), { bigint: true });
+    return {
+      type: s.isDirectory() ? "folder" : "file",
+      size: Number(s.size),
+      mtime: Number(s.mtimeMs),
+      version: [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].join("/")
+    };
   }
   async download(p) {
     const path = this.path(p), file = this.vault.getAbstractFileByPath(path);
@@ -12525,12 +12653,16 @@ function pathFilter(p) {
     (v) => (0, import_posix3.default)(v, { nonegate: true, noextglob: true, nobrace: true })
   );
   const include = compile(p.include), exclude = compile(p.exclude);
-  return (path) => {
+  const allowed = (path) => {
     if (exclude.some((f) => f(path) || f(path + "/"))) return false;
     for (let dir = parent(path); dir; dir = parent(dir))
       if (exclude.some((f) => f(dir) || f(dir + "/"))) return false;
-    return !include.length || include.some((f) => f(path));
+    return true;
   };
+  return Object.assign(
+    (path) => allowed(path) && (!include.length || include.some((f) => f(path))),
+    { directory: allowed }
+  );
 }
 
 // src/selection.ts
@@ -12555,7 +12687,7 @@ function sortOps(ops) {
     (a, b) => rank(a) - rank(b) || (a.action === "mkdir" ? a.path.length - b.path.length : a.action === "rmdir" ? b.path.length - a.path.length : priority(a.path) - priority(b.path)) || a.path.localeCompare(b.path)
   );
 }
-function plan(p, src, dst, base, resolve = resolveConflict, mode = "plan") {
+function plan(p, src, dst, base, resolve = resolveConflict, mode = "plan", configDir = ".obsidian") {
   if (!src.complete || !dst.complete) throw Error("incomplete");
   const skipped = new Map([...src.skipped ?? [], ...dst.skipped ?? []]);
   const names = /* @__PURE__ */ new Map();
@@ -12586,7 +12718,7 @@ function plan(p, src, dst, base, resolve = resolveConflict, mode = "plan") {
     if (protectedPath(path)) continue;
     const s = src.files.get(path), t = dst.files.get(path), b = Object.hasOwn(base.entries, path) ? base.entries[path] : void 0;
     if (!s) {
-      if (p.scope === "settings" && p.role === "subscriber" && fold(path) === "community-plugins.json")
+      if (p.role === "subscriber" && fold(path) === (p.scope === "settings" ? "community-plugins.json" : fold(configDir) + "/community-plugins.json"))
         continue;
       if (t && (p.mirror === "full" || p.deletions && b?.delivered))
         deletes.push({ path, action: "delete", conflict: false, target: t });
@@ -12601,7 +12733,7 @@ function plan(p, src, dst, base, resolve = resolveConflict, mode = "plan") {
     if (!strict && b?.seen === s.hash) continue;
     if (!strict && p.scope === "settings" && s.rawHash && b?.seen === s.rawHash && s.rawHash !== s.hash)
       continue;
-    const conflict = !!t && s.kind === "S" && (!b || t.hash !== b.hash && s.hash !== b.applied);
+    const conflict = !!t && (s.kind === "S" || s.kind === "H" && p.conflict !== "source") && (!b || t.hash !== b.hash && s.hash !== b.applied);
     const action = conflict && t && p.mirror !== "full" ? resolve(p.conflict, s, t) : "write";
     ops.push({ path, action, source: s, target: t, conflict });
   }
@@ -12828,7 +12960,10 @@ var PublicStore = class _PublicStore {
     return reading;
   }
   async find(path) {
-    this.root ??= this.tree.root();
+    this.root ??= this.tree.root().catch((e) => {
+      this.root = void 0;
+      throw e;
+    });
     let dir = await this.root;
     const ancestors = /* @__PURE__ */ new Set([dir.key]);
     for (const name of join(this.prefix, path).split("/").filter(Boolean)) {
@@ -12855,7 +12990,13 @@ var PublicStore = class _PublicStore {
     if (!v || v.type === "skip") return null;
     if (v.type === "file" && v.size === -1 && this.tree.size)
       v.size = await this.tree.size(v);
-    return { type: v.type, size: v.size, mtime: v.mtime };
+    return {
+      type: v.type,
+      size: v.size,
+      mtime: v.mtime,
+      sha256: v.sha256,
+      version: v.sha256 ?? v.md5
+    };
   }
   async download(path) {
     const v = await this.find(path);
@@ -12867,21 +13008,30 @@ var PublicStore = class _PublicStore {
   }
   async confirmAbsent(paths) {
     const fresh2 = new _PublicStore(this.id, this.tree, this.prefix);
+    const indices = /* @__PURE__ */ new Map();
+    const base = await fresh2.find("");
     for (const path of paths) {
-      const base = await fresh2.find("");
       if (base?.type !== "folder") throw Error("missingRoot");
       let dir = base;
       const parts = path.split("/");
-      for (const [index, name] of parts.entries()) {
+      for (const [position, name] of parts.entries()) {
         if (dir.type !== "folder") throw Error("referenceChanged");
-        const matches2 = [...(await fresh2.entries(dir)).values()].filter(
-          (v) => fold(v.name).replace(/[. ]+$/, "") === fold(name)
-        );
+        let index2 = indices.get(dir.key);
+        if (!index2) {
+          index2 = /* @__PURE__ */ new Map();
+          indices.set(dir.key, index2);
+          for (const node of (await fresh2.entries(dir)).values()) {
+            const key = fold(node.name).replace(/[. ]+$/, ""), matches3 = index2.get(key);
+            if (matches3) matches3.push(node);
+            else index2.set(key, [node]);
+          }
+        }
+        const matches2 = index2.get(fold(name)) ?? [];
         if (!matches2.length) break;
         if (matches2.length !== 1 || matches2[0].name !== name)
           throw Error("referenceChanged");
         dir = matches2[0];
-        if (dir.type !== "folder" || index === parts.length - 1)
+        if (dir.type !== "folder" || position === parts.length - 1)
           throw Error("referenceChanged");
       }
     }
@@ -13528,7 +13678,7 @@ function validate(p, desktop, readOnly, configDir) {
     trash: ["plugin", "vault", "system", "permanent"],
     role: ["subscriber", "publisher"],
     scope: ["settings", "content"],
-    access: ["local", "public", "oauth", "token"],
+    access: ["local", "public", "oauth"],
     mirror: ["full", "preserve"],
     conflict: ["source", "target", "both", "newer"],
     mode: ["plan", "silent"]
@@ -13591,6 +13741,8 @@ function validate(p, desktop, readOnly, configDir) {
   for (const field of ["include", "exclude"])
     if (typeof p[field] !== "string" || p[field].length > 4096)
       err(field, "invalid");
+  if (p.content !== void 0 && !validContent(p.content))
+    err("content", "invalid");
   if (p.config !== void 0) {
     if (!validConfig(p.config)) err("config", "invalidConfig");
     else
@@ -13616,7 +13768,61 @@ function validate(p, desktop, readOnly, configDir) {
 
 // src/scanner.ts
 init_git_buffer();
-async function scan(provider, scope, configDir, self, skipHotTarget = false, budget = new RunBudget(), accept = (path) => true, maxMiB = 0, config, projection) {
+var PathIssue = class extends Error {
+  constructor(code, path) {
+    super(code);
+    this.path = path;
+  }
+};
+var newStats = () => ({
+  files: 0,
+  read: 0,
+  reused: 0,
+  folders: 0
+});
+var DigestCache = class {
+  constructor(db, device = "") {
+    this.db = db;
+    this.device = device;
+  }
+  dirty = /* @__PURE__ */ new Map();
+  loaded = false;
+  async load() {
+    if (!this.db || this.loaded) return;
+    this.loaded = true;
+    try {
+      for (const [k, v] of await this.db.readDigests(this.device))
+        if (typeof k === "string" && v && typeof v.version === "string" && /^[0-9a-f]{64}$/.test(v.hash))
+          this.items.set(k, v);
+    } catch {
+    }
+  }
+  async flush() {
+    if (!this.db || !this.dirty.size) return;
+    const changes = this.dirty;
+    this.dirty = /* @__PURE__ */ new Map();
+    try {
+      await this.db.writeDigests(this.device, changes);
+    } catch {
+    }
+  }
+  items = /* @__PURE__ */ new Map();
+  get(key, version) {
+    const v = this.items.get(key);
+    return v?.version === version ? v.hash : void 0;
+  }
+  put(key, version, digest2) {
+    if (this.items.size >= 1e5 && !this.items.has(key)) {
+      const oldest = this.items.keys().next().value;
+      this.items.delete(oldest);
+      if (this.db) this.dirty.set(oldest, null);
+    }
+    const value = { version, hash: digest2 };
+    this.items.set(key, value);
+    if (this.db) this.dirty.set(key, value);
+  }
+};
+async function scan(provider, scope, configDir, self, skipHotTarget = false, budget = new RunBudget(), accept = () => true, maxMiB = 0, config, projection, options = {}) {
   const managedDirectories = /* @__PURE__ */ new Set(), occupiedDirectories = /* @__PURE__ */ new Set();
   const snap = {
     managedDirectories,
@@ -13626,12 +13832,19 @@ async function scan(provider, scope, configDir, self, skipHotTarget = false, bud
     complete: false,
     skipped: /* @__PURE__ */ new Map()
   };
+  let processed = 0;
   const todo = [""], seen = /* @__PURE__ */ new Map();
   if ((await budget.io(() => provider.stat("")))?.type !== "folder")
     throw Error("missingRoot");
   while (todo.length) {
+    options.tick?.();
+    if (options.stats) options.stats.folders++;
     const dir = todo.pop();
-    const list = await budget.io(() => provider.list(dir));
+    const list = await budget.io(() => provider.list(dir)).catch((e) => {
+      if (e instanceof Error && e.message === "readTimeout")
+        throw new PathIssue("readTimeout", dir || "/");
+      throw e;
+    });
     if (dir && !list.files.length && !list.folders.length && !list.skipped?.length && accept(dir) && (scope === "content" || emptyConfigDirectory(dir, config ?? legacyConfig())))
       managedDirectories.add(dir);
     for (const path of list.skipped ?? []) {
@@ -13643,13 +13856,22 @@ async function scan(provider, scope, configDir, self, skipHotTarget = false, bud
       [list.folders, true]
     ]) {
       for (const p of paths) {
+        if (++processed % 256 === 0)
+          await new Promise((r) => setTimeout(r, 0));
+        options.tick?.();
         if (parent(p) !== dir) throw Error("path");
-        if (!selected(p, scope, configDir, self, isDir, config)) {
+        if (isDir && accept.directory && !accept.directory(p)) {
+          snap.skipped.set(p, "filter");
+          continue;
+        }
+        if (!selected(p, scope, configDir, self, isDir, config, options.content)) {
           occupiedDirectories.add(dir);
+          snap.skipped.set(p, "filter");
           continue;
         }
         if (projection?.blocked.includes(fold(p.split("/")[1] ?? "")) && p.startsWith("plugins/")) {
           occupiedDirectories.add(dir);
+          snap.skipped.set(p, "filter");
           continue;
         }
         if (!safe(p)) {
@@ -13673,7 +13895,10 @@ async function scan(provider, scope, configDir, self, skipHotTarget = false, bud
           continue;
         }
         try {
-          const stat = await budget.io(() => provider.stat(p));
+          if (options.stats) options.stats.files++;
+          const stat = await budget.io(
+            () => provider.scanStat ? provider.scanStat(p) : provider.stat(p)
+          );
           if (stat?.type !== "file") throw Error("incomplete");
           if (maxMiB > 0 && stat.size > maxMiB * 1048576) {
             snap.skipped.set(p, "filter");
@@ -13689,17 +13914,46 @@ async function scan(provider, scope, configDir, self, skipHotTarget = false, bud
             });
             continue;
           }
+          const cacheKey = JSON.stringify([provider.id, p]);
+          const community = scope === "content" && p.toLowerCase() === configDir.toLowerCase() + "/community-plugins.json";
+          const policy = community ? { rules: [], blocked: [], self } : projection;
+          const name = community ? "community-plugins.json" : p;
+          const known = !options.thorough && !policy && (stat.sha256 || stat.version && options.cache?.get(cacheKey, stat.version));
+          if (known) {
+            snap.files.set(p, {
+              rawHash: known,
+              hash: known,
+              size: stat.size,
+              mtime: stat.mtime,
+              kind
+            });
+            if (options.stats) options.stats.reused++;
+            continue;
+          }
+          if (options.stats) options.stats.read++;
           const bytes = await budget.io(() => provider.download(p));
           if (bytes.byteLength !== stat.size) throw Error("incomplete");
           const rawHash = await hash(bytes);
+          if (!policy && stat.version)
+            options.cache?.put(cacheKey, stat.version, rawHash);
           snap.files.set(p, {
             rawHash,
-            hash: projection ? await settingsHash(p, bytes, projection) : rawHash,
+            hash: policy ? await settingsHash(name, bytes, policy) : rawHash,
             size: stat.size,
             mtime: stat.mtime,
             kind
           });
         } catch (e) {
+          if ((projection || p.toLowerCase() === configDir.toLowerCase() + "/community-plugins.json") && (e instanceof SyntaxError || e instanceof TypeError || e instanceof Error && e.message === "invalidConfig")) {
+            snap.skipped.set(p, "invalidConfig");
+            continue;
+          }
+          if (e && typeof e === "object" && "code" in e && e.code === "ENOENT") {
+            snap.skipped.set(p, "unstable");
+            continue;
+          }
+          if (e instanceof Error && e.message === "readTimeout")
+            throw new PathIssue("readTimeout", p);
           if (!transient(e)) throw e;
           snap.skipped.set(p, "locked");
         }
@@ -13729,12 +13983,13 @@ var StatusStore = class {
   }
 };
 var SyncEngine = class {
-  constructor(applier, status, configDir, self, desktop) {
+  constructor(applier, status, configDir, self, desktop, cache = new DigestCache()) {
     this.applier = applier;
     this.status = status;
     this.configDir = configDir;
     this.self = self;
     this.desktop = desktop;
+    this.cache = cache;
   }
   busy = false;
   lastSource;
@@ -13768,6 +14023,21 @@ var SyncEngine = class {
         void 0,
         this.applier.fence
       );
+      const stats = newStats(), operations = [];
+      let last = 0;
+      const scanOptions = {
+        stats,
+        cache: this.cache,
+        content: p.content,
+        thorough: options.thorough,
+        tick: () => {
+          if (options.active && !options.active()) throw Error("stopped");
+          if (Date.now() - last >= 250) {
+            last = Date.now();
+            options.scanning?.(stats);
+          }
+        }
+      };
       const cfg = p.config ?? legacyConfig();
       const projection = p.scope === "settings" ? {
         rules: parseOverlay(cfg.overlay),
@@ -13790,25 +14060,32 @@ var SyncEngine = class {
             budget,
             filter,
             p.scope === "content" ? p.maxMiB : 0,
-            cfg
+            cfg,
+            void 0,
+            scanOptions
           );
           return buildManifest(snapshot, this.applier.state.device);
         }
       } : void 0;
       const scanSource = async () => {
-        const revision = p.role === "subscriber" && p.access !== "local" ? manifest?.revision ?? await budget.io(() => source.getRevision()) : null;
+        const revision = p.role === "subscriber" && p.access !== "local" ? await budget.io(() => source.getRevision()) : null;
         const cacheKey = revision && JSON.stringify([
           source.id,
           revision,
+          manifest?.revision,
           p.scope,
           cfg,
           p.include,
+          p.content,
           p.exclude,
           p.maxMiB,
           projection?.blocked
         ]);
-        if (cacheKey && (!manifest || manifest.directories) && this.lastSource?.key === cacheKey)
+        if (!options.thorough && cacheKey && (!manifest || manifest.directories) && this.lastSource?.key === cacheKey) {
+          stats.files += this.lastSource.snapshot.files.size;
+          stats.reused += this.lastSource.snapshot.files.size;
           return this.lastSource.snapshot;
+        }
         const snapshot = await scan(
           source,
           p.scope,
@@ -13819,7 +14096,8 @@ var SyncEngine = class {
           filter,
           p.scope === "content" ? p.maxMiB : 0,
           cfg,
-          projection
+          projection,
+          scanOptions
         );
         if (manifest && p.role === "subscriber")
           verifyManifest(
@@ -13831,14 +14109,24 @@ var SyncEngine = class {
               this.configDir,
               this.self,
               false,
-              cfg
+              cfg,
+              p.content
             ) && filter(f.path) && !(p.scope === "content" && p.maxMiB > 0 && f.size > p.maxMiB * 1048576) && !(f.path.startsWith("plugins/") && projection?.blocked.includes(f.path.split("/")[1].toLowerCase())),
-            (pth) => filter(pth) && selected(pth, p.scope, this.configDir, this.self, true, cfg) && (p.scope === "content" || emptyConfigDirectory(pth, cfg)) && !(pth.startsWith("plugins/") && projection?.blocked.includes(pth.split("/")[1].toLowerCase()))
+            (pth) => filter(pth) && selected(
+              pth,
+              p.scope,
+              this.configDir,
+              this.self,
+              true,
+              cfg,
+              p.content
+            ) && (p.scope === "content" || emptyConfigDirectory(pth, cfg)) && !(pth.startsWith("plugins/") && projection?.blocked.includes(pth.split("/")[1].toLowerCase()))
           );
         if (cacheKey && ![...snapshot.skipped?.values() ?? []].includes("locked"))
           this.lastSource = { key: cacheKey, snapshot };
         return snapshot;
       };
+      await this.cache.load();
       const inputs = await Promise.allSettled([
         scanSource(),
         scan(
@@ -13846,25 +14134,40 @@ var SyncEngine = class {
           p.scope,
           this.configDir,
           this.self,
-          !p.strictDrift,
+          !p.strictDrift && !options.thorough && p.conflict === "source",
           budget,
           filter,
           p.scope === "content" ? p.maxMiB : 0,
           cfg,
-          projection
+          projection,
+          scanOptions
         )
       ]);
+      await this.cache.flush();
       const [s, t] = inputs.map((i) => {
         if (i.status === "rejected") throw i.reason;
         return i.value;
       });
+      if (publication && !preview) {
+        for (const [path, reason] of t.skipped ?? [])
+          if (reason !== "filter") throw new PathIssue(reason, path);
+      }
+      if (publication && manifest && p.scope === "content") {
+        try {
+          verifyManifest(manifest, t, () => true);
+        } catch {
+          publication.missing = true;
+        }
+      }
+      options.scanning?.(stats);
       let result = plan(
         p,
         s,
         t,
-        this.applier.state.get(key),
+        await this.applier.state.load(key),
         void 0,
-        options.mode
+        options.mode,
+        this.configDir
       );
       let changed = 0;
       if (approved)
@@ -13895,7 +14198,7 @@ var SyncEngine = class {
               continue;
             try {
               const now = await budget.io(() => source.stat(op.path));
-              if (now?.mtime !== op.source.mtime || now?.size !== op.source.size)
+              if (!now || Math.trunc(now.mtime) !== Math.trunc(op.source.mtime) || now?.size !== op.source.size)
                 result.deferred.push({ path: op.path, reason: "unstable" });
             } catch (e) {
               if (!transient(e)) throw e;
@@ -13932,13 +14235,16 @@ var SyncEngine = class {
           managed ? async () => {
             if ((await budget.io(() => readManifest(reference)))?.revision !== manifest?.revision)
               throw Error("referenceChanged");
-          } : void 0
+          } : void 0,
+          operations,
+          this.configDir,
+          this.self
         );
       }
       this.status.set(
         result.held.length || result.deferred.length ? "partial" : "done"
       );
-      return { plan: result, changed };
+      return { plan: result, changed, stats, operations };
     });
   }
 };
@@ -13946,6 +14252,33 @@ var SyncEngine = class {
 // src/i18n.ts
 init_git_buffer();
 var ru = {
+  history: "Журнал операций",
+  everything: "Включить всё содержимое",
+  contentHelp: "Включает настройки Obsidian и скрытые файлы. Выбранные исключения сохраняются. Служебные каталоги, корзина, файлы сеанса и сам Sync Studio защищены.",
+  configFolder: "Включать папку настроек Obsidian",
+  otherHidden: "Включать другие скрытые папки и файлы",
+  folderSelection: "Папки и плагины профиля",
+  pluginsPicker: "Выбрать плагины",
+  foldersPicker: "Выбрать папки",
+  loadingFolders: "Чтение списка папок…",
+  folderPartial: "Часть папок недоступна. Показаны доступные папки и сохранённые правила.",
+  noneFound: "Ничего не найдено",
+  checkMatches: "Включить найденные",
+  uncheckMatches: "Исключить найденные",
+  useSelection: "Применить выбор к профилю",
+  readCount: "прочитано",
+  reuseCount: "по метаданным",
+  filesCount: "файлов",
+  foldersCount: "папок",
+  refreshLog: "Обновить",
+  fullCheck: "Диагностика · полная проверка файлов",
+  checkedRun: "Сравнение завершено",
+  verified: "Настройки проверены",
+  holdVerify: "Расхождение настроек",
+  historyEmpty: "Записей пока нет",
+  duration: "Время, с",
+  undoPause: "После отката профиль будет выключен. Его можно включить в настройках.",
+  switchMode: "Переключить режим подтверждения / тихий",
   mkdir: "Создать папку",
   rmdir: "Удалить пустую папку",
   folderRetained: "Папка сохранена: содержит другие объекты или доступ к содержимому ограничен",
@@ -13985,9 +14318,9 @@ var ru = {
   cloudLocation: "Проверьте аккаунт, корневую папку и путь",
   cloud: "Облачный аккаунт",
   manifestInvalid: "Публикация не завершена или манифест повреждён. Повторите после завершения публикации.",
-  manifestMismatch: "Файлы эталона расходятся с манифестом. Проверьте папку и охват публикации.",
+  manifestMismatch: "Файлы источника расходятся с манифестом. Проверьте папку и охват публикации.",
   cloudRecovery: "Восстановление облачной операции ожидает доступа к аккаунту или устранения расхождения версий",
-  engine: "Источник эталона",
+  engine: "Подключение",
   vaultSource: "Папка в хранилище",
   google: "Google Диск",
   yandex: "Яндекс Диск",
@@ -14005,13 +14338,13 @@ var ru = {
   googleKey: "Введите и сохраните API-ключ Google Drive",
   publicQuota: "Исчерпана квота API. Повторите позже.",
   publicDenied: "Сервис отклонил доступ. Проверьте общий доступ и ключ.",
-  remoteHttp: "Ошибка сервиса при чтении эталона",
+  remoteHttp: "Ошибка сервиса при чтении источника",
   remoteNetwork: "Не удалось подключиться к источнику",
   remoteName: "Источник вернул неоднозначное имя файла",
   gitRead: "Не удалось получить Git-репозиторий. Проверьте HTTPS-ссылку, ветку и подключение.",
   maxDeleteCount: "Порог удалений, файлов и папок",
   maxDeletePercent: "Порог удалений, % от цели",
-  shrinkPercent: "Порог уменьшения эталона, %",
+  shrinkPercent: "Порог уменьшения источника, %",
   deleteGrace: "Минимум объектов для процентного порога удалений",
   scopePreset: "Набор настроек",
   preset_full: "Полная копия",
@@ -14071,15 +14404,15 @@ var ru = {
   plan: "План с подтверждением",
   silent: "Тихий",
   silentDeletionSafeguard: "Защита от массовых удалений в тихом режиме",
-  silentDeletionSafeguardHelp: "Если выключить, тихий запуск выполнит все удаления по правилам профиля, даже при пустом эталоне или превышении порогов.",
+  silentDeletionSafeguardHelp: "Если выключить, тихий запуск выполнит все удаления по правилам профиля, даже при пустом источнике или превышении порогов.",
   firstPlan: "Показывать план перед первой доставкой",
   mirrorMode: "Зеркалирование",
   preserve: "Сохранять локальные файлы",
   full: "Полное зеркало",
-  source: "Предпочесть эталон",
+  source: "Предпочесть источник",
   targetVersion: "Предпочесть версию цели",
   newer: "Предпочесть более новый файл",
-  deletions: "Применять удаления из эталона",
+  deletions: "Применять удаления из источника",
   trash: "Способ удаления",
   plugin: "Корзина Sync Studio",
   vault: "Корзина хранилища",
@@ -14128,11 +14461,11 @@ var ru = {
   error: "Ошибка",
   title: "Sync Studio · локальный профиль",
   preview: "Показать план",
-  sync: "Применить эталон",
+  sync: "Синхронизировать",
   undo: "Откатить последнюю доставку",
   cancel: "Отмена",
   confirm: "Откатить",
-  reference: "Папка эталона",
+  reference: "Папка подключения",
   target: "Локальная папка",
   scope: "Охват",
   content: "Контент",
@@ -14155,11 +14488,11 @@ var ru = {
   conflict: "Конфликт",
   invalid: "Недопустимое значение",
   readonly: "Источник доступен только для чтения",
-  mirror: "Полное зеркало требует доставки эталона и удалений",
-  configConflict: "Для настроек используется эталон с бэкапом",
+  mirror: "Полное зеркало требует доставки источника и удалений",
+  configConflict: "Для настроек используется источник с бэкапом",
   configEvents: "События файлов отключены для настроек",
   mobile: "Недоступно на мобильном устройстве",
-  guard: "Требуются бэкап и защита от пустого эталона",
+  guard: "Требуются бэкап и защита от пустого источника",
   overlap: "Папки пересекаются",
   protected: "Служебный путь исключён",
   path: "Непереносимый или некорректный путь",
@@ -14167,18 +14500,45 @@ var ru = {
   incomplete: "Неполное чтение файлов",
   collision: "Коллизия путей",
   indexPending: "Файл ещё не готов в индексе",
-  referenceChanged: "Эталон изменился, повторите сравнение",
+  referenceChanged: "Источник изменился, повторите сравнение",
   busy: "Выполняется другой запуск",
   noBackup: "Нет завершённой доставки для отката",
   backup: "Повреждён бэкап",
   state: "Ошибка локального состояния",
   journal: "Повреждён журнал",
   failed: "Операция не завершена",
-  previewFirst: "Сначала проверьте список. Применение повторно сверяет эталон.",
-  dry: "Пробный план",
+  previewFirst: "Сначала проверьте список. Применение повторно сверяет источник.",
+  dry: "Просмотр изменений",
   unknown: "Неизвестное состояние"
 };
 var en = {
+  history: "Operation history",
+  everything: "Include all content",
+  contentHelp: "Includes Obsidian settings and hidden files. Folder exclusions still apply. Internal folders, trash, session files and Sync Studio are protected.",
+  configFolder: "Include Obsidian configuration folder",
+  otherHidden: "Include other hidden folders and files",
+  folderSelection: "Profile folders and plugins",
+  pluginsPicker: "Choose plugins",
+  foldersPicker: "Choose folders",
+  loadingFolders: "Reading folders…",
+  folderPartial: "Some folders are unavailable. Showing available folders and saved rules.",
+  noneFound: "No matches",
+  checkMatches: "Include matches",
+  uncheckMatches: "Exclude matches",
+  useSelection: "Use selection in profile",
+  readCount: "read",
+  reuseCount: "from metadata",
+  filesCount: "files",
+  foldersCount: "folders",
+  refreshLog: "Refresh",
+  fullCheck: "Diagnostics · full file verification",
+  checkedRun: "Comparison completed",
+  verified: "Settings verified",
+  holdVerify: "Settings mismatch",
+  historyEmpty: "No operations recorded yet",
+  duration: "Seconds",
+  undoPause: "Undo disables this profile. Enable it again in settings.",
+  switchMode: "Toggle review / silent mode",
   mkdir: "Create folder",
   rmdir: "Remove empty folder",
   folderRetained: "Folder retained: it contains other items or access to its contents is limited",
@@ -14220,7 +14580,7 @@ var en = {
   manifestInvalid: "Publication is in progress or its manifest is invalid. Retry after publication.",
   manifestMismatch: "Files differ from the manifest. Check the folder and publishing scope.",
   cloudRecovery: "Cloud recovery requires account access or resolution of a conflicting file version",
-  engine: "Reference source",
+  engine: "Connection",
   vaultSource: "Vault folder",
   google: "Google Drive",
   yandex: "Yandex Disk",
@@ -14238,7 +14598,7 @@ var en = {
   googleKey: "Enter and save your Google Drive API key",
   publicQuota: "API quota reached. Try again later.",
   publicDenied: "Access denied. Check sharing and the API key.",
-  remoteHttp: "Service error while reading reference",
+  remoteHttp: "Service error while reading source",
   remoteNetwork: "Cannot connect to source",
   remoteName: "Source returned an ambiguous file name",
   gitRead: "Cannot fetch repository. Check the HTTPS URL, branch and connection.",
@@ -14361,11 +14721,11 @@ var en = {
   error: "Error",
   title: "Sync Studio · local profile",
   preview: "Show plan",
-  sync: "Apply reference",
+  sync: "Synchronize",
   undo: "Roll back last delivery",
   cancel: "Cancel",
   confirm: "Restore",
-  reference: "Reference folder",
+  reference: "Connection folder",
   target: "Local folder",
   scope: "Scope",
   content: "Content",
@@ -14400,15 +14760,15 @@ var en = {
   incomplete: "Incomplete listing or read",
   collision: "Path collision",
   indexPending: "File not ready in vault index",
-  referenceChanged: "Reference changed, scan again",
+  referenceChanged: "Source changed, scan again",
   busy: "Another run is active",
   noBackup: "No completed delivery to restore",
   backup: "Damaged backup",
   state: "Invalid local state",
   journal: "Invalid journal",
   failed: "Operation failed",
-  previewFirst: "Review the list first. Apply checks the reference again.",
-  dry: "Dry run",
+  previewFirst: "Review the list first. Apply checks the source again.",
+  dry: "Preview changes",
   unknown: "Unknown state"
 };
 function errorKey(message) {
@@ -15609,8 +15969,8 @@ var normalizePath = (path) => {
   };
 };
 var findLastIndex = (array, callback2) => {
-  return array.reduce((lastIndex, item, index) => {
-    return callback2(item) ? index : lastIndex;
+  return array.reduce((lastIndex, item, index2) => {
+    return callback2(item) ? index2 : lastIndex;
   }, -1);
 };
 var GitConfig = class _GitConfig {
@@ -17829,17 +18189,17 @@ var GitCommit = class _GitCommit {
       );
     }
     obj.tree = valueOf(hs[0]);
-    let index = 1;
-    while (index < hs.length && keyOf(hs[index]) === "parent") {
-      obj.parent.push(valueOf(hs[index]));
-      index++;
+    let index2 = 1;
+    while (index2 < hs.length && keyOf(hs[index2]) === "parent") {
+      obj.parent.push(valueOf(hs[index2]));
+      index2++;
     }
     const seen = /* @__PURE__ */ new Set(["tree", "parent"]);
-    for (; index < hs.length; index++) {
-      const key = keyOf(hs[index]);
+    for (; index2 < hs.length; index2++) {
+      const key = keyOf(hs[index2]);
       if (seen.has(key)) continue;
       seen.add(key);
-      obj[key] = valueOf(hs[index]);
+      obj[key] = valueOf(hs[index2]);
     }
     if (obj.author) {
       obj.author = parseAuthor(obj.author);
@@ -20226,13 +20586,326 @@ var Accounts = class {
   }
 };
 
+// src/device-database.ts
+init_git_buffer();
+var DeviceDatabase = class {
+  opening;
+  open() {
+    return this.opening ??= new Promise((resolve, reject) => {
+      const req = indexedDB.open("sync-studio-device-state", 2);
+      req.onupgradeneeded = () => {
+        for (const name of ["baselines", "digests"])
+          if (!req.result.objectStoreNames.contains(name))
+            req.result.createObjectStore(name);
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => {
+        this.opening = void 0;
+        reject(req.error);
+      };
+    });
+  }
+  async readDigests(device) {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("digests"), r = tx.objectStore("digests").getAll(IDBKeyRange.bound([device, ""], [device, []]), 1e5);
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+  }
+  async writeDigests(device, changes) {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("digests", "readwrite"), s = tx.objectStore("digests");
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error ?? Error("state"));
+      for (const [key, value] of changes)
+        if (value) s.put([key, value], [device, key]);
+        else s.delete([device, key]);
+    });
+  }
+  async get(key) {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("baselines"), r = tx.objectStore("baselines").get(key);
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => reject(r.error);
+    });
+  }
+  async put(key, b) {
+    const db = await this.open();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("baselines", "readwrite");
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error ?? Error("state"));
+      tx.objectStore("baselines").put(b, key);
+    });
+  }
+};
+
+// src/history.ts
+init_git_buffer();
+var import_obsidian3 = require("obsidian");
+var historyView = "sync-studio-history";
+var HistoryView = class extends import_obsidian3.ItemView {
+  constructor(leaf, studio) {
+    super(leaf);
+    this.studio = studio;
+  }
+  getViewType() {
+    return historyView;
+  }
+  getDisplayText() {
+    return this.studio.t("history");
+  }
+  getIcon() {
+    return "history";
+  }
+  async onOpen() {
+    await this.show();
+  }
+  query = "";
+  page = 0;
+  async show() {
+    const el = this.contentEl, t = this.studio.t, rows = [];
+    el.empty();
+    const files = await this.studio.historyFiles();
+    for (const file of files)
+      for (const line of file.split("\n").reverse()) {
+        if (!line) continue;
+        try {
+          const r = JSON.parse(line);
+          if (typeof r.at !== "number" || typeof r.profile !== "string" || typeof r.event !== "string")
+            continue;
+          const add = (event, description) => rows.push({ at: r.at, profile: r.profile, event, description });
+          if (r.event !== "operations")
+            add(
+              r.event === "verify-failed" ? "holdVerify" : r.event,
+              [
+                r.code ? t(r.code) : "",
+                r.path ?? "",
+                typeof r.count === "number" ? String(r.count) : "",
+                r.stats ? this.studio.scanLabel(r.stats) : "",
+                r.ms === void 0 ? "" : t("duration") + " " + (r.ms / 1e3).toFixed(1)
+              ].filter(Boolean).join(" · ")
+            );
+          for (const op of r.operations ?? []) add(op.action, op.path);
+          for (const p of r.held ?? []) add("held", p);
+          for (const d of r.deferred ?? [])
+            add("deferred", d.path + " · " + t(d.reason));
+          for (const p of r.unresolved ?? []) add("holdVerify", p);
+        } catch {
+        }
+      }
+    const toolbar = new import_obsidian3.Setting(el);
+    toolbar.addSearch(
+      (s) => s.setPlaceholder(t("search")).setValue(this.query).onChange((v) => {
+        this.query = v;
+        this.page = 0;
+        render();
+      })
+    );
+    toolbar.addButton(
+      (b) => b.setButtonText(t("refreshLog")).onClick(() => this.show())
+    );
+    const list = el.createDiv(), pager = new import_obsidian3.Setting(el);
+    const render = () => {
+      list.empty();
+      pager.clear();
+      const profile = (id) => this.studio.config.profiles.find((p) => p.id === id)?.name ?? id;
+      const visible = rows.filter(
+        (r) => [profile(r.profile), t(r.event), r.description].join(" ").toLowerCase().includes(this.query.toLowerCase())
+      );
+      this.page = Math.min(
+        this.page,
+        Math.max(0, Math.ceil(visible.length / 50) - 1)
+      );
+      if (!visible.length)
+        list.createEl("p", {
+          text: t(rows.length ? "noneFound" : "historyEmpty")
+        });
+      for (const r of visible.slice(this.page * 50, this.page * 50 + 50))
+        new import_obsidian3.Setting(list).setName(t(r.event) + (r.description ? " · " + r.description : "")).setDesc(
+          new Date(r.at).toLocaleString() + " · " + profile(r.profile)
+        );
+      if (visible.length > 50)
+        for (const n of [-1, 1])
+          pager.addButton(
+            (b) => b.setButtonText(n < 0 ? "←" : "→").setDisabled(
+              n < 0 ? this.page === 0 : (this.page + 1) * 50 >= visible.length
+            ).onClick(() => {
+              this.page += n;
+              render();
+            })
+          );
+    };
+    render();
+  }
+};
+
 // src/editor.ts
 init_git_buffer();
 
+// src/content-editor.ts
+init_git_buffer();
+var import_obsidian4 = require("obsidian");
+function contentEditor(el, p, app, self, t, stores, refresh) {
+  const c = p.content ?? plainContent();
+  const toggle = (key, label) => new import_obsidian4.Setting(el).setName(label).addToggle(
+    (b) => b.setValue(c[key]).onChange((v) => {
+      p.content = { ...c, [key]: v };
+      refresh();
+    })
+  );
+  new import_obsidian4.Setting(el).setName(t("everything")).setDesc(t("contentHelp")).addToggle(
+    (b) => b.setValue(c.config && c.hidden).onChange((v) => {
+      p.content = { ...c, config: v, hidden: v };
+      refresh();
+    })
+  );
+  toggle("config", t("configFolder") + " · " + app.vault.configDir);
+  toggle("hidden", t("otherHidden"));
+  const row = new import_obsidian4.Setting(el).setName(t("folderSelection")).setDesc(c.rules.map((r) => (r.include ? "+ " : "− ") + r.path).join(", "));
+  for (const plugins of [false, true])
+    row.addButton(
+      (b) => b.setButtonText(t(plugins ? "pluginsPicker" : "foldersPicker")).setDisabled(plugins && !c.config).onClick(
+        () => new FolderSelection(app, p, self, t, stores, plugins, refresh).open()
+      )
+    );
+}
+var FolderSelection = class extends import_obsidian4.Modal {
+  constructor(app, profile, self, t, stores, plugins, refresh) {
+    super(app);
+    this.profile = profile;
+    this.self = self;
+    this.t = t;
+    this.stores = stores;
+    this.plugins = plugins;
+    this.refresh = refresh;
+    this.directory = plugins ? join(app.vault.configDir, "plugins") : "";
+    this.c = profile.content ?? plainContent();
+  }
+  directory;
+  ticket = 0;
+  c;
+  onClose() {
+    this.ticket++;
+  }
+  onOpen() {
+    void this.show();
+  }
+  async show() {
+    const ticket = ++this.ticket, el = this.contentEl, t = this.t, dir = this.directory;
+    this.titleEl.setText(t(this.plugins ? "pluginsPicker" : "foldersPicker"));
+    el.empty();
+    const header = new import_obsidian4.Setting(el).setName(dir || "/");
+    if (dir && !this.plugins)
+      header.addButton(
+        (b) => b.setButtonText(t("upFolder")).onClick(() => {
+          this.directory = parent(dir);
+          void this.show();
+        })
+      );
+    const status = el.createEl("p", { text: t("loadingFolders") });
+    const names = new Set(
+      this.c.rules.map((r) => r.path).filter((p) => parent(p) === dir)
+    );
+    let failures = 0;
+    try {
+      const sides = this.stores();
+      await Promise.all(
+        sides.map(async (s) => {
+          try {
+            const budget = new RunBudget(void 0, 3e4, []);
+            if ((await budget.io(() => s.stat(dir)))?.type === "folder") {
+              for (const p of (await budget.io(() => s.list(dir))).folders)
+                if (parent(p) === dir) names.add(p);
+            }
+          } catch {
+            failures++;
+          }
+        })
+      );
+    } catch {
+      failures++;
+    }
+    if (ticket !== this.ticket) return;
+    status.setText(failures ? t("folderPartial") : "");
+    const candidates = [...names].filter(
+      (p) => safe(p) && contentPath(p, this.app.vault.configDir, this.self, true, {
+        ...this.c,
+        rules: []
+      })
+    ).sort((a, b) => a.localeCompare(b));
+    let query = "", page = 0;
+    const tools = new import_obsidian4.Setting(el);
+    const list = el.createDiv(), pager = new import_obsidian4.Setting(el);
+    const visible = () => candidates.filter((p) => fold(p).includes(fold(query)));
+    const render = () => {
+      list.empty();
+      pager.clear();
+      const matches2 = visible();
+      if (!matches2.length) list.createEl("p", { text: t("noneFound") });
+      for (const p of matches2.slice(page * 50, page * 50 + 50)) {
+        const row = new import_obsidian4.Setting(list).setName(
+          p.slice(dir ? dir.length + 1 : 0)
+        );
+        row.addToggle(
+          (b) => b.setValue(folderIncluded(p, this.c)).onChange((v) => {
+            this.c = setFolders(this.c, [p], v);
+            render();
+          })
+        );
+        if (!this.plugins)
+          row.addExtraButton(
+            (b) => b.setIcon("folder-open").setTooltip(t("openFolder")).onClick(() => {
+              this.directory = p;
+              void this.show();
+            })
+          );
+      }
+      if (matches2.length > 50)
+        for (const n of [-1, 1])
+          pager.addButton(
+            (b) => b.setButtonText(n < 0 ? "←" : "→").setDisabled(
+              n < 0 ? page === 0 : (page + 1) * 50 >= matches2.length
+            ).onClick(() => {
+              page += n;
+              render();
+            })
+          );
+    };
+    tools.addSearch(
+      (s) => s.setPlaceholder(t("search")).onChange((v) => {
+        query = v;
+        page = 0;
+        render();
+      })
+    );
+    for (const v of [true, false])
+      tools.addButton(
+        (b) => b.setButtonText(t(v ? "checkMatches" : "uncheckMatches")).onClick(() => {
+          this.c = setFolders(this.c, visible(), v);
+          render();
+        })
+      );
+    render();
+    new import_obsidian4.Setting(el).addButton(
+      (b) => b.setButtonText(t("cancel")).onClick(() => this.close())
+    ).addButton(
+      (b) => b.setButtonText(t("useSelection")).setCta().onClick(() => {
+        this.profile.content = this.c;
+        this.close();
+        this.refresh();
+      })
+    );
+  }
+};
+
 // src/oauth-ui.ts
 init_git_buffer();
-var import_obsidian3 = require("obsidian");
-var AccountsView = class extends import_obsidian3.Modal {
+var import_obsidian5 = require("obsidian");
+var AccountsView = class extends import_obsidian5.Modal {
   constructor(app, rs, after) {
     super(app);
     this.rs = rs;
@@ -20244,7 +20917,7 @@ var AccountsView = class extends import_obsidian3.Modal {
     this.titleEl.setText(t("accounts"));
     for (const a of this.rs.accounts.list()) {
       const users = this.rs.config.profiles.filter((p) => p.cloud?.account === a.id).map((p) => p.name);
-      new import_obsidian3.Setting(el).setName(t(a.engine) + " · " + a.label).setDesc(
+      new import_obsidian5.Setting(el).setName(t(a.engine) + " · " + a.label).setDesc(
         [
           t(
             a.needsLogin ? "loginRequired" : a.expires < Date.now() + 6e4 ? "refreshDue" : "accountActive"
@@ -20264,7 +20937,7 @@ var AccountsView = class extends import_obsidian3.Modal {
       );
     }
     for (const engine of ["google", "yandex"])
-      new import_obsidian3.Setting(el).setName(t(engine)).addButton(
+      new import_obsidian5.Setting(el).setName(t(engine)).addButton(
         (b) => b.setButtonText(t("addAccount")).onClick(() => this.login(engine))
       );
   }
@@ -20276,7 +20949,7 @@ var AccountsView = class extends import_obsidian3.Modal {
     this.after();
   }
 };
-var Login = class extends import_obsidian3.Modal {
+var Login = class extends import_obsidian5.Modal {
   constructor(app, rs, engine, previous, done) {
     super(app);
     this.rs = rs;
@@ -20287,7 +20960,7 @@ var Login = class extends import_obsidian3.Modal {
       clientId: "",
       secret: "",
       full: previous?.full ?? false,
-      redirect: engine === "google" && import_obsidian3.Platform.isDesktopApp ? "" : engine === "yandex" ? callback : ""
+      redirect: engine === "google" && import_obsidian5.Platform.isDesktopApp ? "" : engine === "yandex" ? callback : ""
     };
     if (previous) {
       try {
@@ -20352,40 +21025,40 @@ var Login = class extends import_obsidian3.Modal {
             }
           }
         };
-        new import_obsidian3.Setting(el).setName(t("clientPaste")).addTextArea(
+        new import_obsidian5.Setting(el).setName(t("clientPaste")).addTextArea(
           (v) => v.onChange((s) => {
             if (s.trim()) apply(s);
             else this.invalidJson = false;
           })
         );
       }
-      new import_obsidian3.Setting(el).setName("Client ID").addText(
+      new import_obsidian5.Setting(el).setName("Client ID").addText(
         (v) => v.setValue(c.clientId).onChange((s) => {
           c.clientId = s.trim();
           this.invalidJson = false;
         })
       );
-      new import_obsidian3.Setting(el).setName("Client secret").addText((v) => {
+      new import_obsidian5.Setting(el).setName("Client secret").addText((v) => {
         v.inputEl.type = "password";
         v.setValue(c.secret).onChange((s) => {
           c.secret = s.trim();
         });
       });
-      new import_obsidian3.Setting(el).setName(t("redirect")).setDesc(
+      new import_obsidian5.Setting(el).setName(t("redirect")).setDesc(
         t(
-          c.engine === "google" && import_obsidian3.Platform.isDesktopApp ? "loopbackHint" : "redirectHint"
+          c.engine === "google" && import_obsidian5.Platform.isDesktopApp ? "loopbackHint" : "redirectHint"
         )
       ).addText(
         (v) => v.setValue(c.redirect).onChange((s) => {
           c.redirect = s.trim();
         })
       );
-      new import_obsidian3.Setting(el).setName(t("fullAccess")).setDesc(t("scopeHint")).addToggle(
+      new import_obsidian5.Setting(el).setName(t("fullAccess")).setDesc(t("scopeHint")).addToggle(
         (v) => v.setValue(c.full).setDisabled(!!this.previous).onChange((full) => {
           c.full = full;
         })
       );
-      new import_obsidian3.Setting(el).addButton(
+      new import_obsidian5.Setting(el).addButton(
         (b) => b.setButtonText(t("signIn")).setCta().onClick(() => this.start())
       );
     } else if (this.attempt) {
@@ -20395,14 +21068,14 @@ var Login = class extends import_obsidian3.Modal {
         attr: { target: "_blank", rel: "noreferrer" }
       });
       let response = "";
-      new import_obsidian3.Setting(el).setName(t("callbackPaste")).addText(
+      new import_obsidian5.Setting(el).setName(t("callbackPaste")).addText(
         (v) => v.onChange((s) => {
           response = s;
         })
       ).addButton(
         (b) => b.setButtonText(t("connect")).onClick(() => this.finish(response, true))
       );
-      new import_obsidian3.Setting(el).addButton(
+      new import_obsidian5.Setting(el).addButton(
         (b) => b.setButtonText(t("retryLogin")).onClick(() => {
           this.stop();
           this.onOpen();
@@ -20434,7 +21107,7 @@ var Login = class extends import_obsidian3.Modal {
       this.rs.oauthCancel = this.cancel;
       if (this.invalidJson) throw Error("clientJson");
       const c = { ...this.client };
-      if (!c.redirect && c.engine === "google" && !this.webClient && import_obsidian3.Platform.isDesktopApp) {
+      if (!c.redirect && c.engine === "google" && !this.webClient && import_obsidian5.Platform.isDesktopApp) {
         const http = require("node:http");
         const server = http.createServer((req, res) => {
           const a = this.attempt;
@@ -20476,7 +21149,7 @@ var Login = class extends import_obsidian3.Modal {
         this.status.setText(this.rs.t("oauthExpired"));
       }, 6e5);
       this.onOpen();
-      if (import_obsidian3.Platform.isDesktopApp)
+      if (import_obsidian5.Platform.isDesktopApp)
         await require("electron").shell.openExternal(this.attempt.url);
       else window.open(this.attempt.url, "_blank", "noopener,noreferrer");
     } catch (e) {
@@ -20516,8 +21189,8 @@ var Login = class extends import_obsidian3.Modal {
 
 // src/remote-browser.ts
 init_git_buffer();
-var import_obsidian4 = require("obsidian");
-var RemoteFolderBrowser = class extends import_obsidian4.Modal {
+var import_obsidian6 = require("obsidian");
+var RemoteFolderBrowser = class extends import_obsidian6.Modal {
   constructor(app, source, tr, choose) {
     super(app);
     this.source = source;
@@ -20538,7 +21211,7 @@ var RemoteFolderBrowser = class extends import_obsidian4.Modal {
     this.titleEl.setText(t("browse"));
     el.createEl("p", { text: "/" + path });
     if (path)
-      new import_obsidian4.Setting(el).addButton(
+      new import_obsidian6.Setting(el).addButton(
         (b) => b.setButtonText(t("upFolder")).onClick(() => this.show(parent(path)))
       );
     const status = el.createEl("p", {
@@ -20549,14 +21222,14 @@ var RemoteFolderBrowser = class extends import_obsidian4.Modal {
       const { folders } = await this.source.list(path);
       if (seq !== this.sequence) return;
       status.remove();
-      new import_obsidian4.Setting(el).addButton(
+      new import_obsidian6.Setting(el).addButton(
         (b) => b.setButtonText(t("useFolder")).setCta().onClick(() => {
           this.choose(path || "/");
           this.close();
         })
       );
       for (const folder of folders.sort((a, b) => a.localeCompare(b)))
-        new import_obsidian4.Setting(el).setName(folder.slice(path ? path.length + 1 : 0)).addButton(
+        new import_obsidian6.Setting(el).setName(folder.slice(path ? path.length + 1 : 0)).addButton(
           (b) => b.setButtonText(t("openFolder")).onClick(() => this.show(folder))
         );
     } catch (e) {
@@ -20568,7 +21241,7 @@ var RemoteFolderBrowser = class extends import_obsidian4.Modal {
 
 // src/scope-editor.ts
 init_git_buffer();
-var import_obsidian5 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 function scopeEditor(el, p, t, redraw, validate2) {
   const c = p.config ??= legacyConfig();
   el.createEl("h3", { text: t("settings") });
@@ -20576,7 +21249,7 @@ function scopeEditor(el, p, t, redraw, validate2) {
   const selected2 = sets.find(
     (s) => preset(s).length === c.categories.length && preset(s).every((k) => c.categories.includes(k))
   ) ?? "custom";
-  new import_obsidian5.Setting(el).setName(t("scopePreset")).addDropdown((d) => {
+  new import_obsidian7.Setting(el).setName(t("scopePreset")).addDropdown((d) => {
     for (const s of [...sets, "custom"]) d.addOption(s, t("preset_" + s));
     d.setValue(selected2).onChange((v) => {
       if (v !== "custom") {
@@ -20587,7 +21260,7 @@ function scopeEditor(el, p, t, redraw, validate2) {
     });
   });
   for (const k of categories)
-    new import_obsidian5.Setting(el).setName(t("cat_" + k)).setDesc(
+    new import_obsidian7.Setting(el).setName(t("cat_" + k)).setDesc(
       ["core", "appearance", "data", "community"].includes(k) ? "H" : "S"
     ).addToggle(
       (x) => x.setValue(c.categories.includes(k)).onChange((on) => {
@@ -20598,7 +21271,7 @@ function scopeEditor(el, p, t, redraw, validate2) {
     );
   if (!c.categories.includes("code") && c.categories.some((k) => k === "data" || k === "community"))
     el.createEl("p", { text: t("existingCode") });
-  const input = (k) => new import_obsidian5.Setting(el).setName(t("cfg_" + k)).addTextArea(
+  const input = (k) => new import_obsidian7.Setting(el).setName(t("cfg_" + k)).addTextArea(
     (a) => a.setValue(c[k]).onChange((v) => {
       c[k] = v;
       validate2();
@@ -20614,25 +21287,25 @@ function scopeEditor(el, p, t, redraw, validate2) {
     "overlay"
   ])
     input(k);
-  new import_obsidian5.Setting(el).setName(t("mobileFilter")).addToggle(
+  new import_obsidian7.Setting(el).setName(t("mobileFilter")).addToggle(
     (x) => x.setValue(c.platformFilter).onChange((v) => {
       c.platformFilter = v;
     })
   );
-  new import_obsidian5.Setting(el).setName(t("strategy")).addDropdown((d) => {
+  new import_obsidian7.Setting(el).setName(t("strategy")).addDropdown((d) => {
     for (const k of ["batch", "changes"]) d.addOption(k, t(k));
     d.setValue(c.strategy).onChange((v) => {
       c.strategy = v;
     });
   });
-  new import_obsidian5.Setting(el).setName(t("reloadPolicy")).addDropdown((d) => {
+  new import_obsidian7.Setting(el).setName(t("reloadPolicy")).addDropdown((d) => {
     for (const k of ["next", "now", "idle", "never"])
       d.addOption(k, t("reload_" + k));
     d.setValue(c.reload).onChange((v) => {
       c.reload = v;
     });
   });
-  new import_obsidian5.Setting(el).setName(t("idleDelay")).addText((a) => {
+  new import_obsidian7.Setting(el).setName(t("idleDelay")).addText((a) => {
     a.inputEl.type = "number";
     a.setValue(String(c.idleSeconds)).onChange((v) => {
       c.idleSeconds = Number(v);
@@ -20642,8 +21315,8 @@ function scopeEditor(el, p, t, redraw, validate2) {
 }
 
 // src/editor.ts
-var import_obsidian6 = require("obsidian");
-var Editor = class extends import_obsidian6.PluginSettingTab {
+var import_obsidian8 = require("obsidian");
+var Editor = class extends import_obsidian8.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -20660,12 +21333,15 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
       return;
     }
     el.createEl("h2", { text: t("profiles") });
-    new import_obsidian6.Setting(el).addButton(
+    new import_obsidian8.Setting(el).addButton(
+      (b) => b.setButtonText(t("history")).onClick(() => rs.openHistory())
+    );
+    new import_obsidian8.Setting(el).addButton(
       (b) => b.setButtonText(t("accounts")).onClick(
         () => new AccountsView(this.app, rs, () => this.display()).open()
       )
     );
-    new import_obsidian6.Setting(el).setName(t("defaultMode")).addDropdown(
+    new import_obsidian8.Setting(el).setName(t("defaultMode")).addDropdown(
       (d) => d.addOption("plan", t("plan")).addOption("silent", t("silent")).setValue(rs.config.mode).onChange(async (v) => {
         await rs.save({
           ...rs.config,
@@ -20673,25 +21349,25 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
         });
       })
     );
-    new import_obsidian6.Setting(el).setName(t("pause")).addToggle(
+    new import_obsidian8.Setting(el).setName(t("pause")).addToggle(
       (c) => c.setValue(rs.config.paused).onChange(async (paused) => {
         await rs.save({ ...rs.config, paused });
       })
     );
-    new import_obsidian6.Setting(el).addButton(
+    new import_obsidian8.Setting(el).addButton(
       (b) => b.setButtonText(t("add")).setCta().onClick(() => {
-        this.draft = newProfile();
+        this.draft = rs.newProfile();
         this.display();
       })
     ).addButton(
       (b) => b.setButtonText(t("syncAll")).onClick(() => rs.runAll())
     );
-    rs.config.profiles.forEach((p, index) => {
+    rs.config.profiles.forEach((p, index2) => {
       const account = p.cloud ? rs.accounts.list().find((a) => a.id === p.cloud?.account) : void 0;
       const sourceName = p.access === "oauth" && p.cloud ? [t(p.cloud.engine + "Private"), account?.label].filter(Boolean).join(" · ") : p.access === "public" && p.remote ? t(p.remote.engine) : "";
       const reference = [sourceName, p.reference || "/"].filter(Boolean).join(" · ");
       const local = p.scope === "settings" ? this.app.vault.configDir : p.local;
-      const row = new import_obsidian6.Setting(el).setName(p.name).setDesc(
+      const row = new import_obsidian8.Setting(el).setName(p.name).setDesc(
         [
           t(p.scope),
           p.role === "subscriber" ? reference + " → " + local : local + " → " + reference,
@@ -20713,7 +21389,7 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
       );
       row.addExtraButton(
         (b) => b.setIcon("copy").setTooltip(t("duplicate")).onClick(() => {
-          this.draft = newProfile(p);
+          this.draft = rs.newProfile(p);
           this.display();
         })
       );
@@ -20721,25 +21397,27 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
         [-1, "arrow-up"],
         [1, "arrow-down"]
       ])
-        if (rs.config.profiles[index + delta])
+        if (rs.config.profiles[index2 + delta])
           row.addExtraButton(
             (b) => b.setIcon(icon).setTooltip(t(delta < 0 ? "up" : "down")).onClick(async () => {
               const list = [...rs.config.profiles];
-              [list[index], list[index + delta]] = [
-                list[index + delta],
-                list[index]
+              [list[index2], list[index2 + delta]] = [
+                list[index2 + delta],
+                list[index2]
               ];
               await rs.save({ ...rs.config, profiles: list });
               this.display();
             })
           );
-      new import_obsidian6.Setting(el).addButton(
+      new import_obsidian8.Setting(el).addButton(
         (b) => b.setButtonText(t(p.id === rs.config.current ? "current" : "select")).setDisabled(p.id === rs.config.current).onClick(async () => {
           await rs.save({ ...rs.config, current: p.id });
           this.display();
         })
       ).addButton(
         (b) => b.setButtonText(t("dry")).onClick(() => rs.request(p.id, "dry"))
+      ).addButton(
+        (b) => b.setButtonText(t("fullCheck")).onClick(() => rs.request(p.id, "diagnose"))
       ).addButton(
         (b) => b.setButtonText(t("sync")).setDisabled(!p.enabled).onClick(() => rs.request(p.id, "run"))
       );
@@ -20752,7 +21430,7 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
       this.draft = void 0;
       this.display();
     };
-    const text = (field, key) => new import_obsidian6.Setting(el).setName(t(key)).addText(
+    const text = (field, key) => new import_obsidian8.Setting(el).setName(t(key)).addText(
       (c) => c.setValue(String(p[field])).onChange((v) => {
         Object.assign(p, {
           [field]: field === "reference" || field === "local" ? v.replace(/\\/g, "/") : v
@@ -20760,7 +21438,7 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
         validateForm();
       })
     );
-    const num2 = (field, key) => new import_obsidian6.Setting(el).setName(t(key)).addText((c) => {
+    const num2 = (field, key) => new import_obsidian8.Setting(el).setName(t(key)).addText((c) => {
       c.inputEl.type = "number";
       c.inputEl.min = "0";
       c.setValue(String(p[field])).onChange((v) => {
@@ -20768,13 +21446,13 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
         validateForm();
       });
     });
-    const toggle = (field, key, disabled = false) => new import_obsidian6.Setting(el).setName(t(key)).addToggle(
+    const toggle = (field, key, disabled = false) => new import_obsidian8.Setting(el).setName(t(key)).addToggle(
       (c) => c.setDisabled(disabled).setValue(p[field] === true).onChange((v) => {
         Object.assign(p, { [field]: v });
         validateForm();
       })
     );
-    const choice = (field, key, values, disabled = false) => new import_obsidian6.Setting(el).setName(t(key)).addDropdown((d) => {
+    const choice = (field, key, values, disabled = false) => new import_obsidian8.Setting(el).setName(t(key)).addDropdown((d) => {
       for (const v of values)
         d.addOption(
           v,
@@ -20791,7 +21469,7 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
           if (field === "scope" && !p.config) {
             p.config = {
               ...legacyConfig(),
-              categories: preset("full"),
+              categories: legacyConfig().categories,
               legacyThemes: false,
               strategy: "batch"
             };
@@ -20813,7 +21491,7 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
     text("name", "name");
     toggle("enabled", "enabled");
     choice("scope", "scope", ["content", "settings"]);
-    new import_obsidian6.Setting(el).setName(t("engine")).addDropdown((d) => {
+    new import_obsidian8.Setting(el).setName(t("engine")).addDropdown((d) => {
       for (const k of [
         "vaultSource",
         "google",
@@ -20858,14 +21536,14 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
     const remote = p.access === "public" ? p.remote : void 0;
     choice("role", "role", ["subscriber", "publisher"], !!remote);
     if (remote) {
-      new import_obsidian6.Setting(el).setName(t("remote")).setDesc(t("readonly")).addText(
+      new import_obsidian8.Setting(el).setName(t("remote")).setDesc(t("readonly")).addText(
         (c) => c.setValue(remote.url).onChange((v) => {
           remote.url = v.trim();
           validateForm();
         })
       );
       if (remote.engine === "git")
-        new import_obsidian6.Setting(el).setName(t("branch")).addText(
+        new import_obsidian8.Setting(el).setName(t("branch")).addText(
           (c) => c.setValue(remote.branch).onChange((v) => {
             remote.branch = v.trim();
             validateForm();
@@ -20873,7 +21551,7 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
         );
       if (remote.engine === "google") {
         let key = rs.googleKey();
-        new import_obsidian6.Setting(el).setName(t("deviceKey")).addText((c) => {
+        new import_obsidian8.Setting(el).setName(t("deviceKey")).addText((c) => {
           c.inputEl.type = "password";
           c.setValue(key).onChange((v) => {
             key = v;
@@ -20888,7 +21566,7 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
     }
     if (p.access === "oauth" && p.cloud) {
       const c = p.cloud;
-      new import_obsidian6.Setting(el).setName(t("accounts")).addDropdown((d) => {
+      new import_obsidian8.Setting(el).setName(t("accounts")).addDropdown((d) => {
         d.addOption("", t("selectAccount"));
         for (const a of rs.accounts.list().filter((a2) => a2.engine === c.engine))
           d.addOption(
@@ -20907,7 +21585,7 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
         )
       );
       if (c.engine === "google")
-        new import_obsidian6.Setting(el).setName(t("driveRoot")).addText(
+        new import_obsidian8.Setting(el).setName(t("driveRoot")).addText(
           (v) => v.setValue(c.root).onChange((raw) => {
             try {
               c.root = location({
@@ -20927,25 +21605,28 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
       remote || p.access === "oauth" ? "subfolder" : "reference"
     );
     if (remote || p.access === "oauth")
-      new import_obsidian6.Setting(el).addButton(
-        (b) => b.setButtonText(t("browse")).onClick(() => {
-          try {
-            new RemoteFolderBrowser(
-              this.app,
-              p.access === "oauth" ? rs.accountReference(p, "", true) : rs.publicReference(p, ""),
-              t,
-              (path) => {
-                p.reference = path;
-                this.display();
-              }
-            ).open();
-          } catch (e) {
-            rs.report(e, p.id);
-          }
-        })
+      new import_obsidian8.Setting(el).addButton(
+        (b) => b.setButtonText(t("history")).onClick(() => rs.openHistory())
       );
+    new import_obsidian8.Setting(el).addButton(
+      (b) => b.setButtonText(t("browse")).onClick(() => {
+        try {
+          new RemoteFolderBrowser(
+            this.app,
+            p.access === "oauth" ? rs.accountReference(p, "", true) : rs.publicReference(p, ""),
+            t,
+            (path) => {
+              p.reference = path;
+              this.display();
+            }
+          ).open();
+        } catch (e) {
+          rs.report(e, p.id);
+        }
+      })
+    );
     if (p.scope === "settings")
-      new import_obsidian6.Setting(el).setName(t("target")).setDesc(this.app.vault.configDir);
+      new import_obsidian8.Setting(el).setName(t("target")).setDesc(this.app.vault.configDir);
     else text("local", "target");
     if (p.scope === "settings")
       scopeEditor(
@@ -20971,7 +21652,7 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
     num2("shrinkPercent", "shrinkPercent");
     choice("trash", "trash", ["plugin", "vault", "system", "permanent"]);
     if (p.trash === "plugin") num2("trashDays", "trashDays");
-    new import_obsidian6.Setting(el).setName(t("mode")).addDropdown((d) => {
+    new import_obsidian8.Setting(el).setName(t("mode")).addDropdown((d) => {
       for (const k of ["inherit", "plan", "silent"]) d.addOption(k, t(k));
       d.setValue(p.inheritMode ? "inherit" : p.mode).onChange((v) => {
         p.inheritMode = v === "inherit";
@@ -20990,6 +21671,15 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
       num2("intervalMinutes", "intervalMinutes");
     }
     if (p.scope === "content") {
+      contentEditor(
+        el,
+        p,
+        this.app,
+        rs.manifest.id,
+        t,
+        () => rs.folderSources(p),
+        () => this.display()
+      );
       text("include", "include");
       text("exclude", "exclude");
       num2("maxMiB", "maxMiB");
@@ -21003,11 +21693,11 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
       num2("quietSeconds", "quietSeconds");
       num2("maxDeferrals", "maxDeferrals");
     }
-    const error = el.createEl("p", { attr: { role: "status" } }), actions = new import_obsidian6.Setting(el);
+    const error = el.createEl("p", { attr: { role: "status" } }), actions = new import_obsidian8.Setting(el);
     const validateForm = () => {
       const errors = validate(
         p,
-        import_obsidian6.Platform.isDesktopApp,
+        import_obsidian8.Platform.isDesktopApp,
         false,
         this.app.vault.configDir
       );
@@ -21071,7 +21761,7 @@ var Editor = class extends import_obsidian6.PluginSettingTab {
 // src/main.ts
 var send = async (url, method = "GET", headers = {}, body2) => {
   try {
-    const r = await (0, import_obsidian7.requestUrl)({
+    const r = await (0, import_obsidian9.requestUrl)({
       url,
       method,
       headers,
@@ -21096,7 +21786,7 @@ var icons = {
   partial: "shield-alert",
   error: "circle-alert"
 };
-var Confirmation = class extends import_obsidian7.Modal {
+var Confirmation = class extends import_obsidian9.Modal {
   constructor(app, message, tr, action) {
     super(app);
     this.message = message;
@@ -21105,7 +21795,7 @@ var Confirmation = class extends import_obsidian7.Modal {
   }
   onOpen() {
     this.contentEl.createEl("p", { text: this.message });
-    new import_obsidian7.Setting(this.contentEl).addButton(
+    new import_obsidian9.Setting(this.contentEl).addButton(
       (b) => b.setButtonText(this.tr("cancel")).onClick(() => this.close())
     ).addButton(
       (b) => b.setButtonText(this.tr("confirmAction")).onClick(() => {
@@ -21115,7 +21805,7 @@ var Confirmation = class extends import_obsidian7.Modal {
     );
   }
 };
-var SyncStudio = class extends import_obsidian7.Plugin {
+var SyncStudio = class extends import_obsidian9.Plugin {
   accounts;
   driveCursors = /* @__PURE__ */ new Map();
   oauthCancel;
@@ -21127,7 +21817,7 @@ var SyncStudio = class extends import_obsidian7.Plugin {
   logDir = "";
   scheduler;
   quiet = new QuietWindow();
-  notices = new NoticeCenter((m) => new import_obsidian7.Notice(m));
+  notices = new NoticeCenter((m) => new import_obsidian9.Notice(m));
   live = true;
   due = /* @__PURE__ */ new Map();
   own = /* @__PURE__ */ new Map();
@@ -21160,13 +21850,14 @@ var SyncStudio = class extends import_obsidian7.Plugin {
       await this.log(
         r.unresolved.length ? "verify-failed" : "verified",
         r.repaired,
-        this.config.current,
+        r.profile,
         r
       );
-      if (r.unresolved.length)
+      const profile = this.config.profiles.find((p) => p.id === r.profile);
+      if (r.unresolved.length && profile && (profile.inheritMode ? this.config.mode : profile.mode) !== "silent")
         this.notices.send(
           "verify",
-          this.t("repairFailed") + " · " + r.unresolved.join(", ")
+          this.t("repairFailed") + " · " + r.unresolved.length
         );
     }
   }
@@ -21222,10 +21913,14 @@ var SyncStudio = class extends import_obsidian7.Plugin {
       this.oauthCallback?.(callback + "?" + new URLSearchParams(params));
     });
     const deviceKey = (k) => this.manifest.id + ":" + k;
-    const state = new StateStore({
-      get: (k) => this.app.loadLocalStorage(deviceKey(k)),
-      set: (k, v) => this.app.saveLocalStorage(deviceKey(k), v)
-    });
+    const db = new DeviceDatabase();
+    const state = new StateStore(
+      {
+        get: (k) => this.app.loadLocalStorage(deviceKey(k)),
+        set: (k, v) => this.app.saveLocalStorage(deviceKey(k), v)
+      },
+      db
+    );
     this.logDir = join(
       this.app.vault.configDir,
       "plugins/" + this.manifest.id + "/runtime"
@@ -21245,10 +21940,11 @@ var SyncStudio = class extends import_obsidian7.Plugin {
       status,
       this.app.vault.configDir,
       this.manifest.id,
-      import_obsidian7.Platform.isDesktopApp
+      import_obsidian9.Platform.isDesktopApp,
+      new DigestCache(db, state.device)
     );
     this.scheduler = new Scheduler(
-      (id) => this.execute(id, "auto"),
+      (id) => this.execute(id, "auto").catch((e) => this.report(e, id)),
       (e) => this.report(e)
     );
     this.ribbon = this.addRibbonIcon(
@@ -21256,7 +21952,7 @@ var SyncStudio = class extends import_obsidian7.Plugin {
       "Sync Studio",
       (e) => this.menu(e)
     );
-    if (import_obsidian7.Platform.isDesktopApp) {
+    if (import_obsidian9.Platform.isDesktopApp) {
       this.bar = this.addStatusBarItem();
       this.bar.tabIndex = 0;
       this.bar.setAttribute("role", "button");
@@ -21269,9 +21965,12 @@ var SyncStudio = class extends import_obsidian7.Plugin {
       };
     }
     this.register(status.subscribe(() => this.paint()));
+    this.registerView(historyView, (leaf) => new HistoryView(leaf, this));
     this.addSettingTab(new Editor(this.app, this));
     const current = (intent) => this.request(this.config.current, intent);
     const cmd = (id, label, fn) => this.addCommand({ id, name: this.t(label), callback: fn });
+    cmd("history", "history", () => void this.openHistory());
+    cmd("full-check", "fullCheck", () => current("diagnose"));
     cmd("dry-run", "dry", () => current("dry"));
     cmd("deliver", "sync", () => current("run"));
     cmd("sync-all", "syncAll", () => this.runAll());
@@ -21280,7 +21979,7 @@ var SyncStudio = class extends import_obsidian7.Plugin {
     cmd("resolve-deletions", "release", () => current("release"));
     cmd(
       "toggle-silent",
-      "defaultMode",
+      "switchMode",
       () => void this.save({
         ...this.config,
         mode: this.config.mode === "plan" ? "silent" : "plan"
@@ -21330,7 +22029,8 @@ var SyncStudio = class extends import_obsidian7.Plugin {
       previous,
       this.scheduler?.stop(),
       this.startupRecovery,
-      this.saves
+      this.saves,
+      this.logs
     ]).then(() => {
     });
     this.quiet.clear();
@@ -21341,14 +22041,14 @@ var SyncStudio = class extends import_obsidian7.Plugin {
   paint() {
     const phase = this.engine.status.phase, label = this.t(this.config.paused ? "paused" : phase);
     const text = ["Sync Studio", label, this.statusLabel].filter(Boolean).join(" · ");
-    (0, import_obsidian7.setIcon)(this.ribbon, this.config.paused ? "pause" : icons[phase]);
+    (0, import_obsidian9.setIcon)(this.ribbon, this.config.paused ? "pause" : icons[phase]);
     this.ribbon.setAttribute("aria-label", text);
     this.bar?.setText(
       this.pendingReload ? text + " · " + this.t("reloadNeeded") : text
     );
   }
   menu(e) {
-    const m = new import_obsidian7.Menu();
+    const m = new import_obsidian9.Menu();
     for (const p of this.config.profiles)
       m.addItem(
         (item) => item.setTitle(p.name).setChecked(p.id === this.config.current).onClick(() => this.save({ ...this.config, current: p.id }))
@@ -21359,6 +22059,7 @@ var SyncStudio = class extends import_obsidian7.Plugin {
         (i) => i.setTitle(this.t("reloadNeeded")).onClick(() => this.promptReload())
       );
     for (const [k, f] of [
+      ["history", () => this.openHistory()],
       ["preview", () => this.request(this.config.current, "dry")],
       ["sync", () => this.request(this.config.current, "run")],
       ["syncAll", () => this.runAll()],
@@ -21384,6 +22085,9 @@ var SyncStudio = class extends import_obsidian7.Plugin {
     const write = this.saves.then(() => this.saveData(config));
     this.saves = write.catch((e) => this.report(e));
     return write;
+  }
+  newProfile(copy) {
+    return newProfile(copy);
   }
   put(p, select = false) {
     const old = this.config.profiles.some((q) => q.id === p.id);
@@ -21417,7 +22121,10 @@ var SyncStudio = class extends import_obsidian7.Plugin {
         }
         if (now - this.lastPrune >= 864e5) {
           this.lastPrune = now;
-          void this.scheduler.serial(() => this.pruneTrash()).catch((e) => this.report(e));
+          void this.scheduler.serial(async () => {
+            await this.pruneTrash();
+            await this.engine.applier.prune();
+          }).catch((e) => this.report(e));
         }
         for (const [k, v] of this.own) if (v.expires < now) this.own.delete(k);
       }, 1e3)
@@ -21435,7 +22142,7 @@ var SyncStudio = class extends import_obsidian7.Plugin {
     );
     const event = (path, removed) => {
       for (const p of contents())
-        if (eventPath(p, path))
+        if (eventPath(p, path, this.app.vault.configDir, this.manifest.id))
           void this.fileEvent(p, path, removed).catch(
             (e) => this.report(e, p.id)
           );
@@ -21491,7 +22198,8 @@ var SyncStudio = class extends import_obsidian7.Plugin {
       void 0,
       void 0,
       t.settings?.config,
-      t.target === this.app.vault.configDir ? (path, write) => withPluginData(this.app, this.manifest.id, path, write) : void 0
+      t.target === this.app.vault.configDir ? (path, write) => withPluginData(this.app, this.manifest.id, path, write) : void 0,
+      t.content
     );
   }
   googleKey() {
@@ -21550,6 +22258,10 @@ var SyncStudio = class extends import_obsidian7.Plugin {
     if (p.access !== "oauth" || !p.cloud) throw Error("cloudLocation");
     return this.cloudStore(p.cloud, prefix, readOnly);
   }
+  folderSources(p) {
+    const s = this.stores(p);
+    return [s.local, s.reference];
+  }
   stores(p) {
     if (!["local", "public", "oauth"].includes(p.access))
       throw Error("invalid");
@@ -21565,7 +22277,8 @@ var SyncStudio = class extends import_obsidian7.Plugin {
         expires: Date.now() + 1e4
       }),
       p.config,
-      !ro && p.scope === "settings" && path === this.app.vault.configDir ? (file, write) => withPluginData(this.app, this.manifest.id, file, write) : void 0
+      !ro && p.scope === "settings" && path === this.app.vault.configDir ? (file, write) => withPluginData(this.app, this.manifest.id, file, write) : void 0,
+      p.content
     );
     return {
       reference: p.access === "oauth" ? this.accountReference(p) : p.access === "public" ? this.publicReference(p) : make(p.reference, p.role === "subscriber"),
@@ -21586,13 +22299,15 @@ var SyncStudio = class extends import_obsidian7.Plugin {
     await this.ready;
     const p = this.config.profiles.find((x) => x.id === id);
     if (!p || !this.live) return;
-    if (intent !== "dry" && (!p.enabled || this.config.paused)) return;
+    if (intent !== "dry" && intent !== "diagnose" && (!p.enabled || this.config.paused))
+      return;
     if (intent === "auto" && (this.openIds.has(id) || p.access === "oauth" && !this.accounts.list().some((a) => a.id === p.cloud?.account && !a.needsLogin)))
       return;
     if (this.engine.applier.needsRecovery)
       await this.engine.exclusive(
         () => this.engine.applier.recover((t) => this.recoveryTarget(t))
       );
+    this.lastScan = void 0;
     this.statusLabel = p.name;
     const v = this.stores(p);
     if (this.engine.applier.pendingTargets.has(v.reference.id)) {
@@ -21607,15 +22322,30 @@ var SyncStudio = class extends import_obsidian7.Plugin {
       await this.deliver(p);
       return;
     }
-    const { plan: plan2 } = await this.engine.run(
+    const started = Date.now();
+    const { plan: plan2, stats } = await this.engine.run(
       p,
       v.reference,
       v.local,
       true,
       void 0,
-      { mode: intent === "dry" && silent ? "silent" : "plan" }
+      {
+        mode: (intent === "dry" || intent === "diagnose") && silent ? "silent" : "plan",
+        thorough: intent === "diagnose",
+        active: () => this.live && (intent === "dry" || intent === "diagnose" || !this.config.paused),
+        scanning: (s) => this.scanProgress(p, s)
+      }
     );
     if (!this.live) return;
+    this.statusLabel = p.name;
+    this.paint();
+    if (intent === "diagnose" || intent === "dry")
+      await this.log("checkedRun", plan2.count, id, {
+        stats,
+        deferred: plan2.deferred,
+        held: plan2.held,
+        ms: Date.now() - started
+      });
     if (intent === "auto" && !plan2.ops.some((o) => o.action !== "ack") && !plan2.held.length && !plan2.deferred.length)
       return;
     if (this.openIds.has(id)) return;
@@ -21634,7 +22364,7 @@ var SyncStudio = class extends import_obsidian7.Plugin {
         this.t,
         endpoints2,
         close,
-        intent === "dry" ? void 0 : (choices, release) => {
+        intent === "dry" || intent === "diagnose" ? void 0 : (choices, release) => {
           const picked = intent === "release" ? new Map(plan2.ops.map((o) => [o.path, "skip"])) : choices;
           void this.scheduler.serial(() => this.deliver(p, plan2, picked, release)).catch((e) => this.report(e, p.id));
         },
@@ -21659,12 +22389,15 @@ var SyncStudio = class extends import_obsidian7.Plugin {
     ]);
   }
   async deliver(p, approved, choices, release) {
-    const active = () => this.live && !this.config.paused && p.enabled && this.config.profiles.includes(p);
+    const active = () => this.live && !this.config.paused && p.enabled && this.config.profiles.some(
+      (q) => q.id === p.id && q.enabled && (q === p || JSON.stringify({ ...q, name: p.name }) === JSON.stringify(p))
+    );
     if (!active()) return;
     const v = this.stores(p);
     const isOpen = (path) => this.app.workspace.getLeavesOfType("markdown").some(
-      (leaf) => leaf.view instanceof import_obsidian7.MarkdownView && leaf.view.file?.path === join(p.local, path)
+      (leaf) => leaf.view instanceof import_obsidian9.MarkdownView && leaf.view.file?.path === join(p.local, path)
     );
+    const started = Date.now();
     const result = await this.engine.run(
       p,
       v.reference,
@@ -21682,8 +22415,12 @@ var SyncStudio = class extends import_obsidian7.Plugin {
           void 0,
           this.engine.applier.fence
         ),
+        scanning: (s) => this.scanProgress(p, s),
         quiet: (path) => this.quiet.check(p, path, isOpen(path)),
         progress: (done, total) => {
+          if (done !== total && performance.now() - this.lastPaint < 250)
+            return;
+          this.lastPaint = performance.now();
           this.statusLabel = p.name + " · " + done + "/" + total;
           this.paint();
         }
@@ -21693,11 +22430,15 @@ var SyncStudio = class extends import_obsidian7.Plugin {
     this.statusLabel = p.name;
     this.paint();
     const { held, deferred } = result.plan;
+    for (let i = 0; i < result.operations.length; i += 128)
+      await this.log("operations", 0, p.id, {
+        operations: result.operations.slice(i, i + 128)
+      });
     await this.log(
       held.length || deferred.length ? "partial" : "done",
       result.changed,
       p.id,
-      { held, deferred }
+      { held, deferred, stats: result.stats, ms: Date.now() - started }
     );
     if (p.scope === "settings" && p.role === "subscriber" && result.changed) {
       const cfg = p.config ?? legacyConfig(), excluded = new Set(deferred.map((d) => d.path));
@@ -21747,26 +22488,70 @@ var SyncStudio = class extends import_obsidian7.Plugin {
     const p = this.config.profiles.find((p2) => p2.id === this.config.current);
     if (!p) return;
     this.confirm(
-      this.t("undoText") + " · " + p.name,
+      this.t("undoText") + " · " + p.name + " · " + this.t("undoPause"),
       () => this.scheduler.serial(async () => {
         await this.ready;
-        const v = this.stores(p), [source, target] = p.role === "subscriber" ? [v.reference, v.local] : [v.local, v.reference];
+        const local = "vault:" + (p.scope === "settings" ? this.app.vault.configDir : p.local === "/" ? "" : p.local);
+        const remote = referenceId(p), ends = p.role === "subscriber" ? [remote, local] : [local, remote];
         await this.engine.exclusive(
           () => this.engine.applier.undo(
-            JSON.stringify([p.id, p.scope, source.id, target.id]),
-            target,
+            JSON.stringify([p.id, p.scope, ...ends]),
+            void 0,
             (t) => this.recoveryTarget(t)
           )
         );
+        await this.put({ ...p, enabled: false });
         await this.log("undo", 1, p.id);
       })
     );
   }
-  async log(event, count, profile, details = {}) {
+  lastScan;
+  lastPaint = 0;
+  scanLabel(s) {
+    return [
+      [this.t("filesCount"), s.files],
+      [this.t("foldersCount"), s.folders],
+      [this.t("readCount"), s.read],
+      [this.t("reuseCount"), s.reused]
+    ].map((x) => x.join(" ")).join(" · ");
+  }
+  scanProgress(p, s) {
+    this.lastScan = { profile: p.id, stats: s };
+    this.statusLabel = p.name + " · " + this.scanLabel(s);
+    this.paint();
+  }
+  async openHistory() {
+    const w = this.app.workspace;
+    let leaf = w.getLeavesOfType(historyView)[0];
+    if (!leaf) {
+      leaf = w.getLeaf("tab");
+      await leaf.setViewState({ type: historyView, active: true });
+    }
+    await w.revealLeaf(leaf);
+  }
+  async historyFiles() {
+    await this.logs;
+    const a = this.app.vault.adapter, out = [];
+    for (const name of ["events.jsonl", "events.jsonl.1"]) {
+      const path = join(this.logDir, name);
+      if (await a.exists(path)) out.push(await a.read(path));
+    }
+    return out;
+  }
+  logs = Promise.resolve();
+  log(event, count, profile, details = {}) {
+    const write = this.logs.then(
+      () => this.appendLog(event, count, profile, details)
+    );
+    this.logs = write.catch(() => {
+    });
+    return write;
+  }
+  async appendLog(event, count, profile, details = {}) {
     const a = this.app.vault.adapter;
     if (!await a.exists(this.logDir)) await a.mkdir(this.logDir);
     const f = join(this.logDir, "events.jsonl"), prev = f + ".1";
-    if (((await a.stat(f))?.size ?? 0) > 262144) {
+    if (((await a.stat(f))?.size ?? 0) > 2097152) {
       if (await a.exists(prev)) await a.remove(prev);
       await a.rename(f, prev);
     }
@@ -21778,8 +22563,13 @@ var SyncStudio = class extends import_obsidian7.Plugin {
   report(e, id = this.config?.current ?? "") {
     if (!this.live) return;
     const code = e instanceof Error ? errorKey(e.message) : "failed";
+    this.engine?.status.set("error");
     this.notices.send(id + ":" + code, "Sync Studio · " + this.t(code));
-    void this.log("error", 0, id, { code }).catch(() => {
+    void this.log("error", 0, id, {
+      code,
+      stats: this.lastScan?.profile === id ? this.lastScan.stats : void 0,
+      path: e instanceof PathIssue ? e.path : void 0
+    }).catch(() => {
     });
   }
 };

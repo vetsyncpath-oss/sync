@@ -51,6 +51,7 @@ export function plan(
   base: Baseline,
   resolve: ConflictResolver = resolveConflict,
   mode: Mode = "plan",
+  configDir = ".obsidian",
 ): Plan {
   if (!src.complete || !dst.complete) throw Error("incomplete");
   const skipped = new Map([...(src.skipped ?? []), ...(dst.skipped ?? [])]);
@@ -93,9 +94,11 @@ export function plan(
       b = Object.hasOwn(base.entries, path) ? base.entries[path] : undefined;
     if (!s) {
       if (
-        p.scope === "settings" &&
         p.role === "subscriber" &&
-        fold(path) === "community-plugins.json"
+        fold(path) ===
+          (p.scope === "settings"
+            ? "community-plugins.json"
+            : fold(configDir) + "/community-plugins.json")
       )
         continue;
       if (t && (p.mirror === "full" || (p.deletions && b?.delivered)))
@@ -120,7 +123,7 @@ export function plan(
       continue;
     const conflict =
       !!t &&
-      s.kind === "S" &&
+      (s.kind === "S" || (s.kind === "H" && p.conflict !== "source")) &&
       (!b || (t.hash !== b.hash && s.hash !== b.applied));
     const action =
       conflict && t && p.mirror !== "full"

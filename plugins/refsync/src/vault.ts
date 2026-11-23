@@ -83,6 +83,7 @@ export class LocalProvider implements StorageProvider {
     private ownWrite?: (path: string, digest: string | null) => void,
     private config?: ConfigScope,
     readonly withFilePaused?: StorageProvider["withFilePaused"],
+    private content?: Profile["content"],
   ) {
     if (root) checked(root);
     if (under(fold(root), fold(join(vault.configDir, "plugins/" + self))))
@@ -115,6 +116,7 @@ export class LocalProvider implements StorageProvider {
         this.self,
         directory,
         this.config,
+        this.content,
       )
     )
       throw Error("protected");
@@ -139,6 +141,18 @@ export class LocalProvider implements StorageProvider {
   async stat(p: string) {
     if (!this.root && !p) return { type: "folder" as const, size: 0, mtime: 0 };
     return this.vault.adapter.stat(this.path(p));
+  }
+  async scanStat(p: string) {
+    const a = this.vault.adapter;
+    if (!(a instanceof FileSystemAdapter)) return this.stat(p);
+    const fs: typeof import("node:fs/promises") = require("node:fs/promises");
+    const s = await fs.stat(a.getFullPath(this.path(p)), { bigint: true });
+    return {
+      type: s.isDirectory() ? ("folder" as const) : ("file" as const),
+      size: Number(s.size),
+      mtime: Number(s.mtimeMs),
+      version: [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].join("/"),
+    };
   }
   async download(p: string) {
     const path = this.path(p),

@@ -92,7 +92,7 @@ export class Applier {
   async recover(resolve: (t: Transaction) => StorageProvider): Promise<void> {
     this.fence.check();
     this.pendingTargets.clear();
-    for (const t of await this.journal.transactions()) {
+    for await (const t of this.journal.walk(true)) {
       try {
         await this.recoverTransaction(t, resolve);
       } catch (e) {
@@ -101,6 +101,29 @@ export class Applier {
       }
     }
     this.needsRecovery = false;
+  }
+  async prune() {
+    this.fence.check();
+    if (this.needsRecovery) return;
+    const latest = new Map<string, string>();
+    for await (const t of this.journal.walk()) {
+      const has = (marker: string) =>
+        this.journal.disk.has(t.id + "/" + marker);
+      if ((await has("undo-start")) && !(await has("undo-done"))) continue;
+      if (!(await has("rolled-back")) && !(await has("undo-done"))) {
+        if (!(await has("done"))) continue;
+        if (
+          t.settings?.local &&
+          !(await has("verified")) &&
+          !(await has("verify-failed"))
+        )
+          continue;
+        if (!latest.has(t.key))
+          latest.set(t.key, (await this.state.load(t.key)).lastRun);
+        if (latest.get(t.key) === t.id) continue;
+      }
+      await this.journal.disk.removeTree(t.id);
+    }
   }
   private async recoverTransaction(
     t: Transaction,
@@ -111,7 +134,7 @@ export class Applier {
       !(await this.journal.disk.has(t.id + "/undo-done"))
     ) {
       await this.restore(t, resolve(t));
-      this.state.put(t.key, t.before);
+      await this.state.commit(t.key, t.before);
       await this.journal.mark(t.id + "/undo-done");
       return;
     }
@@ -120,7 +143,7 @@ export class Applier {
       (await this.journal.disk.has(t.id + "/rolled-back"))
     )
       return;
-    if (this.state.get(t.key).lastRun === t.id) {
+    if ((await this.state.load(t.key)).lastRun === t.id) {
       await this.journal.mark(t.id + "/done");
       return;
     }
@@ -129,19 +152,21 @@ export class Applier {
   }
   async undo(
     key: string,
-    target: StorageProvider,
+    target: StorageProvider | undefined,
     resolve?: (t: Transaction) => StorageProvider,
   ) {
     this.fence.check();
     this.needsRecovery = true;
-    const last = this.state.get(key).lastRun;
+    const last = (await this.state.load(key)).lastRun;
     const t = (await this.journal.transactions()).find(
       (v) => v.key === key && v.id === last,
     );
     if (!t) throw Error("noBackup");
     await this.journal.mark(t.id + "/undo-start");
-    await this.restore(t, resolve ? resolve(t) : target);
-    this.state.put(key, t.before);
+    const store = resolve ? resolve(t) : target;
+    if (!store) throw Error("journal");
+    await this.restore(t, store);
+    await this.state.commit(key, t.before);
     await this.journal.mark(t.id + "/undo-done");
     this.needsRecovery = false;
   }
@@ -158,6 +183,9 @@ export class Applier {
     projection?: Projection,
     publication?: Publication,
     checkReference?: () => Promise<void>,
+    operations?: { path: string; action: string }[],
+    configDir = ".obsidian",
+    self = "refsync",
   ): Promise<number> {
     this.fence.check();
     if (this.needsRecovery || this.pendingTargets.has(target.id))
@@ -168,9 +196,12 @@ export class Applier {
     };
     const cfg = profile.config ?? legacyConfig();
     const batch = profile.scope === "settings" && cfg.strategy === "batch";
-    if (batch && plan.deferred.some((x) => x.reason === "locked"))
+    if (
+      batch &&
+      plan.deferred.some((x) => ["locked", "invalidConfig"].includes(x.reason))
+    )
       throw Error("incomplete");
-    const previous = this.state.get(key);
+    const previous = await this.state.load(key);
     const next: Baseline = {
       ...fresh(),
       size: plan.held.length ? previous.size : plan.count,
@@ -217,7 +248,10 @@ export class Applier {
           steps.push({ path: p, action: op.action });
           continue;
         }
-        if (publish && op.path !== manifestPath) {
+        if (
+          (publish || profile.scope === "content") &&
+          op.path !== manifestPath
+        ) {
           if (op.target?.rawHash || op.target?.hash)
             expectedTarget.set(p, op.target.rawHash ?? op.target.hash);
           else if (!op.target && op.action === "write")
@@ -244,12 +278,6 @@ export class Applier {
           const bytes = await budget.io(() => source.download(p));
           if ((await hash(bytes)) !== (s.rawHash ?? s.hash))
             throw Error("referenceChanged");
-          await this.journal.disk.putNew(
-            id +
-              "/unchanged/" +
-              (await hash(new TextEncoder().encode(p).buffer)),
-            projection ? deliveryBytes(p, bytes, projection) : bytes,
-          );
         }
         if (op.action === "write" || op.action === "both") {
           let bytes: Bytes;
@@ -314,7 +342,7 @@ export class Applier {
     }
     if (publish) steps.push({ path: manifestPath, action: "write" });
     if (!steps.length) {
-      this.state.put(key, next);
+      await this.state.commit(key, next);
       return 0;
     }
     const t: Transaction = {
@@ -327,6 +355,8 @@ export class Applier {
           ? profile.cloud
           : undefined,
       scope: profile.scope,
+      content: profile.content,
+      createdAt: Date.now(),
       settings: projection
         ? {
             config: cfg,
@@ -382,6 +412,7 @@ export class Applier {
                 continue;
               }
               await this.journal.mark(id + "/applied/" + i);
+              operations?.push({ path: step.path, action: step.action });
               changed++;
               continue;
             }
@@ -394,7 +425,7 @@ export class Applier {
                 : null;
               const copy = displaced.get(step.path);
               if (copy && stat) throw Error("collision");
-              if (t.cloud) {
+              if (t.cloud || profile.scope === "content") {
                 const expected =
                   step.path === manifestPath && i === steps.length - 1
                     ? steps[0].digest
@@ -405,6 +436,12 @@ export class Applier {
                 )
                   throw Error("referenceChanged");
               }
+              if (
+                step.action === "delete" &&
+                !source.confirmAbsent &&
+                (await budget.io(() => source.stat(step.path)))
+              )
+                throw Error("referenceChanged");
               await this.journal.backup(id, i, old);
               if (step.action === "delete") {
                 if (t.cloud)
@@ -434,7 +471,17 @@ export class Applier {
                         old,
                         profile.role === "subscriber",
                       )
-                    : bytes;
+                    : profile.scope === "content" &&
+                        step.path.toLowerCase() ===
+                          configDir.toLowerCase() + "/community-plugins.json"
+                      ? deliveryBytes(
+                          "community-plugins.json",
+                          bytes,
+                          { rules: [], blocked: [], self },
+                          old,
+                          profile.role === "subscriber",
+                        )
+                      : bytes;
                 if (t.cloud)
                   await this.journal.disk.putNew(
                     id + "/after/" + i,
@@ -455,6 +502,11 @@ export class Applier {
             steps[start].path !== manifestPath &&
             !["mkdir", "rmdir"].includes(steps[start].action)
           ) {
+            for (let i = start; i < end; i++)
+              operations?.push({
+                path: steps[i].path,
+                action: steps[i].action,
+              });
             changed += end - start;
             if (steps[start].action === "write")
               for (let d = parent(path); d && !folders.has(d); d = parent(d))
@@ -480,7 +532,7 @@ export class Applier {
       }
       next.folders = [...folders];
       if (changed || publish) next.lastRun = id;
-      this.state.put(key, next);
+      await this.state.commit(key, next);
     } catch (e) {
       budget.fence.check();
       this.fence.check();
@@ -490,6 +542,7 @@ export class Applier {
       throw e;
     }
     await this.journal.mark(id + "/done");
+    if (!t.settings?.local) await this.journal.disk.removeTree(id + "/stage");
     this.needsRecovery = false;
     return changed;
   }

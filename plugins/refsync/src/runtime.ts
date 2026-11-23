@@ -1,3 +1,4 @@
+import { contentPath } from "./content-scope";
 import { type Profile, under, join } from "./model";
 export const sleep = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -39,7 +40,7 @@ export class MutationFence {
 }
 export class RunBudget {
   constructor(
-    private deadline = Date.now() + 300000,
+    private deadline = Infinity,
     private operationMs = 15000,
     private backoff = [250, 500, 1000],
     readonly fence = new MutationFence(),
@@ -163,15 +164,26 @@ export class Scheduler {
     return this.tail;
   }
 }
-export function eventPath(p: Profile, path: string): boolean {
-  if (
-    !p.enabled ||
-    p.scope !== "content" ||
-    !p.fileEvents ||
-    path.split("/").some((s) => s.startsWith("."))
-  )
-    return false;
+export function eventPath(
+  p: Profile,
+  path: string,
+  configDir = ".obsidian",
+  self = "refsync",
+): boolean {
+  if (!p.enabled || p.scope !== "content" || !p.fileEvents) return false;
   return (p.access === "local" ? [p.reference, p.local] : [p.local]).some(
-    (root) => under(path, root === "/" ? "" : root),
+    (root) => {
+      const base = root === "/" ? "" : root;
+      return (
+        under(path, base) &&
+        contentPath(
+          base ? path.slice(base.length + 1) : path,
+          configDir,
+          self,
+          true,
+          p.content,
+        )
+      );
+    },
   );
 }

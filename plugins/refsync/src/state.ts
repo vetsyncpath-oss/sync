@@ -15,13 +15,31 @@ export interface DeviceStorage {
 }
 export class StateStore {
   readonly device: string;
-  constructor(private readonly port: DeviceStorage) {
+  constructor(
+    private readonly port: DeviceStorage,
+    private readonly db?: import("./device-database").DeviceDatabase,
+  ) {
     const current = port.get("device");
     this.device =
       typeof current === "string" && /^[a-f0-9-]{36}$/.test(current)
         ? current
         : crypto.randomUUID();
     port.set("device", this.device);
+  }
+  async load(key: string) {
+    return (await this.db?.get(this.device + ":" + key)) ?? this.get(key);
+  }
+  async commit(key: string, b: Baseline) {
+    if (!this.db) {
+      this.put(key, b);
+      return;
+    }
+    await this.db.put(this.device + ":" + key, b);
+    // The committed DB record takes precedence even if legacy cleanup fails.
+    try {
+      if (this.port.get("state:" + this.device + ":" + key) != null)
+        this.port.set("state:" + this.device + ":" + key, null);
+    } catch {}
   }
   get(key: string): Baseline {
     const raw = this.port.get("state:" + this.device + ":" + key);
@@ -83,6 +101,8 @@ export interface Intent {
 }
 export interface Transaction {
   cloud?: import("./private-cloud").CloudLocation;
+  content?: import("./content-scope").ContentScope;
+  createdAt?: number;
   settings?: {
     config: ConfigScope;
     projection: Projection;
@@ -115,14 +135,21 @@ export class ApplyJournal {
       enc(bytes === null ? null : await hash(bytes)),
     );
   }
-  async transactions(): Promise<Transaction[]> {
-    const out: Transaction[] = [];
+  async *walk(pendingOnly = false): AsyncGenerator<Transaction> {
     for (const id of await this.disk.dirs()) {
       if (!/^[0-9a-f-]{36}$/.test(id)) continue;
       if (!(await this.disk.has(id + "/intent.json"))) {
         await this.disk.removeTree(id);
         continue;
       }
+      if (
+        pendingOnly &&
+        ((await this.disk.has(id + "/rolled-back")) ||
+          ((await this.disk.has(id + "/done")) &&
+            (!(await this.disk.has(id + "/undo-start")) ||
+              (await this.disk.has(id + "/undo-done")))))
+      )
+        continue;
       const t = await this.json<Transaction>(id + "/intent.json");
       if (
         t.version !== 1 ||
@@ -136,8 +163,12 @@ export class ApplyJournal {
         if (!["write", "delete", "mkdir", "rmdir"].includes(step.action))
           throw Error("journal");
       }
-      out.push(t);
+      yield t;
     }
+  }
+  async transactions(): Promise<Transaction[]> {
+    const out: Transaction[] = [];
+    for await (const t of this.walk()) out.push(t);
     return out;
   }
 }

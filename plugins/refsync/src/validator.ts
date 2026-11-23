@@ -1,3 +1,4 @@
+import { validContent } from "./content-scope";
 import { cloudId } from "./private-cloud";
 import { location } from "./public-location";
 import { validConfig } from "./config-scope";
@@ -72,7 +73,7 @@ export function validate(
     trash: ["plugin", "vault", "system", "permanent"],
     role: ["subscriber", "publisher"],
     scope: ["settings", "content"],
-    access: ["local", "public", "oauth", "token"],
+    access: ["local", "public", "oauth"],
     mirror: ["full", "preserve"],
     conflict: ["source", "target", "both", "newer"],
     mode: ["plan", "silent"],
@@ -138,6 +139,8 @@ export function validate(
   for (const field of ["include", "exclude"] as const)
     if (typeof p[field] !== "string" || p[field].length > 4096)
       err(field, "invalid");
+  if (p.content !== undefined && !validContent(p.content))
+    err("content", "invalid");
   if (p.config !== undefined) {
     if (!validConfig(p.config)) err("config", "invalidConfig");
     else

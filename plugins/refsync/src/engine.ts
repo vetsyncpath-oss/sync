@@ -16,7 +16,13 @@ import {
   type StorageProvider,
 } from "./model";
 import { validate } from "./validator";
-import { scan } from "./scanner";
+import {
+  scan,
+  PathIssue,
+  newStats,
+  DigestCache,
+  type ScanStats,
+} from "./scanner";
 import { plan, type Plan } from "./planner";
 import { Applier } from "./applier";
 export type Phase =
@@ -36,6 +42,7 @@ export class StatusStore {
 }
 export class SyncEngine {
   private busy = false;
+
   private lastSource?: { key: string; snapshot: Snapshot };
   constructor(
     readonly applier: Applier,
@@ -43,6 +50,7 @@ export class SyncEngine {
     readonly configDir: string,
     readonly self: string,
     readonly desktop: boolean,
+    private cache = new DigestCache(),
   ) {}
   async exclusive<T>(fn: () => Promise<T>): Promise<T> {
     if (this.busy) throw Error("busy");
@@ -68,10 +76,17 @@ export class SyncEngine {
       release?: ReadonlySet<string>;
       quiet?: (path: string) => boolean;
       budget?: RunBudget;
+      thorough?: boolean;
+      scanning?: (stats: ScanStats) => void;
       progress?: (done: number, total: number) => void;
       active?: () => boolean;
     } = {},
-  ): Promise<{ plan: Plan; changed: number }> {
+  ): Promise<{
+    plan: Plan;
+    changed: number;
+    stats: ScanStats;
+    operations: { path: string; action: string }[];
+  }> {
     return this.exclusive(async () => {
       const bad = validate(
         p,
@@ -92,6 +107,22 @@ export class SyncEngine {
           undefined,
           this.applier.fence,
         );
+      const stats = newStats(),
+        operations: { path: string; action: string }[] = [];
+      let last = 0;
+      const scanOptions = {
+        stats,
+        cache: this.cache,
+        content: p.content,
+        thorough: options.thorough,
+        tick: () => {
+          if (options.active && !options.active()) throw Error("stopped");
+          if (Date.now() - last >= 250) {
+            last = Date.now();
+            options.scanning?.(stats);
+          }
+        },
+      };
       const cfg = p.config ?? legacyConfig();
       const projection =
         p.scope === "settings"
@@ -127,6 +158,8 @@ export class SyncEngine {
                   filter,
                   p.scope === "content" ? p.maxMiB : 0,
                   cfg,
+                  undefined,
+                  scanOptions,
                 );
                 return buildManifest(snapshot, this.applier.state.device);
               },
@@ -135,27 +168,32 @@ export class SyncEngine {
       const scanSource = async () => {
         const revision =
           p.role === "subscriber" && p.access !== "local"
-            ? (manifest?.revision ??
-              (await budget.io(() => source.getRevision())))
+            ? await budget.io(() => source.getRevision())
             : null;
         const cacheKey =
           revision &&
           JSON.stringify([
             source.id,
             revision,
+            manifest?.revision,
             p.scope,
             cfg,
             p.include,
+            p.content,
             p.exclude,
             p.maxMiB,
             projection?.blocked,
           ]);
         if (
+          !options.thorough &&
           cacheKey &&
           (!manifest || manifest.directories) &&
           this.lastSource?.key === cacheKey
-        )
+        ) {
+          stats.files += this.lastSource.snapshot.files.size;
+          stats.reused += this.lastSource.snapshot.files.size;
           return this.lastSource.snapshot;
+        }
         const snapshot = await scan(
           source,
           p.scope,
@@ -167,6 +205,7 @@ export class SyncEngine {
           p.scope === "content" ? p.maxMiB : 0,
           cfg,
           projection,
+          scanOptions,
         );
         if (manifest && p.role === "subscriber")
           verifyManifest(
@@ -180,6 +219,7 @@ export class SyncEngine {
                 this.self,
                 false,
                 cfg,
+                p.content,
               ) &&
               filter(f.path) &&
               !(
@@ -193,7 +233,15 @@ export class SyncEngine {
               ),
             (pth) =>
               filter(pth) &&
-              selected(pth, p.scope, this.configDir, this.self, true, cfg) &&
+              selected(
+                pth,
+                p.scope,
+                this.configDir,
+                this.self,
+                true,
+                cfg,
+                p.content,
+              ) &&
               (p.scope === "content" || emptyConfigDirectory(pth, cfg)) &&
               !(
                 pth.startsWith("plugins/") &&
@@ -207,6 +255,7 @@ export class SyncEngine {
           this.lastSource = { key: cacheKey, snapshot };
         return snapshot;
       };
+      await this.cache.load();
       const inputs = await Promise.allSettled([
         scanSource(),
         scan(
@@ -214,25 +263,40 @@ export class SyncEngine {
           p.scope,
           this.configDir,
           this.self,
-          !p.strictDrift,
+          !p.strictDrift && !options.thorough && p.conflict === "source",
           budget,
           filter,
           p.scope === "content" ? p.maxMiB : 0,
           cfg,
           projection,
+          scanOptions,
         ),
       ]);
+      await this.cache.flush();
       const [s, t] = inputs.map((i) => {
         if (i.status === "rejected") throw i.reason;
         return i.value;
       });
+      if (publication && !preview) {
+        for (const [path, reason] of t.skipped ?? [])
+          if (reason !== "filter") throw new PathIssue(reason, path);
+      }
+      if (publication && manifest && p.scope === "content") {
+        try {
+          verifyManifest(manifest, t, () => true);
+        } catch {
+          publication.missing = true;
+        }
+      }
+      options.scanning?.(stats);
       let result = plan(
         p,
         s,
         t,
-        this.applier.state.get(key),
+        await this.applier.state.load(key),
         undefined,
         options.mode,
+        this.configDir,
       );
       let changed = 0;
       if (approved)
@@ -270,7 +334,8 @@ export class SyncEngine {
             try {
               const now = await budget.io(() => source.stat(op.path));
               if (
-                now?.mtime !== op.source.mtime ||
+                !now ||
+                Math.trunc(now.mtime) !== Math.trunc(op.source.mtime) ||
                 now?.size !== op.source.size
               )
                 result.deferred.push({ path: op.path, reason: "unstable" });
@@ -327,12 +392,15 @@ export class SyncEngine {
                   throw Error("referenceChanged");
               }
             : undefined,
+          operations,
+          this.configDir,
+          this.self,
         );
       }
       this.status.set(
         result.held.length || result.deferred.length ? "partial" : "done",
       );
-      return { plan: result, changed };
+      return { plan: result, changed, stats, operations };
     });
   }
 }

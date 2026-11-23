@@ -1,7 +1,7 @@
 {
   "id": "refsync",
   "name": "Sync Studio",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "minAppVersion": "1.8.7",
   "description": "Publish or subscribe to notes and settings with Google Drive, Yandex Disk, vault folders and public Git sources.",
   "author": "Sync Studio contributors",

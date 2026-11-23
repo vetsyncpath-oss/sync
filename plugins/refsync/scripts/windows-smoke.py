@@ -55,14 +55,15 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
               const v=app.vault,a=v.adapter,reference='Эталон с пробелом',local='Копия',name='тест.md';
               await v.createFolder(reference);await v.createFolder(local);
               await v.create(reference+'/'+name,'эталон');await v.create(local+'/'+name,'исходный');
-              const q={...rs.config.profiles[0],id:'windows-ci',name:'Windows',reference,local,enabled:true,mode:'silent',inheritMode:false};
+              if(rs.config.profiles.length)throw Error('unexpected initial profiles');
+              const q={...rs.newProfile(),startup:false,onFocus:false,onOnline:false,intervalMinutes:0,fileEvents:false,id:'windows-ci' ,name:'Windows',reference,local,enabled:true,mode:'silent',inheritMode:false};
               await rs.put(q,true);await rs.execute(q.id,'run');if(await a.read(local+'/'+name)!=='эталон')throw Error('content');
               const p={...q,scope:'settings',reference:'Параметры'};
               await v.createFolder(p.reference);await v.create(p.reference+'/ci-settings.json','{"ok":true}');
               await rs.put(p,true);await rs.execute(p.id,'run');const path=v.configDir+'/ci-settings.json';
               if(!JSON.parse(await a.read(path)).ok)throw Error('settings');
               await a.write(path,'{"ok":false}');await app.plugins.disablePlugin('refsync');await app.plugins.enablePlugin('refsync');
-              const reloaded=app.plugins.plugins.refsync;await reloaded.ready;if(!JSON.parse(await a.read(path)).ok)throw Error('verify after reload');
+              const reloaded=app.plugins.plugins.refsync;await reloaded.ready;if(JSON.parse(await a.read(path)).ok)throw Error('startup overwrote edit');
               const stores=reloaded.stores(p);await reloaded.engine.applier.undo(JSON.stringify([p.id,p.scope,stores.reference.id,stores.local.id]),stores.local);
               if(await a.exists(path))throw Error('undo');return 'Windows Obsidian: ZIP, Cyrillic paths, content, configDir, verification and undo passed';
             }"""))
@@ -123,6 +124,58 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
               await rs.engine.applier.undo(key,stores.local,t=>rs.recoveryTarget(t));
               if(await a.exists(local+'/Новое')||!await a.exists(local+'/Осталось пустым')||await a.read(local+'/Старое/Вложенное/файл.md')!=='before')throw Error('folder undo');
               return 'Sync Studio: Windows folder cleanup, empty directory delivery, hidden contents and undo passed';
+            }"""))
+            print(page.evaluate("""async()=>{
+              const rs=app.plugins.plugins.refsync,v=app.vault,a=v.adapter;
+              const reference='Переезд источник',local='Переезд цель',n=256;
+              for(const d of [reference,local])await v.createFolder(d);
+              for(let i=0;i<n;i++){
+                await v.create(reference+'/новый-'+i+'.md','источник');
+                await v.create(local+'/старый-'+i+'.md','цель');
+              }
+              const p={...rs.newProfile(),id:'migration',name:'Переезд',reference,local,enabled:true,inheritMode:false,mode:'silent',mirror:'full',deletions:true,silentDeletionSafeguard:false,startup:false,onOnline:false,onFocus:false,intervalMinutes:0,fileEvents:false};
+              await rs.put(p,true);
+              const check=async()=>{const s=rs.stores(p);return (await rs.engine.run(p,s.reference,s.local,true,undefined,{mode:'silent'})).stats};
+              const cold=await check(),warm=await check();
+              if(cold.read!==2*n||warm.read!==0||warm.reused!==2*n)throw Error('digest reuse '+JSON.stringify([cold,warm]));
+              await rs.execute(p.id,'run');
+              if((await a.list(local)).files.length!==n||await a.exists(local+'/старый-0.md')||await a.read(local+'/новый-0.md')!=='источник')throw Error('migration');
+              if(rs.activeReview || rs.openIds.size)throw Error('silent mode opened review');
+              await rs.openHistory();
+              const leaf=app.workspace.getLeavesOfType('sync-studio-history')[0];
+              if(!leaf?.view.contentEl.textContent.includes('Переезд'))throw Error('history view');
+              const field=leaf.view.contentEl.querySelector('input');field.value='старый-0.md';field.dispatchEvent(new Event('input'));
+              if(!leaf.view.contentEl.textContent.includes('старый-0.md'))throw Error('history path');
+              leaf.detach();
+              return 'Native disjoint migration: '+JSON.stringify({cold,warm,created:n,deleted:n});
+            }"""))
+            print(page.evaluate("""async()=>{
+              const rs=app.plugins.plugins.refsync, v=app.vault, a=v.adapter;
+              const p=rs.config.profiles.find(p=>p.id==='migration');
+              for(const d of ['.obsidian','.obsidian/plugins','.obsidian/plugins/reader','.obsidian/plugins/personal','.obsidian/plugins/refsync','.hidden','Private'])await a.mkdir(p.reference+'/'+d);
+              for(const path of ['.obsidian/plugins/reader/main.js','.obsidian/plugins/personal/data.json','.obsidian/plugins/refsync/main.js','.hidden/entry','Private/a'])await a.write(p.reference+'/'+path,'fixture');
+              app.setting.open();app.setting.openTabById('refsync');
+              const editor=app.setting.pluginTabs.find(tab=>tab.id==='refsync');
+              const button=(el,label)=>[...el.querySelectorAll('button')].find(x=>x.textContent===rs.t(label));
+              const rows=[...editor.containerEl.querySelectorAll('.setting-item')];
+              button(rows.find(el=>el.querySelector('.setting-item-name')?.textContent==='Переезд'),'edit').click();
+              const row=[...editor.containerEl.querySelectorAll('.setting-item')].find(el=>el.querySelector('.setting-item-name')?.textContent===rs.t('everything'));
+              row.querySelector('.checkbox-container').click();
+              await new Promise(r=>setTimeout(r,50));
+              const pickerButton=button(editor.containerEl,'pluginsPicker');if(pickerButton.disabled)throw Error('disabled picker '+JSON.stringify(editor.draft?.content));pickerButton.click();
+              const doc=editor.containerEl.ownerDocument;
+              await new Promise((resolve,reject)=>{let n=0;const i=setInterval(()=>{const m=[...new Set([...doc.querySelectorAll('.modal'),...document.querySelectorAll('.modal')])].find(m=>button(m,'uncheckMatches'));if(m){clearInterval(i);resolve();}else if(n++>200){clearInterval(i);reject(Error('picker timeout '+[...doc.querySelectorAll('.modal'),...document.querySelectorAll('.modal')].map(m=>m.textContent.slice(0,250))));}},30);});
+              const m=[...new Set([...doc.querySelectorAll('.modal'),...document.querySelectorAll('.modal')])].find(m=>button(m,'uncheckMatches'));
+              if(m.textContent.includes('refsync')||!m.textContent.includes('reader'))throw Error('plugin picker scope '+m.textContent);
+              const search=m.querySelector('input[type=search],input[type=text]');search.value='personal';search.dispatchEvent(new Event('input'));button(m,'uncheckMatches').click();button(m,'useSelection').click();
+              button(editor.containerEl,'save').click();
+              await rs.saves;app.setting.close();
+              const saved=rs.config.profiles.find(x=>x.id===p.id);
+              if(!saved.content.config||!saved.content.hidden||!saved.content.rules.some(r=>r.path==='.obsidian/plugins/personal'&&!r.include))throw Error('scope persistence');
+              await rs.execute(p.id,'run');
+              const exists=path=>a.exists(p.local+'/'+path);
+              if(!await exists('.obsidian/plugins/reader/main.js')||!await exists('.hidden/entry')||await exists('.obsidian/plugins/personal/data.json')||await exists('.obsidian/plugins/refsync/main.js'))throw Error('scoped delivery');
+              return 'Native settings: bulk checkbox selection, config and hidden folder delivery, excluded plugins and self protected';
             }"""))
             # Deliver a harmless fixture plugin, then let Obsidian itself activate it at startup.
             page.evaluate("""async()=>{

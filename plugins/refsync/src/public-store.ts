@@ -83,7 +83,10 @@ export class PublicStore implements StorageProvider {
     return reading;
   }
   protected async find(path: string) {
-    this.root ??= this.tree.root();
+    this.root ??= this.tree.root().catch((e) => {
+      this.root = undefined;
+      throw e;
+    });
     let dir = await this.root;
     const ancestors = new Set([dir.key]);
     for (const name of join(this.prefix, path).split("/").filter(Boolean)) {
@@ -117,7 +120,13 @@ export class PublicStore implements StorageProvider {
     if (!v || v.type === "skip") return null;
     if (v.type === "file" && v.size === -1 && this.tree.size)
       v.size = await this.tree.size(v);
-    return { type: v.type, size: v.size, mtime: v.mtime };
+    return {
+      type: v.type,
+      size: v.size,
+      mtime: v.mtime,
+      sha256: v.sha256,
+      version: v.sha256 ?? v.md5,
+    };
   }
   async download(path: string) {
     const v = await this.find(path);
@@ -135,21 +144,31 @@ export class PublicStore implements StorageProvider {
     // Re-list cloud parents immediately before applying deletes. An ambiguous
     // Windows spelling or an unsupported ancestor may hide the original path.
     const fresh = new PublicStore(this.id, this.tree, this.prefix);
+    const indices = new Map<string, Map<string, RemoteItem[]>>();
+    const base = await fresh.find("");
     for (const path of paths) {
-      const base = await fresh.find("");
       if (base?.type !== "folder") throw Error("missingRoot");
       let dir = base;
       const parts = path.split("/");
-      for (const [index, name] of parts.entries()) {
+      for (const [position, name] of parts.entries()) {
         if (dir.type !== "folder") throw Error("referenceChanged");
-        const matches = [...(await fresh.entries(dir)).values()].filter(
-          (v) => fold(v.name).replace(/[. ]+$/, "") === fold(name),
-        );
+        let index = indices.get(dir.key);
+        if (!index) {
+          index = new Map();
+          indices.set(dir.key, index);
+          for (const node of (await fresh.entries(dir)).values()) {
+            const key = fold(node.name).replace(/[. ]+$/, ""),
+              matches = index.get(key);
+            if (matches) matches.push(node);
+            else index.set(key, [node]);
+          }
+        }
+        const matches = index.get(fold(name)) ?? [];
         if (!matches.length) break;
         if (matches.length !== 1 || matches[0].name !== name)
           throw Error("referenceChanged");
         dir = matches[0];
-        if (dir.type !== "folder" || index === parts.length - 1)
+        if (dir.type !== "folder" || position === parts.length - 1)
           throw Error("referenceChanged");
       }
     }

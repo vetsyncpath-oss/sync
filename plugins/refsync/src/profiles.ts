@@ -39,16 +39,7 @@ export function loadProfiles(raw: unknown): Configuration {
         ...raw.profile,
       },
     ];
-  } else
-    profiles = [
-      {
-        ...defaults,
-        startup: false,
-        onFocus: false,
-        onOnline: false,
-        intervalMinutes: 0,
-      },
-    ];
+  }
   for (const p of profiles) {
     if (p.scope === "settings" && p.config === undefined) {
       p.config = legacyConfig();
@@ -78,7 +69,7 @@ export function newProfile(copy?: Profile): Profile {
         id,
         name: "Sync Studio " + tag,
         local: "Sync Studio-copy-" + tag,
-        reference: "Sync Studio-reference-" + tag,
+        reference: "Sync Studio-source-" + tag,
         enabled: false,
         fileEvents: true,
       };

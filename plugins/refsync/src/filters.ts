@@ -11,10 +11,15 @@ export function pathFilter(p: Profile) {
       );
   const include = compile(p.include),
     exclude = compile(p.exclude);
-  return (path: string) => {
+  const allowed = (path: string) => {
     if (exclude.some((f) => f(path) || f(path + "/"))) return false;
     for (let dir = parent(path); dir; dir = parent(dir))
       if (exclude.some((f) => f(dir) || f(dir + "/"))) return false;
-    return !include.length || include.some((f) => f(path));
+    return true;
   };
+  return Object.assign(
+    (path: string) =>
+      allowed(path) && (!include.length || include.some((f) => f(path))),
+    { directory: allowed },
+  );
 }

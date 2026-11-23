@@ -8,6 +8,7 @@ export type Volatility = "H" | "S" | "V";
 export interface Profile {
   cloud?: import("./private-cloud").CloudLocation;
   remote?: import("./public-location").PublicSource;
+  content?: import("./content-scope").ContentScope;
   config?: ConfigScope;
   id: string;
   name: string;
@@ -73,7 +74,7 @@ export const defaults: Profile = {
   scope: "content",
   access: "local",
   local: "Sync Studio-copy",
-  reference: "Sync Studio-reference",
+  reference: "Sync Studio-source",
   mirror: "preserve",
   deletions: false,
   conflict: "source",
@@ -120,7 +121,17 @@ export interface StorageProvider {
   list(
     dir: string,
   ): Promise<{ files: string[]; folders: string[]; skipped?: string[] }>;
-  stat(path: string): Promise<(FileMeta & { type: "file" | "folder" }) | null>;
+  scanStat?: StorageProvider["stat"];
+  stat(
+    path: string,
+  ): Promise<
+    | (FileMeta & {
+        type: "file" | "folder";
+        version?: string;
+        sha256?: string;
+      })
+    | null
+  >;
   download(path: string): Promise<Bytes>;
   upload(path: string, data: Bytes, mtime?: number): Promise<void>;
   delete(path: string): Promise<void>;
