@@ -1,4 +1,51 @@
 const ru = {
+  publishHint:
+    "При применении издатель записывает .sync-manifest.json в корень облачной папки. По нему подписчики проверяют завершение публикации.",
+  accounts: "Аккаунты",
+  googlePrivate: "Google Диск · OAuth",
+  yandexPrivate: "Яндекс Диск · OAuth",
+  selectAccount: "Выберите подключённый аккаунт",
+  addAccount: "Подключить аккаунт",
+  signIn: "Войти через браузер",
+  signOut: "Выйти",
+  accountActive: "Подключён",
+  refreshDue: "Токен обновится при обращении",
+  loginRequired: "Требуется повторный вход в аккаунт",
+  logoutHint:
+    "Выйти на этом устройстве? Профили этого аккаунта будут ждать повторного входа.",
+  fullAccess: "Доступ ко всему Диску",
+  appAccess: "Область приложения",
+  scopeHint:
+    "По умолчанию доступны файлы этого приложения Google или папка приложения Яндекса.",
+  clientImport: "Импорт JSON OAuth-клиента Google",
+  clientPaste: "Вставить JSON OAuth-клиента Google",
+  clientJson: "Проверьте JSON клиента Desktop app или Web application",
+  clientReady: "JSON-клиент загружен",
+  clientId: "Укажите Client ID приложения",
+  redirect: "Адрес возврата OAuth (redirect URI)",
+  loopbackHint:
+    "Для клиента Desktop app оставьте поле пустым. Для Web application укажите свой зарегистрированный HTTPS-адрес.",
+  redirectHint:
+    "Укажите зарегистрированный адрес возврата. Для ручного входа подойдёт ваш HTTPS-адрес.",
+  reopenLogin: "Открыть страницу входа",
+  callbackPaste: "Вставить код или полный адрес после входа",
+  connect: "Завершить вход",
+  retryLogin: "Начать вход заново",
+  oauthExpired: "Срок действия кода или сеанса истёк. Войдите заново.",
+  oauthDenied: "Доступ отклонён пользователем",
+  oauthResponse: "Адрес возврата или state не соответствует этому входу",
+  oauthExchange:
+    "Сервис отклонил обмен кода или обновление токена. Проверьте клиент и redirect URI.",
+  oauthIdentity: "Сервис не подтвердил выбранную учётную запись",
+  driveRoot: "ID или ссылка на корневую папку Google Диска",
+  cloudLocation: "Проверьте аккаунт, корневую папку и путь",
+  cloud: "Облачный аккаунт",
+  manifestInvalid:
+    "Публикация не завершена или манифест повреждён. Повторите после завершения публикации.",
+  manifestMismatch:
+    "Файлы эталона расходятся с манифестом. Проверьте папку и охват публикации.",
+  cloudRecovery:
+    "Восстановление облачной операции ожидает доступа к аккаунту или устранения расхождения версий",
   engine: "Источник эталона",
   vaultSource: "Папка в хранилище",
   google: "Google Диск",
@@ -86,7 +133,8 @@ const ru = {
   plan: "План с подтверждением",
   silent: "Тихий",
   silentDeletionSafeguard: "Защита от массовых удалений в тихом режиме",
-  silentDeletionSafeguardHelp: "Если выключить, тихий запуск выполнит все удаления по правилам профиля, даже при пустом эталоне или превышении порогов.",
+  silentDeletionSafeguardHelp:
+    "Если выключить, тихий запуск выполнит все удаления по правилам профиля, даже при пустом эталоне или превышении порогов.",
   firstPlan: "Показывать план перед первой доставкой",
   mirrorMode: "Зеркалирование",
   preserve: "Сохранять локальные файлы",
@@ -198,6 +246,53 @@ const ru = {
 };
 export type Key = keyof typeof ru;
 const en: Record<Key, string> = {
+  publishHint:
+    "Applying this profile writes .sync-manifest.json at the cloud folder root so subscribers can verify publication.",
+  accounts: "Accounts",
+  googlePrivate: "Google Drive · OAuth",
+  yandexPrivate: "Yandex Disk · OAuth",
+  selectAccount: "Select a connected account",
+  addAccount: "Connect an account",
+  signIn: "Sign in with browser",
+  signOut: "Sign out",
+  accountActive: "Connected",
+  refreshDue: "Token refresh due on next request",
+  loginRequired: "Sign in to the account again",
+  logoutHint:
+    "Sign out on this device? Profiles using this account will wait for sign-in.",
+  fullAccess: "Full drive access",
+  appAccess: "Application scope",
+  scopeHint:
+    "Defaults to app-authorized files on Google or the application folder on Yandex.",
+  clientImport: "Import Google OAuth client JSON",
+  clientPaste: "Paste Google OAuth client JSON",
+  clientJson: "Check the Desktop app or Web application client JSON",
+  clientReady: "Client JSON loaded",
+  clientId: "Enter the application client ID",
+  redirect: "OAuth redirect URI",
+  loopbackHint:
+    "Leave empty for a Desktop app client. For a Web application enter your registered HTTPS redirect URI.",
+  redirectHint:
+    "Use the registered callback address. Your own HTTPS redirect supports manual completion.",
+  reopenLogin: "Open sign-in page",
+  callbackPaste: "Paste the code or full redirected URL",
+  connect: "Complete sign-in",
+  retryLogin: "Restart sign-in",
+  oauthExpired: "Code or session expired. Start sign-in again.",
+  oauthDenied: "Authorization was declined",
+  oauthResponse: "Callback or state does not match this sign-in",
+  oauthExchange:
+    "Token exchange or refresh failed. Check the client and redirect URI.",
+  oauthIdentity: "Provider did not confirm the selected account",
+  driveRoot: "Google Drive base folder ID or link",
+  cloudLocation: "Check the account, root folder and path",
+  cloud: "Cloud account",
+  manifestInvalid:
+    "Publication is in progress or its manifest is invalid. Retry after publication.",
+  manifestMismatch:
+    "Files differ from the manifest. Check the folder and publishing scope.",
+  cloudRecovery:
+    "Cloud recovery requires account access or resolution of a conflicting file version",
   engine: "Reference source",
   vaultSource: "Vault folder",
   google: "Google Drive",
@@ -285,7 +380,8 @@ const en: Record<Key, string> = {
   plan: "Review plan",
   silent: "Silent",
   silentDeletionSafeguard: "Mass deletion safeguard in silent mode",
-  silentDeletionSafeguardHelp: "Turn off to apply every deletion selected by the profile during silent runs, even when the source is empty or the thresholds are exceeded.",
+  silentDeletionSafeguardHelp:
+    "Turn off to apply every deletion selected by the profile during silent runs, even when the source is empty or the thresholds are exceeded.",
   firstPlan: "Review before first delivery",
   mirrorMode: "Mirroring",
   preserve: "Preserve local files",
@@ -394,6 +490,9 @@ const en: Record<Key, string> = {
   dry: "Dry run",
   unknown: "Unknown state",
 };
+export function errorKey(message: string) {
+  return Object.hasOwn(ru, message) ? message : "failed";
+}
 export function translator(locale: string) {
   const dict = locale.startsWith("ru") ? ru : en;
   return (k: string) => (Object.hasOwn(dict, k) ? dict[k as Key] : dict.failed);

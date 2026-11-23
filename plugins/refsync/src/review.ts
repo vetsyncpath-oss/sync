@@ -35,6 +35,8 @@ export class Review extends Modal {
       )
     )
       this.contentEl.createEl("p", { text: this.tr("reloadNeeded") });
+    if (this.p.access === "oauth" && this.p.role === "publisher")
+      this.contentEl.createEl("p", { text: this.tr("publishHint") });
     const metrics = this.contentEl.createEl("p"),
       toolbar = new Setting(this.contentEl);
     toolbar.addSearch((s) =>

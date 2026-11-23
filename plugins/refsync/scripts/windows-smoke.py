@@ -16,7 +16,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
     home = Path(temp)
     vault = home / "Хранилище Windows"
     (vault / ".obsidian").mkdir(parents=True)
-    with ZipFile(root / f"releases/refsync-{version}-m4.zip") as archive:
+    with ZipFile(root / f"releases/refsync-{version}-m5.zip") as archive:
         archive.extractall(vault / ".obsidian/plugins")
     settings = home / "config"
     settings.mkdir()
@@ -130,5 +130,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
               const active=app.plugins.plugins[id];if(active?.received?.setting!==2||active.received.device!=='this PC')throw Error('hot data overlay');
               return 'Windows Obsidian: activation after app reload, hot data update and per-device JSON overlay passed';
             }"""))
+            import runpy
+            runpy.run_path(str(root / "scripts/oauth-smoke.py"))["run"](page,browser)
     finally:
         subprocess.run(["taskkill","/PID",str(app.pid),"/T","/F"],capture_output=True)

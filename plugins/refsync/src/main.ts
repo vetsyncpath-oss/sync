@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 import { legacyConfig } from "./config-scope";
 import { withPluginData, reloadApp } from "./hot-config";
 import { needsReload, verifySettings } from "./verify-settings";
@@ -26,7 +28,7 @@ import {
 } from "./state";
 import { LocalProvider, VaultArtifacts } from "./vault";
 import { SyncEngine, StatusStore, type Phase } from "./engine";
-import { translator } from "./i18n";
+import { errorKey, translator } from "./i18n";
 import type { Plan } from "./planner";
 import type { Choices } from "./selection";
 import {
@@ -44,7 +46,35 @@ import { GitTree } from "./public-git";
 import { gitFs } from "./git-fs";
 import { ensure } from "./vault";
 import { referenceId, location } from "./public-location";
+import { Accounts, callback, type Account } from "./accounts";
+import {
+  CloudStore,
+  DriveTree,
+  DiskTree,
+  cloudId,
+  type CloudLocation,
+  type DriveCursor,
+} from "./private-cloud";
 import { Editor } from "./editor";
+
+const send: Transport = async (url, method = "GET", headers = {}, body) => {
+  try {
+    const r = await requestUrl({
+      url,
+      method,
+      headers,
+      body,
+      throw: false,
+    });
+    return {
+      status: r.status,
+      headers: r.headers,
+      arrayBuffer: r.arrayBuffer,
+    };
+  } catch (cause) {
+    throw Error("remoteNetwork", { cause });
+  }
+};
 
 type Intent = "dry" | "run" | "auto" | "release";
 const icons: Record<Phase, string> = {
@@ -80,6 +110,10 @@ class Confirmation extends Modal {
   }
 }
 export default class RefSync extends Plugin {
+  accounts!: Accounts;
+  private driveCursors = new Map<string, DriveCursor>();
+  oauthCancel?: () => void;
+  oauthCallback?: (url: string) => void;
   config!: Configuration;
   t = translator(navigator.language);
   private engine!: SyncEngine;
@@ -180,6 +214,36 @@ export default class RefSync extends Plugin {
     const fence = MutationFence.forVault(this.app.vault);
     await fence.previousInstance;
     this.config = loadProfiles(await this.loadData());
+    const key = (id: string) =>
+      "refsync-" +
+      bytesToHex(
+        sha256(
+          new TextEncoder().encode(
+            this.app.loadLocalStorage("refsync:device") + ":" + id,
+          ),
+        ),
+      ).slice(0, 56);
+    this.accounts = new Accounts(
+      {
+        list: () => this.app.loadLocalStorage("refsync:accounts") ?? [],
+        save: (rows: Account[]) =>
+          this.app.saveLocalStorage("refsync:accounts", rows),
+        get: (id) =>
+          this.app.secretStorage?.getSecret(key(id)) ||
+          this.app.loadLocalStorage(key(id)) ||
+          null,
+        set: (id, v) => {
+          if (this.app.secretStorage) {
+            this.app.secretStorage.setSecret(key(id), v);
+            this.app.saveLocalStorage(key(id), null);
+          } else this.app.saveLocalStorage(key(id), v);
+        },
+      },
+      send,
+    );
+    this.registerObsidianProtocolHandler("refsync-oauth", (params) => {
+      this.oauthCallback?.(callback + "?" + new URLSearchParams(params));
+    });
     const deviceKey = (k: string) => this.manifest.id + ":" + k;
     const state = new StateStore({
       get: (k) => this.app.loadLocalStorage(deviceKey(k)),
@@ -267,6 +331,8 @@ export default class RefSync extends Plugin {
         this.startupRecovery = this.engine
           .exclusive(async () => {
             await this.engine.applier.recover((t) => this.recoveryTarget(t));
+            if (this.engine.applier.pendingTargets.size)
+              this.notices.send("cloudRecovery", this.t("cloudRecovery"));
             if (!this.config.paused)
               await this.verify().catch((e) => this.report(e));
           })
@@ -283,6 +349,7 @@ export default class RefSync extends Plugin {
   }
   onunload() {
     this.live = false;
+    this.oauthCancel?.();
     // A newly enabled instance must finish this instance's rollback before recovery.
     const fence = MutationFence.forVault(this.app.vault);
     const previous = fence.previousInstance;
@@ -463,7 +530,14 @@ export default class RefSync extends Plugin {
         await a.rmdir(dir, true);
     }
   }
-  private recoveryTarget(t: Transaction) {
+  private recoveryTarget(t: Transaction): StorageProvider {
+    const dest = JSON.parse(t.key)[3];
+    if (t.cloud) {
+      if (dest !== cloudId(t.cloud, t.target)) throw Error("journal");
+      return this.cloudStore(t.cloud, t.target, false);
+    }
+    if (dest !== "vault:" + (t.target === "/" ? "" : t.target))
+      throw Error("journal");
     return new LocalProvider(
       this.app.vault,
       t.target === "/" ? "" : t.target,
@@ -489,24 +563,6 @@ export default class RefSync extends Plugin {
     if (p.access !== "public" || p.role !== "subscriber" || !p.remote)
       throw Error("readonly");
     const { root, resourceKey } = location(p.remote);
-    const send: Transport = async (url, method = "GET", headers = {}, body) => {
-      try {
-        const r = await requestUrl({
-          url,
-          method,
-          headers,
-          body,
-          throw: false,
-        });
-        return {
-          status: r.status,
-          headers: r.headers,
-          arrayBuffer: r.arrayBuffer,
-        };
-      } catch (cause) {
-        throw Error("remoteNetwork", { cause });
-      }
-    };
     let tree: RemoteTree;
     if (p.remote.engine === "google")
       tree = new GoogleTree(send, root, this.googleKey(), resourceKey);
@@ -529,8 +585,36 @@ export default class RefSync extends Plugin {
     }
     return new PublicStore(referenceId(p), tree, prefix === "/" ? "" : prefix);
   }
+  private cloudStore(c: CloudLocation, prefix: string, ro: boolean) {
+    const id = cloudId(c, prefix),
+      a = this.accounts
+        .list()
+        .find((a) => a.id === c.account && a.engine === c.engine);
+    if (!a || a.needsLogin) throw Error("loginRequired");
+    if (c.engine === "yandex" && c.root !== (a.full ? "disk:/" : "app:/"))
+      throw Error("cloudLocation");
+    const transport = this.accounts.transport(c.account, c.engine);
+    let tree;
+    if (c.engine === "google") {
+      const cursor = this.driveCursors.get(id) ?? { token: "", revision: "" };
+      this.driveCursors.set(id, cursor);
+      tree = new DriveTree(transport, c.root, cursor);
+    } else tree = new DiskTree(transport, send, c.root);
+    const store = new CloudStore(id, tree, prefix === "/" ? "" : prefix, ro);
+    store.capabilities.supportsChangesFeed = c.engine === "google";
+    return store;
+  }
+  accountReference(
+    p: Profile,
+    prefix = p.reference,
+    readOnly = p.role === "subscriber",
+  ) {
+    if (p.access !== "oauth" || !p.cloud) throw Error("cloudLocation");
+    return this.cloudStore(p.cloud, prefix, readOnly);
+  }
   private stores(p: Profile) {
-    if (p.access !== "local" && p.access !== "public") throw Error("invalid");
+    if (!["local", "public", "oauth"].includes(p.access))
+      throw Error("invalid");
     const make = (path: string, ro: boolean) =>
       new LocalProvider(
         this.app.vault,
@@ -554,9 +638,11 @@ export default class RefSync extends Plugin {
       );
     return {
       reference:
-        p.access === "public"
-          ? this.publicReference(p)
-          : make(p.reference, p.role === "subscriber"),
+        p.access === "oauth"
+          ? this.accountReference(p)
+          : p.access === "public"
+            ? this.publicReference(p)
+            : make(p.reference, p.role === "subscriber"),
       local: make(
         p.scope === "settings" ? this.app.vault.configDir : p.local,
         p.role === "publisher",
@@ -577,13 +663,28 @@ export default class RefSync extends Plugin {
     const p = this.config.profiles.find((x) => x.id === id);
     if (!p || !this.live) return;
     if (intent !== "dry" && (!p.enabled || this.config.paused)) return;
-    if (intent === "auto" && this.openIds.has(id)) return;
+    if (
+      intent === "auto" &&
+      (this.openIds.has(id) ||
+        (p.access === "oauth" &&
+          !this.accounts
+            .list()
+            .some((a) => a.id === p.cloud?.account && !a.needsLogin)))
+    )
+      return;
     if (this.engine.applier.needsRecovery)
       await this.engine.exclusive(() =>
         this.engine.applier.recover((t) => this.recoveryTarget(t)),
       );
     this.statusLabel = p.name;
     const v = this.stores(p);
+    if (this.engine.applier.pendingTargets.has(v.reference.id)) {
+      await this.engine.exclusive(() =>
+        this.engine.applier.recover((t) => this.recoveryTarget(t)),
+      );
+      if (this.engine.applier.pendingTargets.has(v.reference.id))
+        throw Error("cloudRecovery");
+    }
     const firstKey = this.firstKey(p),
       first = p.firstPlan && !this.app.loadLocalStorage(firstKey),
       silent =
@@ -694,7 +795,7 @@ export default class RefSync extends Plugin {
         active,
         budget: new RunBudget(
           undefined,
-          p.access === "public" ? 90000 : undefined,
+          p.access !== "local" ? 90000 : undefined,
           undefined,
           this.engine.applier.fence,
         ),
@@ -816,7 +917,7 @@ export default class RefSync extends Plugin {
   }
   report(e: unknown, id = this.config?.current ?? "") {
     if (!this.live) return;
-    const code = e instanceof Error ? e.message : "failed";
+    const code = e instanceof Error ? errorKey(e.message) : "failed";
     this.notices.send(id + ":" + code, "RefSync · " + this.t(code));
     void this.log("error", 0, id, { code }).catch(() => {});
   }

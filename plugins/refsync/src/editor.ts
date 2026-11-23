@@ -1,3 +1,5 @@
+import { AccountsView } from "./oauth-ui";
+import { location } from "./public-location";
 import { RemoteFolderBrowser } from "./remote-browser";
 import type { PublicSource } from "./public-location";
 import { scopeEditor } from "./scope-editor";
@@ -28,6 +30,13 @@ export class Editor extends PluginSettingTab {
       return;
     }
     el.createEl("h2", { text: t("profiles") });
+    new Setting(el).addButton((b) =>
+      b
+        .setButtonText(t("accounts"))
+        .onClick(() =>
+          new AccountsView(this.app, rs, () => this.display()).open(),
+        ),
+    );
     new Setting(el).setName(t("defaultMode")).addDropdown((d) =>
       d
         .addOption("plan", t("plan"))
@@ -59,24 +68,32 @@ export class Editor extends PluginSettingTab {
         b.setButtonText(t("syncAll")).onClick(() => rs.runAll()),
       );
     rs.config.profiles.forEach((p, index) => {
+      const account = p.cloud
+        ? rs.accounts.list().find((a) => a.id === p.cloud?.account)
+        : undefined;
+      const sourceName =
+        p.access === "oauth" && p.cloud
+          ? [t(p.cloud.engine + "Private"), account?.label]
+              .filter(Boolean)
+              .join(" · ")
+          : p.access === "public" && p.remote
+            ? t(p.remote.engine)
+            : "";
+      const reference = [sourceName, p.reference || "/"]
+        .filter(Boolean)
+        .join(" · ");
+      const local = p.scope === "settings" ? this.app.vault.configDir : p.local;
       const row = new Setting(el)
         .setName(p.name)
         .setDesc(
           [
             t(p.scope),
             p.role === "subscriber"
-              ? (p.access === "public" && p.remote
-                  ? t(p.remote.engine) + " · "
-                  : "") +
-                p.reference +
-                " → " +
-                (p.scope === "settings" ? this.app.vault.configDir : p.local)
-              : (p.scope === "settings" ? this.app.vault.configDir : p.local) +
-                    " → " +
-                    p.access ===
-                  "local"
-                ? p.reference
-                : "",
+              ? reference + " → " + local
+              : local + " → " + reference,
+            ...(p.access === "oauth" && (!account || account.needsLogin)
+              ? [t("loginRequired")]
+              : []),
             t(p.inheritMode ? rs.config.mode : p.mode),
           ].join(" · "),
         );
@@ -233,10 +250,35 @@ export class Editor extends PluginSettingTab {
     toggle("enabled", "enabled");
     choice("scope", "scope", ["content", "settings"]);
     new Setting(el).setName(t("engine")).addDropdown((d) => {
-      for (const k of ["vaultSource", "google", "yandex", "git"])
+      for (const k of [
+        "vaultSource",
+        "google",
+        "yandex",
+        "git",
+        "googlePrivate",
+        "yandexPrivate",
+      ])
         d.addOption(k, t(k));
-      d.setValue(p.remote?.engine ?? "vaultSource").onChange((v) => {
-        if (v === "vaultSource") {
+      d.setValue(
+        p.access === "oauth"
+          ? p.cloud?.engine + "Private"
+          : (p.remote?.engine ?? "vaultSource"),
+      ).onChange((v) => {
+        delete p.cloud;
+        if (v.endsWith("Private")) {
+          const engine = v === "googlePrivate" ? "google" : "yandex";
+          const a = rs.accounts
+            .list()
+            .find((a) => a.engine === engine && !a.needsLogin);
+          delete p.remote;
+          p.cloud = {
+            engine,
+            account: a?.id ?? "",
+            root: engine === "google" ? "root" : a?.full ? "disk:/" : "app:/",
+          };
+          p.access = "oauth";
+          p.reference = "/";
+        } else if (v === "vaultSource") {
           delete p.remote;
           p.access = "local";
           p.reference = "RefSync-reference";
@@ -290,14 +332,67 @@ export class Editor extends PluginSettingTab {
           );
       }
     }
-    text("reference", remote ? "subfolder" : "reference");
-    if (remote)
+    if (p.access === "oauth" && p.cloud) {
+      const c = p.cloud;
+      new Setting(el)
+        .setName(t("accounts"))
+        .addDropdown((d) => {
+          d.addOption("", t("selectAccount"));
+          for (const a of rs.accounts
+            .list()
+            .filter((a) => a.engine === c.engine))
+            d.addOption(
+              a.id,
+              a.label +
+                " · " +
+                t(a.full ? "fullAccess" : "appAccess") +
+                (a.needsLogin ? " · " + t("loginRequired") : ""),
+            );
+          d.setValue(c.account).onChange((id) => {
+            c.account = id;
+            if (c.engine === "yandex")
+              c.root = rs.accounts.list().find((a) => a.id === id)?.full
+                ? "disk:/"
+                : "app:/";
+            this.display();
+          });
+        })
+        .addButton((b) =>
+          b
+            .setButtonText(t("accounts"))
+            .onClick(() =>
+              new AccountsView(this.app, rs, () => this.display()).open(),
+            ),
+        );
+      if (c.engine === "google")
+        new Setting(el).setName(t("driveRoot")).addText((v) =>
+          v.setValue(c.root).onChange((raw) => {
+            try {
+              c.root = location({
+                engine: "google",
+                url: raw.trim(),
+                branch: "",
+              }).root;
+            } catch {
+              c.root = "";
+            }
+            validateForm();
+          }),
+        );
+    }
+    text(
+      "reference",
+      remote || p.access === "oauth" ? "subfolder" : "reference",
+    );
+    if (remote || p.access === "oauth")
       new Setting(el).addButton((b) =>
         b.setButtonText(t("browse")).onClick(() => {
           try {
             new RemoteFolderBrowser(
               this.app,
-              rs.publicReference(p, ""),
+              p.access === "oauth"
+                ? rs.accountReference(p, "", true)
+                : rs.publicReference(p, ""),
               t,
               (path) => {
                 p.reference = path;
@@ -390,6 +485,13 @@ export class Editor extends PluginSettingTab {
         b.setButtonText(t("init")).onClick(async () => {
           if (!validateForm()) return;
           try {
+            if (
+              p.access === "oauth" &&
+              p.role === "publisher" &&
+              p.reference &&
+              p.reference !== "/"
+            )
+              await rs.accountReference(p, "").mkdir(p.reference);
             for (const dir of [
               p.access === "local" ? p.reference : "",
               p.scope === "content" ? p.local : this.app.vault.configDir,

@@ -1,3 +1,4 @@
+import { cloudId } from "./private-cloud";
 import { location } from "./public-location";
 import { validConfig } from "./config-scope";
 import { parseOverlay } from "./json-overlay";
@@ -84,6 +85,14 @@ export function validate(
       (p[key] !== "/" && p[key] !== "" && !safe(p[key]))
     )
       err(key, "path");
+  if (p.access === "oauth") {
+    try {
+      if (!p.cloud) throw Error();
+      cloudId(p.cloud, p.reference);
+    } catch {
+      err("cloud", "cloudLocation");
+    }
+  }
   if (p.access === "public") {
     try {
       if (!p.remote) throw Error("publicUrl");

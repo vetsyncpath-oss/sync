@@ -6,6 +6,7 @@ export type Policy = "source" | "target" | "newer" | "both";
 export type Mode = "plan" | "silent";
 export type Volatility = "H" | "S" | "V";
 export interface Profile {
+  cloud?: import("./private-cloud").CloudLocation;
   remote?: import("./public-location").PublicSource;
   config?: ConfigScope;
   id: string;
@@ -111,6 +112,7 @@ export interface StorageProvider {
     rateLimits: number | null;
   };
   withFilePaused?: (path: string, write: () => Promise<void>) => Promise<void>;
+  reset?: () => void;
   confirmAbsent?: (paths: string[]) => Promise<void>;
   list(
     dir: string,

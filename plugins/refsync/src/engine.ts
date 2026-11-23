@@ -1,3 +1,5 @@
+import { readManifest, buildManifest, verifyManifest } from "./cloud-manifest";
+import { selected } from "./classifier";
 import { legacyConfig, mobileExcluded } from "./config-scope";
 import { parseOverlay } from "./json-overlay";
 import { pathFilter } from "./filters";
@@ -82,7 +84,7 @@ export class SyncEngine {
         options.budget ??
         new RunBudget(
           undefined,
-          p.access === "public" ? 90000 : undefined,
+          p.access !== "local" ? 90000 : undefined,
           undefined,
           this.applier.fence,
         );
@@ -99,10 +101,38 @@ export class SyncEngine {
             }
           : undefined;
       const filter = p.scope === "content" ? pathFilter(p) : () => true;
+      const managed =
+        p.access === "oauth" ||
+        (p.access === "public" && p.remote?.engine !== "git");
+      const manifest = managed
+        ? await budget.io(() => readManifest(reference))
+        : null;
+      const publication =
+        p.access === "oauth" && p.role === "publisher"
+          ? {
+              missing: !manifest,
+              build: async () => {
+                reference.reset?.();
+                const snapshot = await scan(
+                  reference,
+                  p.scope,
+                  this.configDir,
+                  this.self,
+                  false,
+                  budget,
+                  filter,
+                  p.scope === "content" ? p.maxMiB : 0,
+                  cfg,
+                );
+                return buildManifest(snapshot, this.applier.state.device);
+              },
+            }
+          : undefined;
       const scanSource = async () => {
         const revision =
-          p.access === "public"
-            ? await budget.io(() => source.getRevision())
+          p.role === "subscriber" && p.access !== "local"
+            ? (manifest?.revision ??
+              (await budget.io(() => source.getRevision())))
             : null;
         const cacheKey =
           revision &&
@@ -130,6 +160,30 @@ export class SyncEngine {
           cfg,
           projection,
         );
+        if (manifest && p.role === "subscriber")
+          verifyManifest(
+            manifest,
+            snapshot,
+            (f) =>
+              selected(
+                f.path,
+                p.scope,
+                this.configDir,
+                this.self,
+                false,
+                cfg,
+              ) &&
+              filter(f.path) &&
+              !(
+                p.scope === "content" &&
+                p.maxMiB > 0 &&
+                f.size > p.maxMiB * 1048576
+              ) &&
+              !(
+                f.path.startsWith("plugins/") &&
+                projection?.blocked.includes(f.path.split("/")[1].toLowerCase())
+              ),
+          );
         if (
           cacheKey &&
           ![...(snapshot.skipped?.values() ?? [])].includes("locked")
@@ -217,6 +271,7 @@ export class SyncEngine {
           .map((op) => op.path);
         if (deletes.length && source.confirmAbsent)
           await budget.io(() => source.confirmAbsent!(deletes));
+
         this.status.set("apply");
         changed = await this.applier.apply(
           p,
@@ -233,6 +288,16 @@ export class SyncEngine {
           options.progress,
           options.active,
           projection,
+          publication,
+          managed
+            ? async () => {
+                if (
+                  (await budget.io(() => readManifest(reference)))?.revision !==
+                  manifest?.revision
+                )
+                  throw Error("referenceChanged");
+              }
+            : undefined,
         );
       }
       this.status.set(

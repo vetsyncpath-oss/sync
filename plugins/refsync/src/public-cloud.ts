@@ -18,7 +18,7 @@ export type Transport = (
   body?: Bytes,
 ) => Promise<Reply>;
 const decoder = new TextDecoder();
-function check(res: Reply) {
+export function check(res: Reply) {
   if (
     res.status === 429 ||
     (res.status === 403 &&
@@ -30,18 +30,18 @@ function check(res: Reply) {
   if (res.status < 200 || res.status >= 300) throw Error("remoteHttp");
   return res;
 }
-function record(v: unknown): Record<string, unknown> {
+export function record(v: unknown): Record<string, unknown> {
   if (!v || typeof v !== "object" || Array.isArray(v))
     throw Error("incomplete");
   return v as Record<string, unknown>;
 }
-function digest(v: unknown, length: number) {
+export function digest(v: unknown, length: number) {
   if (v === undefined) return undefined;
   if (typeof v !== "string" || v.length !== length || !/^[a-f0-9]+$/i.test(v))
     throw Error("incomplete");
   return v.toLowerCase();
 }
-async function json(
+export async function json(
   http: Transport,
   url: string,
   headers?: Record<string, string>,
@@ -58,13 +58,13 @@ export class GoogleTree implements RemoteTree {
   constructor(
     private http: Transport,
     private folder: string,
-    private apiKey: string,
+    private apiKey: string | null,
     private linkKey: string,
   ) {}
   private headers(id: string, key?: string): Record<string, string> {
-    if (!this.apiKey.trim()) throw Error("googleKey");
+    if (this.apiKey !== null && !this.apiKey.trim()) throw Error("googleKey");
     return {
-      "X-Goog-Api-Key": this.apiKey,
+      ...(this.apiKey ? { "X-Goog-Api-Key": this.apiKey } : {}),
       ...(key ? { "X-Goog-Drive-Resource-Keys": id + "/" + key } : {}),
     };
   }
@@ -77,12 +77,14 @@ export class GoogleTree implements RemoteTree {
       this.headers(this.folder, this.linkKey),
     );
     if (
-      data.id !== this.folder ||
+      typeof data.id !== "string" ||
+      !/^[\w-]+$/.test(data.id) ||
+      (this.folder !== "root" && data.id !== this.folder) ||
       data.mimeType !== "application/vnd.google-apps.folder" ||
       data.trashed === true
     )
       throw Error("missingRoot");
-    return { ...rootItem(this.folder), resourceKey: this.linkKey };
+    return { ...rootItem(data.id), resourceKey: this.linkKey };
   }
   async children(folder: RemoteItem) {
     const result: RemoteItem[] = [],

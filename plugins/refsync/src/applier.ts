@@ -1,3 +1,8 @@
+import {
+  manifestBytes,
+  manifestPath,
+  type Publication,
+} from "./cloud-manifest";
 import { legacyConfig } from "./config-scope";
 import { deliveryBytes, type Projection } from "./json-overlay";
 import { RunBudget, MutationFence, transient } from "./runtime";
@@ -19,6 +24,7 @@ import {
 const decoder = new TextDecoder();
 export class Applier {
   needsRecovery = false;
+  readonly pendingTargets = new Set<string>();
   constructor(
     readonly journal: ApplyJournal,
     readonly state: StateStore,
@@ -35,14 +41,27 @@ export class Applier {
       const p = t.steps[i].path,
         armed = t.id + "/armed/" + i;
       if (
+        (t.cloud && (await this.journal.disk.has(t.id + "/restored/" + i))) ||
         !(await this.journal.disk.has(armed)) ||
         (await this.journal.disk.has(t.id + "/skipped/" + i))
       )
         continue;
       const perform = async () => {
         const saved = await this.journal.json<string | null>(armed);
+        if (t.cloud) target.reset?.();
         const stat = await budget.io(() => target.stat(p));
         if (stat?.type === "folder") throw Error("collision");
+        if (t.cloud) {
+          const expected = t.id + "/after/" + i;
+          // A crash before recording the post-image precedes the remote mutation.
+          if (!(await this.journal.disk.has(expected))) return;
+          const current = stat
+            ? await hash(await budget.io(() => target.download(p)))
+            : null;
+          if (current === saved) return;
+          if (current !== (await this.journal.json<string | null>(expected)))
+            throw Error("cloudRecovery");
+        }
         if (saved === null) {
           if (stat) await budget.io(() => target.delete(p), false);
         } else {
@@ -57,33 +76,46 @@ export class Applier {
       };
       if (target.withFilePaused) await target.withFilePaused(p, perform);
       else await perform();
+      if (t.cloud) await this.journal.mark(t.id + "/restored/" + i);
     }
   }
   async recover(resolve: (t: Transaction) => StorageProvider): Promise<void> {
     this.fence.check();
+    this.pendingTargets.clear();
     for (const t of await this.journal.transactions()) {
-      if (
-        (await this.journal.disk.has(t.id + "/undo-start")) &&
-        !(await this.journal.disk.has(t.id + "/undo-done"))
-      ) {
-        await this.restore(t, resolve(t));
-        this.state.put(t.key, t.before);
-        await this.journal.mark(t.id + "/undo-done");
-        continue;
+      try {
+        await this.recoverTransaction(t, resolve);
+      } catch (e) {
+        if (!t.cloud) throw e;
+        this.pendingTargets.add(JSON.parse(t.key)[3]);
       }
-      if (
-        (await this.journal.disk.has(t.id + "/done")) ||
-        (await this.journal.disk.has(t.id + "/rolled-back"))
-      )
-        continue;
-      if (this.state.get(t.key).lastRun === t.id) {
-        await this.journal.mark(t.id + "/done");
-        continue;
-      }
-      await this.restore(t, resolve(t));
-      await this.journal.mark(t.id + "/rolled-back");
     }
     this.needsRecovery = false;
+  }
+  private async recoverTransaction(
+    t: Transaction,
+    resolve: (t: Transaction) => StorageProvider,
+  ) {
+    if (
+      (await this.journal.disk.has(t.id + "/undo-start")) &&
+      !(await this.journal.disk.has(t.id + "/undo-done"))
+    ) {
+      await this.restore(t, resolve(t));
+      this.state.put(t.key, t.before);
+      await this.journal.mark(t.id + "/undo-done");
+      return;
+    }
+    if (
+      (await this.journal.disk.has(t.id + "/done")) ||
+      (await this.journal.disk.has(t.id + "/rolled-back"))
+    )
+      return;
+    if (this.state.get(t.key).lastRun === t.id) {
+      await this.journal.mark(t.id + "/done");
+      return;
+    }
+    await this.restore(t, resolve(t));
+    await this.journal.mark(t.id + "/rolled-back");
   }
   async undo(
     key: string,
@@ -114,9 +146,12 @@ export class Applier {
     progress?: (done: number, total: number) => void,
     active?: () => boolean,
     projection?: Projection,
+    publication?: Publication,
+    checkReference?: () => Promise<void>,
   ): Promise<number> {
     this.fence.check();
-    if (this.needsRecovery) throw Error("journal");
+    if (this.needsRecovery || this.pendingTargets.has(target.id))
+      throw Error("journal");
     const checkpoint = () => {
       budget.check();
       if (active && !active()) throw Error("stopped");
@@ -144,7 +179,17 @@ export class Applier {
       batch &&
       plan.ops.some((x) => x.action === "write" || x.action === "delete");
     const displaced = new Map<string, string>();
+    const expectedTarget = new Map<string, string | null>();
+    const publish =
+      publication &&
+      (publication.missing ||
+        plan.ops.some((o) => ["write", "both", "delete"].includes(o.action)));
     try {
+      if (publish)
+        await stage(
+          manifestPath,
+          manifestBytes({ schemaVersion: 1, publishing: id }),
+        );
       for (const op of plan.ops) {
         checkpoint();
         const p = op.path,
@@ -152,6 +197,12 @@ export class Applier {
           b = Object.hasOwn(previous.entries, p)
             ? previous.entries[p]
             : undefined;
+        if (publish && op.path !== manifestPath) {
+          if (op.target?.rawHash || op.target?.hash)
+            expectedTarget.set(p, op.target.rawHash ?? op.target.hash);
+          else if (!op.target && op.action === "write")
+            expectedTarget.set(p, null);
+        }
         if (op.action === "delete") {
           steps.push({ path: p, action: "delete" });
           delete next.entries[p];
@@ -236,10 +287,12 @@ export class Applier {
           delivered: op.action !== "ack" || b?.delivered === true,
         };
       }
+      await checkReference?.();
     } catch (e) {
       if (!this.fence.pending) await this.journal.disk.removeTree(id);
       throw e;
     }
+    if (publish) steps.push({ path: manifestPath, action: "write" });
     if (!steps.length) {
       this.state.put(key, next);
       return 0;
@@ -249,6 +302,10 @@ export class Applier {
       id,
       key,
       target: targetPath,
+      cloud:
+        profile.access === "oauth" && profile.role === "publisher"
+          ? profile.cloud
+          : undefined,
       scope: profile.scope,
       settings: projection
         ? {
@@ -274,6 +331,7 @@ export class Applier {
             checkpoint();
             const step = steps[i];
             const perform = async () => {
+              if (t.cloud) target.reset?.();
               const stat = await budget.io(() => target.stat(step.path));
               if (stat?.type === "folder") throw Error("collision");
               const old = stat
@@ -281,8 +339,24 @@ export class Applier {
                 : null;
               const copy = displaced.get(step.path);
               if (copy && stat) throw Error("collision");
+              if (t.cloud) {
+                const expected =
+                  step.path === manifestPath && i === steps.length - 1
+                    ? steps[0].digest
+                    : expectedTarget.get(step.path);
+                if (
+                  expected !== undefined &&
+                  (old ? await hash(old) : null) !== expected
+                )
+                  throw Error("referenceChanged");
+              }
               await this.journal.backup(id, i, old);
               if (step.action === "delete") {
+                if (t.cloud)
+                  await this.journal.disk.putNew(
+                    id + "/after/" + i,
+                    manifestBytes(null),
+                  );
                 if (stat)
                   await budget.io(async () => {
                     if (await target.stat(step.path))
@@ -291,24 +365,28 @@ export class Applier {
               } else {
                 const bytes = copy
                   ? await budget.io(() => target.download(copy))
-                  : await this.journal.disk.read(id + "/stage/" + i);
+                  : publish && i === steps.length - 1
+                    ? await publication!.build()
+                    : await this.journal.disk.read(id + "/stage/" + i);
                 if (step.digest && (await hash(bytes)) !== step.digest)
                   throw Error("incomplete");
+                const outgoing =
+                  projection && step.path !== manifestPath
+                    ? deliveryBytes(
+                        step.path,
+                        bytes,
+                        projection,
+                        old,
+                        profile.role === "subscriber",
+                      )
+                    : bytes;
+                if (t.cloud)
+                  await this.journal.disk.putNew(
+                    id + "/after/" + i,
+                    manifestBytes(await hash(outgoing)),
+                  );
                 await budget.io(
-                  () =>
-                    target.upload(
-                      step.path,
-                      projection
-                        ? deliveryBytes(
-                            step.path,
-                            bytes,
-                            projection,
-                            old,
-                            profile.role === "subscriber",
-                          )
-                        : bytes,
-                      step.mtime,
-                    ),
+                  () => target.upload(step.path, outgoing, step.mtime),
                   false,
                 );
               }
@@ -318,9 +396,10 @@ export class Applier {
             else await perform();
             await this.journal.mark(id + "/applied/" + i);
           }
-          changed += end - start;
+          if (steps[start].path !== manifestPath) changed += end - start;
         } catch (e) {
-          if (batch || !transient(e)) throw e;
+          if (batch || steps[start].path === manifestPath || !transient(e))
+            throw e;
           await this.restore(t, target, start, end);
           for (let i = start; i < end; i++)
             await this.journal.mark(id + "/skipped/" + i);
@@ -332,7 +411,7 @@ export class Applier {
         progress?.(end, steps.length);
         start = end;
       }
-      if (changed) next.lastRun = id;
+      if (changed || publish) next.lastRun = id;
       this.state.put(key, next);
     } catch (e) {
       budget.fence.check();

@@ -82,6 +82,7 @@ export interface Intent {
   digest?: string;
 }
 export interface Transaction {
+  cloud?: import("./private-cloud").CloudLocation;
   settings?: {
     config: ConfigScope;
     projection: Projection;

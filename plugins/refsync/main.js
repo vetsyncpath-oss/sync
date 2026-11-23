@@ -224,7 +224,7 @@ var require_buffer = __commonJS({
   "node_modules/buffer/index.js"(exports) {
     "use strict";
     init_git_buffer();
-    var base64 = require_base64_js();
+    var base642 = require_base64_js();
     var ieee754 = require_ieee754();
     var customInspectSymbol = typeof Symbol === "function" && typeof Symbol["for"] === "function" ? Symbol["for"]("nodejs.util.inspect.custom") : null;
     exports.Buffer = Buffer3;
@@ -923,9 +923,9 @@ var require_buffer = __commonJS({
     };
     function base64Slice(buf, start, end) {
       if (start === 0 && end === buf.length) {
-        return base64.fromByteArray(buf);
+        return base642.fromByteArray(buf);
       } else {
-        return base64.fromByteArray(buf.slice(start, end));
+        return base642.fromByteArray(buf.slice(start, end));
       }
     }
     function utf8Slice(buf, start, end) {
@@ -1776,7 +1776,7 @@ var require_buffer = __commonJS({
       return byteArray;
     }
     function base64ToBytes(str) {
-      return base64.toByteArray(base64clean(str));
+      return base642.toByteArray(base64clean(str));
     }
     function blitBuffer(src, dst, offset, length) {
       let i;
@@ -2130,9 +2130,9 @@ var require_scan = __commonJS({
     var isPathSeparator = (code) => {
       return code === CHAR_FORWARD_SLASH || code === CHAR_BACKWARD_SLASH;
     };
-    var depth = (token) => {
-      if (token.isPrefix !== true) {
-        token.depth = token.isGlobstar ? Infinity : 1;
+    var depth = (token2) => {
+      if (token2.isPrefix !== true) {
+        token2.depth = token2.isGlobstar ? Infinity : 1;
       }
     };
     var scan2 = (input, options) => {
@@ -2159,7 +2159,7 @@ var require_scan = __commonJS({
       let braces = 0;
       let prev;
       let code;
-      let token = { value: "", depth: 0, isGlob: false };
+      let token2 = { value: "", depth: 0, isGlob: false };
       const eos = () => index >= length;
       const peek = () => str.charCodeAt(index + 1);
       const advance = () => {
@@ -2170,7 +2170,7 @@ var require_scan = __commonJS({
         code = advance();
         let next;
         if (code === CHAR_BACKWARD_SLASH) {
-          backslashes = token.backslashes = true;
+          backslashes = token2.backslashes = true;
           code = advance();
           if (code === CHAR_LEFT_CURLY_BRACE) {
             braceEscaped = true;
@@ -2181,7 +2181,7 @@ var require_scan = __commonJS({
           braces++;
           while (eos() !== true && (code = advance())) {
             if (code === CHAR_BACKWARD_SLASH) {
-              backslashes = token.backslashes = true;
+              backslashes = token2.backslashes = true;
               advance();
               continue;
             }
@@ -2190,8 +2190,8 @@ var require_scan = __commonJS({
               continue;
             }
             if (braceEscaped !== true && code === CHAR_DOT && (code = advance()) === CHAR_DOT) {
-              isBrace = token.isBrace = true;
-              isGlob = token.isGlob = true;
+              isBrace = token2.isBrace = true;
+              isGlob = token2.isGlob = true;
               finished = true;
               if (scanToEnd === true) {
                 continue;
@@ -2199,8 +2199,8 @@ var require_scan = __commonJS({
               break;
             }
             if (braceEscaped !== true && code === CHAR_COMMA) {
-              isBrace = token.isBrace = true;
-              isGlob = token.isGlob = true;
+              isBrace = token2.isBrace = true;
+              isGlob = token2.isGlob = true;
               finished = true;
               if (scanToEnd === true) {
                 continue;
@@ -2211,7 +2211,7 @@ var require_scan = __commonJS({
               braces--;
               if (braces === 0) {
                 braceEscaped = false;
-                isBrace = token.isBrace = true;
+                isBrace = token2.isBrace = true;
                 finished = true;
                 break;
               }
@@ -2224,8 +2224,8 @@ var require_scan = __commonJS({
         }
         if (code === CHAR_FORWARD_SLASH) {
           slashes.push(index);
-          tokens.push(token);
-          token = { value: "", depth: 0, isGlob: false };
+          tokens.push(token2);
+          token2 = { value: "", depth: 0, isGlob: false };
           if (finished === true) continue;
           if (prev === CHAR_DOT && index === start + 1) {
             start += 2;
@@ -2237,8 +2237,8 @@ var require_scan = __commonJS({
         if (opts.noext !== true) {
           const isExtglobChar = code === CHAR_PLUS || code === CHAR_AT || code === CHAR_ASTERISK || code === CHAR_QUESTION_MARK || code === CHAR_EXCLAMATION_MARK;
           if (isExtglobChar === true && peek() === CHAR_LEFT_PARENTHESES) {
-            isGlob = token.isGlob = true;
-            isExtglob = token.isExtglob = true;
+            isGlob = token2.isGlob = true;
+            isExtglob = token2.isExtglob = true;
             finished = true;
             if (code === CHAR_EXCLAMATION_MARK && index === start) {
               negatedExtglob = true;
@@ -2247,7 +2247,7 @@ var require_scan = __commonJS({
               let parens = 0;
               while (eos() !== true && (code = advance())) {
                 if (code === CHAR_BACKWARD_SLASH) {
-                  backslashes = token.backslashes = true;
+                  backslashes = token2.backslashes = true;
                   advance();
                   continue;
                 }
@@ -2266,8 +2266,8 @@ var require_scan = __commonJS({
           }
         }
         if (code === CHAR_ASTERISK) {
-          if (prev === CHAR_ASTERISK) isGlobstar = token.isGlobstar = true;
-          isGlob = token.isGlob = true;
+          if (prev === CHAR_ASTERISK) isGlobstar = token2.isGlobstar = true;
+          isGlob = token2.isGlob = true;
           finished = true;
           if (scanToEnd === true) {
             continue;
@@ -2275,7 +2275,7 @@ var require_scan = __commonJS({
           break;
         }
         if (code === CHAR_QUESTION_MARK) {
-          isGlob = token.isGlob = true;
+          isGlob = token2.isGlob = true;
           finished = true;
           if (scanToEnd === true) {
             continue;
@@ -2285,13 +2285,13 @@ var require_scan = __commonJS({
         if (code === CHAR_LEFT_SQUARE_BRACKET) {
           while (eos() !== true && (next = advance())) {
             if (next === CHAR_BACKWARD_SLASH) {
-              backslashes = token.backslashes = true;
+              backslashes = token2.backslashes = true;
               advance();
               continue;
             }
             if (next === CHAR_RIGHT_SQUARE_BRACKET) {
-              isBracket = token.isBracket = true;
-              isGlob = token.isGlob = true;
+              isBracket = token2.isBracket = true;
+              isGlob = token2.isGlob = true;
               finished = true;
               break;
             }
@@ -2302,17 +2302,17 @@ var require_scan = __commonJS({
           break;
         }
         if (opts.nonegate !== true && code === CHAR_EXCLAMATION_MARK && index === start) {
-          negated = token.negated = true;
+          negated = token2.negated = true;
           start++;
           continue;
         }
         if (opts.noparen !== true && code === CHAR_LEFT_PARENTHESES) {
-          isGlob = token.isGlob = true;
+          isGlob = token2.isGlob = true;
           if (scanToEnd === true) {
             let parens = 1;
             while (eos() !== true && (code = advance())) {
               if (code === CHAR_BACKWARD_SLASH) {
-                backslashes = token.backslashes = true;
+                backslashes = token2.backslashes = true;
                 advance();
                 continue;
               }
@@ -2386,7 +2386,7 @@ var require_scan = __commonJS({
       if (opts.tokens === true) {
         state.maxDepth = 0;
         if (!isPathSeparator(code)) {
-          tokens.push(token);
+          tokens.push(token2);
         }
         state.tokens = tokens;
       }
@@ -2646,12 +2646,12 @@ var require_parse = __commonJS({
       }
       return depth;
     };
-    var analyzeRepeatedExtglob = (body, options) => {
+    var analyzeRepeatedExtglob = (body2, options) => {
       if (options.maxExtglobRecursion === false) {
         return { risky: false };
       }
       const max = typeof options.maxExtglobRecursion === "number" ? options.maxExtglobRecursion : constants.DEFAULT_MAX_EXTGLOB_RECURSION;
-      const branches = splitTopLevel(body).map((branch) => branch.trim());
+      const branches = splitTopLevel(body2).map((branch) => branch.trim());
       if (branches.length > 1) {
         if (branches.some((branch) => branch === "") || branches.some((branch) => /^[*?]+$/.test(branch)) || hasRepeatedCharPrefixOverlap(branches)) {
           return { risky: true };
@@ -2756,9 +2756,9 @@ var require_parse = __commonJS({
         state.consumed += value2;
         state.index += num2;
       };
-      const append = (token) => {
-        state.output += token.output != null ? token.output : token.value;
-        consume(token.value);
+      const append = (token2) => {
+        state.output += token2.output != null ? token2.output : token2.value;
+        consume(token2.value);
       };
       const negate = () => {
         let count = 1;
@@ -2808,54 +2808,54 @@ var require_parse = __commonJS({
         prev = tok;
       };
       const extglobOpen = (type, value2) => {
-        const token = { ...EXTGLOB_CHARS[value2], conditions: 1, inner: "" };
-        token.prev = prev;
-        token.parens = state.parens;
-        token.output = state.output;
-        token.startIndex = state.index;
-        token.tokensIndex = tokens.length;
-        const output = (opts.capture ? "(" : "") + token.open;
+        const token2 = { ...EXTGLOB_CHARS[value2], conditions: 1, inner: "" };
+        token2.prev = prev;
+        token2.parens = state.parens;
+        token2.output = state.output;
+        token2.startIndex = state.index;
+        token2.tokensIndex = tokens.length;
+        const output = (opts.capture ? "(" : "") + token2.open;
         increment("parens");
         push({ type, value: value2, output: state.output ? "" : ONE_CHAR });
         push({ type: "paren", extglob: true, value: advance(), output });
-        extglobs.push(token);
+        extglobs.push(token2);
       };
-      const extglobClose = (token) => {
-        const literal = input.slice(token.startIndex, state.index + 1);
-        const body = input.slice(token.startIndex + 2, state.index);
-        const analysis = analyzeRepeatedExtglob(body, opts);
-        if ((token.type === "plus" || token.type === "star") && analysis.risky) {
-          const safeOutput = analysis.safeOutput ? (token.output ? "" : ONE_CHAR) + (opts.capture ? `(${analysis.safeOutput})` : analysis.safeOutput) : void 0;
-          const open = tokens[token.tokensIndex];
+      const extglobClose = (token2) => {
+        const literal = input.slice(token2.startIndex, state.index + 1);
+        const body2 = input.slice(token2.startIndex + 2, state.index);
+        const analysis = analyzeRepeatedExtglob(body2, opts);
+        if ((token2.type === "plus" || token2.type === "star") && analysis.risky) {
+          const safeOutput = analysis.safeOutput ? (token2.output ? "" : ONE_CHAR) + (opts.capture ? `(${analysis.safeOutput})` : analysis.safeOutput) : void 0;
+          const open = tokens[token2.tokensIndex];
           open.type = "text";
           open.value = literal;
           open.output = safeOutput || utils.escapeRegex(literal);
-          for (let i = token.tokensIndex + 1; i < tokens.length; i++) {
+          for (let i = token2.tokensIndex + 1; i < tokens.length; i++) {
             tokens[i].value = "";
             tokens[i].output = "";
             delete tokens[i].suffix;
           }
-          state.output = token.output + open.output;
+          state.output = token2.output + open.output;
           state.backtrack = true;
           push({ type: "paren", extglob: true, value, output: "" });
           decrement("parens");
           return;
         }
-        let output = token.close + (opts.capture ? ")" : "");
+        let output = token2.close + (opts.capture ? ")" : "");
         let rest;
-        if (token.type === "negate") {
+        if (token2.type === "negate") {
           let extglobStar = star;
-          if (token.inner && token.inner.length > 1 && token.inner.includes("/")) {
+          if (token2.inner && token2.inner.length > 1 && token2.inner.includes("/")) {
             extglobStar = globstar(opts);
           }
           if (extglobStar !== star || eos() || /^\)+$/.test(remaining())) {
-            output = token.close = `)$))${extglobStar}`;
+            output = token2.close = `)$))${extglobStar}`;
           }
-          if (token.inner.includes("*") && (rest = remaining()) && /^\.[^\\/.]+$/.test(rest)) {
+          if (token2.inner.includes("*") && (rest = remaining()) && /^\.[^\\/.]+$/.test(rest)) {
             const expression = parse(rest, { ...options, fastpaths: false }).output;
-            output = token.close = `)${expression})${extglobStar})`;
+            output = token2.close = `)${expression})${extglobStar})`;
           }
-          if (token.prev.type === "bos") {
+          if (token2.prev.type === "bos") {
             state.negatedExtglob = true;
           }
         }
@@ -3314,18 +3314,18 @@ var require_parse = __commonJS({
           consume(value);
           continue;
         }
-        const token = { type: "star", value, output: star };
+        const token2 = { type: "star", value, output: star };
         if (opts.bash === true) {
-          token.output = ".*?";
+          token2.output = ".*?";
           if (prev.type === "bos" || prev.type === "slash") {
-            token.output = nodot + token.output;
+            token2.output = nodot + token2.output;
           }
-          push(token);
+          push(token2);
           continue;
         }
         if (prev && (prev.type === "bracket" || prev.type === "paren") && opts.regex === true) {
-          token.output = value;
-          push(token);
+          token2.output = value;
+          push(token2);
           continue;
         }
         if (state.index === state.start || prev.type === "slash" || prev.type === "dot") {
@@ -3344,7 +3344,7 @@ var require_parse = __commonJS({
             prev.output += ONE_CHAR;
           }
         }
-        push(token);
+        push(token2);
       }
       while (state.brackets > 0) {
         if (opts.strictBrackets === true) throw new SyntaxError(syntaxError("closing", "]"));
@@ -3366,10 +3366,10 @@ var require_parse = __commonJS({
       }
       if (state.backtrack === true) {
         state.output = "";
-        for (const token of state.tokens) {
-          state.output += token.output != null ? token.output : token.value;
-          if (token.suffix) {
-            state.output += token.suffix;
+        for (const token2 of state.tokens) {
+          state.output += token2.output != null ? token2.output : token2.value;
+          if (token2.suffix) {
+            state.output += token2.suffix;
           }
         }
       }
@@ -10738,6 +10738,353 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 init_git_buffer();
 
+// node_modules/@noble/hashes/esm/sha256.js
+init_git_buffer();
+
+// node_modules/@noble/hashes/esm/sha2.js
+init_git_buffer();
+
+// node_modules/@noble/hashes/esm/_md.js
+init_git_buffer();
+
+// node_modules/@noble/hashes/esm/utils.js
+init_git_buffer();
+function isBytes(a) {
+  return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
+}
+function abytes(b, ...lengths) {
+  if (!isBytes(b))
+    throw new Error("Uint8Array expected");
+  if (lengths.length > 0 && !lengths.includes(b.length))
+    throw new Error("Uint8Array expected of length " + lengths + ", got length=" + b.length);
+}
+function aexists(instance, checkFinished = true) {
+  if (instance.destroyed)
+    throw new Error("Hash instance has been destroyed");
+  if (checkFinished && instance.finished)
+    throw new Error("Hash#digest() has already been called");
+}
+function aoutput(out, instance) {
+  abytes(out);
+  const min = instance.outputLen;
+  if (out.length < min) {
+    throw new Error("digestInto() expects output buffer of length at least " + min);
+  }
+}
+function clean(...arrays) {
+  for (let i = 0; i < arrays.length; i++) {
+    arrays[i].fill(0);
+  }
+}
+function createView(arr) {
+  return new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
+}
+function rotr(word, shift) {
+  return word << 32 - shift | word >>> shift;
+}
+function rotl(word, shift) {
+  return word << shift | word >>> 32 - shift >>> 0;
+}
+var hasHexBuiltin = /* @__PURE__ */ (() => (
+  // @ts-ignore
+  typeof Uint8Array.from([]).toHex === "function" && typeof Uint8Array.fromHex === "function"
+))();
+var hexes = /* @__PURE__ */ Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
+function bytesToHex(bytes) {
+  abytes(bytes);
+  if (hasHexBuiltin)
+    return bytes.toHex();
+  let hex = "";
+  for (let i = 0; i < bytes.length; i++) {
+    hex += hexes[bytes[i]];
+  }
+  return hex;
+}
+function utf8ToBytes(str) {
+  if (typeof str !== "string")
+    throw new Error("string expected");
+  return new Uint8Array(new TextEncoder().encode(str));
+}
+function toBytes(data) {
+  if (typeof data === "string")
+    data = utf8ToBytes(data);
+  abytes(data);
+  return data;
+}
+var Hash = class {
+};
+function createHasher(hashCons) {
+  const hashC = (msg) => hashCons().update(toBytes(msg)).digest();
+  const tmp = hashCons();
+  hashC.outputLen = tmp.outputLen;
+  hashC.blockLen = tmp.blockLen;
+  hashC.create = () => hashCons();
+  return hashC;
+}
+
+// node_modules/@noble/hashes/esm/_md.js
+function setBigUint64(view, byteOffset, value, isLE) {
+  if (typeof view.setBigUint64 === "function")
+    return view.setBigUint64(byteOffset, value, isLE);
+  const _32n = BigInt(32);
+  const _u32_max = BigInt(4294967295);
+  const wh = Number(value >> _32n & _u32_max);
+  const wl = Number(value & _u32_max);
+  const h = isLE ? 4 : 0;
+  const l = isLE ? 0 : 4;
+  view.setUint32(byteOffset + h, wh, isLE);
+  view.setUint32(byteOffset + l, wl, isLE);
+}
+function Chi(a, b, c) {
+  return a & b ^ ~a & c;
+}
+function Maj(a, b, c) {
+  return a & b ^ a & c ^ b & c;
+}
+var HashMD = class extends Hash {
+  constructor(blockLen, outputLen, padOffset, isLE) {
+    super();
+    this.finished = false;
+    this.length = 0;
+    this.pos = 0;
+    this.destroyed = false;
+    this.blockLen = blockLen;
+    this.outputLen = outputLen;
+    this.padOffset = padOffset;
+    this.isLE = isLE;
+    this.buffer = new Uint8Array(blockLen);
+    this.view = createView(this.buffer);
+  }
+  update(data) {
+    aexists(this);
+    data = toBytes(data);
+    abytes(data);
+    const { view, buffer, blockLen } = this;
+    const len = data.length;
+    for (let pos = 0; pos < len; ) {
+      const take = Math.min(blockLen - this.pos, len - pos);
+      if (take === blockLen) {
+        const dataView = createView(data);
+        for (; blockLen <= len - pos; pos += blockLen)
+          this.process(dataView, pos);
+        continue;
+      }
+      buffer.set(data.subarray(pos, pos + take), this.pos);
+      this.pos += take;
+      pos += take;
+      if (this.pos === blockLen) {
+        this.process(view, 0);
+        this.pos = 0;
+      }
+    }
+    this.length += data.length;
+    this.roundClean();
+    return this;
+  }
+  digestInto(out) {
+    aexists(this);
+    aoutput(out, this);
+    this.finished = true;
+    const { buffer, view, blockLen, isLE } = this;
+    let { pos } = this;
+    buffer[pos++] = 128;
+    clean(this.buffer.subarray(pos));
+    if (this.padOffset > blockLen - pos) {
+      this.process(view, 0);
+      pos = 0;
+    }
+    for (let i = pos; i < blockLen; i++)
+      buffer[i] = 0;
+    setBigUint64(view, blockLen - 8, BigInt(this.length * 8), isLE);
+    this.process(view, 0);
+    const oview = createView(out);
+    const len = this.outputLen;
+    if (len % 4)
+      throw new Error("_sha2: outputLen should be aligned to 32bit");
+    const outLen = len / 4;
+    const state = this.get();
+    if (outLen > state.length)
+      throw new Error("_sha2: outputLen bigger than state");
+    for (let i = 0; i < outLen; i++)
+      oview.setUint32(4 * i, state[i], isLE);
+  }
+  digest() {
+    const { buffer, outputLen } = this;
+    this.digestInto(buffer);
+    const res = buffer.slice(0, outputLen);
+    this.destroy();
+    return res;
+  }
+  _cloneInto(to) {
+    to || (to = new this.constructor());
+    to.set(...this.get());
+    const { blockLen, buffer, length, finished, destroyed, pos } = this;
+    to.destroyed = destroyed;
+    to.finished = finished;
+    to.length = length;
+    to.pos = pos;
+    if (length % blockLen)
+      to.buffer.set(buffer);
+    return to;
+  }
+  clone() {
+    return this._cloneInto();
+  }
+};
+var SHA256_IV = /* @__PURE__ */ Uint32Array.from([
+  1779033703,
+  3144134277,
+  1013904242,
+  2773480762,
+  1359893119,
+  2600822924,
+  528734635,
+  1541459225
+]);
+
+// node_modules/@noble/hashes/esm/sha2.js
+var SHA256_K = /* @__PURE__ */ Uint32Array.from([
+  1116352408,
+  1899447441,
+  3049323471,
+  3921009573,
+  961987163,
+  1508970993,
+  2453635748,
+  2870763221,
+  3624381080,
+  310598401,
+  607225278,
+  1426881987,
+  1925078388,
+  2162078206,
+  2614888103,
+  3248222580,
+  3835390401,
+  4022224774,
+  264347078,
+  604807628,
+  770255983,
+  1249150122,
+  1555081692,
+  1996064986,
+  2554220882,
+  2821834349,
+  2952996808,
+  3210313671,
+  3336571891,
+  3584528711,
+  113926993,
+  338241895,
+  666307205,
+  773529912,
+  1294757372,
+  1396182291,
+  1695183700,
+  1986661051,
+  2177026350,
+  2456956037,
+  2730485921,
+  2820302411,
+  3259730800,
+  3345764771,
+  3516065817,
+  3600352804,
+  4094571909,
+  275423344,
+  430227734,
+  506948616,
+  659060556,
+  883997877,
+  958139571,
+  1322822218,
+  1537002063,
+  1747873779,
+  1955562222,
+  2024104815,
+  2227730452,
+  2361852424,
+  2428436474,
+  2756734187,
+  3204031479,
+  3329325298
+]);
+var SHA256_W = /* @__PURE__ */ new Uint32Array(64);
+var SHA256 = class extends HashMD {
+  constructor(outputLen = 32) {
+    super(64, outputLen, 8, false);
+    this.A = SHA256_IV[0] | 0;
+    this.B = SHA256_IV[1] | 0;
+    this.C = SHA256_IV[2] | 0;
+    this.D = SHA256_IV[3] | 0;
+    this.E = SHA256_IV[4] | 0;
+    this.F = SHA256_IV[5] | 0;
+    this.G = SHA256_IV[6] | 0;
+    this.H = SHA256_IV[7] | 0;
+  }
+  get() {
+    const { A, B, C, D, E, F, G, H } = this;
+    return [A, B, C, D, E, F, G, H];
+  }
+  // prettier-ignore
+  set(A, B, C, D, E, F, G, H) {
+    this.A = A | 0;
+    this.B = B | 0;
+    this.C = C | 0;
+    this.D = D | 0;
+    this.E = E | 0;
+    this.F = F | 0;
+    this.G = G | 0;
+    this.H = H | 0;
+  }
+  process(view, offset) {
+    for (let i = 0; i < 16; i++, offset += 4)
+      SHA256_W[i] = view.getUint32(offset, false);
+    for (let i = 16; i < 64; i++) {
+      const W15 = SHA256_W[i - 15];
+      const W2 = SHA256_W[i - 2];
+      const s0 = rotr(W15, 7) ^ rotr(W15, 18) ^ W15 >>> 3;
+      const s1 = rotr(W2, 17) ^ rotr(W2, 19) ^ W2 >>> 10;
+      SHA256_W[i] = s1 + SHA256_W[i - 7] + s0 + SHA256_W[i - 16] | 0;
+    }
+    let { A, B, C, D, E, F, G, H } = this;
+    for (let i = 0; i < 64; i++) {
+      const sigma1 = rotr(E, 6) ^ rotr(E, 11) ^ rotr(E, 25);
+      const T1 = H + sigma1 + Chi(E, F, G) + SHA256_K[i] + SHA256_W[i] | 0;
+      const sigma0 = rotr(A, 2) ^ rotr(A, 13) ^ rotr(A, 22);
+      const T2 = sigma0 + Maj(A, B, C) | 0;
+      H = G;
+      G = F;
+      F = E;
+      E = D + T1 | 0;
+      D = C;
+      C = B;
+      B = A;
+      A = T1 + T2 | 0;
+    }
+    A = A + this.A | 0;
+    B = B + this.B | 0;
+    C = C + this.C | 0;
+    D = D + this.D | 0;
+    E = E + this.E | 0;
+    F = F + this.F | 0;
+    G = G + this.G | 0;
+    H = H + this.H | 0;
+    this.set(A, B, C, D, E, F, G, H);
+  }
+  roundClean() {
+    clean(SHA256_W);
+  }
+  destroy() {
+    this.set(0, 0, 0, 0, 0, 0, 0, 0);
+    clean(this.buffer);
+  }
+};
+var sha256 = /* @__PURE__ */ createHasher(() => new SHA256());
+
+// node_modules/@noble/hashes/esm/sha256.js
+var sha2562 = sha256;
+
 // src/config-scope.ts
 init_git_buffer();
 var import_posix = __toESM(require_posix());
@@ -11259,7 +11606,7 @@ function canAutoReload(history, now = Date.now()) {
 }
 
 // src/main.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/profiles.ts
 init_git_buffer();
@@ -11333,6 +11680,74 @@ function newProfile(copy) {
 
 // src/applier.ts
 init_git_buffer();
+
+// src/cloud-manifest.ts
+init_git_buffer();
+var manifestPath = ".sync-manifest.json";
+var manifestBytes = (v) => new TextEncoder().encode(JSON.stringify(v)).buffer;
+async function buildManifest(snapshot, device) {
+  if (!snapshot.complete || [...snapshot.skipped?.values() ?? []].some((x) => x !== "filter"))
+    throw Error("incomplete");
+  const files = [...snapshot.files].map(([path, v]) => ({
+    path,
+    size: v.size,
+    hash: v.rawHash ?? v.hash,
+    mtime: Number.isFinite(v.mtime) ? v.mtime : 0
+  })).sort((a, b) => a.path < b.path ? -1 : 1);
+  const revision = await hash(manifestBytes(files));
+  return manifestBytes({
+    schemaVersion: 1,
+    revision,
+    filesHash: revision,
+    generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    publisherDevice: device,
+    files
+  });
+}
+async function readManifest(store) {
+  store.reset?.();
+  const stat = await store.stat(manifestPath);
+  if (!stat) return null;
+  if (stat.type !== "file") throw Error("manifestInvalid");
+  const raw = await store.download(manifestPath);
+  let m;
+  try {
+    m = JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    throw Error("manifestInvalid");
+  }
+  if (!m || m.schemaVersion !== 1 || !Array.isArray(m.files) || !(typeof m.revision === "string" && m.revision.length || Number.isSafeInteger(m.revision)) || typeof m.publisherDevice !== "string" || typeof m.generatedAt !== "string")
+    throw Error("manifestInvalid");
+  const checksum = await hash(manifestBytes(m.files));
+  if ("filesHash" in m && m.filesHash !== checksum)
+    throw Error("manifestInvalid");
+  m.revision = JSON.stringify([m.revision, checksum]);
+  const seen = /* @__PURE__ */ new Set();
+  for (const f of m.files) {
+    if (!f || typeof f.path !== "string" || !safe(f.path) || fold(f.path) === manifestPath || seen.has(fold(f.path)) || !Number.isSafeInteger(f.size) || f.size < 0 || !Number.isFinite(f.mtime) || !/^([a-f0-9]{64})$/.test(f.hash))
+      throw Error("manifestInvalid");
+    seen.add(fold(f.path));
+  }
+  return m;
+}
+function verifyManifest(m, snap, accept) {
+  if (!snap.complete || [...snap.skipped?.values() ?? []].some((reason) => reason !== "filter"))
+    throw Error("manifestMismatch");
+  const entries = new Map(m.files.map((f) => [f.path, f]));
+  for (const [p, item] of snap.files) {
+    const f = entries.get(p);
+    if (f?.hash !== (item.rawHash ?? item.hash) || f.size !== item.size)
+      throw Error("manifestMismatch");
+  }
+  for (const f of m.files) {
+    if (snap.files.has(f.path) || !accept(f)) continue;
+    let p = f.path;
+    while (p && !snap.skipped?.has(p)) p = parent(p);
+    if (!p) throw Error("manifestMismatch");
+  }
+}
+
+// src/applier.ts
 var decoder = new TextDecoder();
 var Applier = class {
   constructor(journal, state, fence = new MutationFence()) {
@@ -11341,16 +11756,26 @@ var Applier = class {
     this.fence = fence;
   }
   needsRecovery = false;
+  pendingTargets = /* @__PURE__ */ new Set();
   async restore(t, target, start = 0, end = t.steps.length) {
     const budget = new RunBudget(void 0, void 0, void 0, this.fence);
     for (let i = end - 1; i >= start; i--) {
       const p = t.steps[i].path, armed = t.id + "/armed/" + i;
-      if (!await this.journal.disk.has(armed) || await this.journal.disk.has(t.id + "/skipped/" + i))
+      if (t.cloud && await this.journal.disk.has(t.id + "/restored/" + i) || !await this.journal.disk.has(armed) || await this.journal.disk.has(t.id + "/skipped/" + i))
         continue;
       const perform = async () => {
         const saved = await this.journal.json(armed);
+        if (t.cloud) target.reset?.();
         const stat = await budget.io(() => target.stat(p));
         if (stat?.type === "folder") throw Error("collision");
+        if (t.cloud) {
+          const expected = t.id + "/after/" + i;
+          if (!await this.journal.disk.has(expected)) return;
+          const current = stat ? await hash(await budget.io(() => target.download(p))) : null;
+          if (current === saved) return;
+          if (current !== await this.journal.json(expected))
+            throw Error("cloudRecovery");
+        }
         if (saved === null) {
           if (stat) await budget.io(() => target.delete(p), false);
         } else {
@@ -11362,27 +11787,37 @@ var Applier = class {
       };
       if (target.withFilePaused) await target.withFilePaused(p, perform);
       else await perform();
+      if (t.cloud) await this.journal.mark(t.id + "/restored/" + i);
     }
   }
   async recover(resolve) {
     this.fence.check();
+    this.pendingTargets.clear();
     for (const t of await this.journal.transactions()) {
-      if (await this.journal.disk.has(t.id + "/undo-start") && !await this.journal.disk.has(t.id + "/undo-done")) {
-        await this.restore(t, resolve(t));
-        this.state.put(t.key, t.before);
-        await this.journal.mark(t.id + "/undo-done");
-        continue;
+      try {
+        await this.recoverTransaction(t, resolve);
+      } catch (e) {
+        if (!t.cloud) throw e;
+        this.pendingTargets.add(JSON.parse(t.key)[3]);
       }
-      if (await this.journal.disk.has(t.id + "/done") || await this.journal.disk.has(t.id + "/rolled-back"))
-        continue;
-      if (this.state.get(t.key).lastRun === t.id) {
-        await this.journal.mark(t.id + "/done");
-        continue;
-      }
-      await this.restore(t, resolve(t));
-      await this.journal.mark(t.id + "/rolled-back");
     }
     this.needsRecovery = false;
+  }
+  async recoverTransaction(t, resolve) {
+    if (await this.journal.disk.has(t.id + "/undo-start") && !await this.journal.disk.has(t.id + "/undo-done")) {
+      await this.restore(t, resolve(t));
+      this.state.put(t.key, t.before);
+      await this.journal.mark(t.id + "/undo-done");
+      return;
+    }
+    if (await this.journal.disk.has(t.id + "/done") || await this.journal.disk.has(t.id + "/rolled-back"))
+      return;
+    if (this.state.get(t.key).lastRun === t.id) {
+      await this.journal.mark(t.id + "/done");
+      return;
+    }
+    await this.restore(t, resolve(t));
+    await this.journal.mark(t.id + "/rolled-back");
   }
   async undo(key, target, resolve) {
     this.fence.check();
@@ -11398,9 +11833,10 @@ var Applier = class {
     await this.journal.mark(t.id + "/undo-done");
     this.needsRecovery = false;
   }
-  async apply(profile, plan2, source, target, key, targetPath, budget = new RunBudget(void 0, void 0, void 0, this.fence), progress, active, projection) {
+  async apply(profile, plan2, source, target, key, targetPath, budget = new RunBudget(void 0, void 0, void 0, this.fence), progress, active, projection, publication, checkReference) {
     this.fence.check();
-    if (this.needsRecovery) throw Error("journal");
+    if (this.needsRecovery || this.pendingTargets.has(target.id))
+      throw Error("journal");
     const checkpoint = () => {
       budget.check();
       if (active && !active()) throw Error("stopped");
@@ -11425,10 +11861,23 @@ var Applier = class {
     };
     const stageBatch = batch && plan2.ops.some((x) => x.action === "write" || x.action === "delete");
     const displaced = /* @__PURE__ */ new Map();
+    const expectedTarget = /* @__PURE__ */ new Map();
+    const publish = publication && (publication.missing || plan2.ops.some((o) => ["write", "both", "delete"].includes(o.action)));
     try {
+      if (publish)
+        await stage(
+          manifestPath,
+          manifestBytes({ schemaVersion: 1, publishing: id })
+        );
       for (const op of plan2.ops) {
         checkpoint();
         const p = op.path, s = op.source, b = Object.hasOwn(previous.entries, p) ? previous.entries[p] : void 0;
+        if (publish && op.path !== manifestPath) {
+          if (op.target?.rawHash || op.target?.hash)
+            expectedTarget.set(p, op.target.rawHash ?? op.target.hash);
+          else if (!op.target && op.action === "write")
+            expectedTarget.set(p, null);
+        }
         if (op.action === "delete") {
           steps.push({ path: p, action: "delete" });
           delete next.entries[p];
@@ -11496,10 +11945,12 @@ var Applier = class {
           delivered: op.action !== "ack" || b?.delivered === true
         };
       }
+      await checkReference?.();
     } catch (e) {
       if (!this.fence.pending) await this.journal.disk.removeTree(id);
       throw e;
     }
+    if (publish) steps.push({ path: manifestPath, action: "write" });
     if (!steps.length) {
       this.state.put(key, next);
       return 0;
@@ -11509,6 +11960,7 @@ var Applier = class {
       id,
       key,
       target: targetPath,
+      cloud: profile.access === "oauth" && profile.role === "publisher" ? profile.cloud : void 0,
       scope: profile.scope,
       settings: projection ? {
         config: cfg,
@@ -11532,34 +11984,47 @@ var Applier = class {
             checkpoint();
             const step = steps[i];
             const perform = async () => {
+              if (t.cloud) target.reset?.();
               const stat = await budget.io(() => target.stat(step.path));
               if (stat?.type === "folder") throw Error("collision");
               const old = stat ? await budget.io(() => target.download(step.path)) : null;
               const copy = displaced.get(step.path);
               if (copy && stat) throw Error("collision");
+              if (t.cloud) {
+                const expected = step.path === manifestPath && i === steps.length - 1 ? steps[0].digest : expectedTarget.get(step.path);
+                if (expected !== void 0 && (old ? await hash(old) : null) !== expected)
+                  throw Error("referenceChanged");
+              }
               await this.journal.backup(id, i, old);
               if (step.action === "delete") {
+                if (t.cloud)
+                  await this.journal.disk.putNew(
+                    id + "/after/" + i,
+                    manifestBytes(null)
+                  );
                 if (stat)
                   await budget.io(async () => {
                     if (await target.stat(step.path))
                       await target.delete(step.path);
                   }, false);
               } else {
-                const bytes = copy ? await budget.io(() => target.download(copy)) : await this.journal.disk.read(id + "/stage/" + i);
+                const bytes = copy ? await budget.io(() => target.download(copy)) : publish && i === steps.length - 1 ? await publication.build() : await this.journal.disk.read(id + "/stage/" + i);
                 if (step.digest && await hash(bytes) !== step.digest)
                   throw Error("incomplete");
+                const outgoing = projection && step.path !== manifestPath ? deliveryBytes(
+                  step.path,
+                  bytes,
+                  projection,
+                  old,
+                  profile.role === "subscriber"
+                ) : bytes;
+                if (t.cloud)
+                  await this.journal.disk.putNew(
+                    id + "/after/" + i,
+                    manifestBytes(await hash(outgoing))
+                  );
                 await budget.io(
-                  () => target.upload(
-                    step.path,
-                    projection ? deliveryBytes(
-                      step.path,
-                      bytes,
-                      projection,
-                      old,
-                      profile.role === "subscriber"
-                    ) : bytes,
-                    step.mtime
-                  ),
+                  () => target.upload(step.path, outgoing, step.mtime),
                   false
                 );
               }
@@ -11569,9 +12034,10 @@ var Applier = class {
             else await perform();
             await this.journal.mark(id + "/applied/" + i);
           }
-          changed += end - start;
+          if (steps[start].path !== manifestPath) changed += end - start;
         } catch (e) {
-          if (batch || !transient(e)) throw e;
+          if (batch || steps[start].path === manifestPath || !transient(e))
+            throw e;
           await this.restore(t, target, start, end);
           for (let i = start; i < end; i++)
             await this.journal.mark(id + "/skipped/" + i);
@@ -11583,7 +12049,7 @@ var Applier = class {
         progress?.(end, steps.length);
         start = end;
       }
-      if (changed) next.lastRun = id;
+      if (changed || publish) next.lastRun = id;
       this.state.put(key, next);
     } catch (e) {
       budget.fence.check();
@@ -11965,6 +12431,727 @@ function selectPlan(profile, fresh2, review, choices, release) {
 // src/validator.ts
 init_git_buffer();
 
+// src/private-cloud.ts
+init_git_buffer();
+
+// src/public-cloud.ts
+init_git_buffer();
+
+// src/public-store.ts
+init_git_buffer();
+
+// node_modules/@noble/hashes/esm/legacy.js
+init_git_buffer();
+var SHA1_IV = /* @__PURE__ */ Uint32Array.from([
+  1732584193,
+  4023233417,
+  2562383102,
+  271733878,
+  3285377520
+]);
+var p32 = /* @__PURE__ */ Math.pow(2, 32);
+var K = /* @__PURE__ */ Array.from({ length: 64 }, (_, i) => Math.floor(p32 * Math.abs(Math.sin(i + 1))));
+var MD5_IV = /* @__PURE__ */ SHA1_IV.slice(0, 4);
+var MD5_W = /* @__PURE__ */ new Uint32Array(16);
+var MD5 = class extends HashMD {
+  constructor() {
+    super(64, 16, 8, true);
+    this.A = MD5_IV[0] | 0;
+    this.B = MD5_IV[1] | 0;
+    this.C = MD5_IV[2] | 0;
+    this.D = MD5_IV[3] | 0;
+  }
+  get() {
+    const { A, B, C, D } = this;
+    return [A, B, C, D];
+  }
+  set(A, B, C, D) {
+    this.A = A | 0;
+    this.B = B | 0;
+    this.C = C | 0;
+    this.D = D | 0;
+  }
+  process(view, offset) {
+    for (let i = 0; i < 16; i++, offset += 4)
+      MD5_W[i] = view.getUint32(offset, true);
+    let { A, B, C, D } = this;
+    for (let i = 0; i < 64; i++) {
+      let F, g, s;
+      if (i < 16) {
+        F = Chi(B, C, D);
+        g = i;
+        s = [7, 12, 17, 22];
+      } else if (i < 32) {
+        F = Chi(D, B, C);
+        g = (5 * i + 1) % 16;
+        s = [5, 9, 14, 20];
+      } else if (i < 48) {
+        F = B ^ C ^ D;
+        g = (3 * i + 5) % 16;
+        s = [4, 11, 16, 23];
+      } else {
+        F = C ^ (B | ~D);
+        g = 7 * i % 16;
+        s = [6, 10, 15, 21];
+      }
+      F = F + A + K[i] + MD5_W[g];
+      A = D;
+      D = C;
+      C = B;
+      B = B + rotl(F, s[i % 4]);
+    }
+    A = A + this.A | 0;
+    B = B + this.B | 0;
+    C = C + this.C | 0;
+    D = D + this.D | 0;
+    this.set(A, B, C, D);
+  }
+  roundClean() {
+    clean(MD5_W);
+  }
+  destroy() {
+    this.set(0, 0, 0, 0);
+    clean(this.buffer);
+  }
+};
+var md5 = /* @__PURE__ */ createHasher(() => new MD5());
+
+// src/public-store.ts
+var rootItem = (key) => ({
+  key,
+  name: "",
+  type: "folder",
+  size: 0,
+  mtime: 0
+});
+function fileName(v) {
+  if (typeof v !== "string" || !v || v === "." || v === ".." || /[/\\\0]/.test(v))
+    throw Error("remoteName");
+  return v;
+}
+function sizeOf(v) {
+  if (!(typeof v === "number" || typeof v === "string" && /^\d+$/.test(v)))
+    throw Error("incomplete");
+  const n = Number(v);
+  if (!Number.isSafeInteger(n) || n < 0) throw Error("incomplete");
+  return n;
+}
+var PublicStore = class _PublicStore {
+  constructor(id, tree, prefix = "") {
+    this.id = id;
+    this.tree = tree;
+    this.prefix = prefix;
+  }
+  capabilities = {
+    readOnly: true,
+    supportsChecksum: false,
+    supportsChangesFeed: false,
+    maxFileSize: Infinity,
+    rateLimits: null
+  };
+  dirs = /* @__PURE__ */ new Map();
+  root;
+  reset() {
+    this.dirs.clear();
+    this.root = void 0;
+  }
+  entries(dir) {
+    let reading = this.dirs.get(dir.key);
+    if (!reading) {
+      reading = this.tree.children(dir).then((items) => {
+        const out = /* @__PURE__ */ new Map();
+        for (const item of items) {
+          const name = fileName(item.name);
+          if (out.has(name)) throw Error("collision");
+          out.set(name, item);
+        }
+        return out;
+      });
+      this.dirs.set(dir.key, reading);
+      reading.catch(() => this.dirs.delete(dir.key));
+    }
+    return reading;
+  }
+  async find(path) {
+    this.root ??= this.tree.root();
+    let dir = await this.root;
+    const ancestors = /* @__PURE__ */ new Set([dir.key]);
+    for (const name of join(this.prefix, path).split("/").filter(Boolean)) {
+      if (dir.type !== "folder") return null;
+      const node = (await this.entries(dir)).get(name);
+      if (!node) return null;
+      if (node.type === "folder" && ancestors.has(node.key))
+        throw Error("collision");
+      ancestors.add(node.key);
+      dir = node;
+    }
+    return dir;
+  }
+  async list(path) {
+    const dir = await this.find(path);
+    if (dir?.type !== "folder") throw Error("missingRoot");
+    const files = [], folders = [], skipped = [];
+    for (const v of (await this.entries(dir)).values())
+      (v.type === "folder" ? folders : v.type === "file" ? files : skipped).push(join(path, v.name));
+    return { files, folders, skipped };
+  }
+  async stat(path) {
+    const v = await this.find(path);
+    if (!v || v.type === "skip") return null;
+    if (v.type === "file" && v.size === -1 && this.tree.size)
+      v.size = await this.tree.size(v);
+    return { type: v.type, size: v.size, mtime: v.mtime };
+  }
+  async download(path) {
+    const v = await this.find(path);
+    if (v?.type !== "file") throw Error("incomplete");
+    const bytes = await this.tree.read(v);
+    if (v.size >= 0 && bytes.byteLength !== v.size || v.sha256 && await hash(bytes) !== v.sha256 || v.md5 && bytesToHex(md5(new Uint8Array(bytes))) !== v.md5)
+      throw Error("referenceChanged");
+    return bytes;
+  }
+  async confirmAbsent(paths) {
+    const fresh2 = new _PublicStore(this.id, this.tree, this.prefix);
+    for (const path of paths) {
+      const base = await fresh2.find("");
+      if (base?.type !== "folder") throw Error("missingRoot");
+      let dir = base;
+      const parts = path.split("/");
+      for (const [index, name] of parts.entries()) {
+        if (dir.type !== "folder") throw Error("referenceChanged");
+        const matches2 = [...(await fresh2.entries(dir)).values()].filter(
+          (v) => fold(v.name).replace(/[. ]+$/, "") === fold(name)
+        );
+        if (!matches2.length) break;
+        if (matches2.length !== 1 || matches2[0].name !== name)
+          throw Error("referenceChanged");
+        dir = matches2[0];
+        if (dir.type !== "folder" || index === parts.length - 1)
+          throw Error("referenceChanged");
+      }
+    }
+  }
+  async getRevision() {
+    return this.tree.revision?.() ?? null;
+  }
+  async upload(_path, _bytes, _mtime) {
+    throw Error("readonly");
+  }
+  async delete(_path) {
+    throw Error("readonly");
+  }
+  async mkdir(_path) {
+    throw Error("readonly");
+  }
+  async move(_from, _to) {
+    throw Error("readonly");
+  }
+};
+
+// src/public-cloud.ts
+var decoder2 = new TextDecoder();
+function check(res) {
+  if (res.status === 429 || res.status === 403 && /quota|rateLimit|dailyLimit/i.test(decoder2.decode(res.arrayBuffer)))
+    throw Error("publicQuota");
+  if (res.status === 401 || res.status === 403) throw Error("publicDenied");
+  if (res.status === 404) throw Error("missingRoot");
+  if (res.status < 200 || res.status >= 300) throw Error("remoteHttp");
+  return res;
+}
+function record2(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v))
+    throw Error("incomplete");
+  return v;
+}
+function digest(v, length) {
+  if (v === void 0) return void 0;
+  if (typeof v !== "string" || v.length !== length || !/^[a-f0-9]+$/i.test(v))
+    throw Error("incomplete");
+  return v.toLowerCase();
+}
+async function json(http, url, headers) {
+  const data = check(await http(url, "GET", headers)).arrayBuffer;
+  try {
+    return record2(JSON.parse(decoder2.decode(data)));
+  } catch {
+    throw Error("incomplete");
+  }
+}
+var date = (v) => typeof v === "string" ? Date.parse(v) : NaN;
+var GoogleTree = class {
+  constructor(http, folder, apiKey, linkKey) {
+    this.http = http;
+    this.folder = folder;
+    this.apiKey = apiKey;
+    this.linkKey = linkKey;
+  }
+  headers(id, key) {
+    if (this.apiKey !== null && !this.apiKey.trim()) throw Error("googleKey");
+    return {
+      ...this.apiKey ? { "X-Goog-Api-Key": this.apiKey } : {},
+      ...key ? { "X-Goog-Drive-Resource-Keys": id + "/" + key } : {}
+    };
+  }
+  async root() {
+    const data = await json(
+      this.http,
+      "https://www.googleapis.com/drive/v3/files/" + this.folder + "?fields=id,mimeType,trashed&supportsAllDrives=true",
+      this.headers(this.folder, this.linkKey)
+    );
+    if (typeof data.id !== "string" || !/^[\w-]+$/.test(data.id) || this.folder !== "root" && data.id !== this.folder || data.mimeType !== "application/vnd.google-apps.folder" || data.trashed === true)
+      throw Error("missingRoot");
+    return { ...rootItem(data.id), resourceKey: this.linkKey };
+  }
+  async children(folder) {
+    const result = [], tokens = /* @__PURE__ */ new Set();
+    let token2 = "";
+    do {
+      const params = new URLSearchParams({
+        q: "'" + folder.key + "' in parents and trashed = false",
+        fields: "nextPageToken,incompleteSearch,files(id,name,mimeType,size,modifiedTime,md5Checksum,sha256Checksum,resourceKey)",
+        pageSize: "1000",
+        supportsAllDrives: "true",
+        includeItemsFromAllDrives: "true"
+      });
+      if (token2) params.set("pageToken", token2);
+      const d = await json(
+        this.http,
+        "https://www.googleapis.com/drive/v3/files?" + params,
+        this.headers(folder.key, folder.resourceKey)
+      );
+      if (!Array.isArray(d.files) || d.incompleteSearch)
+        throw Error("incomplete");
+      for (const raw of d.files) {
+        const f = record2(raw);
+        if (typeof f.id !== "string" || !/^[-\w]+$/.test(f.id) || typeof f.mimeType !== "string" || f.resourceKey !== void 0 && (typeof f.resourceKey !== "string" || !/^[-\w]+$/.test(f.resourceKey)))
+          throw Error("incomplete");
+        const type = f.mimeType === "application/vnd.google-apps.folder" ? "folder" : f.mimeType.startsWith("application/vnd.google-apps.") ? "skip" : "file";
+        result.push({
+          name: fileName(f.name),
+          key: f.id,
+          type,
+          size: type === "file" ? sizeOf(f.size) : 0,
+          mtime: date(f.modifiedTime),
+          md5: digest(f.md5Checksum, 32),
+          sha256: digest(f.sha256Checksum, 64),
+          resourceKey: f.resourceKey
+        });
+      }
+      const next = d.nextPageToken ?? "";
+      if (typeof next !== "string" || tokens.has(next))
+        throw Error("incomplete");
+      token2 = next;
+      tokens.add(token2);
+    } while (token2);
+    return result;
+  }
+  async read(f) {
+    return check(
+      await this.http(
+        "https://www.googleapis.com/drive/v3/files/" + f.key + "?alt=media&supportsAllDrives=true",
+        "GET",
+        this.headers(f.key, f.resourceKey)
+      )
+    ).arrayBuffer;
+  }
+};
+var YandexTree = class {
+  constructor(http, key) {
+    this.http = http;
+    this.key = key;
+  }
+  url(path, download = false, offset = 0) {
+    const q = new URLSearchParams({ public_key: this.key, path: "/" + path });
+    if (!download) {
+      q.set("offset", String(offset));
+      q.set("limit", "200");
+    }
+    return "https://cloud-api.yandex.net/v1/disk/public/resources" + (download ? "/download" : "") + "?" + q;
+  }
+  async root() {
+    return rootItem("");
+  }
+  async children(dir) {
+    let offset = 0, total;
+    const result = [];
+    do {
+      const d = await json(this.http, this.url(dir.key, false, offset)), page = record2(d._embedded);
+      if (d.type !== "dir" || !page || !Array.isArray(page.items) || page.offset !== offset || typeof page.total !== "number" || !Number.isSafeInteger(page.total) || page.total < 0 || total !== void 0 && total !== page.total || offset + page.items.length > page.total || !page.items.length && offset < page.total)
+        throw Error("incomplete");
+      total = page.total;
+      for (const raw of page.items) {
+        const item = record2(raw);
+        if (item.type !== "dir" && item.type !== "file")
+          throw Error("incomplete");
+        const name = fileName(item.name);
+        result.push({
+          name,
+          key: join(dir.key, name),
+          type: item.type === "dir" ? "folder" : "file",
+          size: item.type === "dir" ? 0 : sizeOf(item.size),
+          mtime: date(item.modified),
+          sha256: digest(item.sha256, 64),
+          md5: digest(item.md5, 32)
+        });
+      }
+      offset += page.items.length;
+    } while (offset < total);
+    return result;
+  }
+  async read(file) {
+    const d = await json(this.http, this.url(file.key, true));
+    if (typeof d.href !== "string") throw Error("incomplete");
+    let u;
+    try {
+      u = new URL(d.href);
+    } catch {
+      throw Error("publicUrl");
+    }
+    if (u.protocol !== "https:" || u.username || u.password || !/(^|\.)(yandex\.(net|ru|com)|storage\.yandexcloud\.net)$/.test(
+      u.hostname
+    ))
+      throw Error("publicUrl");
+    return check(await this.http(u.href)).arrayBuffer;
+  }
+};
+
+// src/private-cloud.ts
+function cloudId(c, prefix) {
+  if (!c || !["google", "yandex"].includes(c.engine) || !/^([a-f0-9]{64})$/.test(c.account) || typeof c.root !== "string" || (c.engine === "google" ? !/^[\w-]+$/.test(c.root) : !["app:/", "disk:/"].includes(c.root)))
+    throw Error("cloudLocation");
+  if (prefix && prefix !== "/") checked(prefix);
+  return JSON.stringify([
+    "oauth",
+    c.engine,
+    c.account,
+    c.root,
+    prefix === "/" ? "" : prefix
+  ]);
+}
+var body = (obj) => new TextEncoder().encode(JSON.stringify(obj)).buffer;
+var jsonHeader = { "Content-Type": "application/json" };
+var api = "https://www.googleapis.com/drive/v3/files";
+var DriveTree = class extends GoogleTree {
+  constructor(send2, id, cursor = { token: "", revision: "" }) {
+    super(send2, id, null, "");
+    this.send = send2;
+    this.cursor = cursor;
+  }
+  revision() {
+    return driveRevision(this.send, this.cursor);
+  }
+  async createDir(dir, name) {
+    check(
+      await this.send(
+        api + "?supportsAllDrives=true",
+        "POST",
+        jsonHeader,
+        body({
+          name,
+          parents: [dir.key],
+          mimeType: "application/vnd.google-apps.folder"
+        })
+      )
+    );
+  }
+  async write(dir, name, old, bytes, mtime) {
+    const url = "https://www.googleapis.com/upload/drive/v3/files" + (old ? "/" + old.key : "") + "?supportsAllDrives=true&uploadType=resumable";
+    const start = check(
+      await this.send(
+        url,
+        old ? "PATCH" : "POST",
+        {
+          ...jsonHeader,
+          "X-Upload-Content-Type": "application/octet-stream",
+          "X-Upload-Content-Length": String(bytes.byteLength)
+        },
+        body({
+          name,
+          ...old ? {} : { parents: [dir.key] },
+          ...Number.isFinite(mtime) ? { modifiedTime: new Date(mtime).toISOString() } : {}
+        })
+      )
+    );
+    const raw = Object.entries(start.headers).find(
+      ([k]) => k.toLowerCase() === "location"
+    )?.[1];
+    if (!raw) throw Error("incomplete");
+    const session = new URL(raw);
+    if (session.origin !== "https://www.googleapis.com" || !session.pathname.startsWith("/upload/drive/v3/"))
+      throw Error("publicUrl");
+    const size = bytes.byteLength, chunk = 8 * 1024 * 1024;
+    let offset = 0;
+    do {
+      const end = Math.min(size, offset + chunk), headers = {
+        "Content-Type": "application/octet-stream"
+      };
+      if (size) headers["Content-Range"] = `bytes ${offset}-${end - 1}/${size}`;
+      const res = await this.send(
+        session.href,
+        "PUT",
+        headers,
+        bytes.slice(offset, end)
+      );
+      if (res.status !== 308) {
+        check(res);
+        if (end !== size) throw Error("incomplete");
+        return;
+      }
+      const range = Object.entries(res.headers).find(
+        ([k]) => k.toLowerCase() === "range"
+      )?.[1];
+      const last = range && /^bytes=0-(\d+)$/.exec(range);
+      const next = last ? Number(last[1]) + 1 : 0;
+      if (next <= offset || next > end || next >= size)
+        throw Error("incomplete");
+      offset = next;
+    } while (offset < size);
+    throw Error("incomplete");
+  }
+  async remove(item) {
+    check(
+      await this.send(
+        api + "/" + item.key + "?supportsAllDrives=true",
+        "PATCH",
+        jsonHeader,
+        body({ trashed: true })
+      )
+    );
+  }
+  async relocate(item, from, to, name) {
+    const query = new URLSearchParams({ supportsAllDrives: "true" });
+    if (from.key !== to.key) {
+      query.set("addParents", to.key);
+      query.set("removeParents", from.key);
+    }
+    check(
+      await this.send(
+        api + "/" + item.key + "?" + query,
+        "PATCH",
+        jsonHeader,
+        body({ name })
+      )
+    );
+  }
+};
+var ya = "https://cloud-api.yandex.net/v1/disk/";
+function link(s, operation = false) {
+  if (typeof s !== "string") throw Error("incomplete");
+  const u = new URL(s);
+  if (u.protocol !== "https:" || u.username || u.password || (operation ? u.origin !== "https://cloud-api.yandex.net" || !u.pathname.startsWith("/v1/disk/operations/") : !/(^|\.)(yandex\.(ru|net|com)|storage\.yandexcloud\.net)$/.test(
+    u.hostname
+  )))
+    throw Error("publicUrl");
+  return u.href;
+}
+var DiskTree = class {
+  constructor(auth, direct, base) {
+    this.auth = auth;
+    this.direct = direct;
+    this.base = base;
+  }
+  url(path, suffix = "", params = {}) {
+    return ya + "resources" + suffix + "?" + new URLSearchParams({ path: this.base + path, ...params });
+  }
+  async root() {
+    const d = await json(this.auth, this.url("", "", { fields: "type" }));
+    if (d.type !== "dir") throw Error("missingRoot");
+    return rootItem("");
+  }
+  async children(dir) {
+    const rows = [];
+    let total;
+    do {
+      const d = await json(
+        this.auth,
+        this.url(dir.key, "", {
+          limit: "200",
+          offset: String(rows.length),
+          sort: "name"
+        })
+      ), page = record2(d._embedded);
+      if (d.type !== "dir" || !Array.isArray(page.items) || page.offset !== rows.length || typeof page.total !== "number" || !Number.isSafeInteger(page.total) || page.total < 0 || total !== void 0 && total !== page.total || rows.length + page.items.length > page.total || !page.items.length && rows.length < page.total)
+        throw Error("incomplete");
+      total = page.total;
+      for (const v of page.items) {
+        const f = record2(v), name = fileName(f.name);
+        if (f.type !== "dir" && f.type !== "file") throw Error("incomplete");
+        rows.push({
+          key: join(dir.key, name),
+          name,
+          type: f.type === "dir" ? "folder" : "file",
+          size: f.type === "file" ? sizeOf(f.size) : 0,
+          mtime: typeof f.modified === "string" ? Date.parse(f.modified) : 0,
+          sha256: digest(f.sha256, 64),
+          md5: digest(f.md5, 32)
+        });
+      }
+    } while (rows.length < total);
+    return rows;
+  }
+  async read(f) {
+    const d = await json(this.auth, this.url(f.key, "/download"));
+    return check(await this.direct(link(d.href))).arrayBuffer;
+  }
+  async finish(r) {
+    check(r);
+    if (r.status !== 202) return;
+    const op = link(
+      record2(JSON.parse(new TextDecoder().decode(r.arrayBuffer))).href,
+      true
+    );
+    for (let i = 0; i < 90; i++) {
+      const d = await json(this.auth, op);
+      if (d.status === "success") return;
+      if (d.status !== "in-progress") throw Error("remoteHttp");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    throw Error("remoteHttp");
+  }
+  async createDir(dir, name) {
+    await this.finish(await this.auth(this.url(join(dir.key, name)), "PUT"));
+  }
+  async write(dir, name, old, bytes) {
+    const d = await json(
+      this.auth,
+      this.url(join(dir.key, name), "/upload", { overwrite: String(!!old) })
+    );
+    await this.finish(
+      await this.direct(
+        link(d.href),
+        "PUT",
+        { "Content-Type": "application/octet-stream" },
+        bytes
+      )
+    );
+  }
+  async remove(f) {
+    await this.finish(
+      await this.auth(this.url(f.key, "", { permanently: "false" }), "DELETE")
+    );
+  }
+  async relocate(f, _from, to, name) {
+    await this.finish(
+      await this.auth(
+        this.url(join(to.key, name), "/move", {
+          from: this.base + f.key,
+          overwrite: "false"
+        }),
+        "POST"
+      )
+    );
+  }
+};
+var CloudStore = class extends PublicStore {
+  constructor(id, mutable, prefix, readOnly) {
+    super(id, mutable, prefix);
+    this.mutable = mutable;
+    this.capabilities.readOnly = readOnly;
+    this.capabilities.supportsChecksum = true;
+  }
+  async change(fn) {
+    if (this.capabilities.readOnly) throw Error("readonly");
+    this.reset();
+    try {
+      await fn();
+    } finally {
+      this.reset();
+    }
+  }
+  async ensureDir(path) {
+    const node = await this.find(path);
+    if (node?.type === "folder") return node;
+    if (node || !path) throw Error(node ? "collision" : "missingRoot");
+    const dir = await this.ensureDir(parent(path));
+    await this.mutable.createDir(dir, path.split("/").at(-1));
+    this.dirs.delete(dir.key);
+    const made = await this.find(path);
+    if (made?.type !== "folder") throw Error("incomplete");
+    return made;
+  }
+  async mkdir(path) {
+    checked(path);
+    await this.change(async () => {
+      await this.ensureDir(path);
+    });
+  }
+  async upload(path, bytes, mtime) {
+    checked(path);
+    await this.change(async () => {
+      const dir = await this.ensureDir(parent(path)), old = await this.find(path);
+      if (old && old.type !== "file") throw Error("collision");
+      await this.mutable.write(dir, path.split("/").at(-1), old, bytes, mtime);
+      this.reset();
+      const saved = await this.find(path);
+      if (saved?.type !== "file" || saved.size !== bytes.byteLength || (saved.sha256 ?? await hash(await this.download(path))) !== await hash(bytes))
+        throw Error("referenceChanged");
+    });
+  }
+  async delete(path) {
+    checked(path);
+    await this.change(async () => {
+      const node = await this.find(path);
+      if (!node) return;
+      if (node.type !== "file") throw Error("collision");
+      await this.mutable.remove(node);
+    });
+  }
+  async move(from, to) {
+    checked(from);
+    checked(to);
+    await this.change(async () => {
+      const f = await this.find(from), src = await this.find(parent(from)), dst = await this.ensureDir(parent(to));
+      if (f?.type !== "file" || !src || await this.find(to))
+        throw Error("collision");
+      await this.mutable.relocate(f, src, dst, to.split("/").at(-1));
+    });
+  }
+};
+async function driveRevision(http, cursor) {
+  const base = "https://www.googleapis.com/drive/v3/changes";
+  if (cursor.token) {
+    let token2 = cursor.token, changed = false;
+    const seen = /* @__PURE__ */ new Set();
+    while (!seen.has(token2)) {
+      seen.add(token2);
+      const res = await http(
+        base + "?" + new URLSearchParams({
+          pageToken: token2,
+          spaces: "drive",
+          supportsAllDrives: "true",
+          includeItemsFromAllDrives: "true",
+          fields: "nextPageToken,newStartPageToken,changes(fileId,removed)",
+          pageSize: "1000"
+        })
+      );
+      if (res.status === 410) break;
+      const d = record2(
+        JSON.parse(new TextDecoder().decode(check(res).arrayBuffer))
+      );
+      if (!Array.isArray(d.changes)) throw Error("incomplete");
+      changed ||= d.changes.length > 0;
+      if (typeof d.nextPageToken === "string" && d.nextPageToken) {
+        token2 = d.nextPageToken;
+        continue;
+      }
+      if (typeof d.newStartPageToken !== "string" || !d.newStartPageToken)
+        throw Error("incomplete");
+      cursor.token = d.newStartPageToken;
+      if (changed) cursor.revision = crypto.randomUUID();
+      return cursor.revision;
+    }
+  }
+  const start = await json(
+    http,
+    base + "/startPageToken?supportsAllDrives=true"
+  );
+  if (typeof start.startPageToken !== "string" || !start.startPageToken)
+    throw Error("incomplete");
+  cursor.token = start.startPageToken;
+  cursor.revision = crypto.randomUUID();
+  return cursor.revision;
+}
+
 // src/public-location.ts
 init_git_buffer();
 function location(remote) {
@@ -12004,6 +13191,7 @@ function location(remote) {
 function referenceId(p) {
   if (p.access === "local")
     return "vault:" + (p.reference === "/" ? "" : p.reference);
+  if (p.access === "oauth" && p.cloud) return cloudId(p.cloud, p.reference);
   if (p.access !== "public" || !p.remote) throw Error("publicUrl");
   return JSON.stringify([
     p.remote.engine,
@@ -12073,6 +13261,14 @@ function validate(p, desktop, readOnly, configDir) {
   for (const key of ["local", "reference"])
     if (typeof p[key] !== "string" || p[key] !== "/" && p[key] !== "" && !safe(p[key]))
       err(key, "path");
+  if (p.access === "oauth") {
+    try {
+      if (!p.cloud) throw Error();
+      cloudId(p.cloud, p.reference);
+    } catch {
+      err("cloud", "cloudLocation");
+    }
+  }
   if (p.access === "public") {
     try {
       if (!p.remote) throw Error("publicUrl");
@@ -12357,7 +13553,7 @@ var SyncEngine = class {
       this.status.set("scan");
       const budget = options.budget ?? new RunBudget(
         void 0,
-        p.access === "public" ? 9e4 : void 0,
+        p.access !== "local" ? 9e4 : void 0,
         void 0,
         this.applier.fence
       );
@@ -12368,8 +13564,28 @@ var SyncEngine = class {
         blocked: !this.desktop && cfg.platformFilter ? await mobileExcluded(source, target, budget) : []
       } : void 0;
       const filter = p.scope === "content" ? pathFilter(p) : () => true;
+      const managed = p.access === "oauth" || p.access === "public" && p.remote?.engine !== "git";
+      const manifest = managed ? await budget.io(() => readManifest(reference)) : null;
+      const publication = p.access === "oauth" && p.role === "publisher" ? {
+        missing: !manifest,
+        build: async () => {
+          reference.reset?.();
+          const snapshot = await scan(
+            reference,
+            p.scope,
+            this.configDir,
+            this.self,
+            false,
+            budget,
+            filter,
+            p.scope === "content" ? p.maxMiB : 0,
+            cfg
+          );
+          return buildManifest(snapshot, this.applier.state.device);
+        }
+      } : void 0;
       const scanSource = async () => {
-        const revision = p.access === "public" ? await budget.io(() => source.getRevision()) : null;
+        const revision = p.role === "subscriber" && p.access !== "local" ? manifest?.revision ?? await budget.io(() => source.getRevision()) : null;
         const cacheKey = revision && JSON.stringify([
           source.id,
           revision,
@@ -12394,6 +13610,19 @@ var SyncEngine = class {
           cfg,
           projection
         );
+        if (manifest && p.role === "subscriber")
+          verifyManifest(
+            manifest,
+            snapshot,
+            (f) => selected(
+              f.path,
+              p.scope,
+              this.configDir,
+              this.self,
+              false,
+              cfg
+            ) && filter(f.path) && !(p.scope === "content" && p.maxMiB > 0 && f.size > p.maxMiB * 1048576) && !(f.path.startsWith("plugins/") && projection?.blocked.includes(f.path.split("/")[1].toLowerCase()))
+          );
         if (cacheKey && ![...snapshot.skipped?.values() ?? []].includes("locked"))
           this.lastSource = { key: cacheKey, snapshot };
         return snapshot;
@@ -12475,7 +13704,12 @@ var SyncEngine = class {
           budget,
           options.progress,
           options.active,
-          projection
+          projection,
+          publication,
+          managed ? async () => {
+            if ((await budget.io(() => readManifest(reference)))?.revision !== manifest?.revision)
+              throw Error("referenceChanged");
+          } : void 0
         );
       }
       this.status.set(
@@ -12489,6 +13723,44 @@ var SyncEngine = class {
 // src/i18n.ts
 init_git_buffer();
 var ru = {
+  publishHint: "При применении издатель записывает .sync-manifest.json в корень облачной папки. По нему подписчики проверяют завершение публикации.",
+  accounts: "Аккаунты",
+  googlePrivate: "Google Диск · OAuth",
+  yandexPrivate: "Яндекс Диск · OAuth",
+  selectAccount: "Выберите подключённый аккаунт",
+  addAccount: "Подключить аккаунт",
+  signIn: "Войти через браузер",
+  signOut: "Выйти",
+  accountActive: "Подключён",
+  refreshDue: "Токен обновится при обращении",
+  loginRequired: "Требуется повторный вход в аккаунт",
+  logoutHint: "Выйти на этом устройстве? Профили этого аккаунта будут ждать повторного входа.",
+  fullAccess: "Доступ ко всему Диску",
+  appAccess: "Область приложения",
+  scopeHint: "По умолчанию доступны файлы этого приложения Google или папка приложения Яндекса.",
+  clientImport: "Импорт JSON OAuth-клиента Google",
+  clientPaste: "Вставить JSON OAuth-клиента Google",
+  clientJson: "Проверьте JSON клиента Desktop app или Web application",
+  clientReady: "JSON-клиент загружен",
+  clientId: "Укажите Client ID приложения",
+  redirect: "Адрес возврата OAuth (redirect URI)",
+  loopbackHint: "Для клиента Desktop app оставьте поле пустым. Для Web application укажите свой зарегистрированный HTTPS-адрес.",
+  redirectHint: "Укажите зарегистрированный адрес возврата. Для ручного входа подойдёт ваш HTTPS-адрес.",
+  reopenLogin: "Открыть страницу входа",
+  callbackPaste: "Вставить код или полный адрес после входа",
+  connect: "Завершить вход",
+  retryLogin: "Начать вход заново",
+  oauthExpired: "Срок действия кода или сеанса истёк. Войдите заново.",
+  oauthDenied: "Доступ отклонён пользователем",
+  oauthResponse: "Адрес возврата или state не соответствует этому входу",
+  oauthExchange: "Сервис отклонил обмен кода или обновление токена. Проверьте клиент и redirect URI.",
+  oauthIdentity: "Сервис не подтвердил выбранную учётную запись",
+  driveRoot: "ID или ссылка на корневую папку Google Диска",
+  cloudLocation: "Проверьте аккаунт, корневую папку и путь",
+  cloud: "Облачный аккаунт",
+  manifestInvalid: "Публикация не завершена или манифест повреждён. Повторите после завершения публикации.",
+  manifestMismatch: "Файлы эталона расходятся с манифестом. Проверьте папку и охват публикации.",
+  cloudRecovery: "Восстановление облачной операции ожидает доступа к аккаунту или устранения расхождения версий",
   engine: "Источник эталона",
   vaultSource: "Папка в хранилище",
   google: "Google Диск",
@@ -12681,6 +13953,44 @@ var ru = {
   unknown: "Неизвестное состояние"
 };
 var en = {
+  publishHint: "Applying this profile writes .sync-manifest.json at the cloud folder root so subscribers can verify publication.",
+  accounts: "Accounts",
+  googlePrivate: "Google Drive · OAuth",
+  yandexPrivate: "Yandex Disk · OAuth",
+  selectAccount: "Select a connected account",
+  addAccount: "Connect an account",
+  signIn: "Sign in with browser",
+  signOut: "Sign out",
+  accountActive: "Connected",
+  refreshDue: "Token refresh due on next request",
+  loginRequired: "Sign in to the account again",
+  logoutHint: "Sign out on this device? Profiles using this account will wait for sign-in.",
+  fullAccess: "Full drive access",
+  appAccess: "Application scope",
+  scopeHint: "Defaults to app-authorized files on Google or the application folder on Yandex.",
+  clientImport: "Import Google OAuth client JSON",
+  clientPaste: "Paste Google OAuth client JSON",
+  clientJson: "Check the Desktop app or Web application client JSON",
+  clientReady: "Client JSON loaded",
+  clientId: "Enter the application client ID",
+  redirect: "OAuth redirect URI",
+  loopbackHint: "Leave empty for a Desktop app client. For a Web application enter your registered HTTPS redirect URI.",
+  redirectHint: "Use the registered callback address. Your own HTTPS redirect supports manual completion.",
+  reopenLogin: "Open sign-in page",
+  callbackPaste: "Paste the code or full redirected URL",
+  connect: "Complete sign-in",
+  retryLogin: "Restart sign-in",
+  oauthExpired: "Code or session expired. Start sign-in again.",
+  oauthDenied: "Authorization was declined",
+  oauthResponse: "Callback or state does not match this sign-in",
+  oauthExchange: "Token exchange or refresh failed. Check the client and redirect URI.",
+  oauthIdentity: "Provider did not confirm the selected account",
+  driveRoot: "Google Drive base folder ID or link",
+  cloudLocation: "Check the account, root folder and path",
+  cloud: "Cloud account",
+  manifestInvalid: "Publication is in progress or its manifest is invalid. Retry after publication.",
+  manifestMismatch: "Files differ from the manifest. Check the folder and publishing scope.",
+  cloudRecovery: "Cloud recovery requires account access or resolution of a conflicting file version",
   engine: "Reference source",
   vaultSource: "Vault folder",
   google: "Google Drive",
@@ -12872,6 +14182,9 @@ var en = {
   dry: "Dry run",
   unknown: "Unknown state"
 };
+function errorKey(message) {
+  return Object.hasOwn(ru, message) ? message : "failed";
+}
 function translator(locale) {
   const dict = locale.startsWith("ru") ? ru : en;
   return (k) => Object.hasOwn(dict, k) ? dict[k] : dict.failed;
@@ -12888,26 +14201,26 @@ init_git_buffer();
 init_git_buffer();
 var Diff = class {
   diff(oldStr, newStr, options = {}) {
-    let callback;
+    let callback2;
     if (typeof options === "function") {
-      callback = options;
+      callback2 = options;
       options = {};
     } else if ("callback" in options) {
-      callback = options.callback;
+      callback2 = options.callback;
     }
     const oldString = this.castInput(oldStr, options);
     const newString = this.castInput(newStr, options);
     const oldTokens = this.removeEmpty(this.tokenize(oldString, options));
     const newTokens = this.removeEmpty(this.tokenize(newString, options));
-    return this.diffWithOptionsObj(oldTokens, newTokens, options, callback);
+    return this.diffWithOptionsObj(oldTokens, newTokens, options, callback2);
   }
-  diffWithOptionsObj(oldTokens, newTokens, options, callback) {
+  diffWithOptionsObj(oldTokens, newTokens, options, callback2) {
     var _a;
     const done = (value) => {
       value = this.postProcess(value, options);
-      if (callback) {
+      if (callback2) {
         setTimeout(function() {
-          callback(value);
+          callback2(value);
         }, 0);
         return void 0;
       } else {
@@ -12965,11 +14278,11 @@ var Diff = class {
       }
       editLength++;
     };
-    if (callback) {
+    if (callback2) {
       (function exec() {
         setTimeout(function() {
           if (editLength > maxEditLength || Date.now() > abortAfterTimestamp) {
-            return callback(void 0);
+            return callback2(void 0);
           }
           if (!execEditLength()) {
             exec();
@@ -13138,12 +14451,12 @@ function tokenize(value, options) {
 
 // src/review.ts
 var Review = class extends import_obsidian2.Modal {
-  constructor(app, p, plan2, tr, endpoints, closed, apply, releaseOnly = false) {
+  constructor(app, p, plan2, tr, endpoints2, closed, apply, releaseOnly = false) {
     super(app);
     this.p = p;
     this.plan = plan2;
     this.tr = tr;
-    this.endpoints = endpoints;
+    this.endpoints = endpoints2;
     this.closed = closed;
     this.apply = apply;
     this.releaseOnly = releaseOnly;
@@ -13161,6 +14474,8 @@ var Review = class extends import_obsidian2.Modal {
       (o) => ["write", "delete"].includes(o.action) && needsReload(o.path)
     ))
       this.contentEl.createEl("p", { text: this.tr("reloadNeeded") });
+    if (this.p.access === "oauth" && this.p.role === "publisher")
+      this.contentEl.createEl("p", { text: this.tr("publishHint") });
     const metrics = this.contentEl.createEl("p"), toolbar = new import_obsidian2.Setting(this.contentEl);
     toolbar.addSearch(
       (s) => s.setPlaceholder(this.tr("search")).onChange((v) => {
@@ -13177,7 +14492,7 @@ var Review = class extends import_obsidian2.Modal {
         render();
       });
     });
-    const body = this.contentEl.createDiv(), pager = new import_obsidian2.Setting(this.contentEl), foot = new import_obsidian2.Setting(this.contentEl);
+    const body2 = this.contentEl.createDiv(), pager = new import_obsidian2.Setting(this.contentEl), foot = new import_obsidian2.Setting(this.contentEl);
     const ops = this.plan.ops.filter(
       (o) => o.action !== "ack" && !this.releaseOnly
     );
@@ -13195,7 +14510,7 @@ var Review = class extends import_obsidian2.Modal {
         })
       );
     const render = () => {
-      body.empty();
+      body2.empty();
       pager.clear();
       const rows = filtered();
       const heldRows = held.filter(
@@ -13228,12 +14543,12 @@ var Review = class extends import_obsidian2.Modal {
         this.page,
         Math.max(0, Math.ceil(all.length / 50) - 1)
       );
-      if (!all.length) body.createEl("p", { text: this.tr("none") });
+      if (!all.length) body2.createEl("p", { text: this.tr("none") });
       for (const { op, path } of all.slice(
         this.page * 50,
         (this.page + 1) * 50
       )) {
-        const row = new import_obsidian2.Setting(body).setName(path).setDesc(
+        const row = new import_obsidian2.Setting(body2).setName(path).setDesc(
           this.tr(op ? op.conflict ? "conflict" : op.action : "held")
         );
         if (!op) {
@@ -13370,565 +14685,6 @@ var Review = class extends import_obsidian2.Modal {
   onClose() {
     this.contentEl.empty();
     this.closed();
-  }
-};
-
-// src/public-store.ts
-init_git_buffer();
-
-// node_modules/@noble/hashes/esm/legacy.js
-init_git_buffer();
-
-// node_modules/@noble/hashes/esm/_md.js
-init_git_buffer();
-
-// node_modules/@noble/hashes/esm/utils.js
-init_git_buffer();
-function isBytes(a) {
-  return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
-}
-function abytes(b, ...lengths) {
-  if (!isBytes(b))
-    throw new Error("Uint8Array expected");
-  if (lengths.length > 0 && !lengths.includes(b.length))
-    throw new Error("Uint8Array expected of length " + lengths + ", got length=" + b.length);
-}
-function aexists(instance, checkFinished = true) {
-  if (instance.destroyed)
-    throw new Error("Hash instance has been destroyed");
-  if (checkFinished && instance.finished)
-    throw new Error("Hash#digest() has already been called");
-}
-function aoutput(out, instance) {
-  abytes(out);
-  const min = instance.outputLen;
-  if (out.length < min) {
-    throw new Error("digestInto() expects output buffer of length at least " + min);
-  }
-}
-function clean(...arrays) {
-  for (let i = 0; i < arrays.length; i++) {
-    arrays[i].fill(0);
-  }
-}
-function createView(arr) {
-  return new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
-}
-function rotl(word, shift) {
-  return word << shift | word >>> 32 - shift >>> 0;
-}
-var hasHexBuiltin = /* @__PURE__ */ (() => (
-  // @ts-ignore
-  typeof Uint8Array.from([]).toHex === "function" && typeof Uint8Array.fromHex === "function"
-))();
-var hexes = /* @__PURE__ */ Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
-function bytesToHex(bytes) {
-  abytes(bytes);
-  if (hasHexBuiltin)
-    return bytes.toHex();
-  let hex = "";
-  for (let i = 0; i < bytes.length; i++) {
-    hex += hexes[bytes[i]];
-  }
-  return hex;
-}
-function utf8ToBytes(str) {
-  if (typeof str !== "string")
-    throw new Error("string expected");
-  return new Uint8Array(new TextEncoder().encode(str));
-}
-function toBytes(data) {
-  if (typeof data === "string")
-    data = utf8ToBytes(data);
-  abytes(data);
-  return data;
-}
-var Hash = class {
-};
-function createHasher(hashCons) {
-  const hashC = (msg) => hashCons().update(toBytes(msg)).digest();
-  const tmp = hashCons();
-  hashC.outputLen = tmp.outputLen;
-  hashC.blockLen = tmp.blockLen;
-  hashC.create = () => hashCons();
-  return hashC;
-}
-
-// node_modules/@noble/hashes/esm/_md.js
-function setBigUint64(view, byteOffset, value, isLE) {
-  if (typeof view.setBigUint64 === "function")
-    return view.setBigUint64(byteOffset, value, isLE);
-  const _32n = BigInt(32);
-  const _u32_max = BigInt(4294967295);
-  const wh = Number(value >> _32n & _u32_max);
-  const wl = Number(value & _u32_max);
-  const h = isLE ? 4 : 0;
-  const l = isLE ? 0 : 4;
-  view.setUint32(byteOffset + h, wh, isLE);
-  view.setUint32(byteOffset + l, wl, isLE);
-}
-function Chi(a, b, c) {
-  return a & b ^ ~a & c;
-}
-var HashMD = class extends Hash {
-  constructor(blockLen, outputLen, padOffset, isLE) {
-    super();
-    this.finished = false;
-    this.length = 0;
-    this.pos = 0;
-    this.destroyed = false;
-    this.blockLen = blockLen;
-    this.outputLen = outputLen;
-    this.padOffset = padOffset;
-    this.isLE = isLE;
-    this.buffer = new Uint8Array(blockLen);
-    this.view = createView(this.buffer);
-  }
-  update(data) {
-    aexists(this);
-    data = toBytes(data);
-    abytes(data);
-    const { view, buffer, blockLen } = this;
-    const len = data.length;
-    for (let pos = 0; pos < len; ) {
-      const take = Math.min(blockLen - this.pos, len - pos);
-      if (take === blockLen) {
-        const dataView = createView(data);
-        for (; blockLen <= len - pos; pos += blockLen)
-          this.process(dataView, pos);
-        continue;
-      }
-      buffer.set(data.subarray(pos, pos + take), this.pos);
-      this.pos += take;
-      pos += take;
-      if (this.pos === blockLen) {
-        this.process(view, 0);
-        this.pos = 0;
-      }
-    }
-    this.length += data.length;
-    this.roundClean();
-    return this;
-  }
-  digestInto(out) {
-    aexists(this);
-    aoutput(out, this);
-    this.finished = true;
-    const { buffer, view, blockLen, isLE } = this;
-    let { pos } = this;
-    buffer[pos++] = 128;
-    clean(this.buffer.subarray(pos));
-    if (this.padOffset > blockLen - pos) {
-      this.process(view, 0);
-      pos = 0;
-    }
-    for (let i = pos; i < blockLen; i++)
-      buffer[i] = 0;
-    setBigUint64(view, blockLen - 8, BigInt(this.length * 8), isLE);
-    this.process(view, 0);
-    const oview = createView(out);
-    const len = this.outputLen;
-    if (len % 4)
-      throw new Error("_sha2: outputLen should be aligned to 32bit");
-    const outLen = len / 4;
-    const state = this.get();
-    if (outLen > state.length)
-      throw new Error("_sha2: outputLen bigger than state");
-    for (let i = 0; i < outLen; i++)
-      oview.setUint32(4 * i, state[i], isLE);
-  }
-  digest() {
-    const { buffer, outputLen } = this;
-    this.digestInto(buffer);
-    const res = buffer.slice(0, outputLen);
-    this.destroy();
-    return res;
-  }
-  _cloneInto(to) {
-    to || (to = new this.constructor());
-    to.set(...this.get());
-    const { blockLen, buffer, length, finished, destroyed, pos } = this;
-    to.destroyed = destroyed;
-    to.finished = finished;
-    to.length = length;
-    to.pos = pos;
-    if (length % blockLen)
-      to.buffer.set(buffer);
-    return to;
-  }
-  clone() {
-    return this._cloneInto();
-  }
-};
-
-// node_modules/@noble/hashes/esm/legacy.js
-var SHA1_IV = /* @__PURE__ */ Uint32Array.from([
-  1732584193,
-  4023233417,
-  2562383102,
-  271733878,
-  3285377520
-]);
-var p32 = /* @__PURE__ */ Math.pow(2, 32);
-var K = /* @__PURE__ */ Array.from({ length: 64 }, (_, i) => Math.floor(p32 * Math.abs(Math.sin(i + 1))));
-var MD5_IV = /* @__PURE__ */ SHA1_IV.slice(0, 4);
-var MD5_W = /* @__PURE__ */ new Uint32Array(16);
-var MD5 = class extends HashMD {
-  constructor() {
-    super(64, 16, 8, true);
-    this.A = MD5_IV[0] | 0;
-    this.B = MD5_IV[1] | 0;
-    this.C = MD5_IV[2] | 0;
-    this.D = MD5_IV[3] | 0;
-  }
-  get() {
-    const { A, B, C, D } = this;
-    return [A, B, C, D];
-  }
-  set(A, B, C, D) {
-    this.A = A | 0;
-    this.B = B | 0;
-    this.C = C | 0;
-    this.D = D | 0;
-  }
-  process(view, offset) {
-    for (let i = 0; i < 16; i++, offset += 4)
-      MD5_W[i] = view.getUint32(offset, true);
-    let { A, B, C, D } = this;
-    for (let i = 0; i < 64; i++) {
-      let F, g, s;
-      if (i < 16) {
-        F = Chi(B, C, D);
-        g = i;
-        s = [7, 12, 17, 22];
-      } else if (i < 32) {
-        F = Chi(D, B, C);
-        g = (5 * i + 1) % 16;
-        s = [5, 9, 14, 20];
-      } else if (i < 48) {
-        F = B ^ C ^ D;
-        g = (3 * i + 5) % 16;
-        s = [4, 11, 16, 23];
-      } else {
-        F = C ^ (B | ~D);
-        g = 7 * i % 16;
-        s = [6, 10, 15, 21];
-      }
-      F = F + A + K[i] + MD5_W[g];
-      A = D;
-      D = C;
-      C = B;
-      B = B + rotl(F, s[i % 4]);
-    }
-    A = A + this.A | 0;
-    B = B + this.B | 0;
-    C = C + this.C | 0;
-    D = D + this.D | 0;
-    this.set(A, B, C, D);
-  }
-  roundClean() {
-    clean(MD5_W);
-  }
-  destroy() {
-    this.set(0, 0, 0, 0);
-    clean(this.buffer);
-  }
-};
-var md5 = /* @__PURE__ */ createHasher(() => new MD5());
-
-// src/public-store.ts
-var rootItem = (key) => ({
-  key,
-  name: "",
-  type: "folder",
-  size: 0,
-  mtime: 0
-});
-function fileName(v) {
-  if (typeof v !== "string" || !v || v === "." || v === ".." || /[/\\\0]/.test(v))
-    throw Error("remoteName");
-  return v;
-}
-function sizeOf(v) {
-  if (!(typeof v === "number" || typeof v === "string" && /^\d+$/.test(v)))
-    throw Error("incomplete");
-  const n = Number(v);
-  if (!Number.isSafeInteger(n) || n < 0) throw Error("incomplete");
-  return n;
-}
-var PublicStore = class _PublicStore {
-  constructor(id, tree, prefix = "") {
-    this.id = id;
-    this.tree = tree;
-    this.prefix = prefix;
-  }
-  capabilities = {
-    readOnly: true,
-    supportsChecksum: false,
-    supportsChangesFeed: false,
-    maxFileSize: Infinity,
-    rateLimits: null
-  };
-  dirs = /* @__PURE__ */ new Map();
-  root;
-  entries(dir) {
-    let reading = this.dirs.get(dir.key);
-    if (!reading) {
-      reading = this.tree.children(dir).then((items) => {
-        const out = /* @__PURE__ */ new Map();
-        for (const item of items) {
-          const name = fileName(item.name);
-          if (out.has(name)) throw Error("collision");
-          out.set(name, item);
-        }
-        return out;
-      });
-      this.dirs.set(dir.key, reading);
-      reading.catch(() => this.dirs.delete(dir.key));
-    }
-    return reading;
-  }
-  async find(path) {
-    this.root ??= this.tree.root();
-    let dir = await this.root;
-    const ancestors = /* @__PURE__ */ new Set([dir.key]);
-    for (const name of join(this.prefix, path).split("/").filter(Boolean)) {
-      if (dir.type !== "folder") return null;
-      const node = (await this.entries(dir)).get(name);
-      if (!node) return null;
-      if (node.type === "folder" && ancestors.has(node.key))
-        throw Error("collision");
-      ancestors.add(node.key);
-      dir = node;
-    }
-    return dir;
-  }
-  async list(path) {
-    const dir = await this.find(path);
-    if (dir?.type !== "folder") throw Error("missingRoot");
-    const files = [], folders = [], skipped = [];
-    for (const v of (await this.entries(dir)).values())
-      (v.type === "folder" ? folders : v.type === "file" ? files : skipped).push(join(path, v.name));
-    return { files, folders, skipped };
-  }
-  async stat(path) {
-    const v = await this.find(path);
-    if (!v || v.type === "skip") return null;
-    if (v.type === "file" && v.size === -1 && this.tree.size)
-      v.size = await this.tree.size(v);
-    return { type: v.type, size: v.size, mtime: v.mtime };
-  }
-  async download(path) {
-    const v = await this.find(path);
-    if (v?.type !== "file") throw Error("incomplete");
-    const bytes = await this.tree.read(v);
-    if (v.size >= 0 && bytes.byteLength !== v.size || v.sha256 && await hash(bytes) !== v.sha256 || v.md5 && bytesToHex(md5(new Uint8Array(bytes))) !== v.md5)
-      throw Error("referenceChanged");
-    return bytes;
-  }
-  async confirmAbsent(paths) {
-    const fresh2 = new _PublicStore(this.id, this.tree, this.prefix);
-    for (const path of paths) {
-      const base = await fresh2.find("");
-      if (base?.type !== "folder") throw Error("missingRoot");
-      let dir = base;
-      const parts = path.split("/");
-      for (const [index, name] of parts.entries()) {
-        if (dir.type !== "folder") throw Error("referenceChanged");
-        const matches2 = [...(await fresh2.entries(dir)).values()].filter(
-          (v) => fold(v.name).replace(/[. ]+$/, "") === fold(name)
-        );
-        if (!matches2.length) break;
-        if (matches2.length !== 1 || matches2[0].name !== name)
-          throw Error("referenceChanged");
-        dir = matches2[0];
-        if (dir.type !== "folder" || index === parts.length - 1)
-          throw Error("referenceChanged");
-      }
-    }
-  }
-  async getRevision() {
-    return this.tree.revision?.() ?? null;
-  }
-  async upload() {
-    throw Error("readonly");
-  }
-  async delete() {
-    throw Error("readonly");
-  }
-  async mkdir() {
-    throw Error("readonly");
-  }
-  async move() {
-    throw Error("readonly");
-  }
-};
-
-// src/public-cloud.ts
-init_git_buffer();
-var decoder2 = new TextDecoder();
-function check(res) {
-  if (res.status === 429 || res.status === 403 && /quota|rateLimit|dailyLimit/i.test(decoder2.decode(res.arrayBuffer)))
-    throw Error("publicQuota");
-  if (res.status === 401 || res.status === 403) throw Error("publicDenied");
-  if (res.status === 404) throw Error("missingRoot");
-  if (res.status < 200 || res.status >= 300) throw Error("remoteHttp");
-  return res;
-}
-function record2(v) {
-  if (!v || typeof v !== "object" || Array.isArray(v))
-    throw Error("incomplete");
-  return v;
-}
-function digest(v, length) {
-  if (v === void 0) return void 0;
-  if (typeof v !== "string" || v.length !== length || !/^[a-f0-9]+$/i.test(v))
-    throw Error("incomplete");
-  return v.toLowerCase();
-}
-async function json(http, url, headers) {
-  const data = check(await http(url, "GET", headers)).arrayBuffer;
-  try {
-    return record2(JSON.parse(decoder2.decode(data)));
-  } catch {
-    throw Error("incomplete");
-  }
-}
-var date = (v) => typeof v === "string" ? Date.parse(v) : NaN;
-var GoogleTree = class {
-  constructor(http, folder, apiKey, linkKey) {
-    this.http = http;
-    this.folder = folder;
-    this.apiKey = apiKey;
-    this.linkKey = linkKey;
-  }
-  headers(id, key) {
-    if (!this.apiKey.trim()) throw Error("googleKey");
-    return {
-      "X-Goog-Api-Key": this.apiKey,
-      ...key ? { "X-Goog-Drive-Resource-Keys": id + "/" + key } : {}
-    };
-  }
-  async root() {
-    const data = await json(
-      this.http,
-      "https://www.googleapis.com/drive/v3/files/" + this.folder + "?fields=id,mimeType,trashed&supportsAllDrives=true",
-      this.headers(this.folder, this.linkKey)
-    );
-    if (data.id !== this.folder || data.mimeType !== "application/vnd.google-apps.folder" || data.trashed === true)
-      throw Error("missingRoot");
-    return { ...rootItem(this.folder), resourceKey: this.linkKey };
-  }
-  async children(folder) {
-    const result = [], tokens = /* @__PURE__ */ new Set();
-    let token = "";
-    do {
-      const params = new URLSearchParams({
-        q: "'" + folder.key + "' in parents and trashed = false",
-        fields: "nextPageToken,incompleteSearch,files(id,name,mimeType,size,modifiedTime,md5Checksum,sha256Checksum,resourceKey)",
-        pageSize: "1000",
-        supportsAllDrives: "true",
-        includeItemsFromAllDrives: "true"
-      });
-      if (token) params.set("pageToken", token);
-      const d = await json(
-        this.http,
-        "https://www.googleapis.com/drive/v3/files?" + params,
-        this.headers(folder.key, folder.resourceKey)
-      );
-      if (!Array.isArray(d.files) || d.incompleteSearch)
-        throw Error("incomplete");
-      for (const raw of d.files) {
-        const f = record2(raw);
-        if (typeof f.id !== "string" || !/^[-\w]+$/.test(f.id) || typeof f.mimeType !== "string" || f.resourceKey !== void 0 && (typeof f.resourceKey !== "string" || !/^[-\w]+$/.test(f.resourceKey)))
-          throw Error("incomplete");
-        const type = f.mimeType === "application/vnd.google-apps.folder" ? "folder" : f.mimeType.startsWith("application/vnd.google-apps.") ? "skip" : "file";
-        result.push({
-          name: fileName(f.name),
-          key: f.id,
-          type,
-          size: type === "file" ? sizeOf(f.size) : 0,
-          mtime: date(f.modifiedTime),
-          md5: digest(f.md5Checksum, 32),
-          sha256: digest(f.sha256Checksum, 64),
-          resourceKey: f.resourceKey
-        });
-      }
-      const next = d.nextPageToken ?? "";
-      if (typeof next !== "string" || tokens.has(next))
-        throw Error("incomplete");
-      token = next;
-      tokens.add(token);
-    } while (token);
-    return result;
-  }
-  async read(f) {
-    return check(
-      await this.http(
-        "https://www.googleapis.com/drive/v3/files/" + f.key + "?alt=media&supportsAllDrives=true",
-        "GET",
-        this.headers(f.key, f.resourceKey)
-      )
-    ).arrayBuffer;
-  }
-};
-var YandexTree = class {
-  constructor(http, key) {
-    this.http = http;
-    this.key = key;
-  }
-  url(path, download = false, offset = 0) {
-    const q = new URLSearchParams({ public_key: this.key, path: "/" + path });
-    if (!download) {
-      q.set("offset", String(offset));
-      q.set("limit", "200");
-    }
-    return "https://cloud-api.yandex.net/v1/disk/public/resources" + (download ? "/download" : "") + "?" + q;
-  }
-  async root() {
-    return rootItem("");
-  }
-  async children(dir) {
-    let offset = 0, total;
-    const result = [];
-    do {
-      const d = await json(this.http, this.url(dir.key, false, offset)), page = record2(d._embedded);
-      if (d.type !== "dir" || !page || !Array.isArray(page.items) || page.offset !== offset || typeof page.total !== "number" || !Number.isSafeInteger(page.total) || page.total < 0 || total !== void 0 && total !== page.total || offset + page.items.length > page.total || !page.items.length && offset < page.total)
-        throw Error("incomplete");
-      total = page.total;
-      for (const raw of page.items) {
-        const item = record2(raw);
-        if (item.type !== "dir" && item.type !== "file")
-          throw Error("incomplete");
-        const name = fileName(item.name);
-        result.push({
-          name,
-          key: join(dir.key, name),
-          type: item.type === "dir" ? "folder" : "file",
-          size: item.type === "dir" ? 0 : sizeOf(item.size),
-          mtime: date(item.modified),
-          sha256: digest(item.sha256, 64),
-          md5: digest(item.md5, 32)
-        });
-      }
-      offset += page.items.length;
-    } while (offset < total);
-    return result;
-  }
-  async read(file) {
-    const d = await json(this.http, this.url(file.key, true));
-    if (typeof d.href !== "string") throw Error("incomplete");
-    let u;
-    try {
-      u = new URL(d.href);
-    } catch {
-      throw Error("publicUrl");
-    }
-    if (u.protocol !== "https:" || u.username || u.password || !/(^|\.)(yandex\.(net|ru|com)|storage\.yandexcloud\.net)$/.test(
-      u.hostname
-    ))
-      throw Error("publicUrl");
-    return check(await this.http(u.href)).arrayBuffer;
   }
 };
 
@@ -14158,8 +14914,8 @@ function getLock() {
   if (lock === void 0) lock = new import_async_lock.default({ maxPending: Infinity });
   return lock;
 }
-function acquireLock(key, callback) {
-  return getLock().acquire(key, callback);
+function acquireLock(key, callback2) {
+  return getLock().acquire(key, callback2);
 }
 var IndexCache = Symbol("IndexCache");
 function dirname(path) {
@@ -14622,9 +15378,9 @@ var normalizePath = (path) => {
     isSection: !!section
   };
 };
-var findLastIndex = (array, callback) => {
+var findLastIndex = (array, callback2) => {
   return array.reduce((lastIndex, item, index) => {
-    return callback(item) ? index : lastIndex;
+    return callback2(item) ? index : lastIndex;
   }, -1);
 };
 var GitConfig = class _GitConfig {
@@ -17233,8 +17989,8 @@ var FileSystem = class {
    */
   async readlink(filename, opts = { encoding: "buffer" }) {
     try {
-      const link = await this._readlink(filename, opts);
-      return import_buffer.Buffer.isBuffer(link) ? link : import_buffer.Buffer.from(link);
+      const link2 = await this._readlink(filename, opts);
+      return import_buffer.Buffer.isBuffer(link2) ? link2 : import_buffer.Buffer.from(link2);
     } catch (err) {
       if (isNotFoundError(err)) {
         return null;
@@ -17867,7 +18623,7 @@ var GitRemoteHTTP = class {
     service,
     url,
     auth,
-    body,
+    body: body2,
     headers,
     signal
   }) {
@@ -17881,7 +18637,7 @@ var GitRemoteHTTP = class {
       onProgress,
       method: "POST",
       url: `${url}/${service}`,
-      body,
+      body: body2,
       headers,
       signal
     });
@@ -18783,17 +19539,17 @@ async function readTree({
 }
 
 // src/public-git.ts
-function gitHttp(send) {
+function gitHttp(send2) {
   return {
-    async request({ url, method = "GET", headers = {}, body }) {
+    async request({ url, method = "GET", headers = {}, body: body2 }) {
       const u = new URL(url);
       if (u.protocol !== "https:" || !(method === "GET" && u.pathname.endsWith("/info/refs") && u.searchParams.get("service") === "git-upload-pack" || method === "POST" && u.pathname.endsWith("/git-upload-pack")))
         throw Error("gitRead");
       let payload;
-      if (body) {
+      if (body2) {
         const chunks = [];
         let n = 0;
-        for await (const chunk of body) {
+        for await (const chunk of body2) {
           chunks.push(chunk);
           n += chunk.length;
         }
@@ -18805,7 +19561,7 @@ function gitHttp(send) {
         }
         payload = bytes.buffer;
       }
-      const res = await send(url, method, headers, payload);
+      const res = await send2(url, method, headers, payload);
       return {
         url,
         method,
@@ -18821,9 +19577,9 @@ function gitHttp(send) {
 }
 var fetching = /* @__PURE__ */ new Map();
 var GitTree2 = class {
-  constructor(openFs, send, url, branch, cacheKey) {
+  constructor(openFs, send2, url, branch, cacheKey) {
     this.openFs = openFs;
-    this.send = send;
+    this.send = send2;
     this.url = url;
     this.branch = branch;
     this.cacheKey = cacheKey;
@@ -18984,13 +19740,554 @@ function gitFs(adapter, cacheRoot) {
   };
 }
 
+// src/accounts.ts
+init_git_buffer();
+var callback = "obsidian://refsync-oauth";
+var endpoints = {
+  google: [
+    "https://accounts.google.com/o/oauth2/v2/auth",
+    "https://oauth2.googleapis.com/token"
+  ],
+  yandex: [
+    "https://oauth.yandex.ru/authorize",
+    "https://oauth.yandex.ru/token"
+  ]
+};
+var encode2 = (s) => new TextEncoder().encode(s).buffer;
+var base64 = (b) => btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+function googleClient(raw) {
+  try {
+    const doc = JSON.parse(raw), c = doc.installed ?? doc.web;
+    if (typeof c?.client_id !== "string" || !c.client_id.trim()) throw Error();
+    return {
+      clientId: c.client_id,
+      secret: typeof c.client_secret === "string" ? c.client_secret : "",
+      web: !doc.installed,
+      redirects: Array.isArray(c.redirect_uris) ? c.redirect_uris.filter(
+        (x) => typeof x === "string" && x.startsWith("https://")
+      ) : []
+    };
+  } catch {
+    throw Error("clientJson");
+  }
+}
+async function authorize(client) {
+  if (!client.clientId.trim()) throw Error("clientId");
+  let uri;
+  try {
+    uri = new URL(client.redirect);
+  } catch {
+    throw Error("redirect");
+  }
+  if (!(uri.protocol === "https:" || client.engine === "google" && uri.origin === `http://127.0.0.1:${uri.port}` && uri.port || client.engine === "yandex" && uri.href === callback) || uri.username || uri.password || uri.search || uri.hash)
+    throw Error("redirect");
+  const state = base64(crypto.getRandomValues(new Uint8Array(32))), verifier = base64(crypto.getRandomValues(new Uint8Array(32)));
+  const challenge = base64(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", encode2(verifier)))
+  );
+  const scope = client.engine === "google" ? "https://www.googleapis.com/auth/drive" + (client.full ? "" : ".file") : client.full ? "cloud_api:disk.read cloud_api:disk.write cloud_api:disk.info" : "cloud_api:disk.app_folder cloud_api:disk.info";
+  const query = new URLSearchParams({
+    client_id: client.clientId,
+    redirect_uri: client.redirect,
+    response_type: "code",
+    scope,
+    state,
+    code_challenge: challenge,
+    code_challenge_method: "S256"
+  });
+  if (client.engine === "google") {
+    query.set("access_type", "offline");
+    query.set("prompt", "consent select_account");
+  } else query.set("force_confirm", "yes");
+  return {
+    url: endpoints[client.engine][0] + "?" + query,
+    state,
+    verifier,
+    client: { ...client },
+    expires: Date.now() + 6e5
+  };
+}
+function codeFrom(a, input, manual) {
+  if (Date.now() > a.expires) throw Error("oauthExpired");
+  const s = input.trim();
+  if (manual && /^[\w./=-]+$/.test(s) && !s.includes(":")) return s;
+  let u;
+  try {
+    u = new URL(s);
+  } catch {
+    throw Error("oauthResponse");
+  }
+  const dest = new URL(a.client.redirect);
+  if (u.protocol !== dest.protocol || u.host !== dest.host || u.pathname !== dest.pathname || u.searchParams.get("state") !== a.state)
+    throw Error("oauthResponse");
+  if (u.searchParams.has("error")) throw Error("oauthDenied");
+  const code = u.searchParams.get("code");
+  if (!code) throw Error("oauthResponse");
+  return code;
+}
+async function token(http, client, fields) {
+  const form = new URLSearchParams({ ...fields, client_id: client.clientId });
+  if (client.secret) form.set("client_secret", client.secret);
+  const res = await http(
+    endpoints[client.engine][1],
+    "POST",
+    { "Content-Type": "application/x-www-form-urlencoded" },
+    encode2(form.toString())
+  );
+  let d;
+  try {
+    d = record2(JSON.parse(new TextDecoder().decode(res.arrayBuffer)));
+  } catch {
+    throw Error("remoteHttp");
+  }
+  if (d.error === "invalid_grant") throw Error("oauthExpired");
+  if (res.status !== 200 || typeof d.access_token !== "string" || !d.access_token)
+    throw Error("oauthExchange");
+  const ttl = Number(d.expires_in ?? 3600);
+  if (!Number.isFinite(ttl) || ttl <= 0) throw Error("oauthExchange");
+  return {
+    access: d.access_token,
+    refresh: typeof d.refresh_token === "string" ? d.refresh_token : "",
+    expires: Date.now() + ttl * 1e3
+  };
+}
+var Accounts = class {
+  constructor(port, http) {
+    this.port = port;
+    this.http = http;
+  }
+  refreshing = /* @__PURE__ */ new Map();
+  list() {
+    return this.port.list();
+  }
+  put(a) {
+    this.port.save([...this.list().filter((v) => v.id !== a.id), a]);
+  }
+  grant(id) {
+    const raw = this.port.get(id);
+    if (!raw) throw Error("loginRequired");
+    return JSON.parse(raw);
+  }
+  async connect(a, input, manual, expected, active = () => true) {
+    const code = codeFrom(a, input, manual), client = a.client;
+    const t = await token(this.http, client, {
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: client.redirect,
+      code_verifier: a.verifier
+    });
+    const g = client.engine === "google";
+    const about = await json(
+      this.http,
+      g ? "https://www.googleapis.com/drive/v3/about?fields=user(permissionId,displayName)" : "https://cloud-api.yandex.net/v1/disk?fields=user.uid,user.display_name",
+      { Authorization: (g ? "Bearer " : "OAuth ") + t.access }
+    );
+    const u = record2(about.user), sub = g ? u.permissionId : u.uid;
+    if (typeof sub !== "string" && typeof sub !== "number" || !String(sub))
+      throw Error("oauthIdentity");
+    const subject = String(sub), id = await hash(
+      encode2(
+        JSON.stringify([
+          client.engine,
+          client.clientId,
+          client.full,
+          subject
+        ])
+      )
+    );
+    if (expected && expected !== id) throw Error("oauthIdentity");
+    if (!active()) throw Error("stopped");
+    const refresh = t.refresh || (this.port.get(id) ? this.grant(id).refresh : "");
+    if (!refresh) throw Error("oauthExchange");
+    this.port.set(id, JSON.stringify({ client, refresh, access: t.access }));
+    const name = g ? u.displayName : u.display_name;
+    this.put({
+      id,
+      engine: client.engine,
+      subject,
+      label: typeof name === "string" ? name : subject,
+      full: client.full,
+      needsLogin: false,
+      expires: t.expires
+    });
+    return id;
+  }
+  client(id) {
+    return this.grant(id).client;
+  }
+  logout(id) {
+    const a = this.list().find((v) => v.id === id);
+    if (a) {
+      this.port.set(id, "");
+      this.put({ ...a, needsLogin: true, expires: 0 });
+    }
+  }
+  async access(id, engine, rejected) {
+    const a = this.list().find((v) => v.id === id && v.engine === engine);
+    if (!a || a.needsLogin) throw Error("loginRequired");
+    if (!this.port.get(id)) {
+      this.put({ ...a, needsLogin: true });
+      throw Error("loginRequired");
+    }
+    const g = this.grant(id);
+    if (g.access !== rejected && a.expires > Date.now() + 6e4)
+      return g.access;
+    const running = this.refreshing.get(id);
+    if (running) return running;
+    const work = (async () => {
+      try {
+        const t = await token(this.http, g.client, {
+          grant_type: "refresh_token",
+          refresh_token: g.refresh
+        });
+        if (this.port.get(id) !== JSON.stringify(g))
+          throw Error("loginRequired");
+        this.port.set(
+          id,
+          JSON.stringify({
+            ...g,
+            access: t.access,
+            refresh: t.refresh || g.refresh
+          })
+        );
+        this.put({ ...a, expires: t.expires });
+        return t.access;
+      } catch (e) {
+        if (e instanceof Error && e.message === "oauthExpired" && this.port.get(id) === JSON.stringify(g)) {
+          this.put({ ...a, needsLogin: true });
+          throw Error("loginRequired");
+        }
+        throw e;
+      }
+    })().finally(() => this.refreshing.delete(id));
+    this.refreshing.set(id, work);
+    return work;
+  }
+  transport(id, engine) {
+    return async (url, method, headers, body2) => {
+      const u = new URL(url), google = engine === "google";
+      if (u.origin !== (google ? "https://www.googleapis.com" : "https://cloud-api.yandex.net") || !(google ? /^\/(upload\/)?drive\/v3\// : /^\/v1\/disk(?:\/|$)/).test(
+        u.pathname
+      ))
+        throw Error("publicUrl");
+      const send2 = (access) => this.http(
+        url,
+        method,
+        {
+          ...headers,
+          Authorization: (google ? "Bearer " : "OAuth ") + access
+        },
+        body2
+      );
+      const first = await this.access(id, engine);
+      let r = await send2(first);
+      if (r.status === 401) {
+        const refreshed = await this.access(id, engine, first);
+        r = await send2(refreshed);
+        if (r.status === 401) {
+          const a = this.list().find((a2) => a2.id === id);
+          if (a && this.grant(id).access === refreshed)
+            this.put({ ...a, needsLogin: true });
+          throw Error("loginRequired");
+        }
+      }
+      return r;
+    };
+  }
+};
+
 // src/editor.ts
 init_git_buffer();
 
-// src/remote-browser.ts
+// src/oauth-ui.ts
 init_git_buffer();
 var import_obsidian3 = require("obsidian");
-var RemoteFolderBrowser = class extends import_obsidian3.Modal {
+var AccountsView = class extends import_obsidian3.Modal {
+  constructor(app, rs, after) {
+    super(app);
+    this.rs = rs;
+    this.after = after;
+  }
+  onOpen() {
+    const el = this.contentEl, t = this.rs.t;
+    el.empty();
+    this.titleEl.setText(t("accounts"));
+    for (const a of this.rs.accounts.list()) {
+      const users = this.rs.config.profiles.filter((p) => p.cloud?.account === a.id).map((p) => p.name);
+      new import_obsidian3.Setting(el).setName(t(a.engine) + " · " + a.label).setDesc(
+        [
+          t(
+            a.needsLogin ? "loginRequired" : a.expires < Date.now() + 6e4 ? "refreshDue" : "accountActive"
+          ),
+          t(a.full ? "fullAccess" : "appAccess"),
+          ...users
+        ].join(" · ")
+      ).addButton(
+        (b) => b.setButtonText(t("signIn")).onClick(() => this.login(a.engine, a))
+      ).addButton(
+        (b) => b.setButtonText(t("signOut")).setDisabled(a.needsLogin).onClick(
+          () => this.rs.confirm(t("logoutHint"), () => {
+            this.rs.accounts.logout(a.id);
+            this.onOpen();
+          })
+        )
+      );
+    }
+    for (const engine of ["google", "yandex"])
+      new import_obsidian3.Setting(el).setName(t(engine)).addButton(
+        (b) => b.setButtonText(t("addAccount")).onClick(() => this.login(engine))
+      );
+  }
+  login(engine, a) {
+    new Login(this.app, this.rs, engine, a, () => this.onOpen()).open();
+  }
+  onClose() {
+    this.contentEl.empty();
+    this.after();
+  }
+};
+var Login = class extends import_obsidian3.Modal {
+  constructor(app, rs, engine, previous, done) {
+    super(app);
+    this.rs = rs;
+    this.previous = previous;
+    this.done = done;
+    this.client = {
+      engine,
+      clientId: "",
+      secret: "",
+      full: previous?.full ?? false,
+      redirect: engine === "google" && import_obsidian3.Platform.isDesktopApp ? "" : engine === "yandex" ? callback : ""
+    };
+    if (previous) {
+      try {
+        const saved = rs.accounts.client(previous.id);
+        this.client = {
+          ...saved,
+          redirect: saved.redirect.startsWith("http://127.0.0.1:") ? "" : saved.redirect
+        };
+      } catch {
+      }
+    }
+  }
+  invalidJson = false;
+  webClient = false;
+  client;
+  attempt;
+  server;
+  waiting = false;
+  busy = false;
+  alive = true;
+  status;
+  timer;
+  onOpen() {
+    const el = this.contentEl, t = this.rs.t, c = this.client;
+    el.empty();
+    this.titleEl.setText(t("signIn") + " · " + t(c.engine));
+    if (!this.waiting) {
+      if (c.engine === "google") {
+        const apply = (s) => {
+          try {
+            const v = googleClient(s);
+            this.invalidJson = false;
+            this.webClient = v.web;
+            c.clientId = v.clientId;
+            c.secret = v.secret;
+            c.redirect = v.web ? v.redirects[0] ?? "" : "";
+            this.onOpen();
+            this.status.setText(t("clientReady"));
+          } catch {
+            this.invalidJson = true;
+            this.status.setText(t("clientJson"));
+          }
+        };
+        const input = el.createEl("input", {
+          attr: {
+            type: "file",
+            accept: ".json,application/json",
+            "aria-label": t("clientImport")
+          }
+        });
+        input.onchange = async () => {
+          const f = input.files?.[0];
+          if (f) {
+            if (f.size > 262144) {
+              this.status.setText(t("clientJson"));
+              return;
+            }
+            try {
+              apply(await f.text());
+            } catch {
+              this.status.setText(t("clientJson"));
+            }
+          }
+        };
+        new import_obsidian3.Setting(el).setName(t("clientPaste")).addTextArea(
+          (v) => v.onChange((s) => {
+            if (s.trim()) apply(s);
+            else this.invalidJson = false;
+          })
+        );
+      }
+      new import_obsidian3.Setting(el).setName("Client ID").addText(
+        (v) => v.setValue(c.clientId).onChange((s) => {
+          c.clientId = s.trim();
+          this.invalidJson = false;
+        })
+      );
+      new import_obsidian3.Setting(el).setName("Client secret").addText((v) => {
+        v.inputEl.type = "password";
+        v.setValue(c.secret).onChange((s) => {
+          c.secret = s.trim();
+        });
+      });
+      new import_obsidian3.Setting(el).setName(t("redirect")).setDesc(
+        t(
+          c.engine === "google" && import_obsidian3.Platform.isDesktopApp ? "loopbackHint" : "redirectHint"
+        )
+      ).addText(
+        (v) => v.setValue(c.redirect).onChange((s) => {
+          c.redirect = s.trim();
+        })
+      );
+      new import_obsidian3.Setting(el).setName(t("fullAccess")).setDesc(t("scopeHint")).addToggle(
+        (v) => v.setValue(c.full).setDisabled(!!this.previous).onChange((full) => {
+          c.full = full;
+        })
+      );
+      new import_obsidian3.Setting(el).addButton(
+        (b) => b.setButtonText(t("signIn")).setCta().onClick(() => this.start())
+      );
+    } else if (this.attempt) {
+      el.createEl("a", {
+        text: t("reopenLogin"),
+        href: this.attempt.url,
+        attr: { target: "_blank", rel: "noreferrer" }
+      });
+      let response = "";
+      new import_obsidian3.Setting(el).setName(t("callbackPaste")).addText(
+        (v) => v.onChange((s) => {
+          response = s;
+        })
+      ).addButton(
+        (b) => b.setButtonText(t("connect")).onClick(() => this.finish(response, true))
+      );
+      new import_obsidian3.Setting(el).addButton(
+        (b) => b.setButtonText(t("retryLogin")).onClick(() => {
+          this.stop();
+          this.onOpen();
+        })
+      );
+    }
+    this.status = el.createEl("p", { attr: { role: "status" } });
+  }
+  cancel = () => this.close();
+  stop() {
+    if (this.rs.oauthCancel === this.cancel) this.rs.oauthCancel = void 0;
+    if (this.rs.oauthCallback === this.receive)
+      this.rs.oauthCallback = void 0;
+    this.server?.close();
+    this.server?.closeAllConnections();
+    this.server = void 0;
+    window.clearTimeout(this.timer);
+    this.waiting = false;
+    this.attempt = void 0;
+  }
+  receive = (url) => {
+    void this.finish(url, false);
+  };
+  async start() {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      if (this.rs.oauthCancel) throw Error("busy");
+      this.rs.oauthCancel = this.cancel;
+      if (this.invalidJson) throw Error("clientJson");
+      const c = { ...this.client };
+      if (!c.redirect && c.engine === "google" && !this.webClient && import_obsidian3.Platform.isDesktopApp) {
+        const http = require("node:http");
+        const server = http.createServer((req, res) => {
+          const a = this.attempt;
+          let valid = false;
+          if (a && req.method === "GET" && req.headers.host === new URL(a.client.redirect).host) {
+            try {
+              const u = new URL(req.url ?? "", a.client.redirect);
+              valid = u.origin === new URL(a.client.redirect).origin && u.pathname === "/" && u.searchParams.get("state") === a.state;
+              if (valid) this.receive(u.href);
+            } catch {
+            }
+          }
+          res.writeHead(valid ? 200 : 400, {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Cache-Control": "no-store"
+          });
+          res.end(valid ? "Return to Obsidian." : "Invalid callback.");
+        });
+        this.server = server;
+        await new Promise((yes, no) => {
+          server.once("error", no);
+          server.listen(0, "127.0.0.1", yes);
+        });
+        const addr = server.address();
+        if (!addr || typeof addr === "string") throw Error("redirect");
+        c.redirect = "http://127.0.0.1:" + addr.port + "/";
+      }
+      if (!c.redirect) throw Error("redirect");
+      this.attempt = await authorize(c);
+      if (!this.alive) {
+        this.stop();
+        return;
+      }
+      this.waiting = true;
+      this.rs.oauthCallback = this.receive;
+      this.timer = window.setTimeout(() => {
+        this.stop();
+        this.onOpen();
+        this.status.setText(this.rs.t("oauthExpired"));
+      }, 6e5);
+      this.onOpen();
+      if (import_obsidian3.Platform.isDesktopApp)
+        await require("electron").shell.openExternal(this.attempt.url);
+      else window.open(this.attempt.url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      this.stop();
+      this.onOpen();
+      this.status.setText(this.rs.t(e instanceof Error ? e.message : "failed"));
+    } finally {
+      this.busy = false;
+    }
+  }
+  async finish(response, manual) {
+    if (!this.attempt || this.busy) return;
+    this.busy = true;
+    try {
+      const a = this.attempt;
+      await this.rs.accounts.connect(
+        a,
+        response,
+        manual,
+        this.previous?.id,
+        () => this.alive && this.attempt === a
+      );
+      this.close();
+      this.done();
+    } catch (e) {
+      this.status.setText(this.rs.t(e instanceof Error ? e.message : "failed"));
+    } finally {
+      this.busy = false;
+    }
+  }
+  onClose() {
+    this.alive = false;
+    this.stop();
+    this.contentEl.empty();
+  }
+};
+
+// src/remote-browser.ts
+init_git_buffer();
+var import_obsidian4 = require("obsidian");
+var RemoteFolderBrowser = class extends import_obsidian4.Modal {
   constructor(app, source, tr, choose) {
     super(app);
     this.source = source;
@@ -19011,7 +20308,7 @@ var RemoteFolderBrowser = class extends import_obsidian3.Modal {
     this.titleEl.setText(t("browse"));
     el.createEl("p", { text: "/" + path });
     if (path)
-      new import_obsidian3.Setting(el).addButton(
+      new import_obsidian4.Setting(el).addButton(
         (b) => b.setButtonText(t("upFolder")).onClick(() => this.show(parent(path)))
       );
     const status = el.createEl("p", {
@@ -19022,14 +20319,14 @@ var RemoteFolderBrowser = class extends import_obsidian3.Modal {
       const { folders } = await this.source.list(path);
       if (seq !== this.sequence) return;
       status.remove();
-      new import_obsidian3.Setting(el).addButton(
+      new import_obsidian4.Setting(el).addButton(
         (b) => b.setButtonText(t("useFolder")).setCta().onClick(() => {
           this.choose(path || "/");
           this.close();
         })
       );
       for (const folder of folders.sort((a, b) => a.localeCompare(b)))
-        new import_obsidian3.Setting(el).setName(folder.slice(path ? path.length + 1 : 0)).addButton(
+        new import_obsidian4.Setting(el).setName(folder.slice(path ? path.length + 1 : 0)).addButton(
           (b) => b.setButtonText(t("openFolder")).onClick(() => this.show(folder))
         );
     } catch (e) {
@@ -19041,7 +20338,7 @@ var RemoteFolderBrowser = class extends import_obsidian3.Modal {
 
 // src/scope-editor.ts
 init_git_buffer();
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 function scopeEditor(el, p, t, redraw, validate2) {
   const c = p.config ??= legacyConfig();
   el.createEl("h3", { text: t("settings") });
@@ -19049,7 +20346,7 @@ function scopeEditor(el, p, t, redraw, validate2) {
   const selected2 = sets.find(
     (s) => preset(s).length === c.categories.length && preset(s).every((k) => c.categories.includes(k))
   ) ?? "custom";
-  new import_obsidian4.Setting(el).setName(t("scopePreset")).addDropdown((d) => {
+  new import_obsidian5.Setting(el).setName(t("scopePreset")).addDropdown((d) => {
     for (const s of [...sets, "custom"]) d.addOption(s, t("preset_" + s));
     d.setValue(selected2).onChange((v) => {
       if (v !== "custom") {
@@ -19060,7 +20357,7 @@ function scopeEditor(el, p, t, redraw, validate2) {
     });
   });
   for (const k of categories)
-    new import_obsidian4.Setting(el).setName(t("cat_" + k)).setDesc(
+    new import_obsidian5.Setting(el).setName(t("cat_" + k)).setDesc(
       ["core", "appearance", "data", "community"].includes(k) ? "H" : "S"
     ).addToggle(
       (x) => x.setValue(c.categories.includes(k)).onChange((on) => {
@@ -19071,7 +20368,7 @@ function scopeEditor(el, p, t, redraw, validate2) {
     );
   if (!c.categories.includes("code") && c.categories.some((k) => k === "data" || k === "community"))
     el.createEl("p", { text: t("existingCode") });
-  const input = (k) => new import_obsidian4.Setting(el).setName(t("cfg_" + k)).addTextArea(
+  const input = (k) => new import_obsidian5.Setting(el).setName(t("cfg_" + k)).addTextArea(
     (a) => a.setValue(c[k]).onChange((v) => {
       c[k] = v;
       validate2();
@@ -19087,25 +20384,25 @@ function scopeEditor(el, p, t, redraw, validate2) {
     "overlay"
   ])
     input(k);
-  new import_obsidian4.Setting(el).setName(t("mobileFilter")).addToggle(
+  new import_obsidian5.Setting(el).setName(t("mobileFilter")).addToggle(
     (x) => x.setValue(c.platformFilter).onChange((v) => {
       c.platformFilter = v;
     })
   );
-  new import_obsidian4.Setting(el).setName(t("strategy")).addDropdown((d) => {
+  new import_obsidian5.Setting(el).setName(t("strategy")).addDropdown((d) => {
     for (const k of ["batch", "changes"]) d.addOption(k, t(k));
     d.setValue(c.strategy).onChange((v) => {
       c.strategy = v;
     });
   });
-  new import_obsidian4.Setting(el).setName(t("reloadPolicy")).addDropdown((d) => {
+  new import_obsidian5.Setting(el).setName(t("reloadPolicy")).addDropdown((d) => {
     for (const k of ["next", "now", "idle", "never"])
       d.addOption(k, t("reload_" + k));
     d.setValue(c.reload).onChange((v) => {
       c.reload = v;
     });
   });
-  new import_obsidian4.Setting(el).setName(t("idleDelay")).addText((a) => {
+  new import_obsidian5.Setting(el).setName(t("idleDelay")).addText((a) => {
     a.inputEl.type = "number";
     a.setValue(String(c.idleSeconds)).onChange((v) => {
       c.idleSeconds = Number(v);
@@ -19115,8 +20412,8 @@ function scopeEditor(el, p, t, redraw, validate2) {
 }
 
 // src/editor.ts
-var import_obsidian5 = require("obsidian");
-var Editor = class extends import_obsidian5.PluginSettingTab {
+var import_obsidian6 = require("obsidian");
+var Editor = class extends import_obsidian6.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -19133,7 +20430,12 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
       return;
     }
     el.createEl("h2", { text: t("profiles") });
-    new import_obsidian5.Setting(el).setName(t("defaultMode")).addDropdown(
+    new import_obsidian6.Setting(el).addButton(
+      (b) => b.setButtonText(t("accounts")).onClick(
+        () => new AccountsView(this.app, rs, () => this.display()).open()
+      )
+    );
+    new import_obsidian6.Setting(el).setName(t("defaultMode")).addDropdown(
       (d) => d.addOption("plan", t("plan")).addOption("silent", t("silent")).setValue(rs.config.mode).onChange(async (v) => {
         await rs.save({
           ...rs.config,
@@ -19141,12 +20443,12 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
         });
       })
     );
-    new import_obsidian5.Setting(el).setName(t("pause")).addToggle(
+    new import_obsidian6.Setting(el).setName(t("pause")).addToggle(
       (c) => c.setValue(rs.config.paused).onChange(async (paused) => {
         await rs.save({ ...rs.config, paused });
       })
     );
-    new import_obsidian5.Setting(el).addButton(
+    new import_obsidian6.Setting(el).addButton(
       (b) => b.setButtonText(t("add")).setCta().onClick(() => {
         this.draft = newProfile();
         this.display();
@@ -19155,10 +20457,15 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
       (b) => b.setButtonText(t("syncAll")).onClick(() => rs.runAll())
     );
     rs.config.profiles.forEach((p, index) => {
-      const row = new import_obsidian5.Setting(el).setName(p.name).setDesc(
+      const account = p.cloud ? rs.accounts.list().find((a) => a.id === p.cloud?.account) : void 0;
+      const sourceName = p.access === "oauth" && p.cloud ? [t(p.cloud.engine + "Private"), account?.label].filter(Boolean).join(" · ") : p.access === "public" && p.remote ? t(p.remote.engine) : "";
+      const reference = [sourceName, p.reference || "/"].filter(Boolean).join(" · ");
+      const local = p.scope === "settings" ? this.app.vault.configDir : p.local;
+      const row = new import_obsidian6.Setting(el).setName(p.name).setDesc(
         [
           t(p.scope),
-          p.role === "subscriber" ? (p.access === "public" && p.remote ? t(p.remote.engine) + " · " : "") + p.reference + " → " + (p.scope === "settings" ? this.app.vault.configDir : p.local) : (p.scope === "settings" ? this.app.vault.configDir : p.local) + " → " + p.access === "local" ? p.reference : "",
+          p.role === "subscriber" ? reference + " → " + local : local + " → " + reference,
+          ...p.access === "oauth" && (!account || account.needsLogin) ? [t("loginRequired")] : [],
           t(p.inheritMode ? rs.config.mode : p.mode)
         ].join(" · ")
       );
@@ -19196,7 +20503,7 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
               this.display();
             })
           );
-      new import_obsidian5.Setting(el).addButton(
+      new import_obsidian6.Setting(el).addButton(
         (b) => b.setButtonText(t(p.id === rs.config.current ? "current" : "select")).setDisabled(p.id === rs.config.current).onClick(async () => {
           await rs.save({ ...rs.config, current: p.id });
           this.display();
@@ -19215,7 +20522,7 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
       this.draft = void 0;
       this.display();
     };
-    const text = (field, key) => new import_obsidian5.Setting(el).setName(t(key)).addText(
+    const text = (field, key) => new import_obsidian6.Setting(el).setName(t(key)).addText(
       (c) => c.setValue(String(p[field])).onChange((v) => {
         Object.assign(p, {
           [field]: field === "reference" || field === "local" ? v.replace(/\\/g, "/") : v
@@ -19223,7 +20530,7 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
         validateForm();
       })
     );
-    const num2 = (field, key) => new import_obsidian5.Setting(el).setName(t(key)).addText((c) => {
+    const num2 = (field, key) => new import_obsidian6.Setting(el).setName(t(key)).addText((c) => {
       c.inputEl.type = "number";
       c.inputEl.min = "0";
       c.setValue(String(p[field])).onChange((v) => {
@@ -19231,13 +20538,13 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
         validateForm();
       });
     });
-    const toggle = (field, key, disabled = false) => new import_obsidian5.Setting(el).setName(t(key)).addToggle(
+    const toggle = (field, key, disabled = false) => new import_obsidian6.Setting(el).setName(t(key)).addToggle(
       (c) => c.setDisabled(disabled).setValue(p[field] === true).onChange((v) => {
         Object.assign(p, { [field]: v });
         validateForm();
       })
     );
-    const choice = (field, key, values, disabled = false) => new import_obsidian5.Setting(el).setName(t(key)).addDropdown((d) => {
+    const choice = (field, key, values, disabled = false) => new import_obsidian6.Setting(el).setName(t(key)).addDropdown((d) => {
       for (const v of values)
         d.addOption(
           v,
@@ -19276,11 +20583,32 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
     text("name", "name");
     toggle("enabled", "enabled");
     choice("scope", "scope", ["content", "settings"]);
-    new import_obsidian5.Setting(el).setName(t("engine")).addDropdown((d) => {
-      for (const k of ["vaultSource", "google", "yandex", "git"])
+    new import_obsidian6.Setting(el).setName(t("engine")).addDropdown((d) => {
+      for (const k of [
+        "vaultSource",
+        "google",
+        "yandex",
+        "git",
+        "googlePrivate",
+        "yandexPrivate"
+      ])
         d.addOption(k, t(k));
-      d.setValue(p.remote?.engine ?? "vaultSource").onChange((v) => {
-        if (v === "vaultSource") {
+      d.setValue(
+        p.access === "oauth" ? p.cloud?.engine + "Private" : p.remote?.engine ?? "vaultSource"
+      ).onChange((v) => {
+        delete p.cloud;
+        if (v.endsWith("Private")) {
+          const engine = v === "googlePrivate" ? "google" : "yandex";
+          const a = rs.accounts.list().find((a2) => a2.engine === engine && !a2.needsLogin);
+          delete p.remote;
+          p.cloud = {
+            engine,
+            account: a?.id ?? "",
+            root: engine === "google" ? "root" : a?.full ? "disk:/" : "app:/"
+          };
+          p.access = "oauth";
+          p.reference = "/";
+        } else if (v === "vaultSource") {
           delete p.remote;
           p.access = "local";
           p.reference = "RefSync-reference";
@@ -19300,14 +20628,14 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
     const remote = p.access === "public" ? p.remote : void 0;
     choice("role", "role", ["subscriber", "publisher"], !!remote);
     if (remote) {
-      new import_obsidian5.Setting(el).setName(t("remote")).setDesc(t("readonly")).addText(
+      new import_obsidian6.Setting(el).setName(t("remote")).setDesc(t("readonly")).addText(
         (c) => c.setValue(remote.url).onChange((v) => {
           remote.url = v.trim();
           validateForm();
         })
       );
       if (remote.engine === "git")
-        new import_obsidian5.Setting(el).setName(t("branch")).addText(
+        new import_obsidian6.Setting(el).setName(t("branch")).addText(
           (c) => c.setValue(remote.branch).onChange((v) => {
             remote.branch = v.trim();
             validateForm();
@@ -19315,7 +20643,7 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
         );
       if (remote.engine === "google") {
         let key = rs.googleKey();
-        new import_obsidian5.Setting(el).setName(t("deviceKey")).addText((c) => {
+        new import_obsidian6.Setting(el).setName(t("deviceKey")).addText((c) => {
           c.inputEl.type = "password";
           c.setValue(key).onChange((v) => {
             key = v;
@@ -19328,14 +20656,53 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
         );
       }
     }
-    text("reference", remote ? "subfolder" : "reference");
-    if (remote)
-      new import_obsidian5.Setting(el).addButton(
+    if (p.access === "oauth" && p.cloud) {
+      const c = p.cloud;
+      new import_obsidian6.Setting(el).setName(t("accounts")).addDropdown((d) => {
+        d.addOption("", t("selectAccount"));
+        for (const a of rs.accounts.list().filter((a2) => a2.engine === c.engine))
+          d.addOption(
+            a.id,
+            a.label + " · " + t(a.full ? "fullAccess" : "appAccess") + (a.needsLogin ? " · " + t("loginRequired") : "")
+          );
+        d.setValue(c.account).onChange((id) => {
+          c.account = id;
+          if (c.engine === "yandex")
+            c.root = rs.accounts.list().find((a) => a.id === id)?.full ? "disk:/" : "app:/";
+          this.display();
+        });
+      }).addButton(
+        (b) => b.setButtonText(t("accounts")).onClick(
+          () => new AccountsView(this.app, rs, () => this.display()).open()
+        )
+      );
+      if (c.engine === "google")
+        new import_obsidian6.Setting(el).setName(t("driveRoot")).addText(
+          (v) => v.setValue(c.root).onChange((raw) => {
+            try {
+              c.root = location({
+                engine: "google",
+                url: raw.trim(),
+                branch: ""
+              }).root;
+            } catch {
+              c.root = "";
+            }
+            validateForm();
+          })
+        );
+    }
+    text(
+      "reference",
+      remote || p.access === "oauth" ? "subfolder" : "reference"
+    );
+    if (remote || p.access === "oauth")
+      new import_obsidian6.Setting(el).addButton(
         (b) => b.setButtonText(t("browse")).onClick(() => {
           try {
             new RemoteFolderBrowser(
               this.app,
-              rs.publicReference(p, ""),
+              p.access === "oauth" ? rs.accountReference(p, "", true) : rs.publicReference(p, ""),
               t,
               (path) => {
                 p.reference = path;
@@ -19348,7 +20715,7 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
         })
       );
     if (p.scope === "settings")
-      new import_obsidian5.Setting(el).setName(t("target")).setDesc(this.app.vault.configDir);
+      new import_obsidian6.Setting(el).setName(t("target")).setDesc(this.app.vault.configDir);
     else text("local", "target");
     if (p.scope === "settings")
       scopeEditor(
@@ -19374,7 +20741,7 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
     num2("shrinkPercent", "shrinkPercent");
     choice("trash", "trash", ["plugin", "vault", "system", "permanent"]);
     if (p.trash === "plugin") num2("trashDays", "trashDays");
-    new import_obsidian5.Setting(el).setName(t("mode")).addDropdown((d) => {
+    new import_obsidian6.Setting(el).setName(t("mode")).addDropdown((d) => {
       for (const k of ["inherit", "plan", "silent"]) d.addOption(k, t(k));
       d.setValue(p.inheritMode ? "inherit" : p.mode).onChange((v) => {
         p.inheritMode = v === "inherit";
@@ -19406,11 +20773,11 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
       num2("quietSeconds", "quietSeconds");
       num2("maxDeferrals", "maxDeferrals");
     }
-    const error = el.createEl("p", { attr: { role: "status" } }), actions = new import_obsidian5.Setting(el);
+    const error = el.createEl("p", { attr: { role: "status" } }), actions = new import_obsidian6.Setting(el);
     const validateForm = () => {
       const errors = validate(
         p,
-        import_obsidian5.Platform.isDesktopApp,
+        import_obsidian6.Platform.isDesktopApp,
         false,
         this.app.vault.configDir
       );
@@ -19423,6 +20790,8 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
       (b) => b.setButtonText(t("init")).onClick(async () => {
         if (!validateForm()) return;
         try {
+          if (p.access === "oauth" && p.role === "publisher" && p.reference && p.reference !== "/")
+            await rs.accountReference(p, "").mkdir(p.reference);
           for (const dir of [
             p.access === "local" ? p.reference : "",
             p.scope === "content" ? p.local : this.app.vault.configDir
@@ -19470,6 +20839,24 @@ var Editor = class extends import_obsidian5.PluginSettingTab {
 };
 
 // src/main.ts
+var send = async (url, method = "GET", headers = {}, body2) => {
+  try {
+    const r = await (0, import_obsidian7.requestUrl)({
+      url,
+      method,
+      headers,
+      body: body2,
+      throw: false
+    });
+    return {
+      status: r.status,
+      headers: r.headers,
+      arrayBuffer: r.arrayBuffer
+    };
+  } catch (cause) {
+    throw Error("remoteNetwork", { cause });
+  }
+};
 var icons = {
   idle: "refresh-cw",
   scan: "search",
@@ -19479,7 +20866,7 @@ var icons = {
   partial: "shield-alert",
   error: "circle-alert"
 };
-var Confirmation = class extends import_obsidian6.Modal {
+var Confirmation = class extends import_obsidian7.Modal {
   constructor(app, message, tr, action) {
     super(app);
     this.message = message;
@@ -19488,7 +20875,7 @@ var Confirmation = class extends import_obsidian6.Modal {
   }
   onOpen() {
     this.contentEl.createEl("p", { text: this.message });
-    new import_obsidian6.Setting(this.contentEl).addButton(
+    new import_obsidian7.Setting(this.contentEl).addButton(
       (b) => b.setButtonText(this.tr("cancel")).onClick(() => this.close())
     ).addButton(
       (b) => b.setButtonText(this.tr("confirmAction")).onClick(() => {
@@ -19498,7 +20885,11 @@ var Confirmation = class extends import_obsidian6.Modal {
     );
   }
 };
-var RefSync = class extends import_obsidian6.Plugin {
+var RefSync = class extends import_obsidian7.Plugin {
+  accounts;
+  driveCursors = /* @__PURE__ */ new Map();
+  oauthCancel;
+  oauthCallback;
   config;
   t = translator(navigator.language);
   engine;
@@ -19506,7 +20897,7 @@ var RefSync = class extends import_obsidian6.Plugin {
   logDir = "";
   scheduler;
   quiet = new QuietWindow();
-  notices = new NoticeCenter((m) => new import_obsidian6.Notice(m));
+  notices = new NoticeCenter((m) => new import_obsidian7.Notice(m));
   live = true;
   due = /* @__PURE__ */ new Map();
   own = /* @__PURE__ */ new Map();
@@ -19576,6 +20967,30 @@ var RefSync = class extends import_obsidian6.Plugin {
     const fence = MutationFence.forVault(this.app.vault);
     await fence.previousInstance;
     this.config = loadProfiles(await this.loadData());
+    const key = (id) => "refsync-" + bytesToHex(
+      sha2562(
+        new TextEncoder().encode(
+          this.app.loadLocalStorage("refsync:device") + ":" + id
+        )
+      )
+    ).slice(0, 56);
+    this.accounts = new Accounts(
+      {
+        list: () => this.app.loadLocalStorage("refsync:accounts") ?? [],
+        save: (rows) => this.app.saveLocalStorage("refsync:accounts", rows),
+        get: (id) => this.app.secretStorage?.getSecret(key(id)) || this.app.loadLocalStorage(key(id)) || null,
+        set: (id, v) => {
+          if (this.app.secretStorage) {
+            this.app.secretStorage.setSecret(key(id), v);
+            this.app.saveLocalStorage(key(id), null);
+          } else this.app.saveLocalStorage(key(id), v);
+        }
+      },
+      send
+    );
+    this.registerObsidianProtocolHandler("refsync-oauth", (params) => {
+      this.oauthCallback?.(callback + "?" + new URLSearchParams(params));
+    });
     const deviceKey = (k) => this.manifest.id + ":" + k;
     const state = new StateStore({
       get: (k) => this.app.loadLocalStorage(deviceKey(k)),
@@ -19600,7 +21015,7 @@ var RefSync = class extends import_obsidian6.Plugin {
       status,
       this.app.vault.configDir,
       this.manifest.id,
-      import_obsidian6.Platform.isDesktopApp
+      import_obsidian7.Platform.isDesktopApp
     );
     this.scheduler = new Scheduler(
       (id) => this.execute(id, "auto"),
@@ -19611,7 +21026,7 @@ var RefSync = class extends import_obsidian6.Plugin {
       "RefSync",
       (e) => this.menu(e)
     );
-    if (import_obsidian6.Platform.isDesktopApp) {
+    if (import_obsidian7.Platform.isDesktopApp) {
       this.bar = this.addStatusBarItem();
       this.bar.tabIndex = 0;
       this.bar.setAttribute("role", "button");
@@ -19661,6 +21076,8 @@ var RefSync = class extends import_obsidian6.Plugin {
         }
         this.startupRecovery = this.engine.exclusive(async () => {
           await this.engine.applier.recover((t) => this.recoveryTarget(t));
+          if (this.engine.applier.pendingTargets.size)
+            this.notices.send("cloudRecovery", this.t("cloudRecovery"));
           if (!this.config.paused)
             await this.verify().catch((e) => this.report(e));
         }).then(() => {
@@ -19676,6 +21093,7 @@ var RefSync = class extends import_obsidian6.Plugin {
   }
   onunload() {
     this.live = false;
+    this.oauthCancel?.();
     const fence = MutationFence.forVault(this.app.vault);
     const previous = fence.previousInstance;
     fence.previousInstance = Promise.allSettled([
@@ -19693,14 +21111,14 @@ var RefSync = class extends import_obsidian6.Plugin {
   paint() {
     const phase = this.engine.status.phase, label = this.t(this.config.paused ? "paused" : phase);
     const text = ["RefSync", label, this.statusLabel].filter(Boolean).join(" · ");
-    (0, import_obsidian6.setIcon)(this.ribbon, this.config.paused ? "pause" : icons[phase]);
+    (0, import_obsidian7.setIcon)(this.ribbon, this.config.paused ? "pause" : icons[phase]);
     this.ribbon.setAttribute("aria-label", text);
     this.bar?.setText(
       this.pendingReload ? text + " · " + this.t("reloadNeeded") : text
     );
   }
   menu(e) {
-    const m = new import_obsidian6.Menu();
+    const m = new import_obsidian7.Menu();
     for (const p of this.config.profiles)
       m.addItem(
         (item) => item.setTitle(p.name).setChecked(p.id === this.config.current).onClick(() => this.save({ ...this.config, current: p.id }))
@@ -19827,6 +21245,13 @@ var RefSync = class extends import_obsidian6.Plugin {
     }
   }
   recoveryTarget(t) {
+    const dest = JSON.parse(t.key)[3];
+    if (t.cloud) {
+      if (dest !== cloudId(t.cloud, t.target)) throw Error("journal");
+      return this.cloudStore(t.cloud, t.target, false);
+    }
+    if (dest !== "vault:" + (t.target === "/" ? "" : t.target))
+      throw Error("journal");
     return new LocalProvider(
       this.app.vault,
       t.target === "/" ? "" : t.target,
@@ -19849,24 +21274,6 @@ var RefSync = class extends import_obsidian6.Plugin {
     if (p.access !== "public" || p.role !== "subscriber" || !p.remote)
       throw Error("readonly");
     const { root, resourceKey } = location(p.remote);
-    const send = async (url, method = "GET", headers = {}, body) => {
-      try {
-        const r = await (0, import_obsidian6.requestUrl)({
-          url,
-          method,
-          headers,
-          body,
-          throw: false
-        });
-        return {
-          status: r.status,
-          headers: r.headers,
-          arrayBuffer: r.arrayBuffer
-        };
-      } catch (cause) {
-        throw Error("remoteNetwork", { cause });
-      }
-    };
     let tree;
     if (p.remote.engine === "google")
       tree = new GoogleTree(send, root, this.googleKey(), resourceKey);
@@ -19887,8 +21294,29 @@ var RefSync = class extends import_obsidian6.Plugin {
     }
     return new PublicStore(referenceId(p), tree, prefix === "/" ? "" : prefix);
   }
+  cloudStore(c, prefix, ro) {
+    const id = cloudId(c, prefix), a = this.accounts.list().find((a2) => a2.id === c.account && a2.engine === c.engine);
+    if (!a || a.needsLogin) throw Error("loginRequired");
+    if (c.engine === "yandex" && c.root !== (a.full ? "disk:/" : "app:/"))
+      throw Error("cloudLocation");
+    const transport = this.accounts.transport(c.account, c.engine);
+    let tree;
+    if (c.engine === "google") {
+      const cursor = this.driveCursors.get(id) ?? { token: "", revision: "" };
+      this.driveCursors.set(id, cursor);
+      tree = new DriveTree(transport, c.root, cursor);
+    } else tree = new DiskTree(transport, send, c.root);
+    const store = new CloudStore(id, tree, prefix === "/" ? "" : prefix, ro);
+    store.capabilities.supportsChangesFeed = c.engine === "google";
+    return store;
+  }
+  accountReference(p, prefix = p.reference, readOnly = p.role === "subscriber") {
+    if (p.access !== "oauth" || !p.cloud) throw Error("cloudLocation");
+    return this.cloudStore(p.cloud, prefix, readOnly);
+  }
   stores(p) {
-    if (p.access !== "local" && p.access !== "public") throw Error("invalid");
+    if (!["local", "public", "oauth"].includes(p.access))
+      throw Error("invalid");
     const make = (path, ro) => new LocalProvider(
       this.app.vault,
       path === "/" ? "" : path,
@@ -19904,7 +21332,7 @@ var RefSync = class extends import_obsidian6.Plugin {
       !ro && p.scope === "settings" && path === this.app.vault.configDir ? (file, write) => withPluginData(this.app, this.manifest.id, file, write) : void 0
     );
     return {
-      reference: p.access === "public" ? this.publicReference(p) : make(p.reference, p.role === "subscriber"),
+      reference: p.access === "oauth" ? this.accountReference(p) : p.access === "public" ? this.publicReference(p) : make(p.reference, p.role === "subscriber"),
       local: make(
         p.scope === "settings" ? this.app.vault.configDir : p.local,
         p.role === "publisher"
@@ -19923,13 +21351,21 @@ var RefSync = class extends import_obsidian6.Plugin {
     const p = this.config.profiles.find((x) => x.id === id);
     if (!p || !this.live) return;
     if (intent !== "dry" && (!p.enabled || this.config.paused)) return;
-    if (intent === "auto" && this.openIds.has(id)) return;
+    if (intent === "auto" && (this.openIds.has(id) || p.access === "oauth" && !this.accounts.list().some((a) => a.id === p.cloud?.account && !a.needsLogin)))
+      return;
     if (this.engine.applier.needsRecovery)
       await this.engine.exclusive(
         () => this.engine.applier.recover((t) => this.recoveryTarget(t))
       );
     this.statusLabel = p.name;
     const v = this.stores(p);
+    if (this.engine.applier.pendingTargets.has(v.reference.id)) {
+      await this.engine.exclusive(
+        () => this.engine.applier.recover((t) => this.recoveryTarget(t))
+      );
+      if (this.engine.applier.pendingTargets.has(v.reference.id))
+        throw Error("cloudRecovery");
+    }
     const firstKey = this.firstKey(p), first = p.firstPlan && !this.app.loadLocalStorage(firstKey), silent = (p.inheritMode ? this.config.mode : p.mode) === "silent" && !first;
     if ((intent === "run" || intent === "auto") && silent) {
       await this.deliver(p);
@@ -19953,14 +21389,14 @@ var RefSync = class extends import_obsidian6.Plugin {
       this.activeReview = void 0;
       this.showNext();
     };
-    const endpoints = () => p.role === "subscriber" ? [v.reference, v.local] : [v.local, v.reference];
+    const endpoints2 = () => p.role === "subscriber" ? [v.reference, v.local] : [v.local, v.reference];
     this.reviewQueue.push(
       new Review(
         this.app,
         p,
         plan2,
         this.t,
-        endpoints,
+        endpoints2,
         close,
         intent === "dry" ? void 0 : (choices, release) => {
           const picked = intent === "release" ? new Map(plan2.ops.map((o) => [o.path, "skip"])) : choices;
@@ -19991,7 +21427,7 @@ var RefSync = class extends import_obsidian6.Plugin {
     if (!active()) return;
     const v = this.stores(p);
     const isOpen = (path) => this.app.workspace.getLeavesOfType("markdown").some(
-      (leaf) => leaf.view instanceof import_obsidian6.MarkdownView && leaf.view.file?.path === join(p.local, path)
+      (leaf) => leaf.view instanceof import_obsidian7.MarkdownView && leaf.view.file?.path === join(p.local, path)
     );
     const result = await this.engine.run(
       p,
@@ -20006,7 +21442,7 @@ var RefSync = class extends import_obsidian6.Plugin {
         active,
         budget: new RunBudget(
           void 0,
-          p.access === "public" ? 9e4 : void 0,
+          p.access !== "local" ? 9e4 : void 0,
           void 0,
           this.engine.applier.fence
         ),
@@ -20105,7 +21541,7 @@ var RefSync = class extends import_obsidian6.Plugin {
   }
   report(e, id = this.config?.current ?? "") {
     if (!this.live) return;
-    const code = e instanceof Error ? e.message : "failed";
+    const code = e instanceof Error ? errorKey(e.message) : "failed";
     this.notices.send(id + ":" + code, "RefSync · " + this.t(code));
     void this.log("error", 0, id, { code }).catch(() => {
     });

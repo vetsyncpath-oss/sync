@@ -1,3 +1,4 @@
+import { cloudId } from "./private-cloud";
 import { type Profile } from "./model";
 export interface PublicSource {
   engine: "google" | "yandex" | "git";
@@ -63,6 +64,7 @@ export function location(remote: PublicSource) {
 export function referenceId(p: Profile) {
   if (p.access === "local")
     return "vault:" + (p.reference === "/" ? "" : p.reference);
+  if (p.access === "oauth" && p.cloud) return cloudId(p.cloud, p.reference);
   if (p.access !== "public" || !p.remote) throw Error("publicUrl");
   return JSON.stringify([
     p.remote.engine,

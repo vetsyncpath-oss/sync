@@ -1062,3 +1062,204 @@ test("silent deletion opt-out honors preserve mode, filters, and incomplete sour
   assert.equal(bad.target.data.size, 1);
   assert.equal(bad.disk.data.size, 0);
 });
+
+import {
+  readManifest,
+  manifestPath,
+  buildManifest,
+  manifestBytes,
+} from "../src/cloud-manifest";
+test("cloud publication journals both manifest writes, verifies a subscription and undoes the cloud target", async () => {
+  const { engine, source: remote, target: local, state } = fixture();
+  const cloud = {
+    engine: "yandex" as const,
+    account: "a".repeat(64),
+    root: "app:/",
+  };
+  const p: Profile = {
+    ...defaults,
+    access: "oauth",
+    cloud,
+    scope: "settings",
+    role: "publisher",
+    reference: "Settings",
+  };
+  local.data.set("app.json", bytes('{"font":1}'));
+  const events: string[] = [];
+  const put = remote.upload.bind(remote);
+  remote.upload = async (path, data) => {
+    events.push(path);
+    await put(path, data);
+  };
+  await engine.run(p, remote, local, false);
+  assert.deepEqual(events, [manifestPath, "app.json", manifestPath]);
+  const manifest = await readManifest(remote);
+  assert.deepEqual(
+    manifest?.files.map((f) => f.path),
+    ["app.json"],
+  );
+  assert.equal(manifest?.files[0].hash, await hash(bytes('{"font":1}')));
+  const key = JSON.stringify([p.id, p.scope, local.id, remote.id]);
+  assert.ok(state.get(key).lastRun);
+  const t = (await engine.applier.journal.transactions()).find(
+    (t) => t.key === key,
+  )!;
+  assert.deepEqual(t.cloud, cloud);
+  assert.equal(t.target, p.reference);
+  const copy = new Memory("another-vault");
+  const subscriber = { ...p, role: "subscriber" as const };
+  await engine.run(subscriber, remote, copy, false);
+  assert.equal(text(copy.data.get("app.json")!), '{"font":1}');
+  await engine.applier.undo(key, remote);
+  assert.equal(remote.data.size, 0);
+});
+test("a failed publication restores its original cloud files and manifest", async () => {
+  const { engine, source: remote, target: local } = fixture();
+  const p: Profile = {
+    ...defaults,
+    access: "oauth",
+    cloud: { engine: "google", account: "0".repeat(64), root: "root" },
+    scope: "settings",
+    role: "publisher",
+    reference: "Settings",
+  };
+  remote.data.set("app.json", bytes('{"old":true}'));
+  local.data.set("app.json", bytes('{"new":true}'));
+  const old = await buildManifest(
+    await scan(remote, "settings", ".obsidian", "refsync"),
+    "other",
+  );
+  remote.data.set(manifestPath, old);
+  const put = remote.upload.bind(remote);
+  let fail = true;
+  remote.upload = async (path, data) => {
+    if (path === manifestPath && JSON.parse(text(data)).files && fail) {
+      fail = false;
+      throw Error("quota");
+    }
+    await put(path, data);
+  };
+  await assert.rejects(engine.run(p, remote, local, false), /quota/);
+  assert.equal(text(remote.data.get("app.json")!), '{"old":true}');
+  assert.deepEqual(remote.data.get(manifestPath), old);
+});
+test("an interrupted, incomplete or changing manifest aborts a silent unguarded mirror", async () => {
+  const { engine, source: remote, target: local } = fixture();
+  const p: Profile = {
+    ...defaults,
+    access: "oauth",
+    cloud: { engine: "google", account: "0".repeat(64), root: "root" },
+    reference: "/",
+    mirror: "full",
+    deletions: true,
+    silentDeletionSafeguard: false,
+  };
+  remote.data.set("new.md", bytes("new"));
+  local.data.set("keep.md", bytes("keep"));
+  const incomplete = await buildManifest(
+    await scan(new Memory("empty"), "content", ".obsidian", "refsync"),
+    "a",
+  );
+  for (const content of [
+    manifestBytes({ schemaVersion: 1, publishing: true }),
+    incomplete,
+  ]) {
+    remote.data.set(manifestPath, content);
+    await assert.rejects(
+      engine.run(p, remote, local, false, undefined, { mode: "silent" }),
+      /manifestInvalid|manifestMismatch/,
+    );
+    assert.deepEqual([...local.data.keys()], ["keep.md"]);
+  }
+  remote.data.delete(manifestPath);
+  const good = await buildManifest(
+    await scan(remote, "content", ".obsidian", "refsync"),
+    "a",
+  );
+  remote.data.set(manifestPath, good);
+  const get = remote.download.bind(remote);
+  let hits = 0;
+  remote.download = async (path) => {
+    if (path === "new.md" && ++hits === 2)
+      remote.data.set(manifestPath, incomplete);
+    return get(path);
+  };
+  await assert.rejects(
+    engine.run(p, remote, local, false, undefined, { mode: "silent" }),
+    /referenceChanged/,
+  );
+  assert.deepEqual([...local.data.keys()], ["keep.md"]);
+});
+
+test("an unavailable cloud account defers only its own recovery and resumes with the same journal", async () => {
+  const { engine, target, journal } = fixture(),
+    id = crypto.randomUUID(),
+    cloud = {
+      engine: "yandex" as const,
+      root: "app:/",
+      account: "0".repeat(64),
+    };
+  const t: Transaction = {
+    id,
+    scope: "content",
+    version: 1,
+    target: "Published",
+    key: JSON.stringify(["p", "content", "vault:notes", "account-bound-cloud"]),
+    cloud,
+    before: fresh(),
+    steps: [{ path: "one.md", action: "write" }],
+  };
+  await journal.begin(t);
+  await journal.backup(id, 0, bytes("before"));
+  await journal.disk.putNew(
+    id + "/after/0",
+    manifestBytes(await hash(bytes("after"))),
+  );
+  target.data.set("one.md", bytes("after"));
+  await engine.applier.recover(() => {
+    throw Error("loginRequired");
+  });
+  assert.deepEqual([...engine.applier.pendingTargets], ["account-bound-cloud"]);
+  assert.equal(await journal.disk.has(id + "/rolled-back"), false);
+  assert.equal(text(target.data.get("one.md")!), "after");
+  await engine.applier.recover((tx) => {
+    assert.deepEqual(tx.cloud, cloud);
+    return target;
+  });
+  assert.equal(engine.applier.pendingTargets.size, 0);
+  assert.equal(text(target.data.get("one.md")!), "before");
+  assert.ok(await journal.disk.has(id + "/rolled-back"));
+});
+test("cloud rollback preserves a concurrent edit and remains resumable", async () => {
+  const { engine, target, journal } = fixture(),
+    id = crypto.randomUUID(),
+    cloud = {
+      engine: "google" as const,
+      root: "root",
+      account: "0".repeat(64),
+    };
+  const t: Transaction = {
+    id,
+    scope: "content",
+    version: 1,
+    target: "Notes",
+    key: JSON.stringify(["p", "content", "vault:notes", "private"]),
+    cloud,
+    before: fresh(),
+    steps: [{ path: "note.md", action: "write" }],
+  };
+  await journal.begin(t);
+  await journal.backup(id, 0, bytes("before"));
+  await journal.disk.putNew(
+    id + "/after/0",
+    manifestBytes(await hash(bytes("published"))),
+  );
+  target.data.set("note.md", bytes("concurrent"));
+  await engine.applier.recover(() => target);
+  assert.equal(text(target.data.get("note.md")!), "concurrent");
+  assert.ok(engine.applier.pendingTargets.has("private"));
+  target.data.set("note.md", bytes("published"));
+  await engine.applier.recover(() => target);
+  assert.equal(text(target.data.get("note.md")!), "before");
+  assert.ok(await journal.disk.has(id + "/rolled-back"));
+});

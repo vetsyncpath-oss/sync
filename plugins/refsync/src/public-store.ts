@@ -53,13 +53,17 @@ export class PublicStore implements StorageProvider {
     maxFileSize: Infinity,
     rateLimits: null,
   };
-  private dirs = new Map<string, Promise<Map<string, RemoteItem>>>();
+  protected dirs = new Map<string, Promise<Map<string, RemoteItem>>>();
   private root?: Promise<RemoteItem>;
   constructor(
     readonly id: string,
     private tree: RemoteTree,
     private prefix = "",
   ) {}
+  reset() {
+    this.dirs.clear();
+    this.root = undefined;
+  }
   private entries(dir: RemoteItem) {
     let reading = this.dirs.get(dir.key);
     if (!reading) {
@@ -77,7 +81,7 @@ export class PublicStore implements StorageProvider {
     }
     return reading;
   }
-  private async find(path: string) {
+  protected async find(path: string) {
     this.root ??= this.tree.root();
     let dir = await this.root;
     const ancestors = new Set([dir.key]);
@@ -152,16 +156,16 @@ export class PublicStore implements StorageProvider {
   async getRevision() {
     return this.tree.revision?.() ?? null;
   }
-  async upload(): Promise<void> {
+  async upload(_path?: string, _bytes?: Bytes, _mtime?: number): Promise<void> {
     throw Error("readonly");
   }
-  async delete(): Promise<void> {
+  async delete(_path?: string): Promise<void> {
     throw Error("readonly");
   }
-  async mkdir(): Promise<void> {
+  async mkdir(_path?: string): Promise<void> {
     throw Error("readonly");
   }
-  async move(): Promise<void> {
+  async move(_from?: string, _to?: string): Promise<void> {
     throw Error("readonly");
   }
 }
