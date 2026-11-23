@@ -11177,6 +11177,7 @@ var categories = [
   "data",
   "extras"
 ];
+var pluginParts = ["code", "data", "extras"];
 function preset(name) {
   switch (name) {
     case "look":
@@ -11227,26 +11228,39 @@ var matches = (path, patterns) => terms(patterns).some(
 );
 function emptyConfigDirectory(path, c) {
   if (matches(path, c.exclude) || matches(path + "/", c.exclude)) return false;
-  if (matches(path, c.include)) return true;
   const [top, id] = fold(path).split("/");
+  const specific = top === "plugins" ? c.pluginLimits?.find((r) => fold(r.id) === id) : void 0;
+  if (specific && !specific.allow.length) return false;
+  if (matches(path, c.include)) return true;
   if (top === "themes" || top === "snippets") return c.categories.includes(top);
   if (top !== "plugins") return false;
-  const allowed = (allow, deny) => !id || (!allow.trim() || matches(id, allow)) && !matches(id, deny);
-  return (c.categories.includes("code") || c.categories.includes("extras")) && allowed(c.codeAllow, c.codeDeny) || c.categories.includes("data") && allowed(c.dataAllow, c.dataDeny);
+  const allowed = (part) => {
+    if (!c.categories.includes(part) || specific && !specific.allow.includes(part))
+      return false;
+    const allow = part === "data" ? c.dataAllow : c.codeAllow, deny = part === "data" ? c.dataDeny : c.codeDeny;
+    return !id || (!allow.trim() || matches(id, allow)) && !matches(id, deny);
+  };
+  return pluginParts.some(allowed);
 }
-function inScope(path, c, directory) {
+function configReason(path, c, directory) {
   path = fold(path);
   if (directory)
-    return /^(themes|snippets|plugins)(\/|$)/.test(path) || !!c.include;
+    return /^(themes|snippets|plugins)(\/|$)/.test(path) || !!c.include ? "included" : "categoryRule";
   const cat = category(path), custom = matches(path, c.include);
-  if (!custom && (!cat || !c.categories.includes(cat))) return false;
+  if (!custom && (!cat || !c.categories.includes(cat))) return "categoryRule";
   if (c.legacyThemes && cat === "themes" && !custom && !/^themes\/[^/]+\/(manifest\.json|theme\.css)$/.test(path))
-    return false;
-  if (matches(path, c.exclude)) return false;
+    return "categoryRule";
+  if (matches(path, c.exclude)) return "maskRule";
   const id = path.startsWith("plugins/") ? path.split("/")[1] : void 0;
-  if (!id) return true;
-  const [allow, deny] = cat === "data" ? [c.dataAllow, c.dataDeny] : [c.codeAllow, c.codeDeny];
-  return (!allow.trim() || matches(id, allow)) && !matches(id, deny);
+  if (!id) return "included";
+  const part = cat === "code" || cat === "data" ? cat : "extras";
+  const limit = c.pluginLimits?.find((r) => fold(r.id) === id);
+  if (limit && !limit.allow.includes(part)) return "pluginRule";
+  const [allow, deny] = part === "data" ? [c.dataAllow, c.dataDeny] : [c.codeAllow, c.codeDeny];
+  return (!allow.trim() || matches(id, allow)) && !matches(id, deny) ? "included" : "pluginRule";
+}
+function inScope(path, c, directory) {
+  return configReason(path, c, directory) === "included";
 }
 async function mobileExcluded(source, target, budget) {
   const blocked = /* @__PURE__ */ new Set();
@@ -11266,7 +11280,9 @@ async function mobileExcluded(source, target, budget) {
   return [...blocked];
 }
 function validConfig(c) {
-  return !!c && Array.isArray(c.categories) && c.categories.every((k) => categories.includes(k)) && [
+  return !!c && (c.pluginLimits === void 0 || Array.isArray(c.pluginLimits) && c.pluginLimits.every(
+    (r) => r && Object.keys(r).every((k) => k === "id" || k === "allow") && typeof r.id === "string" && safe(r.id) && !r.id.includes("/") && Array.isArray(r.allow) && r.allow.every((k) => pluginParts.includes(k))
+  )) && Array.isArray(c.categories) && c.categories.every((k) => categories.includes(k)) && [
     "codeAllow",
     "codeDeny",
     "dataAllow",
@@ -11385,7 +11401,7 @@ var plainContent = () => ({
   rules: []
 });
 function validContent(c) {
-  return c && typeof c.config === "boolean" && typeof c.hidden === "boolean" && Array.isArray(c.rules) && c.rules.every(
+  return c && (c.base === void 0 || c.base === "all" || c.base === "selected") && typeof c.config === "boolean" && typeof c.hidden === "boolean" && Array.isArray(c.rules) && c.rules.every(
     (r) => r && typeof r.path === "string" && safe(r.path) && typeof r.include === "boolean"
   );
 }
@@ -11410,9 +11426,9 @@ function folderIncluded(path, c) {
     const included = rules.get(d);
     if (included !== void 0) return included;
   }
-  return true;
+  return c.base !== "selected";
 }
-function contentPath(path, configDir, self, directory, c) {
+function contentReason(path, configDir, self, directory, c) {
   const f = fold(path), cfg = fold(configDir);
   if (f.split("/").some(
     (x) => [
@@ -11423,20 +11439,23 @@ function contentPath(path, configDir, self, directory, c) {
       ".sync-manifest.json"
     ].includes(x)
   ) || /(?:\.tmp$|(?:^|\/)(?:thumbs\.db|desktop\.ini)$)/i.test(f) || under(f, cfg + "/plugins/" + fold(self)))
-    return false;
+    return "protected";
   const settings = under(f, cfg);
-  if (settings && !c?.config) return false;
+  if (settings && !c?.config) return "configOff";
   const relative = settings ? f.slice(cfg.length + 1) : f;
   if (settings && /^(?:workspace(?:-mobile)?\.json$|cache(?:\/|$))|\.lock$/.test(relative))
-    return false;
+    return "protected";
   if (!c?.hidden && relative.split("/").some((s) => s.startsWith(".")))
-    return false;
-  if (!c) return true;
-  if (settings && relative === "community-plugins.json" && c.rules.some(
+    return "hiddenOff";
+  if (!c) return "included";
+  if (settings && relative === "community-plugins.json" && (c.base === "selected" && !folderIncluded(cfg + "/plugins", c) || c.rules.some(
     (r) => !r.include && (under(fold(r.path), cfg + "/plugins") || under(cfg + "/plugins", fold(r.path)))
-  ))
-    return false;
-  return folderIncluded(f, c) || directory && index(c).parents.has(f);
+  )))
+    return "protectedList";
+  return folderIncluded(f, c) || directory && index(c).parents.has(f) ? "included" : "folderRule";
+}
+function contentPath(...args) {
+  return contentReason(...args) === "included";
 }
 function setFolders(c, paths, include) {
   const targets = new Set(paths.map(fold));
@@ -11694,1127 +11713,12 @@ function canAutoReload(history, now = Date.now()) {
 }
 
 // src/main.ts
-var import_obsidian9 = require("obsidian");
+var import_obsidian13 = require("obsidian");
 
 // src/profiles.ts
 init_git_buffer();
-var object = (v) => !!v && typeof v === "object" && !Array.isArray(v);
-function loadProfiles(raw) {
-  let profiles = [];
-  let current = "", mode = "plan", paused = false;
-  if (object(raw) && Array.isArray(raw.profiles)) {
-    const ids = /* @__PURE__ */ new Set();
-    for (const entry of raw.profiles) {
-      if (!object(entry) || typeof entry.id !== "string" || ids.has(entry.id))
-        throw Error("invalid");
-      ids.add(entry.id);
-      profiles.push({ ...defaults, ...entry });
-    }
-    current = String(raw.current);
-    mode = raw.mode === "silent" ? "silent" : "plan";
-    paused = raw.paused === true;
-  } else if (object(raw) && object(raw.profile)) {
-    profiles = [
-      {
-        ...defaults,
-        startup: false,
-        onFocus: false,
-        onOnline: false,
-        intervalMinutes: 0,
-        inheritMode: false,
-        trash: "vault",
-        ...raw.profile
-      }
-    ];
-  }
-  for (const p of profiles) {
-    if (p.scope === "settings" && p.config === void 0) {
-      p.config = legacyConfig();
-      p.startup = false;
-      p.intervalMinutes = 0;
-      p.onFocus = false;
-      p.onOnline = false;
-    }
-  }
-  return {
-    version: 2,
-    profiles,
-    current: profiles.some((p) => p.id === current) ? current : profiles[0]?.id ?? "",
-    mode,
-    paused
-  };
-}
-function newProfile(copy) {
-  const id = crypto.randomUUID(), tag = id.slice(0, 6);
-  return copy ? { ...structuredClone(copy), id, name: copy.name + " (2)", enabled: false } : {
-    ...defaults,
-    id,
-    name: "Sync Studio " + tag,
-    local: "Sync Studio-copy-" + tag,
-    reference: "Sync Studio-source-" + tag,
-    enabled: false,
-    fileEvents: true
-  };
-}
 
-// src/applier.ts
-init_git_buffer();
-
-// src/cloud-manifest.ts
-init_git_buffer();
-var manifestPath = ".sync-manifest.json";
-var manifestBytes = (v) => new TextEncoder().encode(JSON.stringify(v)).buffer;
-async function buildManifest(snapshot, device) {
-  if (!snapshot.complete || [...snapshot.skipped?.values() ?? []].some((x) => x !== "filter"))
-    throw Error("incomplete");
-  const files = [...snapshot.files].map(([path, v]) => ({
-    path,
-    size: v.size,
-    hash: v.rawHash ?? v.hash,
-    mtime: Number.isFinite(v.mtime) ? v.mtime : 0
-  })).sort((a, b) => a.path < b.path ? -1 : 1);
-  const filesHash = await hash(manifestBytes(files));
-  const directories = [
-    ...snapshot.managedDirectories ?? snapshot.directories
-  ].sort();
-  const revision = await hash(manifestBytes([filesHash, directories]));
-  return manifestBytes({
-    schemaVersion: 1,
-    revision,
-    filesHash,
-    directories,
-    generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    publisherDevice: device,
-    files
-  });
-}
-async function readManifest(store) {
-  store.reset?.();
-  const stat = await store.stat(manifestPath);
-  if (!stat) return null;
-  if (stat.type !== "file") throw Error("manifestInvalid");
-  const raw = await store.download(manifestPath);
-  let m;
-  try {
-    m = JSON.parse(new TextDecoder().decode(raw));
-  } catch {
-    throw Error("manifestInvalid");
-  }
-  if (!m || m.schemaVersion !== 1 || !Array.isArray(m.files) || !(typeof m.revision === "string" && m.revision.length || Number.isSafeInteger(m.revision)) || typeof m.publisherDevice !== "string" || typeof m.generatedAt !== "string")
-    throw Error("manifestInvalid");
-  const checksum = await hash(manifestBytes(m.files));
-  if ("filesHash" in m && m.filesHash !== checksum)
-    throw Error("manifestInvalid");
-  if (m.directories !== void 0 && (!Array.isArray(m.directories) || m.directories.some((p) => typeof p !== "string" || !safe(p)) || new Set(m.directories.map(fold)).size !== m.directories.length || m.revision !== await hash(manifestBytes([checksum, m.directories]))))
-    throw Error("manifestInvalid");
-  m.revision = JSON.stringify([m.revision, checksum]);
-  const seen = /* @__PURE__ */ new Set();
-  for (const f of m.files) {
-    if (!f || typeof f.path !== "string" || !safe(f.path) || fold(f.path) === manifestPath || seen.has(fold(f.path)) || !Number.isSafeInteger(f.size) || f.size < 0 || !Number.isFinite(f.mtime) || !/^([a-f0-9]{64})$/.test(f.hash))
-      throw Error("manifestInvalid");
-    seen.add(fold(f.path));
-  }
-  return m;
-}
-function verifyManifest(m, snap, accept, acceptDir = (p) => true) {
-  if (!snap.complete || [...snap.skipped?.values() ?? []].some((reason) => reason !== "filter"))
-    throw Error("manifestMismatch");
-  if (m.directories) {
-    const dirs = new Set(m.directories);
-    for (const p of snap.managedDirectories ?? snap.directories)
-      if (!dirs.has(p)) throw Error("manifestMismatch");
-    for (const p of dirs)
-      if (acceptDir(p) && !snap.directories.has(p))
-        throw Error("manifestMismatch");
-  }
-  const entries = new Map(m.files.map((f) => [f.path, f]));
-  for (const [p, item] of snap.files) {
-    const f = entries.get(p);
-    if (f?.hash !== (item.rawHash ?? item.hash) || f.size !== item.size)
-      throw Error("manifestMismatch");
-  }
-  for (const f of m.files) {
-    if (snap.files.has(f.path) || !accept(f)) continue;
-    let p = f.path;
-    while (p && !snap.skipped?.has(p)) p = parent(p);
-    if (!p) throw Error("manifestMismatch");
-  }
-}
-
-// src/applier.ts
-var decoder = new TextDecoder();
-var Applier = class {
-  constructor(journal, state, fence = new MutationFence()) {
-    this.journal = journal;
-    this.state = state;
-    this.fence = fence;
-  }
-  needsRecovery = false;
-  pendingTargets = /* @__PURE__ */ new Set();
-  async restore(t, target, start = 0, end = t.steps.length) {
-    const budget = new RunBudget(void 0, void 0, void 0, this.fence);
-    for (let i = end - 1; i >= start; i--) {
-      const p = t.steps[i].path, armed = t.id + "/armed/" + i;
-      if (t.cloud && await this.journal.disk.has(t.id + "/restored/" + i) || !await this.journal.disk.has(armed) || await this.journal.disk.has(t.id + "/skipped/" + i))
-        continue;
-      const perform = async () => {
-        const saved = await this.journal.json(armed);
-        if (t.cloud) target.reset?.();
-        const stat = await budget.io(() => target.stat(p));
-        if (t.steps[i].action === "mkdir" || t.steps[i].action === "rmdir") {
-          if (stat && stat.type !== "folder") throw Error("collision");
-          if (saved === "folder" && !stat)
-            await budget.io(() => target.mkdir(p), false);
-          if (saved === null && stat)
-            await budget.io(() => target.removeEmptyDir(p), false);
-          return;
-        }
-        if (stat?.type === "folder") throw Error("collision");
-        if (t.cloud) {
-          const expected = t.id + "/after/" + i;
-          if (!await this.journal.disk.has(expected)) return;
-          const current = stat ? await hash(await budget.io(() => target.download(p))) : null;
-          if (current === saved) return;
-          if (current !== await this.journal.json(expected))
-            throw Error("cloudRecovery");
-        }
-        if (saved === null) {
-          if (stat) await budget.io(() => target.delete(p), false);
-        } else {
-          const bytes = await this.journal.disk.read(t.id + "/backup/" + i);
-          if (await hash(bytes) !== saved) throw Error("backup");
-          if (!stat || await hash(await budget.io(() => target.download(p))) !== saved)
-            await budget.io(() => target.upload(p, bytes), false);
-        }
-      };
-      if (target.withFilePaused) await target.withFilePaused(p, perform);
-      else await perform();
-      if (t.cloud) await this.journal.mark(t.id + "/restored/" + i);
-    }
-  }
-  async recover(resolve) {
-    this.fence.check();
-    this.pendingTargets.clear();
-    for await (const t of this.journal.walk(true)) {
-      try {
-        await this.recoverTransaction(t, resolve);
-      } catch (e) {
-        if (!t.cloud) throw e;
-        this.pendingTargets.add(JSON.parse(t.key)[3]);
-      }
-    }
-    this.needsRecovery = false;
-  }
-  async prune() {
-    this.fence.check();
-    if (this.needsRecovery) return;
-    const latest = /* @__PURE__ */ new Map();
-    for await (const t of this.journal.walk()) {
-      const has = (marker) => this.journal.disk.has(t.id + "/" + marker);
-      if (await has("undo-start") && !await has("undo-done")) continue;
-      if (!await has("rolled-back") && !await has("undo-done")) {
-        if (!await has("done")) continue;
-        if (t.settings?.local && !await has("verified") && !await has("verify-failed"))
-          continue;
-        if (!latest.has(t.key))
-          latest.set(t.key, (await this.state.load(t.key)).lastRun);
-        if (latest.get(t.key) === t.id) continue;
-      }
-      await this.journal.disk.removeTree(t.id);
-    }
-  }
-  async recoverTransaction(t, resolve) {
-    if (await this.journal.disk.has(t.id + "/undo-start") && !await this.journal.disk.has(t.id + "/undo-done")) {
-      await this.restore(t, resolve(t));
-      await this.state.commit(t.key, t.before);
-      await this.journal.mark(t.id + "/undo-done");
-      return;
-    }
-    if (await this.journal.disk.has(t.id + "/done") || await this.journal.disk.has(t.id + "/rolled-back"))
-      return;
-    if ((await this.state.load(t.key)).lastRun === t.id) {
-      await this.journal.mark(t.id + "/done");
-      return;
-    }
-    await this.restore(t, resolve(t));
-    await this.journal.mark(t.id + "/rolled-back");
-  }
-  async undo(key, target, resolve) {
-    this.fence.check();
-    this.needsRecovery = true;
-    const last = (await this.state.load(key)).lastRun;
-    const t = (await this.journal.transactions()).find(
-      (v) => v.key === key && v.id === last
-    );
-    if (!t) throw Error("noBackup");
-    await this.journal.mark(t.id + "/undo-start");
-    const store = resolve ? resolve(t) : target;
-    if (!store) throw Error("journal");
-    await this.restore(t, store);
-    await this.state.commit(key, t.before);
-    await this.journal.mark(t.id + "/undo-done");
-    this.needsRecovery = false;
-  }
-  async apply(profile, plan2, source, target, key, targetPath, budget = new RunBudget(void 0, void 0, void 0, this.fence), progress, active, projection, publication, checkReference, operations, configDir = ".obsidian", self = "refsync") {
-    this.fence.check();
-    if (this.needsRecovery || this.pendingTargets.has(target.id))
-      throw Error("journal");
-    const checkpoint = () => {
-      budget.check();
-      if (active && !active()) throw Error("stopped");
-    };
-    const cfg = profile.config ?? legacyConfig();
-    const batch = profile.scope === "settings" && cfg.strategy === "batch";
-    if (batch && plan2.deferred.some((x) => ["locked", "invalidConfig"].includes(x.reason)))
-      throw Error("incomplete");
-    const previous = await this.state.load(key);
-    const next = {
-      ...fresh(),
-      size: plan2.held.length ? previous.size : plan2.count,
-      lastRun: previous.lastRun
-    };
-    const previousFolders = trackedDirectories(previous), folders = new Set(previousFolders);
-    for (const p of plan2.forgottenFolders ?? []) folders.delete(p);
-    next.folders = [...folders];
-    Object.assign(next.entries, previous.entries);
-    for (const path of plan2.forgotten) delete next.entries[path];
-    const id = crypto.randomUUID(), steps = [];
-    const stage = async (path, bytes, mtime) => {
-      const digest2 = await hash(bytes);
-      await this.journal.disk.putNew(id + "/stage/" + steps.length, bytes);
-      steps.push({ path, action: "write", mtime, digest: digest2 });
-    };
-    const stageBatch = batch && plan2.ops.some((x) => x.action === "write" || x.action === "delete");
-    const displaced = /* @__PURE__ */ new Map();
-    const expectedTarget = /* @__PURE__ */ new Map();
-    const publish = publication && (publication.missing || plan2.ops.some(
-      (o) => ["write", "both", "delete", "mkdir", "rmdir"].includes(o.action)
-    ));
-    try {
-      if (publish)
-        await stage(
-          manifestPath,
-          manifestBytes({ schemaVersion: 1, publishing: id })
-        );
-      for (const op of plan2.ops) {
-        checkpoint();
-        const p = op.path, s = op.source, b = Object.hasOwn(previous.entries, p) ? previous.entries[p] : void 0;
-        if (op.action === "mkdir" || op.action === "rmdir") {
-          steps.push({ path: p, action: op.action });
-          continue;
-        }
-        if ((publish || profile.scope === "content") && op.path !== manifestPath) {
-          if (op.target?.rawHash || op.target?.hash)
-            expectedTarget.set(p, op.target.rawHash ?? op.target.hash);
-          else if (!op.target && op.action === "write")
-            expectedTarget.set(p, null);
-        }
-        if (op.action === "delete") {
-          steps.push({ path: p, action: "delete" });
-          delete next.entries[p];
-          continue;
-        }
-        if (!s) throw Error("incomplete");
-        if (op.action === "retain") {
-          next.entries[p] = {
-            size: b?.size ?? 0,
-            mtime: b?.mtime ?? 0,
-            hash: b?.hash ?? "",
-            applied: b?.applied ?? "",
-            seen: s.hash,
-            delivered: b?.delivered ?? false
-          };
-          continue;
-        }
-        if (stageBatch && op.action === "ack") {
-          const bytes = await budget.io(() => source.download(p));
-          if (await hash(bytes) !== (s.rawHash ?? s.hash))
-            throw Error("referenceChanged");
-        }
-        if (op.action === "write" || op.action === "both") {
-          let bytes;
-          try {
-            bytes = await budget.io(() => source.download(p));
-          } catch (e) {
-            if (batch || !transient(e)) throw e;
-            plan2.deferred.push({ path: p, reason: "locked" });
-            continue;
-          }
-          if (bytes.byteLength !== s.size || await hash(bytes) !== (s.rawHash ?? s.hash)) {
-            if (profile.role === "publisher") {
-              plan2.deferred.push({ path: p, reason: "unstable" });
-              continue;
-            }
-            throw Error("referenceChanged");
-          }
-          if (profile.scope === "settings" && p.endsWith(".json"))
-            JSON.parse(decoder.decode(bytes));
-          if (op.action === "both") {
-            const dot = p.lastIndexOf("."), cut = dot > p.lastIndexOf("/") + 1 ? dot : p.length;
-            const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
-            const copy = p.slice(0, cut) + ".conflict-" + this.state.device + "-" + stamp + p.slice(cut);
-            if (await target.stat(copy)) throw Error("collision");
-            displaced.set(copy, p);
-            steps.push({ path: copy, action: "write" });
-          }
-          await stage(
-            p,
-            projection ? deliveryBytes(p, bytes, projection) : bytes,
-            s.mtime
-          );
-        }
-        next.entries[p] = {
-          size: s.size,
-          mtime: s.mtime,
-          hash: s.hash,
-          applied: s.hash,
-          seen: s.hash,
-          delivered: op.action !== "ack" || b?.delivered === true
-        };
-      }
-      await checkReference?.();
-    } catch (e) {
-      if (!this.fence.pending) await this.journal.disk.removeTree(id);
-      throw e;
-    }
-    if (publish) steps.push({ path: manifestPath, action: "write" });
-    if (!steps.length) {
-      await this.state.commit(key, next);
-      return 0;
-    }
-    const t = {
-      version: 1,
-      id,
-      key,
-      target: targetPath,
-      cloud: profile.access === "oauth" && profile.role === "publisher" ? profile.cloud : void 0,
-      scope: profile.scope,
-      content: profile.content,
-      createdAt: Date.now(),
-      settings: projection ? {
-        config: cfg,
-        projection,
-        local: profile.role === "subscriber",
-        at: Date.now()
-      } : void 0,
-      before: previous,
-      steps
-    };
-    checkpoint();
-    this.needsRecovery = true;
-    await this.journal.begin(t);
-    let changed = 0;
-    try {
-      for (let start = 0; start < steps.length; ) {
-        const path = displaced.get(steps[start].path) ?? steps[start].path;
-        const end = start + (displaced.has(steps[start].path) ? 2 : 1);
-        try {
-          for (let i = start; i < end; i++) {
-            checkpoint();
-            const step = steps[i];
-            if (step.action === "mkdir" || step.action === "rmdir") {
-              target.reset?.();
-              const stat = await budget.io(() => target.stat(step.path));
-              if (stat && stat.type !== "folder") throw Error("collision");
-              const creating = step.action === "mkdir";
-              if (creating === !!stat) {
-                if (!stat) folders.delete(step.path);
-                continue;
-              }
-              const origin = await budget.io(() => source.stat(step.path));
-              if (creating ? origin?.type !== "folder" : !!origin)
-                throw Error("referenceChanged");
-              await this.journal.disk.putNew(
-                id + "/armed/" + i,
-                manifestBytes(stat ? "folder" : null)
-              );
-              if (creating) {
-                await budget.io(() => target.mkdir(step.path), false);
-                folders.add(step.path);
-              } else if (await budget.io(() => target.removeEmptyDir(step.path), false))
-                folders.delete(step.path);
-              else {
-                await this.journal.mark(id + "/skipped/" + i);
-                plan2.deferred.push({
-                  path: step.path,
-                  reason: "folderRetained"
-                });
-                continue;
-              }
-              await this.journal.mark(id + "/applied/" + i);
-              operations?.push({ path: step.path, action: step.action });
-              changed++;
-              continue;
-            }
-            const perform = async () => {
-              if (t.cloud) target.reset?.();
-              const stat = await budget.io(() => target.stat(step.path));
-              if (stat?.type === "folder") throw Error("collision");
-              const old = stat ? await budget.io(() => target.download(step.path)) : null;
-              const copy = displaced.get(step.path);
-              if (copy && stat) throw Error("collision");
-              if (t.cloud || profile.scope === "content") {
-                const expected = step.path === manifestPath && i === steps.length - 1 ? steps[0].digest : expectedTarget.get(step.path);
-                if (expected !== void 0 && (old ? await hash(old) : null) !== expected)
-                  throw Error("referenceChanged");
-              }
-              if (step.action === "delete" && !source.confirmAbsent && await budget.io(() => source.stat(step.path)))
-                throw Error("referenceChanged");
-              await this.journal.backup(id, i, old);
-              if (step.action === "delete") {
-                if (t.cloud)
-                  await this.journal.disk.putNew(
-                    id + "/after/" + i,
-                    manifestBytes(null)
-                  );
-                if (stat)
-                  await budget.io(async () => {
-                    if (await target.stat(step.path))
-                      await target.delete(step.path);
-                  }, false);
-              } else {
-                const bytes = copy ? await budget.io(() => target.download(copy)) : publish && i === steps.length - 1 ? await publication.build() : await this.journal.disk.read(id + "/stage/" + i);
-                if (step.digest && await hash(bytes) !== step.digest)
-                  throw Error("incomplete");
-                const outgoing = projection && step.path !== manifestPath ? deliveryBytes(
-                  step.path,
-                  bytes,
-                  projection,
-                  old,
-                  profile.role === "subscriber"
-                ) : profile.scope === "content" && step.path.toLowerCase() === configDir.toLowerCase() + "/community-plugins.json" ? deliveryBytes(
-                  "community-plugins.json",
-                  bytes,
-                  { rules: [], blocked: [], self },
-                  old,
-                  profile.role === "subscriber"
-                ) : bytes;
-                if (t.cloud)
-                  await this.journal.disk.putNew(
-                    id + "/after/" + i,
-                    manifestBytes(await hash(outgoing))
-                  );
-                await budget.io(
-                  () => target.upload(step.path, outgoing, step.mtime),
-                  false
-                );
-              }
-            };
-            if (target.withFilePaused)
-              await target.withFilePaused(step.path, perform);
-            else await perform();
-            await this.journal.mark(id + "/applied/" + i);
-          }
-          if (steps[start].path !== manifestPath && !["mkdir", "rmdir"].includes(steps[start].action)) {
-            for (let i = start; i < end; i++)
-              operations?.push({
-                path: steps[i].path,
-                action: steps[i].action
-              });
-            changed += end - start;
-            if (steps[start].action === "write")
-              for (let d = parent(path); d && !folders.has(d); d = parent(d))
-                folders.add(d);
-          }
-        } catch (e) {
-          if (batch || steps[start].path === manifestPath || !transient(e))
-            throw e;
-          await this.restore(t, target, start, end);
-          for (let i = start; i < end; i++)
-            await this.journal.mark(id + "/skipped/" + i);
-          if (["mkdir", "rmdir"].includes(steps[start].action)) {
-            if (previousFolders.has(path)) folders.add(path);
-            else folders.delete(path);
-          }
-          if (Object.hasOwn(previous.entries, path))
-            next.entries[path] = previous.entries[path];
-          else delete next.entries[path];
-          plan2.deferred.push({ path, reason: "locked" });
-        }
-        progress?.(end, steps.length);
-        start = end;
-      }
-      next.folders = [...folders];
-      if (changed || publish) next.lastRun = id;
-      await this.state.commit(key, next);
-    } catch (e) {
-      budget.fence.check();
-      this.fence.check();
-      await this.restore(t, target);
-      await this.journal.mark(id + "/rolled-back");
-      this.needsRecovery = false;
-      throw e;
-    }
-    await this.journal.mark(id + "/done");
-    if (!t.settings?.local) await this.journal.disk.removeTree(id + "/stage");
-    this.needsRecovery = false;
-    return changed;
-  }
-};
-
-// src/state.ts
-init_git_buffer();
-var StateStore = class {
-  constructor(port, db) {
-    this.port = port;
-    this.db = db;
-    const current = port.get("device");
-    this.device = typeof current === "string" && /^[a-f0-9-]{36}$/.test(current) ? current : crypto.randomUUID();
-    port.set("device", this.device);
-  }
-  device;
-  async load(key) {
-    return await this.db?.get(this.device + ":" + key) ?? this.get(key);
-  }
-  async commit(key, b) {
-    if (!this.db) {
-      this.put(key, b);
-      return;
-    }
-    await this.db.put(this.device + ":" + key, b);
-    try {
-      if (this.port.get("state:" + this.device + ":" + key) != null)
-        this.port.set("state:" + this.device + ":" + key, null);
-    } catch {
-    }
-  }
-  get(key) {
-    const raw = this.port.get("state:" + this.device + ":" + key);
-    if (raw == null) return fresh();
-    if (typeof raw !== "object" || !("entries" in raw) || typeof raw.entries !== "object" || !raw.entries || !("size" in raw) || typeof raw.size !== "number" || !("lastRun" in raw) || typeof raw.lastRun !== "string")
-      throw Error("state");
-    return structuredClone(raw);
-  }
-  put(key, value) {
-    this.port.set("state:" + this.device + ":" + key, value);
-  }
-};
-var TimedArtifacts = class {
-  constructor(disk, fence) {
-    this.disk = disk;
-    this.fence = fence;
-  }
-  io(work, read = true) {
-    return new RunBudget(void 0, void 0, [], this.fence).io(work, read);
-  }
-  putNew(path, data) {
-    return this.io(() => this.disk.putNew(path, data), false);
-  }
-  read(path) {
-    return this.io(() => this.disk.read(path));
-  }
-  has(path) {
-    return this.io(() => this.disk.has(path));
-  }
-  dirs() {
-    return this.io(() => this.disk.dirs());
-  }
-  removeTree(path) {
-    return this.io(() => this.disk.removeTree(path), false);
-  }
-};
-var enc = (x) => new TextEncoder().encode(JSON.stringify(x)).buffer;
-var ApplyJournal = class {
-  constructor(disk) {
-    this.disk = disk;
-  }
-  async json(p) {
-    return JSON.parse(new TextDecoder().decode(await this.disk.read(p)));
-  }
-  mark(p) {
-    return this.disk.putNew(p, enc(true));
-  }
-  async begin(t) {
-    await this.disk.putNew(t.id + "/intent.json", enc(t));
-  }
-  async backup(id, i, bytes) {
-    if (bytes !== null) await this.disk.putNew(id + "/backup/" + i, bytes);
-    await this.disk.putNew(
-      id + "/armed/" + i,
-      enc(bytes === null ? null : await hash(bytes))
-    );
-  }
-  async *walk(pendingOnly = false) {
-    for (const id of await this.disk.dirs()) {
-      if (!/^[0-9a-f-]{36}$/.test(id)) continue;
-      if (!await this.disk.has(id + "/intent.json")) {
-        await this.disk.removeTree(id);
-        continue;
-      }
-      if (pendingOnly && (await this.disk.has(id + "/rolled-back") || await this.disk.has(id + "/done") && (!await this.disk.has(id + "/undo-start") || await this.disk.has(id + "/undo-done"))))
-        continue;
-      const t = await this.json(id + "/intent.json");
-      if (t.version !== 1 || t.id !== id || !Array.isArray(t.steps) || !["content", "settings"].includes(t.scope))
-        throw Error("journal");
-      for (const step of t.steps) {
-        checked(step.path);
-        if (!["write", "delete", "mkdir", "rmdir"].includes(step.action))
-          throw Error("journal");
-      }
-      yield t;
-    }
-  }
-  async transactions() {
-    const out = [];
-    for await (const t of this.walk()) out.push(t);
-    return out;
-  }
-};
-
-// src/vault.ts
-init_git_buffer();
-
-// src/classifier.ts
-init_git_buffer();
-function volatility(p, scope) {
-  if (scope === "content") return "S";
-  p = fold(p);
-  if (/^(workspace(?:-mobile)?\.json|cache(?:\/|$))$/.test(p) || p.startsWith("cache/") || p.endsWith(".lock") || p.split("/").some((x) => x === ".git" || x === "node_modules"))
-    return "V";
-  return /^(?:[^/]+\.json|plugins\/[^/]+\/data\.json)$/.test(p) ? "H" : "S";
-}
-function selected(p, scope, configDir, self, directory, config = legacyConfig(), content) {
-  const f = fold(p);
-  if (f.split("/").some(
-    (s) => [".git", ".trash", ".sync-trash", "node_modules"].includes(s)
-  ) || scope === "settings" && under(f, fold("plugins/" + self)) || under(f, fold(join(configDir, "plugins/" + self))))
-    return false;
-  if (scope === "content")
-    return contentPath(p, configDir, self, directory, content);
-  if (volatility(p, scope) === "V" || p.split("/").some((s) => s.startsWith(".")))
-    return false;
-  return inScope(p, config, directory);
-}
-var priority = (p) => p === "community-plugins.json" ? 3 : p.includes("/") ? p.endsWith("/data.json") ? 1 : 0 : 2;
-
-// src/vault.ts
-var import_obsidian = require("obsidian");
-async function ensure(adapter, dir) {
-  if (!dir) return;
-  const stat = await adapter.stat(dir);
-  if (stat?.type === "folder") return;
-  if (stat) throw Error("collision");
-  await ensure(adapter, parent(dir));
-  try {
-    await adapter.mkdir(dir);
-  } catch (e) {
-    if ((await adapter.stat(dir))?.type !== "folder") throw e;
-  }
-}
-var VaultArtifacts = class {
-  constructor(adapter, root) {
-    this.adapter = adapter;
-    this.root = root;
-  }
-  path(p) {
-    return join(this.root, checked(p));
-  }
-  async putNew(p, b) {
-    const path = this.path(p);
-    await ensure(this.adapter, parent(path));
-    if (await this.adapter.exists(path)) throw Error("state");
-    const tmp = path + ".tmp-" + crypto.randomUUID();
-    await this.adapter.writeBinary(tmp, b);
-    try {
-      await this.adapter.rename(tmp, path);
-    } finally {
-      if (await this.adapter.exists(tmp)) await this.adapter.remove(tmp);
-    }
-  }
-  read(p) {
-    return this.adapter.readBinary(this.path(p));
-  }
-  has(p) {
-    return this.adapter.exists(this.path(p));
-  }
-  async dirs() {
-    if (!await this.adapter.exists(this.root)) return [];
-    return (await this.adapter.list(this.root)).folders.map(
-      (p) => p.slice(this.root.length + 1)
-    );
-  }
-  async removeTree(p) {
-    if (await this.has(p)) await this.adapter.rmdir(this.path(p), true);
-  }
-};
-var LocalProvider = class {
-  constructor(vault, root, self, scope, readOnly = false, policy = {
-    trash: "vault",
-    trashDays: 30
-  }, ownWrite, config, withFilePaused, content) {
-    this.vault = vault;
-    this.root = root;
-    this.self = self;
-    this.scope = scope;
-    this.policy = policy;
-    this.ownWrite = ownWrite;
-    this.config = config;
-    this.withFilePaused = withFilePaused;
-    this.content = content;
-    if (root) checked(root);
-    if (under(fold(root), fold(join(vault.configDir, "plugins/" + self))))
-      throw Error("protected");
-    this.id = "vault:" + root;
-    this.capabilities = {
-      readOnly,
-      supportsChecksum: false,
-      supportsChangesFeed: false,
-      maxFileSize: Infinity,
-      rateLimits: null
-    };
-  }
-  id;
-  capabilities;
-  path(p) {
-    return p ? join(this.root, checked(p)) : this.root;
-  }
-  indexed(path) {
-    return !under(fold(path), fold(this.vault.configDir)) && !path.split("/").some((s) => s.startsWith("."));
-  }
-  writable(p, directory = false) {
-    if (this.capabilities.readOnly || !selected(
-      p,
-      this.scope,
-      this.vault.configDir,
-      this.self,
-      directory,
-      this.config,
-      this.content
-    ))
-      throw Error("protected");
-    const path = this.path(p);
-    if (under(
-      fold(path),
-      fold(join(this.vault.configDir, "plugins/" + this.self))
-    ))
-      throw Error("protected");
-    return path;
-  }
-  async list(p) {
-    const data = await this.vault.adapter.list(this.path(p) || "/");
-    const rel = (f) => {
-      if (this.root && !f.startsWith(this.root + "/")) throw Error("path");
-      return this.root ? f.slice(this.root.length + 1) : f;
-    };
-    return { files: data.files.map(rel), folders: data.folders.map(rel) };
-  }
-  async stat(p) {
-    if (!this.root && !p) return { type: "folder", size: 0, mtime: 0 };
-    return this.vault.adapter.stat(this.path(p));
-  }
-  async scanStat(p) {
-    const a = this.vault.adapter;
-    if (!(a instanceof import_obsidian.FileSystemAdapter)) return this.stat(p);
-    const fs = require("node:fs/promises");
-    const s = await fs.stat(a.getFullPath(this.path(p)), { bigint: true });
-    return {
-      type: s.isDirectory() ? "folder" : "file",
-      size: Number(s.size),
-      mtime: Number(s.mtimeMs),
-      version: [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].join("/")
-    };
-  }
-  async download(p) {
-    const path = this.path(p), file = this.vault.getAbstractFileByPath(path);
-    return file instanceof import_obsidian.TFile && this.indexed(path) ? this.vault.readBinary(file) : this.vault.adapter.readBinary(path);
-  }
-  async mkdir(p) {
-    const path = this.writable(p, true);
-    if (this.indexed(path)) {
-      const stat = await this.vault.adapter.stat(path);
-      if (stat?.type === "folder") return;
-      if (stat) throw Error("collision");
-      if (this.vault.getAbstractFileByPath(path)) throw Error("indexPending");
-      await this.vault.createFolder(path);
-    } else await ensure(this.vault.adapter, path);
-  }
-  async upload(p, b, mtime) {
-    const path = this.writable(p), options = Number.isFinite(mtime) ? { mtime } : void 0;
-    if (this.ownWrite) this.ownWrite(path, await hash(b));
-    if (this.indexed(path)) {
-      const parts = p.split("/");
-      let at = "";
-      for (const part of parts.slice(0, -1)) {
-        at = join(at, part);
-        await this.mkdir(at);
-      }
-      const file = this.vault.getAbstractFileByPath(path);
-      if (file instanceof import_obsidian.TFile) {
-        await this.vault.modifyBinary(file, b, options);
-        return;
-      }
-      if (file || await this.vault.adapter.exists(path))
-        throw Error("indexPending");
-      await this.vault.createBinary(path, b, options);
-      return;
-    }
-    await ensure(this.vault.adapter, parent(path));
-    if (await this.vault.adapter.exists(path)) {
-      await this.vault.adapter.writeBinary(path, b, options);
-      return;
-    }
-    const staging = join(
-      this.vault.configDir,
-      "plugins/" + this.self + "/runtime/tmp"
-    );
-    await ensure(this.vault.adapter, staging);
-    const tmp = join(staging, crypto.randomUUID());
-    await this.vault.adapter.writeBinary(tmp, b, options);
-    try {
-      await this.vault.adapter.rename(tmp, path);
-    } finally {
-      if (await this.vault.adapter.exists(tmp))
-        await this.vault.adapter.remove(tmp);
-    }
-  }
-  async delete(p) {
-    const path = this.writable(p);
-    if ((await this.stat(p))?.type !== "file") throw Error("collision");
-    const a = this.vault.adapter;
-    this.ownWrite?.(path, null);
-    const file = this.indexed(path) ? this.vault.getAbstractFileByPath(path) : null;
-    if (this.indexed(path) && !(file instanceof import_obsidian.TFile))
-      throw Error("indexPending");
-    switch (this.policy.trash) {
-      case "plugin": {
-        const expires = Date.now() + this.policy.trashDays * 864e5;
-        const dest = join(
-          join(this.vault.configDir, "plugins/" + this.self + "/runtime/trash"),
-          expires + "-" + crypto.randomUUID() + "/" + path
-        );
-        await ensure(a, parent(dest));
-        if (file) await this.vault.rename(file, dest);
-        else await a.rename(path, dest);
-        break;
-      }
-      case "permanent":
-        if (file) await this.vault.delete(file);
-        else await a.remove(path);
-        break;
-      case "system":
-        if (!await a.trashSystem(path)) throw Error("trashUnavailable");
-        break;
-      case "vault":
-        if (file) await this.vault.trash(file, false);
-        else await a.trashLocal(path);
-        break;
-    }
-  }
-  async removeEmptyDir(p) {
-    checked(p);
-    const path = this.writable(p, true), a = this.vault.adapter;
-    const listed = await a.list(path);
-    if (listed.files.length || listed.folders.length) return false;
-    try {
-      if (a instanceof import_obsidian.FileSystemAdapter) {
-        const fs = require("node:fs/promises");
-        const paths = require("node:path");
-        const full = a.getFullPath(path), base = await fs.realpath(a.getBasePath());
-        if (paths.relative(paths.join(base, path), await fs.realpath(full)) !== "")
-          return false;
-        await fs.rmdir(full);
-      } else await a.rmdir(path, false);
-    } catch (e) {
-      if (e instanceof Error && /\b(ENOTEMPTY|EEXIST)\b/.test(e.message))
-        return false;
-      const s = await a.stat(path);
-      if (!s) return true;
-      if (s.type === "folder") {
-        const now = await a.list(path);
-        if (now.files.length || now.folders.length) return false;
-      }
-      throw e;
-    }
-    this.ownWrite?.(path, null);
-    return true;
-  }
-  async move(from, to) {
-    const a = this.writable(from), b = this.writable(to);
-    if (await this.vault.adapter.exists(b)) throw Error("collision");
-    if (this.indexed(a)) {
-      const f = this.vault.getAbstractFileByPath(a);
-      if (!(f instanceof import_obsidian.TFile)) throw Error("indexPending");
-      await this.vault.rename(f, b);
-    } else await this.vault.adapter.rename(a, b);
-  }
-  async getRevision() {
-    return null;
-  }
-};
-
-// src/engine.ts
-init_git_buffer();
-
-// src/filters.ts
-init_git_buffer();
-var import_posix3 = __toESM(require_posix());
-function pathFilter(p) {
-  const compile = (s) => s.split(/[\n,]+/).map((v) => v.trim()).filter(Boolean).map(
-    (v) => (0, import_posix3.default)(v, { nonegate: true, noextglob: true, nobrace: true })
-  );
-  const include = compile(p.include), exclude = compile(p.exclude);
-  const allowed = (path) => {
-    if (exclude.some((f) => f(path) || f(path + "/"))) return false;
-    for (let dir = parent(path); dir; dir = parent(dir))
-      if (exclude.some((f) => f(dir) || f(dir + "/"))) return false;
-    return true;
-  };
-  return Object.assign(
-    (path) => allowed(path) && (!include.length || include.some((f) => f(path))),
-    { directory: allowed }
-  );
-}
-
-// src/selection.ts
-init_git_buffer();
-
-// src/planner.ts
-init_git_buffer();
-
-// src/conflict-resolver.ts
-init_git_buffer();
-var resolveConflict = (policy, s, t) => {
-  if (policy === "both") return "both";
-  if (policy === "target" || policy === "newer" && Number.isFinite(s.mtime) && Number.isFinite(t.mtime) && t.mtime > s.mtime + 2e3)
-    return "retain";
-  return "write";
-};
-
-// src/planner.ts
-function sortOps(ops) {
-  const rank = (o) => o.action === "mkdir" ? 0 : o.action === "rmdir" ? 2 : 1;
-  return ops.sort(
-    (a, b) => rank(a) - rank(b) || (a.action === "mkdir" ? a.path.length - b.path.length : a.action === "rmdir" ? b.path.length - a.path.length : priority(a.path) - priority(b.path)) || a.path.localeCompare(b.path)
-  );
-}
-function plan(p, src, dst, base, resolve = resolveConflict, mode = "plan", configDir = ".obsidian") {
-  if (!src.complete || !dst.complete) throw Error("incomplete");
-  const skipped = new Map([...src.skipped ?? [], ...dst.skipped ?? []]);
-  const names = /* @__PURE__ */ new Map();
-  for (const snap of [src, dst])
-    for (const [paths, kind] of [
-      [snap.files.keys(), "file"],
-      [snap.directories.keys(), "folder"]
-    ])
-      for (const path of paths) {
-        const key = fold(path), sig = kind + " " + path;
-        if (names.has(key) && names.get(key) !== sig)
-          skipped.set(path, "collision");
-        names.set(key, sig);
-      }
-  const alias = (s) => fold(s).split("/").map((k) => k.replace(/[. ]+$/, "")).join("/");
-  const blocked = new Set([...skipped.keys()].map(alias));
-  const protectedPath = (path) => {
-    const parts = alias(path).split("/");
-    while (parts.length) {
-      if (blocked.has(parts.join("/"))) return true;
-      parts.pop();
-    }
-    return false;
-  };
-  const deferred = [...skipped].filter(([, reason]) => reason !== "filter").map(([path, reason]) => ({ path, reason }));
-  const ops = [], deletes = [];
-  for (const path of /* @__PURE__ */ new Set([...src.files.keys(), ...dst.files.keys()])) {
-    if (protectedPath(path)) continue;
-    const s = src.files.get(path), t = dst.files.get(path), b = Object.hasOwn(base.entries, path) ? base.entries[path] : void 0;
-    if (!s) {
-      if (p.role === "subscriber" && fold(path) === (p.scope === "settings" ? "community-plugins.json" : fold(configDir) + "/community-plugins.json"))
-        continue;
-      if (t && (p.mirror === "full" || p.deletions && b?.delivered))
-        deletes.push({ path, action: "delete", conflict: false, target: t });
-      continue;
-    }
-    if (s.kind === "V") continue;
-    if (s.hash === t?.hash) {
-      ops.push({ path, action: "ack", source: s, conflict: false });
-      continue;
-    }
-    const strict = p.strictDrift || p.scope === "content" && p.mirror === "full";
-    if (!strict && b?.seen === s.hash) continue;
-    if (!strict && p.scope === "settings" && s.rawHash && b?.seen === s.rawHash && s.rawHash !== s.hash)
-      continue;
-    const conflict = !!t && (s.kind === "S" || s.kind === "H" && p.conflict !== "source") && (!b || t.hash !== b.hash && s.hash !== b.applied);
-    const action = conflict && t && p.mirror !== "full" ? resolve(p.conflict, s, t) : "write";
-    ops.push({ path, action, source: s, target: t, conflict });
-  }
-  const managedSrc = src.managedDirectories ?? src.directories, managedDst = dst.managedDirectories ?? dst.directories;
-  for (const path of managedSrc)
-    if (!dst.directories.has(path) && !protectedPath(path))
-      ops.push({ path, action: "mkdir", conflict: false });
-  const tracked = trackedDirectories(base), occupied = new Set(dst.occupiedDirectories);
-  const removed = new Set(deletes.map((o) => o.path));
-  for (const path of dst.files.keys())
-    if (!removed.has(path)) occupied.add(parent(path));
-  for (const path of skipped.keys()) occupied.add(parent(path));
-  for (const path of [...dst.directories].sort((a, b) => b.length - a.length)) {
-    if (managedDst.has(path) && !occupied.has(path) && !src.directories.has(path) && !protectedPath(path) && (p.mirror === "full" || p.deletions && tracked.has(path)))
-      deletes.push({ path, action: "rmdir", conflict: false });
-    else occupied.add(parent(path));
-  }
-  const protect = (mode !== "silent" || p.silentDeletionSafeguard !== false) && (p.emptyGuard && (src.files.size === 0 || base.size > 0 && src.files.size < base.size * (1 - p.shrinkPercent / 100)) || removed.size > Math.max(p.deleteGrace, dst.files.size * p.maxDeletePercent / 100) || deletes.length > p.maxDeleteCount || deletes.length > Math.max(
-    p.deleteGrace,
-    (dst.files.size + managedDst.size) * p.maxDeletePercent / 100
-  ));
-  if (!protect) for (const deletion of deletes) ops.push(deletion);
-  sortOps(ops);
-  return {
-    ops,
-    deferred,
-    forgotten: Object.keys(base.entries).filter(
-      (path) => !protectedPath(path) && !src.files.has(path) && !dst.files.has(path)
-    ),
-    forgottenFolders: [...tracked].filter(
-      (p2) => !dst.directories.has(p2) && !src.directories.has(p2) && !protectedPath(p2)
-    ),
-    heldFolders: protect ? deletes.filter((o) => o.action === "rmdir").map((o) => o.path) : [],
-    held: protect ? deletes.map((d) => d.path) : [],
-    count: src.files.size,
-    direction: "SourceToTarget"
-  };
-}
-
-// src/selection.ts
-function selectPlan(profile, fresh2, review, choices, release) {
-  const seen = new Map(review.ops.map((op) => [op.path, op]));
-  const skippedFolders = new Set(
-    review.ops.filter((o) => o.action === "mkdir" && choices?.get(o.path) === "skip").map((o) => o.path)
-  );
-  const ops = fresh2.ops.flatMap((op) => {
-    const before = seen.get(op.path);
-    for (let d = parent(op.path); d; d = parent(d))
-      if (skippedFolders.has(d)) return [];
-    if (!before || choices?.get(op.path) === "skip") return [];
-    if (op.action === "ack") return [op];
-    if (before.source?.hash !== op.source?.hash || before.action !== op.action || before.conflict !== op.conflict)
-      throw Error("referenceChanged");
-    const decision = choices?.get(op.path);
-    if (!decision || decision === op.action) return [op];
-    if (!op.conflict || profile.mirror === "full" || !(decision === "write" || decision === "retain" || decision === "both" && profile.scope === "content"))
-      throw Error("invalid");
-    return [{ ...op, action: decision }];
-  });
-  const reviewedHeld = new Set(review.held);
-  const folders = new Set(fresh2.heldFolders), reviewedFolders = new Set(review.heldFolders);
-  const held = fresh2.held.filter((path) => {
-    if (!release?.has(path) || !reviewedHeld.has(path)) return true;
-    if (folders.has(path) !== reviewedFolders.has(path))
-      throw Error("referenceChanged");
-    ops.push({
-      path,
-      action: folders.has(path) ? "rmdir" : "delete",
-      conflict: false
-    });
-    return false;
-  });
-  return {
-    ...fresh2,
-    ops: sortOps(ops),
-    held,
-    heldFolders: held.filter((p) => folders.has(p))
-  };
-}
-
-// src/validator.ts
+// src/task-library.ts
 init_git_buffer();
 
 // src/private-cloud.ts
@@ -13057,9 +11961,9 @@ var PublicStore = class _PublicStore {
 };
 
 // src/public-cloud.ts
-var decoder2 = new TextDecoder();
+var decoder = new TextDecoder();
 function check(res) {
-  if (res.status === 429 || res.status === 403 && /quota|rateLimit|dailyLimit/i.test(decoder2.decode(res.arrayBuffer)))
+  if (res.status === 429 || res.status === 403 && /quota|rateLimit|dailyLimit/i.test(decoder.decode(res.arrayBuffer)))
     throw Error("publicQuota");
   if (res.status === 401 || res.status === 403) throw Error("publicDenied");
   if (res.status === 404) throw Error("missingRoot");
@@ -13080,7 +11984,7 @@ function digest(v, length) {
 async function json(http, url, headers) {
   const data = check(await http(url, "GET", headers)).arrayBuffer;
   try {
-    return record2(JSON.parse(decoder2.decode(data)));
+    return record2(JSON.parse(decoder.decode(data)));
   } catch {
     throw Error("incomplete");
   }
@@ -13629,6 +12533,7 @@ function referenceId(p) {
 }
 
 // src/validator.ts
+init_git_buffer();
 function profileRules(p, desktop, readOnly) {
   const rules = [];
   const force = (field, forced, code) => rules.push({
@@ -13653,9 +12558,6 @@ function profileRules(p, desktop, readOnly) {
       invalid: p.fileEvents
     });
   }
-  if (p.role === "publisher")
-    for (const field of ["deletions", "conflict"])
-      rules.push({ field, visible: false, code: "publisher" });
   if (!desktop)
     rules.push({
       field: "watch",
@@ -13766,6 +12668,1325 @@ function validate(p, desktop, readOnly, configDir) {
   return errors;
 }
 
+// src/task-library.ts
+var scopeKeys = [
+  "scope",
+  "config",
+  "content",
+  "maxMiB",
+  "include",
+  "exclude"
+];
+var taskKeys = [
+  ...scopeKeys,
+  "role",
+  "mirror",
+  "deletions",
+  "conflict",
+  "trash",
+  "trashDays",
+  "maxDeleteCount",
+  "maxDeletePercent",
+  "shrinkPercent",
+  "deleteGrace",
+  "backup",
+  "emptyGuard",
+  "silentDeletionSafeguard",
+  "inheritMode",
+  "mode",
+  "firstPlan",
+  "startup",
+  "startupSeconds",
+  "intervalMinutes",
+  "onFocus",
+  "onOnline",
+  "fileEvents",
+  "debounceSeconds",
+  "quietSeconds",
+  "maxDeferrals",
+  "strictDrift"
+];
+var emptyLibrary = () => ({ places: [], templates: [] });
+function loadLibrary(raw) {
+  const result = emptyLibrary();
+  if (raw == null) return result;
+  if (typeof raw !== "object" || !("places" in raw) || !("templates" in raw) || !Array.isArray(raw.places) || !Array.isArray(raw.templates))
+    throw Error("invalid");
+  for (const [rows, target] of [
+    [raw.places, "places"],
+    [raw.templates, "templates"]
+  ]) {
+    const ids = /* @__PURE__ */ new Set();
+    for (const v of rows) {
+      if (typeof v?.id !== "string" || !/^[\w-]+$/.test(v.id) || ids.has(v.id) || typeof v.name !== "string" || !v.name.trim())
+        throw Error("invalid");
+      ids.add(v.id);
+      if (target === "places") {
+        validEndpoint(v.endpoint);
+        result.places.push({ id: v.id, name: v.name, endpoint: v.endpoint });
+      } else {
+        const t = readTemplate(serializeTemplate(v));
+        result.templates.push({ ...t, id: v.id });
+      }
+    }
+  }
+  return result;
+}
+function endpoint(p, s) {
+  if (s === "local" || p.access === "local")
+    return { access: "local", reference: p[s] || "/" };
+  return p.access === "oauth" ? {
+    access: "oauth",
+    reference: p.reference,
+    cloud: structuredClone(p.cloud)
+  } : {
+    access: "public",
+    reference: p.reference,
+    remote: structuredClone(p.remote)
+  };
+}
+function validEndpoint(e) {
+  if (!e || typeof e.reference !== "string" || e.reference !== "/" && !safe(e.reference))
+    throw Error("path");
+  if (e.access === "oauth" && e.cloud) cloudId(e.cloud, e.reference);
+  else if (e.access === "public" && e.remote) location(e.remote);
+  else if (e.access !== "local") throw Error("invalid");
+}
+var linkField = (s) => s === "local" ? "localPlace" : "referencePlace";
+function bindPlace(p, s, place) {
+  const e = place.endpoint;
+  validEndpoint(e);
+  if (s === "local") {
+    if (e.access !== "local" || p.scope === "settings") throw Error("invalid");
+    p.local = e.reference;
+  } else {
+    delete p.remote;
+    delete p.cloud;
+    Object.assign(p, structuredClone(e));
+    if (p.access === "public") p.role = "subscriber";
+  }
+  p[linkField(s)] = place.id;
+}
+function detachEdited(p, library) {
+  for (const side of ["local", "reference"]) {
+    const k = linkField(side), match = library.places.find((a) => a.id === p[k]);
+    if (!match || side === "local" && p.scope === "settings" || JSON.stringify(endpoint(p, side)) !== JSON.stringify(match.endpoint))
+      delete p[k];
+  }
+}
+var deletionPolicy = (p) => p.mirror === "full" ? "full" : p.deletions ? "tracked" : "copyOnly";
+function applyPolicy(p, value) {
+  p.mirror = value === "full" ? "full" : "preserve";
+  p.deletions = value !== "copyOnly";
+  if (p.mirror === "full") p.conflict = "source";
+}
+function makeTemplate(p, name, kind) {
+  const rules = {};
+  for (const k of kind === "task" ? taskKeys : scopeKeys)
+    if (p[k] !== void 0)
+      Object.assign(rules, { [k]: structuredClone(p[k]) });
+  return { id: crypto.randomUUID(), name, kind, rules };
+}
+function applyTemplate(p, t) {
+  delete p.config;
+  delete p.content;
+  Object.assign(p, structuredClone(t.rules));
+  if (p.access === "public") p.role = "subscriber";
+  if (p.scope === "settings") {
+    p.fileEvents = p.onFocus = p.onOnline = false;
+    if (p.conflict === "both") p.conflict = "source";
+    delete p.localPlace;
+  }
+}
+function readTemplate(text) {
+  if (text.length > 1e6) throw Error("invalid");
+  const v = JSON.parse(text);
+  if (v?.format !== "sync-studio-template/1" || !["task", "scope"].includes(v.kind) || typeof v.name !== "string" || !v.name.trim() || !v.rules || typeof v.rules !== "object" || Array.isArray(v.rules))
+    throw Error("invalid");
+  const keys = v.kind === "task" ? taskKeys : scopeKeys;
+  const r = v.rules;
+  if (Object.keys(r).some((k) => !keys.includes(k)) || keys.some((k) => !["config", "content"].includes(k) && !Object.hasOwn(r, k)))
+    throw Error("invalid");
+  if (r.content !== void 0 && (!validContent(r.content) || Object.keys(r.content).some(
+    (k) => !["config", "hidden", "rules", "base"].includes(k)
+  ) || r.content.rules.some(
+    (v2) => Object.keys(v2).some((k) => k !== "path" && k !== "include")
+  )))
+    throw Error("invalid");
+  if (r.config !== void 0 && (!validConfig(r.config) || Object.keys(r.config).some(
+    (k) => !Object.hasOwn(legacyConfig(), k) && k !== "pluginLimits"
+  )))
+    throw Error("invalidConfig");
+  const p = { ...defaults, ...r };
+  if (p.scope === "settings" && v.kind === "scope") p.fileEvents = false;
+  if (validate(p, true, false, ".obsidian").length) throw Error("invalid");
+  return makeTemplate(p, v.name.trim(), v.kind);
+}
+function serializeTemplate(t) {
+  return JSON.stringify(
+    {
+      format: "sync-studio-template/1",
+      name: t.name,
+      kind: t.kind,
+      rules: t.rules
+    },
+    null,
+    2
+  );
+}
+var scenarios = [
+  "copyNotes",
+  "publishSelection",
+  "mirrorTask",
+  "appearanceTask",
+  "pluginDataTask",
+  "manualTask"
+];
+function scenario(p, id) {
+  p.startup = p.onFocus = p.onOnline = p.fileEvents = false;
+  p.intervalMinutes = 0;
+  if (id === "copyNotes") p.include = "**/*.md";
+  if (id === "publishSelection") {
+    p.role = "publisher";
+    p.content = { base: "selected", config: false, hidden: false, rules: [] };
+  }
+  if (id === "mirrorTask") applyPolicy(p, "full");
+  if (id === "appearanceTask" || id === "pluginDataTask") {
+    p.scope = "settings";
+    p.config = {
+      ...legacyConfig(),
+      legacyThemes: false,
+      categories: id === "appearanceTask" ? preset("look") : ["data"]
+    };
+  }
+}
+
+// src/profiles.ts
+var object = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+function loadProfiles(raw) {
+  let profiles = [];
+  let current = "", mode = "plan", paused = false;
+  if (object(raw) && Array.isArray(raw.profiles)) {
+    const ids = /* @__PURE__ */ new Set();
+    for (const entry of raw.profiles) {
+      if (!object(entry) || typeof entry.id !== "string" || ids.has(entry.id))
+        throw Error("invalid");
+      ids.add(entry.id);
+      profiles.push({ ...defaults, ...entry });
+    }
+    current = String(raw.current);
+    mode = raw.mode === "silent" ? "silent" : "plan";
+    paused = raw.paused === true;
+  } else if (object(raw) && object(raw.profile)) {
+    profiles = [
+      {
+        ...defaults,
+        startup: false,
+        onFocus: false,
+        onOnline: false,
+        intervalMinutes: 0,
+        inheritMode: false,
+        trash: "vault",
+        ...raw.profile
+      }
+    ];
+  }
+  for (const p of profiles) {
+    if (p.scope === "settings") {
+      p.fileEvents = false;
+      p.onFocus = false;
+      p.onOnline = false;
+    }
+    if (p.scope === "settings" && p.config === void 0) {
+      p.config = legacyConfig();
+      p.startup = false;
+      p.intervalMinutes = 0;
+      p.onFocus = false;
+      p.onOnline = false;
+    }
+  }
+  return {
+    library: loadLibrary(object(raw) ? raw.library : void 0),
+    version: 2,
+    profiles,
+    current: profiles.some((p) => p.id === current) ? current : profiles[0]?.id ?? "",
+    mode,
+    paused
+  };
+}
+function newProfile(copy) {
+  const id = crypto.randomUUID(), tag = id.slice(0, 6);
+  return copy ? { ...structuredClone(copy), id, name: copy.name + " (2)", enabled: false } : {
+    ...defaults,
+    id,
+    name: "Sync Studio " + tag,
+    local: "Sync Studio-copy-" + tag,
+    reference: "Sync Studio-source-" + tag,
+    enabled: false,
+    fileEvents: true
+  };
+}
+
+// src/applier.ts
+init_git_buffer();
+
+// src/cloud-manifest.ts
+init_git_buffer();
+var manifestPath = ".sync-manifest.json";
+var manifestBytes = (v) => new TextEncoder().encode(JSON.stringify(v)).buffer;
+async function buildManifest(snapshot, device) {
+  if (!snapshot.complete || [...snapshot.skipped?.values() ?? []].some((x) => x !== "filter"))
+    throw Error("incomplete");
+  const files = [...snapshot.files].map(([path, v]) => ({
+    path,
+    size: v.size,
+    hash: v.rawHash ?? v.hash,
+    mtime: Number.isFinite(v.mtime) ? v.mtime : 0
+  })).sort((a, b) => a.path < b.path ? -1 : 1);
+  const filesHash = await hash(manifestBytes(files));
+  const directories = [
+    ...snapshot.managedDirectories ?? snapshot.directories
+  ].sort();
+  const revision = await hash(manifestBytes([filesHash, directories]));
+  return manifestBytes({
+    schemaVersion: 1,
+    revision,
+    filesHash,
+    directories,
+    generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    publisherDevice: device,
+    files
+  });
+}
+async function readManifest(store) {
+  store.reset?.();
+  const stat = await store.stat(manifestPath);
+  if (!stat) return null;
+  if (stat.type !== "file") throw Error("manifestInvalid");
+  const raw = await store.download(manifestPath);
+  let m;
+  try {
+    m = JSON.parse(new TextDecoder().decode(raw));
+  } catch {
+    throw Error("manifestInvalid");
+  }
+  if (!m || m.schemaVersion !== 1 || !Array.isArray(m.files) || !(typeof m.revision === "string" && m.revision.length || Number.isSafeInteger(m.revision)) || typeof m.publisherDevice !== "string" || typeof m.generatedAt !== "string")
+    throw Error("manifestInvalid");
+  const checksum = await hash(manifestBytes(m.files));
+  if ("filesHash" in m && m.filesHash !== checksum)
+    throw Error("manifestInvalid");
+  if (m.directories !== void 0 && (!Array.isArray(m.directories) || m.directories.some((p) => typeof p !== "string" || !safe(p)) || new Set(m.directories.map(fold)).size !== m.directories.length || m.revision !== await hash(manifestBytes([checksum, m.directories]))))
+    throw Error("manifestInvalid");
+  m.revision = JSON.stringify([m.revision, checksum]);
+  const seen = /* @__PURE__ */ new Set();
+  for (const f of m.files) {
+    if (!f || typeof f.path !== "string" || !safe(f.path) || fold(f.path) === manifestPath || seen.has(fold(f.path)) || !Number.isSafeInteger(f.size) || f.size < 0 || !Number.isFinite(f.mtime) || !/^([a-f0-9]{64})$/.test(f.hash))
+      throw Error("manifestInvalid");
+    seen.add(fold(f.path));
+  }
+  return m;
+}
+function verifyManifest(m, snap, accept, acceptDir = (p) => true) {
+  if (!snap.complete || [...snap.skipped?.values() ?? []].some((reason) => reason !== "filter"))
+    throw Error("manifestMismatch");
+  if (m.directories) {
+    const dirs = new Set(m.directories);
+    for (const p of snap.managedDirectories ?? snap.directories)
+      if (!dirs.has(p)) throw Error("manifestMismatch");
+    for (const p of dirs)
+      if (acceptDir(p) && !snap.directories.has(p))
+        throw Error("manifestMismatch");
+  }
+  const entries = new Map(m.files.map((f) => [f.path, f]));
+  for (const [p, item] of snap.files) {
+    const f = entries.get(p);
+    if (f?.hash !== (item.rawHash ?? item.hash) || f.size !== item.size)
+      throw Error("manifestMismatch");
+  }
+  for (const f of m.files) {
+    if (snap.files.has(f.path) || !accept(f)) continue;
+    let p = f.path;
+    while (p && !snap.skipped?.has(p)) p = parent(p);
+    if (!p) throw Error("manifestMismatch");
+  }
+}
+
+// src/applier.ts
+var decoder2 = new TextDecoder();
+var Applier = class {
+  constructor(journal, state, fence = new MutationFence()) {
+    this.journal = journal;
+    this.state = state;
+    this.fence = fence;
+  }
+  needsRecovery = false;
+  pendingTargets = /* @__PURE__ */ new Set();
+  async restore(t, target, start = 0, end = t.steps.length) {
+    const budget = new RunBudget(void 0, void 0, void 0, this.fence);
+    for (let i = end - 1; i >= start; i--) {
+      const p = t.steps[i].path, armed = t.id + "/armed/" + i;
+      if (t.cloud && await this.journal.disk.has(t.id + "/restored/" + i) || !await this.journal.disk.has(armed) || await this.journal.disk.has(t.id + "/skipped/" + i))
+        continue;
+      const perform = async () => {
+        const saved = await this.journal.json(armed);
+        if (t.cloud) target.reset?.();
+        const stat = await budget.io(() => target.stat(p));
+        if (t.steps[i].action === "mkdir" || t.steps[i].action === "rmdir") {
+          if (stat && stat.type !== "folder") throw Error("collision");
+          if (saved === "folder" && !stat)
+            await budget.io(() => target.mkdir(p), false);
+          if (saved === null && stat)
+            await budget.io(() => target.removeEmptyDir(p), false);
+          return;
+        }
+        if (stat?.type === "folder") throw Error("collision");
+        if (t.cloud) {
+          const expected = t.id + "/after/" + i;
+          if (!await this.journal.disk.has(expected)) return;
+          const current = stat ? await hash(await budget.io(() => target.download(p))) : null;
+          if (current === saved) return;
+          if (current !== await this.journal.json(expected))
+            throw Error("cloudRecovery");
+        }
+        if (saved === null) {
+          if (stat) await budget.io(() => target.delete(p), false);
+        } else {
+          const bytes = await this.journal.disk.read(t.id + "/backup/" + i);
+          if (await hash(bytes) !== saved) throw Error("backup");
+          if (!stat || await hash(await budget.io(() => target.download(p))) !== saved)
+            await budget.io(() => target.upload(p, bytes), false);
+        }
+      };
+      if (target.withFilePaused) await target.withFilePaused(p, perform);
+      else await perform();
+      if (t.cloud) await this.journal.mark(t.id + "/restored/" + i);
+    }
+  }
+  async recover(resolve) {
+    this.fence.check();
+    this.pendingTargets.clear();
+    for await (const t of this.journal.walk(true)) {
+      try {
+        await this.recoverTransaction(t, resolve);
+      } catch (e) {
+        if (!t.cloud) throw e;
+        this.pendingTargets.add(JSON.parse(t.key)[3]);
+      }
+    }
+    this.needsRecovery = false;
+  }
+  async prune() {
+    this.fence.check();
+    if (this.needsRecovery) return;
+    const latest = /* @__PURE__ */ new Map();
+    for await (const t of this.journal.walk()) {
+      const has = (marker) => this.journal.disk.has(t.id + "/" + marker);
+      if (await has("undo-start") && !await has("undo-done")) continue;
+      if (!await has("rolled-back") && !await has("undo-done")) {
+        if (!await has("done")) continue;
+        if (t.settings?.local && !await has("verified") && !await has("verify-failed"))
+          continue;
+        if (!latest.has(t.key))
+          latest.set(t.key, (await this.state.load(t.key)).lastRun);
+        if (latest.get(t.key) === t.id) continue;
+      }
+      await this.journal.disk.removeTree(t.id);
+    }
+  }
+  async recoverTransaction(t, resolve) {
+    if (await this.journal.disk.has(t.id + "/undo-start") && !await this.journal.disk.has(t.id + "/undo-done")) {
+      await this.restore(t, resolve(t));
+      await this.state.commit(t.key, t.before);
+      await this.journal.mark(t.id + "/undo-done");
+      return;
+    }
+    if (await this.journal.disk.has(t.id + "/done") || await this.journal.disk.has(t.id + "/rolled-back"))
+      return;
+    if ((await this.state.load(t.key)).lastRun === t.id) {
+      await this.journal.mark(t.id + "/done");
+      return;
+    }
+    await this.restore(t, resolve(t));
+    await this.journal.mark(t.id + "/rolled-back");
+  }
+  async undo(key, target, resolve) {
+    this.fence.check();
+    this.needsRecovery = true;
+    const last = (await this.state.load(key)).lastRun;
+    const t = (await this.journal.transactions()).find(
+      (v) => v.key === key && v.id === last
+    );
+    if (!t) throw Error("noBackup");
+    await this.journal.mark(t.id + "/undo-start");
+    const store = resolve ? resolve(t) : target;
+    if (!store) throw Error("journal");
+    await this.restore(t, store);
+    await this.state.commit(key, t.before);
+    await this.journal.mark(t.id + "/undo-done");
+    this.needsRecovery = false;
+  }
+  async apply(profile, plan2, source, target, key, targetPath, budget = new RunBudget(void 0, void 0, void 0, this.fence), progress, active, projection, publication, checkReference, operations, configDir = ".obsidian", self = "refsync") {
+    this.fence.check();
+    if (this.needsRecovery || this.pendingTargets.has(target.id))
+      throw Error("journal");
+    const checkpoint = () => {
+      budget.check();
+      if (active && !active()) throw Error("stopped");
+    };
+    const cfg = profile.config ?? legacyConfig();
+    const batch = profile.scope === "settings" && cfg.strategy === "batch";
+    if (batch && plan2.deferred.some((x) => ["locked", "invalidConfig"].includes(x.reason)))
+      throw Error("incomplete");
+    const previous = await this.state.load(key);
+    const next = {
+      ...fresh(),
+      size: plan2.held.length ? previous.size : plan2.count,
+      lastRun: previous.lastRun
+    };
+    const previousFolders = trackedDirectories(previous), folders = new Set(previousFolders);
+    for (const p of plan2.forgottenFolders ?? []) folders.delete(p);
+    next.folders = [...folders];
+    Object.assign(next.entries, previous.entries);
+    for (const path of plan2.forgotten) delete next.entries[path];
+    const id = crypto.randomUUID(), steps = [];
+    const stage = async (path, bytes, mtime) => {
+      const digest2 = await hash(bytes);
+      await this.journal.disk.putNew(id + "/stage/" + steps.length, bytes);
+      steps.push({ path, action: "write", mtime, digest: digest2 });
+    };
+    const stageBatch = batch && plan2.ops.some((x) => x.action === "write" || x.action === "delete");
+    const displaced = /* @__PURE__ */ new Map();
+    const expectedTarget = /* @__PURE__ */ new Map();
+    const publish = publication && (publication.missing || plan2.ops.some(
+      (o) => ["write", "both", "delete", "mkdir", "rmdir"].includes(o.action)
+    ));
+    try {
+      if (publish)
+        await stage(
+          manifestPath,
+          manifestBytes({ schemaVersion: 1, publishing: id })
+        );
+      for (const op of plan2.ops) {
+        checkpoint();
+        const p = op.path, s = op.source, b = Object.hasOwn(previous.entries, p) ? previous.entries[p] : void 0;
+        if (op.action === "mkdir" || op.action === "rmdir") {
+          steps.push({ path: p, action: op.action });
+          continue;
+        }
+        if ((publish || profile.scope === "content") && op.path !== manifestPath) {
+          if (op.target?.rawHash || op.target?.hash)
+            expectedTarget.set(p, op.target.rawHash ?? op.target.hash);
+          else if (!op.target && op.action === "write")
+            expectedTarget.set(p, null);
+        }
+        if (op.action === "delete") {
+          steps.push({ path: p, action: "delete" });
+          delete next.entries[p];
+          continue;
+        }
+        if (!s) throw Error("incomplete");
+        if (op.action === "retain") {
+          next.entries[p] = {
+            size: b?.size ?? 0,
+            mtime: b?.mtime ?? 0,
+            hash: b?.hash ?? "",
+            applied: b?.applied ?? "",
+            seen: s.hash,
+            delivered: b?.delivered ?? false
+          };
+          continue;
+        }
+        if (stageBatch && op.action === "ack") {
+          const bytes = await budget.io(() => source.download(p));
+          if (await hash(bytes) !== (s.rawHash ?? s.hash))
+            throw Error("referenceChanged");
+        }
+        if (op.action === "write" || op.action === "both") {
+          let bytes;
+          try {
+            bytes = await budget.io(() => source.download(p));
+          } catch (e) {
+            if (batch || !transient(e)) throw e;
+            plan2.deferred.push({ path: p, reason: "locked" });
+            continue;
+          }
+          if (bytes.byteLength !== s.size || await hash(bytes) !== (s.rawHash ?? s.hash)) {
+            if (profile.role === "publisher") {
+              plan2.deferred.push({ path: p, reason: "unstable" });
+              continue;
+            }
+            throw Error("referenceChanged");
+          }
+          if (profile.scope === "settings" && p.endsWith(".json"))
+            JSON.parse(decoder2.decode(bytes));
+          if (op.action === "both") {
+            const dot = p.lastIndexOf("."), cut = dot > p.lastIndexOf("/") + 1 ? dot : p.length;
+            const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+            const copy = p.slice(0, cut) + ".conflict-" + this.state.device + "-" + stamp + p.slice(cut);
+            if (await target.stat(copy)) throw Error("collision");
+            displaced.set(copy, p);
+            steps.push({ path: copy, action: "write" });
+          }
+          await stage(
+            p,
+            projection ? deliveryBytes(p, bytes, projection) : bytes,
+            s.mtime
+          );
+        }
+        next.entries[p] = {
+          size: s.size,
+          mtime: s.mtime,
+          hash: s.hash,
+          applied: s.hash,
+          seen: s.hash,
+          delivered: op.action !== "ack" || b?.delivered === true
+        };
+      }
+      await checkReference?.();
+    } catch (e) {
+      if (!this.fence.pending) await this.journal.disk.removeTree(id);
+      throw e;
+    }
+    if (publish) steps.push({ path: manifestPath, action: "write" });
+    if (!steps.length) {
+      await this.state.commit(key, next);
+      return 0;
+    }
+    const t = {
+      version: 1,
+      id,
+      key,
+      target: targetPath,
+      cloud: profile.access === "oauth" && profile.role === "publisher" ? profile.cloud : void 0,
+      scope: profile.scope,
+      content: profile.content,
+      createdAt: Date.now(),
+      settings: projection ? {
+        config: cfg,
+        projection,
+        local: profile.role === "subscriber",
+        at: Date.now()
+      } : void 0,
+      before: previous,
+      steps
+    };
+    checkpoint();
+    this.needsRecovery = true;
+    await this.journal.begin(t);
+    let changed = 0;
+    try {
+      for (let start = 0; start < steps.length; ) {
+        const path = displaced.get(steps[start].path) ?? steps[start].path;
+        const end = start + (displaced.has(steps[start].path) ? 2 : 1);
+        try {
+          for (let i = start; i < end; i++) {
+            checkpoint();
+            const step = steps[i];
+            if (step.action === "mkdir" || step.action === "rmdir") {
+              target.reset?.();
+              const stat = await budget.io(() => target.stat(step.path));
+              if (stat && stat.type !== "folder") throw Error("collision");
+              const creating = step.action === "mkdir";
+              if (creating === !!stat) {
+                if (!stat) folders.delete(step.path);
+                continue;
+              }
+              const origin = await budget.io(() => source.stat(step.path));
+              if (creating ? origin?.type !== "folder" : !!origin)
+                throw Error("referenceChanged");
+              await this.journal.disk.putNew(
+                id + "/armed/" + i,
+                manifestBytes(stat ? "folder" : null)
+              );
+              if (creating) {
+                await budget.io(() => target.mkdir(step.path), false);
+                folders.add(step.path);
+              } else if (await budget.io(() => target.removeEmptyDir(step.path), false))
+                folders.delete(step.path);
+              else {
+                await this.journal.mark(id + "/skipped/" + i);
+                plan2.deferred.push({
+                  path: step.path,
+                  reason: "folderRetained"
+                });
+                continue;
+              }
+              await this.journal.mark(id + "/applied/" + i);
+              operations?.push({ path: step.path, action: step.action });
+              changed++;
+              continue;
+            }
+            const perform = async () => {
+              if (t.cloud) target.reset?.();
+              const stat = await budget.io(() => target.stat(step.path));
+              if (stat?.type === "folder") throw Error("collision");
+              const old = stat ? await budget.io(() => target.download(step.path)) : null;
+              const copy = displaced.get(step.path);
+              if (copy && stat) throw Error("collision");
+              if (t.cloud || profile.scope === "content") {
+                const expected = step.path === manifestPath && i === steps.length - 1 ? steps[0].digest : expectedTarget.get(step.path);
+                if (expected !== void 0 && (old ? await hash(old) : null) !== expected)
+                  throw Error("referenceChanged");
+              }
+              if (step.action === "delete" && !source.confirmAbsent && await budget.io(() => source.stat(step.path)))
+                throw Error("referenceChanged");
+              await this.journal.backup(id, i, old);
+              if (step.action === "delete") {
+                if (t.cloud)
+                  await this.journal.disk.putNew(
+                    id + "/after/" + i,
+                    manifestBytes(null)
+                  );
+                if (stat)
+                  await budget.io(async () => {
+                    if (await target.stat(step.path))
+                      await target.delete(step.path);
+                  }, false);
+              } else {
+                const bytes = copy ? await budget.io(() => target.download(copy)) : publish && i === steps.length - 1 ? await publication.build() : await this.journal.disk.read(id + "/stage/" + i);
+                if (step.digest && await hash(bytes) !== step.digest)
+                  throw Error("incomplete");
+                const outgoing = projection && step.path !== manifestPath ? deliveryBytes(
+                  step.path,
+                  bytes,
+                  projection,
+                  old,
+                  profile.role === "subscriber"
+                ) : profile.scope === "content" && step.path.toLowerCase() === configDir.toLowerCase() + "/community-plugins.json" ? deliveryBytes(
+                  "community-plugins.json",
+                  bytes,
+                  { rules: [], blocked: [], self },
+                  old,
+                  profile.role === "subscriber"
+                ) : bytes;
+                if (t.cloud)
+                  await this.journal.disk.putNew(
+                    id + "/after/" + i,
+                    manifestBytes(await hash(outgoing))
+                  );
+                await budget.io(
+                  () => target.upload(step.path, outgoing, step.mtime),
+                  false
+                );
+              }
+            };
+            if (target.withFilePaused)
+              await target.withFilePaused(step.path, perform);
+            else await perform();
+            await this.journal.mark(id + "/applied/" + i);
+          }
+          if (steps[start].path !== manifestPath && !["mkdir", "rmdir"].includes(steps[start].action)) {
+            for (let i = start; i < end; i++)
+              operations?.push({
+                path: steps[i].path,
+                action: steps[i].action
+              });
+            changed += end - start;
+            if (steps[start].action === "write")
+              for (let d = parent(path); d && !folders.has(d); d = parent(d))
+                folders.add(d);
+          }
+        } catch (e) {
+          if (batch || steps[start].path === manifestPath || !transient(e))
+            throw e;
+          await this.restore(t, target, start, end);
+          for (let i = start; i < end; i++)
+            await this.journal.mark(id + "/skipped/" + i);
+          if (["mkdir", "rmdir"].includes(steps[start].action)) {
+            if (previousFolders.has(path)) folders.add(path);
+            else folders.delete(path);
+          }
+          if (Object.hasOwn(previous.entries, path))
+            next.entries[path] = previous.entries[path];
+          else delete next.entries[path];
+          plan2.deferred.push({ path, reason: "locked" });
+        }
+        progress?.(end, steps.length);
+        start = end;
+      }
+      next.folders = [...folders];
+      if (changed || publish) next.lastRun = id;
+      await this.state.commit(key, next);
+    } catch (e) {
+      budget.fence.check();
+      this.fence.check();
+      await this.restore(t, target);
+      await this.journal.mark(id + "/rolled-back");
+      this.needsRecovery = false;
+      throw e;
+    }
+    await this.journal.mark(id + "/done");
+    if (!t.settings?.local) await this.journal.disk.removeTree(id + "/stage");
+    this.needsRecovery = false;
+    return changed;
+  }
+};
+
+// src/state.ts
+init_git_buffer();
+var StateStore = class {
+  constructor(port, db) {
+    this.port = port;
+    this.db = db;
+    const current = port.get("device");
+    this.device = typeof current === "string" && /^[a-f0-9-]{36}$/.test(current) ? current : crypto.randomUUID();
+    port.set("device", this.device);
+  }
+  device;
+  async load(key) {
+    return await this.db?.get(this.device + ":" + key) ?? this.get(key);
+  }
+  async commit(key, b) {
+    if (!this.db) {
+      this.put(key, b);
+      return;
+    }
+    await this.db.put(this.device + ":" + key, b);
+    try {
+      if (this.port.get("state:" + this.device + ":" + key) != null)
+        this.port.set("state:" + this.device + ":" + key, null);
+    } catch {
+    }
+  }
+  get(key) {
+    const raw = this.port.get("state:" + this.device + ":" + key);
+    if (raw == null) return fresh();
+    if (typeof raw !== "object" || !("entries" in raw) || typeof raw.entries !== "object" || !raw.entries || !("size" in raw) || typeof raw.size !== "number" || !("lastRun" in raw) || typeof raw.lastRun !== "string")
+      throw Error("state");
+    return structuredClone(raw);
+  }
+  put(key, value) {
+    this.port.set("state:" + this.device + ":" + key, value);
+  }
+};
+var TimedArtifacts = class {
+  constructor(disk, fence) {
+    this.disk = disk;
+    this.fence = fence;
+  }
+  io(work, read = true) {
+    return new RunBudget(void 0, void 0, [], this.fence).io(work, read);
+  }
+  putNew(path, data) {
+    return this.io(() => this.disk.putNew(path, data), false);
+  }
+  read(path) {
+    return this.io(() => this.disk.read(path));
+  }
+  has(path) {
+    return this.io(() => this.disk.has(path));
+  }
+  dirs() {
+    return this.io(() => this.disk.dirs());
+  }
+  removeTree(path) {
+    return this.io(() => this.disk.removeTree(path), false);
+  }
+};
+var enc = (x) => new TextEncoder().encode(JSON.stringify(x)).buffer;
+var ApplyJournal = class {
+  constructor(disk) {
+    this.disk = disk;
+  }
+  async json(p) {
+    return JSON.parse(new TextDecoder().decode(await this.disk.read(p)));
+  }
+  mark(p) {
+    return this.disk.putNew(p, enc(true));
+  }
+  async begin(t) {
+    await this.disk.putNew(t.id + "/intent.json", enc(t));
+  }
+  async backup(id, i, bytes) {
+    if (bytes !== null) await this.disk.putNew(id + "/backup/" + i, bytes);
+    await this.disk.putNew(
+      id + "/armed/" + i,
+      enc(bytes === null ? null : await hash(bytes))
+    );
+  }
+  async *walk(pendingOnly = false) {
+    for (const id of await this.disk.dirs()) {
+      if (!/^[0-9a-f-]{36}$/.test(id)) continue;
+      if (!await this.disk.has(id + "/intent.json")) {
+        await this.disk.removeTree(id);
+        continue;
+      }
+      if (pendingOnly && (await this.disk.has(id + "/rolled-back") || await this.disk.has(id + "/done") && (!await this.disk.has(id + "/undo-start") || await this.disk.has(id + "/undo-done"))))
+        continue;
+      const t = await this.json(id + "/intent.json");
+      if (t.version !== 1 || t.id !== id || !Array.isArray(t.steps) || !["content", "settings"].includes(t.scope))
+        throw Error("journal");
+      for (const step of t.steps) {
+        checked(step.path);
+        if (!["write", "delete", "mkdir", "rmdir"].includes(step.action))
+          throw Error("journal");
+      }
+      yield t;
+    }
+  }
+  async transactions() {
+    const out = [];
+    for await (const t of this.walk()) out.push(t);
+    return out;
+  }
+};
+
+// src/vault.ts
+init_git_buffer();
+
+// src/classifier.ts
+init_git_buffer();
+function volatility(p, scope) {
+  if (scope === "content") return "S";
+  p = fold(p);
+  if (/^(workspace(?:-mobile)?\.json|cache(?:\/|$))$/.test(p) || p.startsWith("cache/") || p.endsWith(".lock") || p.split("/").some((x) => x === ".git" || x === "node_modules"))
+    return "V";
+  return /^(?:[^/]+\.json|plugins\/[^/]+\/data\.json)$/.test(p) ? "H" : "S";
+}
+function selectionReason(p, scope, configDir, self, directory, config = legacyConfig(), content) {
+  const f = fold(p);
+  if (f.split("/").some(
+    (s) => [".git", ".trash", ".sync-trash", "node_modules"].includes(s)
+  ) || scope === "settings" && under(f, fold("plugins/" + self)) || under(f, fold(join(configDir, "plugins/" + self))))
+    return "protected";
+  if (scope === "content")
+    return contentReason(p, configDir, self, directory, content);
+  if (volatility(p, scope) === "V" || p.split("/").some((s) => s.startsWith(".")))
+    return "protected";
+  return configReason(p, config, directory);
+}
+function selected(...args) {
+  return selectionReason(...args) === "included";
+}
+var priority = (p) => p === "community-plugins.json" ? 3 : p.includes("/") ? p.endsWith("/data.json") ? 1 : 0 : 2;
+
+// src/vault.ts
+var import_obsidian = require("obsidian");
+async function ensure(adapter, dir) {
+  if (!dir) return;
+  const stat = await adapter.stat(dir);
+  if (stat?.type === "folder") return;
+  if (stat) throw Error("collision");
+  await ensure(adapter, parent(dir));
+  try {
+    await adapter.mkdir(dir);
+  } catch (e) {
+    if ((await adapter.stat(dir))?.type !== "folder") throw e;
+  }
+}
+var VaultArtifacts = class {
+  constructor(adapter, root) {
+    this.adapter = adapter;
+    this.root = root;
+  }
+  path(p) {
+    return join(this.root, checked(p));
+  }
+  async putNew(p, b) {
+    const path = this.path(p);
+    await ensure(this.adapter, parent(path));
+    if (await this.adapter.exists(path)) throw Error("state");
+    const tmp = path + ".tmp-" + crypto.randomUUID();
+    await this.adapter.writeBinary(tmp, b);
+    try {
+      await this.adapter.rename(tmp, path);
+    } finally {
+      if (await this.adapter.exists(tmp)) await this.adapter.remove(tmp);
+    }
+  }
+  read(p) {
+    return this.adapter.readBinary(this.path(p));
+  }
+  has(p) {
+    return this.adapter.exists(this.path(p));
+  }
+  async dirs() {
+    if (!await this.adapter.exists(this.root)) return [];
+    return (await this.adapter.list(this.root)).folders.map(
+      (p) => p.slice(this.root.length + 1)
+    );
+  }
+  async removeTree(p) {
+    if (await this.has(p)) await this.adapter.rmdir(this.path(p), true);
+  }
+};
+var LocalProvider = class {
+  constructor(vault, root, self, scope, readOnly = false, policy = {
+    trash: "vault",
+    trashDays: 30
+  }, ownWrite, config, withFilePaused, content) {
+    this.vault = vault;
+    this.root = root;
+    this.self = self;
+    this.scope = scope;
+    this.policy = policy;
+    this.ownWrite = ownWrite;
+    this.config = config;
+    this.withFilePaused = withFilePaused;
+    this.content = content;
+    if (root) checked(root);
+    if (under(fold(root), fold(join(vault.configDir, "plugins/" + self))))
+      throw Error("protected");
+    this.id = "vault:" + root;
+    this.capabilities = {
+      readOnly,
+      supportsChecksum: false,
+      supportsChangesFeed: false,
+      maxFileSize: Infinity,
+      rateLimits: null
+    };
+  }
+  id;
+  capabilities;
+  path(p) {
+    return p ? join(this.root, checked(p)) : this.root;
+  }
+  indexed(path) {
+    return !under(fold(path), fold(this.vault.configDir)) && !path.split("/").some((s) => s.startsWith("."));
+  }
+  writable(p, directory = false) {
+    if (this.capabilities.readOnly || !selected(
+      p,
+      this.scope,
+      this.vault.configDir,
+      this.self,
+      directory,
+      this.config,
+      this.content
+    ))
+      throw Error("protected");
+    const path = this.path(p);
+    if (under(
+      fold(path),
+      fold(join(this.vault.configDir, "plugins/" + this.self))
+    ))
+      throw Error("protected");
+    return path;
+  }
+  async list(p) {
+    const data = await this.vault.adapter.list(this.path(p) || "/");
+    const rel = (f) => {
+      if (this.root && !f.startsWith(this.root + "/")) throw Error("path");
+      return this.root ? f.slice(this.root.length + 1) : f;
+    };
+    return { files: data.files.map(rel), folders: data.folders.map(rel) };
+  }
+  async stat(p) {
+    if (!this.root && !p) return { type: "folder", size: 0, mtime: 0 };
+    return this.vault.adapter.stat(this.path(p));
+  }
+  async scanStat(p) {
+    const a = this.vault.adapter;
+    if (!(a instanceof import_obsidian.FileSystemAdapter)) return this.stat(p);
+    const fs = require("node:fs/promises");
+    const s = await fs.stat(a.getFullPath(this.path(p)), { bigint: true });
+    return {
+      type: s.isDirectory() ? "folder" : "file",
+      size: Number(s.size),
+      mtime: Number(s.mtimeMs),
+      version: [s.dev, s.ino, s.size, s.mtimeNs, s.ctimeNs].join("/")
+    };
+  }
+  async download(p) {
+    const path = this.path(p), file = this.vault.getAbstractFileByPath(path);
+    return file instanceof import_obsidian.TFile && this.indexed(path) ? this.vault.readBinary(file) : this.vault.adapter.readBinary(path);
+  }
+  async mkdir(p) {
+    const path = this.writable(p, true);
+    if (this.indexed(path)) {
+      const stat = await this.vault.adapter.stat(path);
+      if (stat?.type === "folder") return;
+      if (stat) throw Error("collision");
+      if (this.vault.getAbstractFileByPath(path)) throw Error("indexPending");
+      await this.vault.createFolder(path);
+    } else await ensure(this.vault.adapter, path);
+  }
+  async upload(p, b, mtime) {
+    const path = this.writable(p), options = Number.isFinite(mtime) ? { mtime } : void 0;
+    if (this.ownWrite) this.ownWrite(path, await hash(b));
+    if (this.indexed(path)) {
+      const parts = p.split("/");
+      let at = "";
+      for (const part of parts.slice(0, -1)) {
+        at = join(at, part);
+        await this.mkdir(at);
+      }
+      const file = this.vault.getAbstractFileByPath(path);
+      if (file instanceof import_obsidian.TFile) {
+        await this.vault.modifyBinary(file, b, options);
+        return;
+      }
+      if (file || await this.vault.adapter.exists(path))
+        throw Error("indexPending");
+      await this.vault.createBinary(path, b, options);
+      return;
+    }
+    await ensure(this.vault.adapter, parent(path));
+    if (await this.vault.adapter.exists(path)) {
+      await this.vault.adapter.writeBinary(path, b, options);
+      return;
+    }
+    const staging = join(
+      this.vault.configDir,
+      "plugins/" + this.self + "/runtime/tmp"
+    );
+    await ensure(this.vault.adapter, staging);
+    const tmp = join(staging, crypto.randomUUID());
+    await this.vault.adapter.writeBinary(tmp, b, options);
+    try {
+      await this.vault.adapter.rename(tmp, path);
+    } finally {
+      if (await this.vault.adapter.exists(tmp))
+        await this.vault.adapter.remove(tmp);
+    }
+  }
+  async delete(p) {
+    const path = this.writable(p);
+    if ((await this.stat(p))?.type !== "file") throw Error("collision");
+    const a = this.vault.adapter;
+    this.ownWrite?.(path, null);
+    const file = this.indexed(path) ? this.vault.getAbstractFileByPath(path) : null;
+    if (this.indexed(path) && !(file instanceof import_obsidian.TFile))
+      throw Error("indexPending");
+    switch (this.policy.trash) {
+      case "plugin": {
+        const expires = Date.now() + this.policy.trashDays * 864e5;
+        const dest = join(
+          join(this.vault.configDir, "plugins/" + this.self + "/runtime/trash"),
+          expires + "-" + crypto.randomUUID() + "/" + path
+        );
+        await ensure(a, parent(dest));
+        if (file) await this.vault.rename(file, dest);
+        else await a.rename(path, dest);
+        break;
+      }
+      case "permanent":
+        if (file) await this.vault.delete(file);
+        else await a.remove(path);
+        break;
+      case "system":
+        if (!await a.trashSystem(path)) throw Error("trashUnavailable");
+        break;
+      case "vault":
+        if (file) await this.vault.trash(file, false);
+        else await a.trashLocal(path);
+        break;
+    }
+  }
+  async removeEmptyDir(p) {
+    checked(p);
+    const path = this.writable(p, true), a = this.vault.adapter;
+    const listed = await a.list(path);
+    if (listed.files.length || listed.folders.length) return false;
+    try {
+      if (a instanceof import_obsidian.FileSystemAdapter) {
+        const fs = require("node:fs/promises");
+        const paths = require("node:path");
+        const full = a.getFullPath(path), base = await fs.realpath(a.getBasePath());
+        if (paths.relative(paths.join(base, path), await fs.realpath(full)) !== "")
+          return false;
+        await fs.rmdir(full);
+      } else await a.rmdir(path, false);
+    } catch (e) {
+      if (e instanceof Error && /\b(ENOTEMPTY|EEXIST)\b/.test(e.message))
+        return false;
+      const s = await a.stat(path);
+      if (!s) return true;
+      if (s.type === "folder") {
+        const now = await a.list(path);
+        if (now.files.length || now.folders.length) return false;
+      }
+      throw e;
+    }
+    this.ownWrite?.(path, null);
+    return true;
+  }
+  async move(from, to) {
+    const a = this.writable(from), b = this.writable(to);
+    if (await this.vault.adapter.exists(b)) throw Error("collision");
+    if (this.indexed(a)) {
+      const f = this.vault.getAbstractFileByPath(a);
+      if (!(f instanceof import_obsidian.TFile)) throw Error("indexPending");
+      await this.vault.rename(f, b);
+    } else await this.vault.adapter.rename(a, b);
+  }
+  async getRevision() {
+    return null;
+  }
+};
+
+// src/engine.ts
+init_git_buffer();
+
+// src/filters.ts
+init_git_buffer();
+var import_posix3 = __toESM(require_posix());
+function pathFilter(p) {
+  const compile = (s) => s.split(/[\n,]+/).map((v) => v.trim()).filter(Boolean).map(
+    (v) => (0, import_posix3.default)(v, { nonegate: true, noextglob: true, nobrace: true })
+  );
+  const include = compile(p.include), exclude = compile(p.exclude);
+  const allowed = (path) => {
+    if (exclude.some((f) => f(path) || f(path + "/"))) return false;
+    for (let dir = parent(path); dir; dir = parent(dir))
+      if (exclude.some((f) => f(dir) || f(dir + "/"))) return false;
+    return true;
+  };
+  return Object.assign(
+    (path) => allowed(path) && (!include.length || include.some((f) => f(path))),
+    { directory: allowed }
+  );
+}
+
+// src/selection.ts
+init_git_buffer();
+
+// src/planner.ts
+init_git_buffer();
+
+// src/conflict-resolver.ts
+init_git_buffer();
+var resolveConflict = (policy, s, t) => {
+  if (policy === "both") return "both";
+  if (policy === "target" || policy === "newer" && Number.isFinite(s.mtime) && Number.isFinite(t.mtime) && t.mtime > s.mtime + 2e3)
+    return "retain";
+  return "write";
+};
+
+// src/planner.ts
+function sortOps(ops) {
+  const rank = (o) => o.action === "mkdir" ? 0 : o.action === "rmdir" ? 2 : 1;
+  return ops.sort(
+    (a, b) => rank(a) - rank(b) || (a.action === "mkdir" ? a.path.length - b.path.length : a.action === "rmdir" ? b.path.length - a.path.length : priority(a.path) - priority(b.path)) || a.path.localeCompare(b.path)
+  );
+}
+function plan(p, src, dst, base, resolve = resolveConflict, mode = "plan", configDir = ".obsidian") {
+  if (!src.complete || !dst.complete) throw Error("incomplete");
+  const skipped = new Map([...src.skipped ?? [], ...dst.skipped ?? []]);
+  const names = /* @__PURE__ */ new Map();
+  for (const snap of [src, dst])
+    for (const [paths, kind] of [
+      [snap.files.keys(), "file"],
+      [snap.directories.keys(), "folder"]
+    ])
+      for (const path of paths) {
+        const key = fold(path), sig = kind + " " + path;
+        if (names.has(key) && names.get(key) !== sig)
+          skipped.set(path, "collision");
+        names.set(key, sig);
+      }
+  const alias = (s) => fold(s).split("/").map((k) => k.replace(/[. ]+$/, "")).join("/");
+  const blocked = new Set([...skipped.keys()].map(alias));
+  const protectedPath = (path) => {
+    const parts = alias(path).split("/");
+    while (parts.length) {
+      if (blocked.has(parts.join("/"))) return true;
+      parts.pop();
+    }
+    return false;
+  };
+  const deferred = [...skipped].filter(([, reason]) => reason !== "filter").map(([path, reason]) => ({ path, reason }));
+  const ops = [], deletes = [];
+  for (const path of /* @__PURE__ */ new Set([...src.files.keys(), ...dst.files.keys()])) {
+    if (protectedPath(path)) continue;
+    const s = src.files.get(path), t = dst.files.get(path), b = Object.hasOwn(base.entries, path) ? base.entries[path] : void 0;
+    if (!s) {
+      if (p.role === "subscriber" && fold(path) === (p.scope === "settings" ? "community-plugins.json" : fold(configDir) + "/community-plugins.json"))
+        continue;
+      if (t && (p.mirror === "full" || p.deletions && b?.delivered))
+        deletes.push({ path, action: "delete", conflict: false, target: t });
+      continue;
+    }
+    if (s.kind === "V") continue;
+    if (s.hash === t?.hash) {
+      ops.push({ path, action: "ack", source: s, conflict: false });
+      continue;
+    }
+    const strict = p.strictDrift || p.scope === "content" && p.mirror === "full";
+    if (!strict && b?.seen === s.hash) continue;
+    if (!strict && p.scope === "settings" && s.rawHash && b?.seen === s.rawHash && s.rawHash !== s.hash)
+      continue;
+    const conflict = !!t && (s.kind === "S" || s.kind === "H" && p.conflict !== "source") && (!b || t.hash !== b.hash && s.hash !== b.applied);
+    const action = conflict && t && p.mirror !== "full" ? resolve(p.conflict, s, t) : "write";
+    ops.push({ path, action, source: s, target: t, conflict });
+  }
+  const managedSrc = src.managedDirectories ?? src.directories, managedDst = dst.managedDirectories ?? dst.directories;
+  for (const path of managedSrc)
+    if (!dst.directories.has(path) && !protectedPath(path))
+      ops.push({ path, action: "mkdir", conflict: false });
+  const tracked = trackedDirectories(base), occupied = new Set(dst.occupiedDirectories);
+  const removed = new Set(deletes.map((o) => o.path));
+  for (const path of dst.files.keys())
+    if (!removed.has(path)) occupied.add(parent(path));
+  for (const path of skipped.keys()) occupied.add(parent(path));
+  for (const path of [...dst.directories].sort((a, b) => b.length - a.length)) {
+    if (managedDst.has(path) && (p.scope !== "content" || !p.content || folderIncluded(path, p.content)) && !occupied.has(path) && !src.directories.has(path) && !protectedPath(path) && (p.mirror === "full" || p.deletions && tracked.has(path)))
+      deletes.push({ path, action: "rmdir", conflict: false });
+    else occupied.add(parent(path));
+  }
+  const protect = (mode !== "silent" || p.silentDeletionSafeguard !== false) && (p.emptyGuard && (src.files.size === 0 || base.size > 0 && src.files.size < base.size * (1 - p.shrinkPercent / 100)) || removed.size > Math.max(p.deleteGrace, dst.files.size * p.maxDeletePercent / 100) || deletes.length > p.maxDeleteCount || deletes.length > Math.max(
+    p.deleteGrace,
+    (dst.files.size + managedDst.size) * p.maxDeletePercent / 100
+  ));
+  if (!protect) for (const deletion of deletes) ops.push(deletion);
+  sortOps(ops);
+  return {
+    ops,
+    deferred,
+    forgotten: Object.keys(base.entries).filter(
+      (path) => !protectedPath(path) && !src.files.has(path) && !dst.files.has(path)
+    ),
+    forgottenFolders: [...tracked].filter(
+      (p2) => !dst.directories.has(p2) && !src.directories.has(p2) && !protectedPath(p2)
+    ),
+    heldFolders: protect ? deletes.filter((o) => o.action === "rmdir").map((o) => o.path) : [],
+    held: protect ? deletes.map((d) => d.path) : [],
+    count: src.files.size,
+    direction: "SourceToTarget"
+  };
+}
+
+// src/selection.ts
+function selectPlan(profile, fresh2, review, choices, release) {
+  const seen = new Map(review.ops.map((op) => [op.path, op]));
+  const skippedFolders = new Set(
+    review.ops.filter((o) => o.action === "mkdir" && choices?.get(o.path) === "skip").map((o) => o.path)
+  );
+  const ops = fresh2.ops.flatMap((op) => {
+    const before = seen.get(op.path);
+    for (let d = parent(op.path); d; d = parent(d))
+      if (skippedFolders.has(d)) return [];
+    if (!before || choices?.get(op.path) === "skip") return [];
+    if (op.action === "ack") return [op];
+    if (before.source?.hash !== op.source?.hash || before.action !== op.action || before.conflict !== op.conflict)
+      throw Error("referenceChanged");
+    const decision = choices?.get(op.path);
+    if (!decision || decision === op.action) return [op];
+    if (!op.conflict || profile.mirror === "full" || !(decision === "write" || decision === "retain" || decision === "both" && profile.scope === "content"))
+      throw Error("invalid");
+    return [{ ...op, action: decision }];
+  });
+  const reviewedHeld = new Set(review.held);
+  const folders = new Set(fresh2.heldFolders), reviewedFolders = new Set(review.heldFolders);
+  const held = fresh2.held.filter((path) => {
+    if (!release?.has(path) || !reviewedHeld.has(path)) return true;
+    if (folders.has(path) !== reviewedFolders.has(path))
+      throw Error("referenceChanged");
+    ops.push({
+      path,
+      action: folders.has(path) ? "rmdir" : "delete",
+      conflict: false
+    });
+    return false;
+  });
+  return {
+    ...fresh2,
+    ops: sortOps(ops),
+    held,
+    heldFolders: held.filter((p) => folders.has(p))
+  };
+}
+
 // src/scanner.ts
 init_git_buffer();
 var PathIssue = class extends Error {
@@ -13845,7 +14066,7 @@ async function scan(provider, scope, configDir, self, skipHotTarget = false, bud
         throw new PathIssue("readTimeout", dir || "/");
       throw e;
     });
-    if (dir && !list.files.length && !list.folders.length && !list.skipped?.length && accept(dir) && (scope === "content" || emptyConfigDirectory(dir, config ?? legacyConfig())))
+    if (dir && !list.files.length && !list.folders.length && !list.skipped?.length && accept(dir) && (scope === "content" ? !options.content || folderIncluded(dir, options.content) : emptyConfigDirectory(dir, config ?? legacyConfig())))
       managedDirectories.add(dir);
     for (const path of list.skipped ?? []) {
       if (parent(path) !== dir) throw Error("path");
@@ -14120,7 +14341,7 @@ var SyncEngine = class {
               true,
               cfg,
               p.content
-            ) && (p.scope === "content" || emptyConfigDirectory(pth, cfg)) && !(pth.startsWith("plugins/") && projection?.blocked.includes(pth.split("/")[1].toLowerCase()))
+            ) && (p.scope === "content" ? !p.content || folderIncluded(pth, p.content) : emptyConfigDirectory(pth, cfg)) && !(pth.startsWith("plugins/") && projection?.blocked.includes(pth.split("/")[1].toLowerCase()))
           );
         if (cacheKey && ![...snapshot.skipped?.values() ?? []].includes("locked"))
           this.lastSource = { key: cacheKey, snapshot };
@@ -14254,14 +14475,90 @@ var SyncEngine = class {
 // src/i18n.ts
 init_git_buffer();
 var ru = {
+  categoryRule: "Исключено категориями настроек",
+  pluginRule: "Исключено правилами для этого плагина",
+  baseScope: "Исходный охват",
+  onlyHelp: "Отметьте нужные папки или отдельные файлы. Остальные и новые соседи исключены. Новые файлы внутри выбранной папки включаются.",
+  allHelp: "Включены все разрешённые пути. Исключения применяются к выбранным файлам и папкам вместе с их содержимым.",
+  allExcept: "Всё, кроме исключений",
+  onlySelected: "Только выбранное",
+  minutesUnit: "мин",
+  inactive: "Выключен",
+  places: "Расположения",
+  templates: "Шаблоны",
+  endpoints: "Расположения и направление",
+  composition: "Состав",
+  taskRules: "Правила",
+  schedule: "Запуск",
+  diagnostics: "Диагностика",
+  localBookmark: "Сохранённая локальная папка",
+  remoteBookmark: "Сохранённая папка подключения",
+  customLocation: "Указать расположение",
+  saveLocation: "Запомнить расположение",
+  replacePlace: "Изменить расположение и пути связанных профилей?",
+  useTemplate: "Применить шаблон",
+  saveTaskTemplate: "Сохранить правила задачи",
+  saveScopeTemplate: "Сохранить набор фильтров",
+  templateName: "Название шаблона",
+  replaceTemplate: "Обновить существующий шаблон?",
+  locationsHelp: "Сохраните локальную или облачную папку один раз и выбирайте её в профилях.",
+  checkAccess: "Проверить доступ",
+  accessible: "Папка доступна",
+  rename: "Переименовать",
+  unlinkHelp: "Убрать расположение из библиотеки? Профили сохранят свои пути.",
+  copyJson: "Скопировать JSON",
+  exportJson: "Экспорт JSON",
+  importJson: "Импорт шаблона из JSON",
+  createTask: "Создать профиль",
+  userTemplates: "Мои шаблоны",
+  copyNotes: "Копировать заметки Markdown",
+  publishSelection: "Публиковать выбранное",
+  mirrorTask: "Зеркало папки",
+  appearanceTask: "Перенести оформление Obsidian",
+  pluginDataTask: "Перенести настройки плагинов",
+  manualTask: "Только ручной запуск",
+  copyOnly: "Добавлять и обновлять без удалений",
+  tracked: "Удалять исчезнувшие из источника ранее доставленные файлы и папки",
+  browseLocal: "Выбрать локальную папку",
+  settingsProcessing: "Действующая папка настроек Obsidian. Применяются категории, локальные поля JSON, правила для плагинов и перезагрузки.",
+  contentProcessing: "В этом профиле содержимое папки настроек можно включить как файлы. Для выборочной доставки настроек и сохранения локальных полей JSON выберите охват «Настройки».",
+  draftPreview: "Операции по текущему черновику",
+  createNow: "Создать эти папки сейчас?",
+  whyPath: "Проверить путь",
+  whyPathHelp: "Введите путь относительно папки профиля. Проверка учитывает правила и метаданные обеих сторон.",
+  checkPath: "Проверить",
+  pathAbsent: "Путь отсутствует",
+  folderRule: "Исключено выбором папок и файлов",
+  settingsRule: "Исключено категориями или фильтрами настроек",
+  maskRule: "Исключено масками путей",
+  sizeRule: "Превышено ограничение размера",
+  hiddenOff: "Скрытые файлы исключены",
+  configOff: "Папка настроек исключена",
+  included: "Входит в охват",
+  modifiedSet: "Действуют дополнительные фильтры и правила",
+  advancedFilters: "Маски путей, ID и локальные поля JSON",
+  pluginFiles: "Файлы отдельных плагинов",
+  pluginPartsHelp: "Выберите разрешённые части каждого плагина. Общие категории и маски также действуют. Список включённых в Obsidian плагинов настраивается отдельной категорией.",
+  newPlace: "Новое расположение",
+  editPlace: "Изменить расположение",
+  markdownType: "Заметки Markdown",
+  imageType: "Изображения",
+  allTypes: "Любые типы",
+  fileType: "Типы файлов",
+  customTypes: "Свои маски",
+  includedCategory: "Категория",
+  settingsPaths: "Правила путей и плагинов",
+  protectedList: "Сохранён локальный список включённых плагинов",
+  mixedRules: "Есть исключения или включения внутри",
+  diagnosisHelp: "Проверка использует несохранённые настройки профиля.",
   history: "Журнал операций",
-  everything: "Включить всё содержимое",
+  everything: "Включать настройки и скрытые файлы",
   contentHelp: "Включает настройки Obsidian и скрытые файлы. Выбранные исключения сохраняются. Служебные каталоги, корзина, файлы сеанса и сам Sync Studio защищены.",
   configFolder: "Включать папку настроек Obsidian",
   otherHidden: "Включать другие скрытые папки и файлы",
   folderSelection: "Папки и плагины профиля",
   pluginsPicker: "Выбрать плагины",
-  foldersPicker: "Выбрать папки",
+  foldersPicker: "Выбрать папки и файлы",
   loadingFolders: "Чтение списка папок…",
   folderPartial: "Часть папок недоступна. Показаны доступные папки и сохранённые правила.",
   noneFound: "Ничего не найдено",
@@ -14349,8 +14646,8 @@ var ru = {
   shrinkPercent: "Порог уменьшения источника, %",
   deleteGrace: "Минимум объектов для процентного порога удалений",
   scopePreset: "Набор настроек",
-  preset_full: "Полная копия",
-  preset_noData: "Всё кроме данных плагинов",
+  preset_full: "Основные настройки и плагины",
+  preset_noData: "Настройки и код плагинов",
   preset_look: "Оформление и темы",
   preset_plugins: "Код и список плагинов",
   preset_custom: "Свой набор",
@@ -14473,9 +14770,9 @@ var ru = {
   content: "Контент",
   settings: "Настройки",
   save: "Сохранить",
-  role: "Роль",
-  subscriber: "Подписчик",
-  publisher: "Издатель",
+  role: "Направление",
+  subscriber: "Получать в локальную папку",
+  publisher: "Публиковать из локальной папки",
   saved: "Сохранено",
   instructions: "Создайте две отдельные папки. Для настроек локальным корнем служит каталог конфигурации Obsidian. Исходные папки должны существовать.",
   init: "Создать недостающие папки",
@@ -14514,14 +14811,90 @@ var ru = {
   unknown: "Неизвестное состояние"
 };
 var en = {
+  categoryRule: "Excluded by settings categories",
+  pluginRule: "Excluded by rules for this plugin",
+  baseScope: "Starting selection",
+  onlyHelp: "Select folders or individual files. Other entries and new siblings are excluded. New files inside a selected folder are included.",
+  allHelp: "All eligible paths are included. Exclusions apply to selected files and entire folders.",
+  allExcept: "All except exclusions",
+  onlySelected: "Selected items only",
+  minutesUnit: "min",
+  inactive: "Disabled",
+  places: "Locations",
+  templates: "Templates",
+  endpoints: "Locations and direction",
+  composition: "Contents",
+  taskRules: "Rules",
+  schedule: "Run settings",
+  diagnostics: "Diagnostics",
+  localBookmark: "Saved local folder",
+  remoteBookmark: "Saved connection folder",
+  customLocation: "Custom location",
+  saveLocation: "Save location",
+  replacePlace: "Update this location and the paths of its linked profiles?",
+  useTemplate: "Apply template",
+  saveTaskTemplate: "Save task template",
+  saveScopeTemplate: "Save scope template",
+  templateName: "Template name",
+  replaceTemplate: "Update existing template?",
+  locationsHelp: "Save a local or cloud folder once and reuse it across profiles.",
+  checkAccess: "Check access",
+  accessible: "Folder available",
+  rename: "Rename",
+  unlinkHelp: "Remove this location from the library? Profiles will keep their paths.",
+  copyJson: "Copy JSON",
+  exportJson: "Export JSON",
+  importJson: "Import template JSON",
+  createTask: "Create profile",
+  userTemplates: "My templates",
+  copyNotes: "Copy Markdown notes",
+  publishSelection: "Publish selected files",
+  mirrorTask: "Mirror a folder",
+  appearanceTask: "Transfer Obsidian appearance",
+  pluginDataTask: "Transfer plugin settings",
+  manualTask: "Manual runs only",
+  copyOnly: "Add and update without deletions",
+  tracked: "Remove previously delivered files and folders missing from the source",
+  browseLocal: "Browse local folder",
+  settingsProcessing: "Uses the active Obsidian configuration folder with categories, local JSON fields, plugin rules and reload settings.",
+  contentProcessing: "This profile can include configuration as files. Choose Settings for category selection and preservation of local JSON fields.",
+  draftPreview: "Operations for this draft",
+  createNow: "Create these folders now?",
+  whyPath: "Inspect a path",
+  whyPathHelp: "Enter a path relative to the profile root to inspect its rules and metadata on both sides.",
+  checkPath: "Check",
+  pathAbsent: "Path absent",
+  folderRule: "Excluded by folder and file selection",
+  settingsRule: "Excluded by settings categories or filters",
+  maskRule: "Excluded by path patterns",
+  sizeRule: "Exceeds the size limit",
+  hiddenOff: "Hidden files excluded",
+  configOff: "Configuration folder excluded",
+  included: "Included",
+  modifiedSet: "Additional filters and rules apply",
+  advancedFilters: "Path patterns, plugin IDs and local JSON fields",
+  pluginFiles: "Files per plugin",
+  pluginPartsHelp: "Choose the allowed parts of each plugin. Global categories and patterns also apply. The enabled-plugin list has its own category.",
+  newPlace: "New location",
+  editPlace: "Edit location",
+  markdownType: "Markdown notes",
+  imageType: "Images",
+  allTypes: "Any file type",
+  fileType: "File types",
+  customTypes: "Custom patterns",
+  includedCategory: "Category",
+  settingsPaths: "Path and plugin rules",
+  protectedList: "Enabled plugins list is preserved",
+  mixedRules: "Contains selection overrides",
+  diagnosisHelp: "Uses the current unsaved profile settings.",
   history: "Operation history",
-  everything: "Include all content",
+  everything: "Include configuration and hidden files",
   contentHelp: "Includes Obsidian settings and hidden files. Folder exclusions still apply. Internal folders, trash, session files and Sync Studio are protected.",
   configFolder: "Include Obsidian configuration folder",
   otherHidden: "Include other hidden folders and files",
   folderSelection: "Profile folders and plugins",
   pluginsPicker: "Choose plugins",
-  foldersPicker: "Choose folders",
+  foldersPicker: "Choose folders and files",
   loadingFolders: "Reading folders…",
   folderPartial: "Some folders are unavailable. Showing available folders and saved rules.",
   noneFound: "No matches",
@@ -14609,8 +14982,8 @@ var en = {
   shrinkPercent: "Source shrink threshold (%)",
   deleteGrace: "Deletion count floor for percentage threshold",
   scopePreset: "Settings preset",
-  preset_full: "Full copy",
-  preset_noData: "All except plugin data",
+  preset_full: "Standard settings and plugins",
+  preset_noData: "Settings and plugin code",
   preset_look: "Appearance and themes",
   preset_plugins: "Plugin code and list",
   preset_custom: "Custom selection",
@@ -20748,146 +21121,108 @@ var HistoryView = class extends import_obsidian3.ItemView {
 // src/editor.ts
 init_git_buffer();
 
-// src/content-editor.ts
+// src/plugin-filters.ts
 init_git_buffer();
 var import_obsidian4 = require("obsidian");
-function contentEditor(el, p, app, self, t, stores, refresh) {
-  const c = p.content ?? plainContent();
-  const toggle = (key, label) => new import_obsidian4.Setting(el).setName(label).addToggle(
-    (b) => b.setValue(c[key]).onChange((v) => {
-      p.content = { ...c, [key]: v };
-      refresh();
-    })
-  );
-  new import_obsidian4.Setting(el).setName(t("everything")).setDesc(t("contentHelp")).addToggle(
-    (b) => b.setValue(c.config && c.hidden).onChange((v) => {
-      p.content = { ...c, config: v, hidden: v };
-      refresh();
-    })
-  );
-  toggle("config", t("configFolder") + " · " + app.vault.configDir);
-  toggle("hidden", t("otherHidden"));
-  const row = new import_obsidian4.Setting(el).setName(t("folderSelection")).setDesc(c.rules.map((r) => (r.include ? "+ " : "− ") + r.path).join(", "));
-  for (const plugins of [false, true])
-    row.addButton(
-      (b) => b.setButtonText(t(plugins ? "pluginsPicker" : "foldersPicker")).setDisabled(plugins && !c.config).onClick(
-        () => new FolderSelection(app, p, self, t, stores, plugins, refresh).open()
-      )
-    );
-}
-var FolderSelection = class extends import_obsidian4.Modal {
-  constructor(app, profile, self, t, stores, plugins, refresh) {
+var PluginFilters = class extends import_obsidian4.Modal {
+  constructor(app, config, stores, self, t, refresh) {
     super(app);
-    this.profile = profile;
+    this.config = config;
+    this.stores = stores;
     this.self = self;
     this.t = t;
-    this.stores = stores;
-    this.plugins = plugins;
     this.refresh = refresh;
-    this.directory = plugins ? join(app.vault.configDir, "plugins") : "";
-    this.c = profile.content ?? plainContent();
   }
-  directory;
-  ticket = 0;
-  c;
+  live = true;
   onClose() {
-    this.ticket++;
+    this.live = false;
   }
-  onOpen() {
-    void this.show();
-  }
-  async show() {
-    const ticket = ++this.ticket, el = this.contentEl, t = this.t, dir = this.directory;
-    this.titleEl.setText(t(this.plugins ? "pluginsPicker" : "foldersPicker"));
-    el.empty();
-    const header = new import_obsidian4.Setting(el).setName(dir || "/");
-    if (dir && !this.plugins)
-      header.addButton(
-        (b) => b.setButtonText(t("upFolder")).onClick(() => {
-          this.directory = parent(dir);
-          void this.show();
-        })
-      );
-    const status = el.createEl("p", { text: t("loadingFolders") });
-    const names = new Set(
-      this.c.rules.map((r) => r.path).filter((p) => parent(p) === dir)
+  async onOpen() {
+    const limits = new Map(
+      (this.config.pluginLimits ?? []).map((x) => [
+        fold(x.id),
+        new Set(x.allow)
+      ])
     );
-    let failures = 0;
+    const names = new Set(limits.keys()), el = this.contentEl, t = this.t;
+    this.titleEl.setText(t("pluginFiles"));
+    const status = el.createEl("p", { text: t("loadingFolders") });
+    let failed = false;
     try {
-      const sides = this.stores();
       await Promise.all(
-        sides.map(async (s) => {
+        this.stores().map(async (s) => {
           try {
-            const budget = new RunBudget(void 0, 3e4, []);
-            if ((await budget.io(() => s.stat(dir)))?.type === "folder") {
-              for (const p of (await budget.io(() => s.list(dir))).folders)
-                if (parent(p) === dir) names.add(p);
-            }
+            const b = new RunBudget(void 0, 3e4, []);
+            if ((await b.io(() => s.stat("plugins")))?.type === "folder")
+              for (const p of (await b.io(() => s.list("plugins"))).folders) {
+                const id = p.split("/")[1];
+                if (id && p === "plugins/" + id && safe(id) && fold(id) !== fold(this.self))
+                  names.add(fold(id));
+              }
           } catch {
-            failures++;
+            failed = true;
           }
         })
       );
     } catch {
-      failures++;
+      failed = true;
     }
-    if (ticket !== this.ticket) return;
-    status.setText(failures ? t("folderPartial") : "");
-    const candidates = [...names].filter(
-      (p) => safe(p) && contentPath(p, this.app.vault.configDir, this.self, true, {
-        ...this.c,
-        rules: []
-      })
-    ).sort((a, b) => a.localeCompare(b));
-    let query = "", page = 0;
-    const tools = new import_obsidian4.Setting(el);
-    const list = el.createDiv(), pager = new import_obsidian4.Setting(el);
-    const visible = () => candidates.filter((p) => fold(p).includes(fold(query)));
+    if (!this.live) return;
+    status.setText(
+      [t("pluginPartsHelp"), failed ? t("folderPartial") : ""].filter(Boolean).join(" ")
+    );
+    const toolbar = new import_obsidian4.Setting(el), bulk = new import_obsidian4.Setting(el), list = el.createDiv(), pager = new import_obsidian4.Setting(el);
+    let search = "", page = 0, part = "code";
+    const matches2 = () => [...names].filter((id) => id.includes(fold(search))).sort();
+    const change = (id, k, on) => {
+      const s = limits.get(id) ?? new Set(pluginParts);
+      if (on) s.add(k);
+      else s.delete(k);
+      if (s.size === 3) limits.delete(id);
+      else limits.set(id, s);
+    };
     const render = () => {
       list.empty();
       pager.clear();
-      const matches2 = visible();
-      if (!matches2.length) list.createEl("p", { text: t("noneFound") });
-      for (const p of matches2.slice(page * 50, page * 50 + 50)) {
-        const row = new import_obsidian4.Setting(list).setName(
-          p.slice(dir ? dir.length + 1 : 0)
-        );
-        row.addToggle(
-          (b) => b.setValue(folderIncluded(p, this.c)).onChange((v) => {
-            this.c = setFolders(this.c, [p], v);
-            render();
-          })
-        );
-        if (!this.plugins)
-          row.addExtraButton(
-            (b) => b.setIcon("folder-open").setTooltip(t("openFolder")).onClick(() => {
-              this.directory = p;
-              void this.show();
-            })
-          );
+      const found = matches2();
+      if (!found.length) list.createEl("p", { text: t("noneFound") });
+      for (const id of found.slice(page * 40, page * 40 + 40)) {
+        const row = new import_obsidian4.Setting(list).setName(id);
+        for (const k of pluginParts) {
+          const label = row.controlEl.createEl("label", {
+            text: t("cat_" + k)
+          });
+          const box = label.createEl("input", { type: "checkbox" });
+          box.checked = limits.get(id)?.has(k) ?? true;
+          box.onchange = () => change(id, k, box.checked);
+        }
       }
-      if (matches2.length > 50)
+      if (found.length > 40)
         for (const n of [-1, 1])
           pager.addButton(
-            (b) => b.setButtonText(n < 0 ? "←" : "→").setDisabled(
-              n < 0 ? page === 0 : (page + 1) * 50 >= matches2.length
-            ).onClick(() => {
+            (b) => b.setButtonText(n < 0 ? "←" : "→").setDisabled(n < 0 ? page === 0 : (page + 1) * 40 >= found.length).onClick(() => {
               page += n;
               render();
             })
           );
     };
-    tools.addSearch(
+    toolbar.addSearch(
       (s) => s.setPlaceholder(t("search")).onChange((v) => {
-        query = v;
+        search = v;
         page = 0;
         render();
       })
     );
-    for (const v of [true, false])
-      tools.addButton(
-        (b) => b.setButtonText(t(v ? "checkMatches" : "uncheckMatches")).onClick(() => {
-          this.c = setFolders(this.c, visible(), v);
+    bulk.addDropdown((d) => {
+      for (const k of pluginParts) d.addOption(k, t("cat_" + k));
+      d.onChange((v) => {
+        part = v;
+      });
+    });
+    for (const on of [true, false])
+      bulk.addButton(
+        (b) => b.setButtonText(t(on ? "checkMatches" : "uncheckMatches")).onClick(() => {
+          for (const id of matches2()) change(id, part, on);
           render();
         })
       );
@@ -20896,13 +21231,24 @@ var FolderSelection = class extends import_obsidian4.Modal {
       (b) => b.setButtonText(t("cancel")).onClick(() => this.close())
     ).addButton(
       (b) => b.setButtonText(t("useSelection")).setCta().onClick(() => {
-        this.profile.content = this.c;
+        this.config.pluginLimits = [...limits].map(([id, allow]) => ({
+          id,
+          allow: [...allow]
+        }));
         this.close();
         this.refresh();
       })
     );
   }
 };
+
+// src/library-editor.ts
+init_git_buffer();
+var import_obsidian8 = require("obsidian");
+
+// src/connection-fields.ts
+init_git_buffer();
+var import_obsidian6 = require("obsidian");
 
 // src/oauth-ui.ts
 init_git_buffer();
@@ -21189,10 +21535,121 @@ var Login = class extends import_obsidian5.Modal {
   }
 };
 
+// src/connection-fields.ts
+function connectionFields(el, rs, p, redraw, validateForm, fieldRow) {
+  const t = rs.t;
+  fieldRow("access").setName(t("engine")).addDropdown((d) => {
+    for (const k of [
+      "vaultSource",
+      "google",
+      "yandex",
+      "git",
+      "googlePrivate",
+      "yandexPrivate"
+    ])
+      d.addOption(k, t(k));
+    d.setValue(
+      p.access === "oauth" ? p.cloud?.engine + "Private" : p.remote?.engine ?? "vaultSource"
+    ).onChange((v) => {
+      delete p.cloud;
+      if (v.endsWith("Private")) {
+        const engine = v === "googlePrivate" ? "google" : "yandex";
+        const a = rs.accounts.list().find((a2) => a2.engine === engine && !a2.needsLogin);
+        delete p.remote;
+        p.cloud = {
+          engine,
+          account: a?.id ?? "",
+          root: engine === "google" ? "root" : a?.full ? "disk:/" : "app:/"
+        };
+        p.access = "oauth";
+        p.reference = "/";
+      } else if (v === "vaultSource") {
+        delete p.remote;
+        p.access = "local";
+        p.reference = "Sync Studio-source";
+      } else {
+        p.access = "public";
+        p.role = "subscriber";
+        p.reference = "/";
+        p.remote = {
+          engine: v,
+          url: "",
+          branch: ""
+        };
+      }
+      redraw();
+    });
+  });
+  const remote = p.access === "public" ? p.remote : void 0;
+  if (remote) {
+    fieldRow("remote").setName(t("remote")).setDesc(t("readonly")).addText(
+      (c) => c.setValue(remote.url).onChange((v) => {
+        remote.url = v.trim();
+        validateForm();
+      })
+    );
+    if (remote.engine === "git")
+      new import_obsidian6.Setting(el).setName(t("branch")).addText(
+        (c) => c.setValue(remote.branch).onChange((v) => {
+          remote.branch = v.trim();
+          validateForm();
+        })
+      );
+    if (remote.engine === "google") {
+      let key = rs.googleKey();
+      new import_obsidian6.Setting(el).setName(t("deviceKey")).addText((c) => {
+        c.inputEl.type = "password";
+        c.setValue(key).onChange((v) => {
+          key = v;
+        });
+      }).addButton(
+        (b) => b.setButtonText(t("save")).onClick(() => {
+          rs.saveGoogleKey(key);
+          b.setButtonText(t("saved"));
+        })
+      );
+    }
+  }
+  if (p.access === "oauth" && p.cloud) {
+    const c = p.cloud;
+    fieldRow("cloud").setName(t("accounts")).addDropdown((d) => {
+      d.addOption("", t("selectAccount"));
+      for (const a of rs.accounts.list().filter((a2) => a2.engine === c.engine))
+        d.addOption(
+          a.id,
+          a.label + " · " + t(a.full ? "fullAccess" : "appAccess") + (a.needsLogin ? " · " + t("loginRequired") : "")
+        );
+      d.setValue(c.account).onChange((id) => {
+        c.account = id;
+        if (c.engine === "yandex")
+          c.root = rs.accounts.list().find((a) => a.id === id)?.full ? "disk:/" : "app:/";
+        redraw();
+      });
+    }).addButton(
+      (b) => b.setButtonText(t("accounts")).onClick(() => new AccountsView(rs.app, rs, () => redraw()).open())
+    );
+    if (c.engine === "google")
+      new import_obsidian6.Setting(el).setName(t("driveRoot")).addText(
+        (v) => v.setValue(c.root).onChange((raw) => {
+          try {
+            c.root = location({
+              engine: "google",
+              url: raw.trim(),
+              branch: ""
+            }).root;
+          } catch {
+            c.root = "";
+          }
+          validateForm();
+        })
+      );
+  }
+}
+
 // src/remote-browser.ts
 init_git_buffer();
-var import_obsidian6 = require("obsidian");
-var RemoteFolderBrowser = class extends import_obsidian6.Modal {
+var import_obsidian7 = require("obsidian");
+var RemoteFolderBrowser = class extends import_obsidian7.Modal {
   constructor(app, source, tr, choose) {
     super(app);
     this.source = source;
@@ -21213,7 +21670,7 @@ var RemoteFolderBrowser = class extends import_obsidian6.Modal {
     this.titleEl.setText(t("browse"));
     el.createEl("p", { text: "/" + path });
     if (path)
-      new import_obsidian6.Setting(el).addButton(
+      new import_obsidian7.Setting(el).addButton(
         (b) => b.setButtonText(t("upFolder")).onClick(() => this.show(parent(path)))
       );
     const status = el.createEl("p", {
@@ -21224,14 +21681,14 @@ var RemoteFolderBrowser = class extends import_obsidian6.Modal {
       const { folders } = await this.source.list(path);
       if (seq !== this.sequence) return;
       status.remove();
-      new import_obsidian6.Setting(el).addButton(
+      new import_obsidian7.Setting(el).addButton(
         (b) => b.setButtonText(t("useFolder")).setCta().onClick(() => {
           this.choose(path || "/");
           this.close();
         })
       );
       for (const folder of folders.sort((a, b) => a.localeCompare(b)))
-        new import_obsidian6.Setting(el).setName(folder.slice(path ? path.length + 1 : 0)).addButton(
+        new import_obsidian7.Setting(el).setName(folder.slice(path ? path.length + 1 : 0)).addButton(
           (b) => b.setButtonText(t("openFolder")).onClick(() => this.show(folder))
         );
     } catch (e) {
@@ -21241,17 +21698,699 @@ var RemoteFolderBrowser = class extends import_obsidian6.Modal {
   }
 };
 
+// src/library-editor.ts
+var InputDialog = class extends import_obsidian8.Modal {
+  constructor(app, t, title, value, submit, json2 = false, output = false) {
+    super(app);
+    this.t = t;
+    this.title = title;
+    this.value = value;
+    this.submit = submit;
+    this.json = json2;
+    this.output = output;
+  }
+  onOpen() {
+    this.titleEl.setText(this.title);
+    const row = new import_obsidian8.Setting(this.contentEl);
+    if (this.json)
+      row.addTextArea((c) => {
+        c.inputEl.rows = 12;
+        c.inputEl.cols = 45;
+        c.inputEl.readOnly = this.output;
+        c.setValue(this.value).onChange((v) => this.value = v);
+      });
+    else
+      row.addText(
+        (c) => c.setValue(this.value).onChange((v) => this.value = v)
+      );
+    const status = this.contentEl.createEl("p", { attr: { role: "status" } });
+    new import_obsidian8.Setting(this.contentEl).addButton(
+      (b) => b.setButtonText(this.t("cancel")).onClick(() => this.close())
+    ).addButton(
+      (b) => b.setButtonText(this.t(this.output ? "copyJson" : "save")).setCta().onClick(async () => {
+        if (!this.value.trim()) {
+          status.setText(this.t("invalid"));
+          return;
+        }
+        try {
+          await this.submit(this.value.trim());
+          this.close();
+        } catch (e) {
+          status.setText(
+            this.t(
+              e instanceof Error && e.message === "invalidConfig" ? "invalidConfig" : "invalid"
+            )
+          );
+        }
+      })
+    );
+  }
+};
+function placeTitle(p, t) {
+  const e = p.endpoint;
+  return [
+    t(
+      e.cloud ? e.cloud.engine + "Private" : e.remote?.engine ?? "vaultSource"
+    ),
+    e.cloud?.root ?? e.remote?.url,
+    e.reference
+  ].filter(Boolean).join(" · ");
+}
+function uses(rs, id) {
+  return rs.config.profiles.filter(
+    (p) => p.localPlace === id || p.referencePlace === id
+  );
+}
+async function storePlace(rs, place) {
+  validEndpoint(place.endpoint);
+  const library = rs.config.library;
+  const profiles = rs.config.profiles.map((p) => {
+    if (p.localPlace !== place.id && p.referencePlace !== place.id) return p;
+    const next = structuredClone(p);
+    for (const s of ["local", "reference"])
+      if (p[linkField(s)] === place.id) {
+        if (s === "reference" && place.endpoint.access === "public" && p.role === "publisher")
+          throw Error("readonly");
+        bindPlace(next, s, place);
+      }
+    const invalid = validate(
+      next,
+      import_obsidian8.Platform.isDesktopApp,
+      false,
+      rs.app.vault.configDir
+    );
+    if (invalid.length) throw Error(invalid[0].code);
+    return next;
+  });
+  await rs.save({
+    ...rs.config,
+    profiles,
+    library: {
+      ...library,
+      places: [...library.places.filter((p) => p.id !== place.id), place]
+    }
+  });
+}
+var PlaceEditor = class extends import_obsidian8.Modal {
+  constructor(rs, refresh, old) {
+    super(rs.app);
+    this.rs = rs;
+    this.refresh = refresh;
+    this.old = old;
+    this.draft = rs.newProfile();
+    this.draft.reference = "/";
+    this.name = old?.name ?? "";
+    if (old) bindPlace(this.draft, "reference", old);
+  }
+  draft;
+  name;
+  onOpen() {
+    this.draw();
+  }
+  draw() {
+    const rs = this.rs, p = this.draft, t = rs.t, el = this.contentEl;
+    el.empty();
+    this.titleEl.setText(t(this.old ? "editPlace" : "newPlace"));
+    new import_obsidian8.Setting(el).setName(t("name")).addText((c) => c.setValue(this.name).onChange((v) => this.name = v));
+    connectionFields(
+      el,
+      rs,
+      p,
+      () => this.draw(),
+      () => {
+      },
+      () => new import_obsidian8.Setting(el)
+    );
+    new import_obsidian8.Setting(el).setName(t("reference")).addText(
+      (c) => c.setValue(p.reference).onChange((v) => p.reference = v.replace(/\\/g, "/"))
+    ).addButton(
+      (b) => b.setButtonText(t("browse")).onClick(() => {
+        try {
+          new RemoteFolderBrowser(
+            this.app,
+            rs.browseStore(p, "reference"),
+            t,
+            (path) => {
+              p.reference = path;
+              this.draw();
+            }
+          ).open();
+        } catch (e) {
+          rs.report(e);
+        }
+      })
+    );
+    const status = el.createEl("p", { attr: { role: "status" } });
+    new import_obsidian8.Setting(el).addButton(
+      (b) => b.setButtonText(t("cancel")).onClick(() => this.close())
+    ).addButton(
+      (b) => b.setButtonText(t("save")).setCta().onClick(async () => {
+        try {
+          const name = this.name.trim();
+          if (!name || rs.config.library.places.some(
+            (v) => v.id !== this.old?.id && v.name === name
+          ))
+            throw Error("invalid");
+          const place = {
+            id: this.old?.id ?? crypto.randomUUID(),
+            name,
+            endpoint: endpoint(p, "reference")
+          };
+          validEndpoint(place.endpoint);
+          const apply = async () => {
+            await storePlace(rs, place);
+            this.close();
+            this.refresh();
+          };
+          const linked = uses(rs, place.id);
+          if (linked.length && JSON.stringify(place.endpoint) !== JSON.stringify(this.old?.endpoint))
+            rs.confirm(
+              t("replacePlace") + " · " + linked.map((v) => v.name).join(", "),
+              apply
+            );
+          else await apply();
+        } catch (e) {
+          status.setText(t(e instanceof Error ? e.message : "invalid"));
+        }
+      })
+    );
+  }
+};
+function placeControl(el, rs, p, side, refresh) {
+  const t = rs.t, library = rs.config.library;
+  const row = new import_obsidian8.Setting(el).setName(
+    t(side === "local" ? "localBookmark" : "remoteBookmark")
+  );
+  row.addDropdown((d) => {
+    d.addOption("", t("customLocation"));
+    for (const v of library.places)
+      if (side === "reference" || v.endpoint.access === "local")
+        d.addOption(v.id, v.name);
+    d.setValue(p[linkField(side)] ?? "").onChange((id) => {
+      if (id)
+        bindPlace(
+          p,
+          side,
+          library.places.find((v) => v.id === id)
+        );
+      else delete p[linkField(side)];
+      refresh();
+    });
+  });
+  row.addButton(
+    (b) => b.setButtonText(t("saveLocation")).onClick(() => {
+      const e = endpoint(p, side), current = library.places.find((v) => v.id === p[linkField(side)]);
+      new InputDialog(
+        rs.app,
+        t,
+        t("saveLocation"),
+        current?.name ?? e.reference,
+        async (name) => {
+          validEndpoint(e);
+          const existing = rs.config.library.places.find(
+            (v) => v.name === name
+          ), place = {
+            id: existing?.id ?? crypto.randomUUID(),
+            name,
+            endpoint: e
+          };
+          const apply = async () => {
+            await storePlace(rs, place);
+            bindPlace(p, side, place);
+            refresh();
+          };
+          if (existing) {
+            rs.confirm(
+              t("replacePlace") + " · " + name + " · " + uses(rs, place.id).map((p2) => p2.name).join(", "),
+              apply
+            );
+            return;
+          }
+          await apply();
+        }
+      ).open();
+    })
+  );
+}
+function templateControl(el, rs, p, refresh) {
+  const t = rs.t;
+  const row = new import_obsidian8.Setting(el).setName(t("templates"));
+  if (rs.config.library.templates.length)
+    row.addDropdown((d) => {
+      d.addOption("", t("useTemplate"));
+      for (const v of rs.config.library.templates) d.addOption(v.id, v.name);
+      d.onChange((id) => {
+        const v = rs.config.library.templates.find((v2) => v2.id === id);
+        if (v) {
+          applyTemplate(p, v);
+          refresh();
+        }
+      });
+    });
+  for (const kind of ["task", "scope"])
+    row.addButton(
+      (b) => b.setButtonText(
+        t(kind === "task" ? "saveTaskTemplate" : "saveScopeTemplate")
+      ).onClick(() => {
+        new InputDialog(
+          rs.app,
+          t,
+          t("templateName"),
+          p.name,
+          async (name) => {
+            const template = makeTemplate(p, name, kind);
+            readTemplate(serializeTemplate(template));
+            const existing = rs.config.library.templates.find(
+              (v) => v.name === name
+            );
+            const write = async () => {
+              if (existing) template.id = existing.id;
+              await saveTemplate(rs, template);
+              refresh();
+            };
+            if (existing)
+              rs.confirm(t("replaceTemplate") + " · " + name, write);
+            else await write();
+          }
+        ).open();
+      })
+    );
+}
+var saveTemplate = (rs, v) => rs.save({
+  ...rs.config,
+  library: {
+    ...rs.config.library,
+    templates: [
+      ...rs.config.library.templates.filter((o) => o.id !== v.id),
+      v
+    ]
+  }
+});
+function libraryPage(el, rs, section, refresh, edit) {
+  const t = rs.t, lib = rs.config.library;
+  if (section === "places") {
+    new import_obsidian8.Setting(el).addButton(
+      (b) => b.setButtonText(t("newPlace")).setCta().onClick(() => new PlaceEditor(rs, refresh).open())
+    );
+    if (!lib.places.length) el.createEl("p", { text: t("locationsHelp") });
+    for (const v of lib.places) {
+      const users = uses(rs, v.id);
+      const row = new import_obsidian8.Setting(el).setName(v.name).setDesc([placeTitle(v, t), ...users.map((p) => p.name)].join(" · "));
+      row.addButton(
+        (b) => b.setButtonText(t("checkAccess")).onClick(async () => {
+          b.setDisabled(true);
+          try {
+            const p = rs.newProfile();
+            bindPlace(p, "reference", v);
+            const s = rs.browseStore(p, "reference");
+            const stat = await s.stat(
+              v.endpoint.reference === "/" ? "" : v.endpoint.reference
+            );
+            if (stat?.type !== "folder") throw Error("missingRoot");
+            await s.list(
+              v.endpoint.reference === "/" ? "" : v.endpoint.reference
+            );
+            b.setButtonText(t("accessible"));
+          } catch (e) {
+            rs.report(e);
+          } finally {
+            b.setDisabled(false);
+          }
+        })
+      );
+      row.addButton(
+        (b) => b.setButtonText(t("editPlace")).onClick(() => new PlaceEditor(rs, refresh, v).open())
+      );
+      row.addButton(
+        (b) => b.setButtonText(t("remove")).onClick(
+          () => rs.confirm(t("unlinkHelp") + " · " + v.name, async () => {
+            const profiles = rs.config.profiles.map((p) => {
+              if (p.localPlace !== v.id && p.referencePlace !== v.id) return p;
+              const next = { ...p };
+              if (next.localPlace === v.id) delete next.localPlace;
+              if (next.referencePlace === v.id) delete next.referencePlace;
+              return next;
+            });
+            await rs.save({
+              ...rs.config,
+              profiles,
+              library: {
+                ...rs.config.library,
+                places: rs.config.library.places.filter((o) => o.id !== v.id)
+              }
+            });
+            refresh();
+          })
+        )
+      );
+    }
+    return;
+  }
+  const start = (v) => {
+    const p = rs.newProfile();
+    if (typeof v === "string") {
+      scenario(p, v);
+      p.name = t(v);
+    } else {
+      applyTemplate(p, v);
+      p.name = v.name;
+    }
+    edit(p);
+  };
+  for (const key of scenarios)
+    new import_obsidian8.Setting(el).setName(t(key)).addButton(
+      (b) => b.setButtonText(t("createTask")).onClick(() => start(key))
+    );
+  new import_obsidian8.Setting(el).setName(t("userTemplates")).addButton(
+    (b) => b.setButtonText(t("importJson")).onClick(
+      () => new InputDialog(
+        rs.app,
+        t,
+        t("importJson"),
+        "",
+        async (raw) => {
+          await saveTemplate(rs, readTemplate(raw));
+          refresh();
+        },
+        true
+      ).open()
+    )
+  );
+  for (const v of lib.templates) {
+    const row = new import_obsidian8.Setting(el).setName(v.name).setDesc(t(v.kind === "task" ? "taskRules" : "scope"));
+    row.addButton(
+      (b) => b.setButtonText(t("createTask")).onClick(() => start(v))
+    );
+    row.addButton(
+      (b) => b.setButtonText(t("rename")).onClick(
+        () => new InputDialog(rs.app, t, t("name"), v.name, async (name) => {
+          await saveTemplate(rs, { ...v, name });
+          refresh();
+        }).open()
+      )
+    );
+    row.addButton(
+      (b) => b.setButtonText(t("exportJson")).onClick(
+        () => new InputDialog(
+          rs.app,
+          t,
+          t("exportJson"),
+          serializeTemplate(v),
+          (s) => navigator.clipboard.writeText(s),
+          true,
+          true
+        ).open()
+      )
+    );
+    row.addButton(
+      (b) => b.setButtonText(t("remove")).onClick(
+        () => rs.confirm(t("remove") + " · " + v.name, async () => {
+          await rs.save({
+            ...rs.config,
+            library: {
+              ...rs.config.library,
+              templates: rs.config.library.templates.filter(
+                (o) => o.id !== v.id
+              )
+            }
+          });
+          refresh();
+        })
+      )
+    );
+  }
+}
+
+// src/path-inspector.ts
+init_git_buffer();
+var import_obsidian9 = require("obsidian");
+function inspectPath(el, rs, p) {
+  const t = rs.t, row = new import_obsidian9.Setting(el).setName(t("whyPath")).setDesc(t("whyPathHelp")), result = el.createEl("p", { attr: { role: "status" } });
+  let path = "";
+  row.addText(
+    (c) => c.setPlaceholder("Projects/note.md").onChange((v) => {
+      path = v.trim().replace(/\\/g, "/");
+      result.empty();
+    })
+  );
+  row.addButton(
+    (b) => b.setButtonText(t("checkPath")).onClick(async () => {
+      const key = path;
+      if (!safe(key)) {
+        result.setText(t("path"));
+        return;
+      }
+      b.setDisabled(true);
+      result.setText(t("scan"));
+      try {
+        const sides = rs.folderSources(p), budget = new RunBudget(void 0, 3e4, []), cfg = p.config ?? legacyConfig(), filter = pathFilter(p);
+        const blocked = p.scope === "settings" && !import_obsidian9.Platform.isDesktopApp && cfg.platformFilter ? await mobileExcluded(sides[0], sides[1], budget) : [];
+        const findings = await Promise.all(
+          sides.map(async (s, i) => {
+            const label = t(i === 0 ? "target" : "reference");
+            try {
+              const stat = await budget.io(() => s.stat(key));
+              if (!stat) return label + " · " + t("pathAbsent");
+              let reason = selectionReason(
+                key,
+                p.scope,
+                rs.app.vault.configDir,
+                rs.manifest.id,
+                stat.type === "folder",
+                cfg,
+                p.content
+              );
+              for (let d = parent(key); reason === "included" && d; d = parent(d))
+                reason = selectionReason(
+                  d,
+                  p.scope,
+                  rs.app.vault.configDir,
+                  rs.manifest.id,
+                  true,
+                  cfg,
+                  p.content
+                );
+              if (reason === "included" && p.scope === "content" && !(stat.type === "folder" ? filter.directory(key) : filter(key)))
+                return label + " · " + t("maskRule");
+              if (reason === "included" && p.scope === "content" && stat.type === "file" && p.maxMiB > 0 && stat.size > p.maxMiB * 1048576)
+                return label + " · " + t("sizeRule");
+              if (reason === "included" && fold(key).startsWith("plugins/") && blocked.includes(fold(key).split("/")[1]))
+                return label + " · " + t("mobileFilter");
+              return label + " · " + t(reason);
+            } catch (e) {
+              return label + " · " + t(e instanceof Error ? e.message : "failed");
+            }
+          })
+        );
+        if (key === path) result.setText(findings.join("  |  "));
+      } catch (e) {
+        result.setText(t(e instanceof Error ? e.message : "failed"));
+      } finally {
+        b.setDisabled(false);
+      }
+    })
+  );
+}
+
+// src/content-editor.ts
+init_git_buffer();
+var import_obsidian10 = require("obsidian");
+function contentEditor(el, p, app, self, t, stores, refresh) {
+  const c = p.content ?? plainContent();
+  new import_obsidian10.Setting(el).setName(t("baseScope")).setDesc(t(c.base === "selected" ? "onlyHelp" : "allHelp")).addDropdown(
+    (d) => d.addOption("all", t("allExcept")).addOption("selected", t("onlySelected")).setValue(c.base ?? "all").onChange((v) => {
+      p.content = { ...c, base: v === "selected" ? "selected" : "all" };
+      refresh();
+    })
+  );
+  const toggle = (key, label) => new import_obsidian10.Setting(el).setName(label).addToggle(
+    (b) => b.setValue(c[key]).onChange((v) => {
+      p.content = { ...c, [key]: v };
+      refresh();
+    })
+  );
+  new import_obsidian10.Setting(el).setName(t("everything")).setDesc(t("contentHelp")).addToggle(
+    (b) => b.setValue(c.config && c.hidden).onChange((v) => {
+      p.content = { ...c, config: v, hidden: v };
+      refresh();
+    })
+  );
+  toggle("config", t("configFolder") + " · " + app.vault.configDir);
+  toggle("hidden", t("otherHidden"));
+  const row = new import_obsidian10.Setting(el).setName(t("folderSelection")).setDesc(c.rules.map((r) => (r.include ? "+ " : "− ") + r.path).join(", "));
+  for (const plugins of [false, true])
+    row.addButton(
+      (b) => b.setButtonText(t(plugins ? "pluginsPicker" : "foldersPicker")).setDisabled(plugins && !c.config).onClick(
+        () => new FolderSelection(app, p, self, t, stores, plugins, refresh).open()
+      )
+    );
+}
+var FolderSelection = class extends import_obsidian10.Modal {
+  constructor(app, profile, self, t, stores, plugins, refresh) {
+    super(app);
+    this.profile = profile;
+    this.self = self;
+    this.t = t;
+    this.stores = stores;
+    this.plugins = plugins;
+    this.refresh = refresh;
+    this.directory = plugins ? join(app.vault.configDir, "plugins") : "";
+    this.c = profile.content ?? plainContent();
+  }
+  directory;
+  ticket = 0;
+  c;
+  onClose() {
+    this.ticket++;
+  }
+  onOpen() {
+    void this.show();
+  }
+  async show() {
+    const ticket = ++this.ticket, el = this.contentEl, t = this.t, dir = this.directory;
+    this.titleEl.setText(t(this.plugins ? "pluginsPicker" : "foldersPicker"));
+    el.empty();
+    const header = new import_obsidian10.Setting(el).setName(dir || "/");
+    if (dir && !this.plugins)
+      header.addButton(
+        (b) => b.setButtonText(t("upFolder")).onClick(() => {
+          this.directory = parent(dir);
+          void this.show();
+        })
+      );
+    const status = el.createEl("p", { text: t("loadingFolders") });
+    const names = new Set(
+      this.c.rules.map((r) => r.path).filter((p) => parent(p) === dir)
+    );
+    const folders = /* @__PURE__ */ new Set();
+    let failures = 0;
+    try {
+      const sides = this.stores();
+      await Promise.all(
+        sides.map(async (s) => {
+          try {
+            const budget = new RunBudget(void 0, 3e4, []);
+            if ((await budget.io(() => s.stat(dir)))?.type === "folder") {
+              const list2 = await budget.io(() => s.list(dir));
+              for (const path of list2.folders)
+                if (parent(path) === dir) {
+                  names.add(path);
+                  folders.add(path);
+                }
+              if (!this.plugins) {
+                for (const path of list2.files)
+                  if (parent(path) === dir) names.add(path);
+              }
+            }
+          } catch {
+            failures++;
+          }
+        })
+      );
+    } catch {
+      failures++;
+    }
+    if (ticket !== this.ticket) return;
+    status.setText(failures ? t("folderPartial") : "");
+    const candidates = [...names].filter(
+      (p) => safe(p) && contentPath(p, this.app.vault.configDir, this.self, true, {
+        ...this.c,
+        base: "all",
+        rules: []
+      })
+    ).sort((a, b) => a.localeCompare(b));
+    let query = "", page = 0;
+    const tools = new import_obsidian10.Setting(el);
+    const list = el.createDiv(), pager = new import_obsidian10.Setting(el);
+    const visible = () => candidates.filter((p) => fold(p).includes(fold(query)));
+    const render = () => {
+      list.empty();
+      pager.clear();
+      const matches2 = visible();
+      if (!matches2.length) list.createEl("p", { text: t("noneFound") });
+      for (const p of matches2.slice(page * 50, page * 50 + 50)) {
+        const row = new import_obsidian10.Setting(list).setName(
+          p.slice(dir ? dir.length + 1 : 0)
+        );
+        if (folders.has(p) && this.c.rules.some((r) => fold(r.path).startsWith(fold(p) + "/")))
+          row.setDesc(t("mixedRules"));
+        row.addToggle(
+          (b) => b.setValue(folderIncluded(p, this.c)).onChange((v) => {
+            this.c = setFolders(this.c, [p], v);
+            render();
+          })
+        );
+        if (!this.plugins && folders.has(p))
+          row.addExtraButton(
+            (b) => b.setIcon("folder-open").setTooltip(t("openFolder")).onClick(() => {
+              this.directory = p;
+              void this.show();
+            })
+          );
+      }
+      if (matches2.length > 50)
+        for (const n of [-1, 1])
+          pager.addButton(
+            (b) => b.setButtonText(n < 0 ? "←" : "→").setDisabled(
+              n < 0 ? page === 0 : (page + 1) * 50 >= matches2.length
+            ).onClick(() => {
+              page += n;
+              render();
+            })
+          );
+    };
+    tools.addSearch(
+      (s) => s.setPlaceholder(t("search")).onChange((v) => {
+        query = v;
+        page = 0;
+        render();
+      })
+    );
+    for (const v of [true, false])
+      tools.addButton(
+        (b) => b.setButtonText(t(v ? "checkMatches" : "uncheckMatches")).onClick(() => {
+          this.c = setFolders(this.c, visible(), v);
+          render();
+        })
+      );
+    render();
+    new import_obsidian10.Setting(el).addButton(
+      (b) => b.setButtonText(t("cancel")).onClick(() => this.close())
+    ).addButton(
+      (b) => b.setButtonText(t("useSelection")).setCta().onClick(() => {
+        this.profile.content = this.c;
+        this.close();
+        this.refresh();
+      })
+    );
+  }
+};
+
 // src/scope-editor.ts
 init_git_buffer();
-var import_obsidian7 = require("obsidian");
-function scopeEditor(el, p, t, redraw, validate2) {
+var import_obsidian11 = require("obsidian");
+function scopeEditor(el, p, t, redraw, validate2, plugins) {
   const c = p.config ??= legacyConfig();
   el.createEl("h3", { text: t("settings") });
   const sets = ["full", "noData", "look", "plugins"];
   const selected2 = sets.find(
     (s) => preset(s).length === c.categories.length && preset(s).every((k) => c.categories.includes(k))
   ) ?? "custom";
-  new import_obsidian7.Setting(el).setName(t("scopePreset")).addDropdown((d) => {
+  const base = new import_obsidian11.Setting(el).setName(t("scopePreset"));
+  const note = () => {
+    const n = [
+      c.codeAllow,
+      c.codeDeny,
+      c.dataAllow,
+      c.dataDeny,
+      c.include,
+      c.exclude,
+      c.overlay
+    ].filter((v) => v.trim()).length + (c.pluginLimits?.length ?? 0);
+    base.setDesc(n ? t("modifiedSet") + " · " + n : "");
+  };
+  note();
+  base.addDropdown((d) => {
     for (const s of [...sets, "custom"]) d.addOption(s, t("preset_" + s));
     d.setValue(selected2).onChange((v) => {
       if (v !== "custom") {
@@ -21262,9 +22401,7 @@ function scopeEditor(el, p, t, redraw, validate2) {
     });
   });
   for (const k of categories)
-    new import_obsidian7.Setting(el).setName(t("cat_" + k)).setDesc(
-      ["core", "appearance", "data", "community"].includes(k) ? "H" : "S"
-    ).addToggle(
+    new import_obsidian11.Setting(el).setName(t("cat_" + k)).addToggle(
       (x) => x.setValue(c.categories.includes(k)).onChange((on) => {
         c.categories = on ? [...c.categories, k] : c.categories.filter((i) => i !== k);
         if (k === "themes") c.legacyThemes = false;
@@ -21273,9 +22410,15 @@ function scopeEditor(el, p, t, redraw, validate2) {
     );
   if (!c.categories.includes("code") && c.categories.some((k) => k === "data" || k === "community"))
     el.createEl("p", { text: t("existingCode") });
-  const input = (k) => new import_obsidian7.Setting(el).setName(t("cfg_" + k)).addTextArea(
+  new import_obsidian11.Setting(el).addButton(
+    (b) => b.setButtonText(t("pluginFiles")).onClick(plugins)
+  );
+  const details = el.createEl("details");
+  details.createEl("summary", { text: t("advancedFilters") });
+  const input = (k) => new import_obsidian11.Setting(details).setName(t("cfg_" + k)).addTextArea(
     (a) => a.setValue(c[k]).onChange((v) => {
       c[k] = v;
+      note();
       validate2();
     })
   );
@@ -21289,61 +22432,141 @@ function scopeEditor(el, p, t, redraw, validate2) {
     "overlay"
   ])
     input(k);
-  new import_obsidian7.Setting(el).setName(t("mobileFilter")).addToggle(
+  new import_obsidian11.Setting(el).setName(t("mobileFilter")).addToggle(
     (x) => x.setValue(c.platformFilter).onChange((v) => {
       c.platformFilter = v;
     })
   );
-  new import_obsidian7.Setting(el).setName(t("strategy")).addDropdown((d) => {
+  new import_obsidian11.Setting(el).setName(t("strategy")).addDropdown((d) => {
     for (const k of ["batch", "changes"]) d.addOption(k, t(k));
     d.setValue(c.strategy).onChange((v) => {
       c.strategy = v;
     });
   });
-  new import_obsidian7.Setting(el).setName(t("reloadPolicy")).addDropdown((d) => {
+  new import_obsidian11.Setting(el).setName(t("reloadPolicy")).addDropdown((d) => {
     for (const k of ["next", "now", "idle", "never"])
       d.addOption(k, t("reload_" + k));
     d.setValue(c.reload).onChange((v) => {
       c.reload = v;
+      redraw();
     });
   });
-  new import_obsidian7.Setting(el).setName(t("idleDelay")).addText((a) => {
-    a.inputEl.type = "number";
-    a.setValue(String(c.idleSeconds)).onChange((v) => {
-      c.idleSeconds = Number(v);
-      validate2();
+  if (c.reload === "idle")
+    new import_obsidian11.Setting(el).setName(t("idleDelay")).addText((a) => {
+      a.inputEl.type = "number";
+      a.setValue(String(c.idleSeconds)).onChange((v) => {
+        c.idleSeconds = Number(v);
+        validate2();
+      });
     });
-  });
 }
 
 // src/editor.ts
-var import_obsidian8 = require("obsidian");
-var Editor = class extends import_obsidian8.PluginSettingTab {
+var import_obsidian12 = require("obsidian");
+var Editor = class extends import_obsidian12.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
   draft;
+  home = "profiles";
+  section = "endpoints";
+  editDraft(p) {
+    this.draft = p;
+    this.section = "endpoints";
+    this.display();
+  }
+  summary(p) {
+    const rs = this.plugin, t = rs.t, local = p.scope === "settings" ? this.app.vault.configDir : p.local || "/";
+    const account = p.cloud && rs.accounts.list().find((a) => a.id === p.cloud.account);
+    const remote = [
+      p.cloud ? t(p.cloud.engine + "Private") : p.remote ? t(p.remote.engine) : "",
+      account?.label,
+      p.cloud?.root ?? p.remote?.url,
+      p.reference || "/"
+    ].filter(Boolean).join(" · ");
+    const [from, to] = p.role === "publisher" ? [local, remote] : [remote, local];
+    const c = p.config ?? legacyConfig();
+    const limits = [
+      c.codeAllow,
+      c.codeDeny,
+      c.dataAllow,
+      c.dataDeny,
+      c.include,
+      c.exclude,
+      c.overlay
+    ].filter((x) => x.trim()).length + (c.pluginLimits?.length ?? 0);
+    const scope = p.scope === "settings" ? [
+      t("settings"),
+      ...c.categories.map((k) => t("cat_" + k)),
+      limits ? t("modifiedSet") + " · " + limits : ""
+    ] : [
+      t(p.content?.base === "selected" ? "onlySelected" : "allExcept"),
+      ...(p.content?.rules ?? []).slice(0, 3).map((r) => (r.include ? "+ " : "− ") + r.path),
+      ...p.content?.rules.length && p.content.rules.length > 3 ? ["…"] : [],
+      p.content?.config ? this.app.vault.configDir : "",
+      p.content?.hidden ? t("otherHidden") : "",
+      p.include,
+      p.exclude ? "− " + p.exclude : "",
+      p.maxMiB ? p.maxMiB + " MiB" : ""
+    ];
+    return [
+      from + " → " + to,
+      scope.filter(Boolean).join(" · "),
+      t(deletionPolicy(p)) + (p.deletions ? " → " + to : ""),
+      t(p.inheritMode ? rs.config.mode : p.mode),
+      p.firstPlan ? t("firstPlan") : "",
+      p.startup ? t("startup") : "",
+      p.intervalMinutes ? p.intervalMinutes + " " + t("minutesUnit") : "",
+      p.scope === "content" && p.onFocus ? t("onFocus") : "",
+      p.scope === "content" && p.onOnline ? t("onOnline") : "",
+      p.scope === "content" && p.fileEvents ? t("fileEvents") : "",
+      !p.enabled ? t("inactive") : "",
+      rs.config.paused ? t("paused") : ""
+    ].filter(Boolean).join("\n");
+  }
   hide() {
     this.draft = void 0;
   }
   display() {
     const el = this.containerEl, rs = this.plugin, t = rs.t;
     el.empty();
+    el.addClass("sync-studio-editor");
     if (this.draft) {
       this.edit(this.draft);
       return;
     }
-    el.createEl("h2", { text: t("profiles") });
-    new import_obsidian8.Setting(el).addButton(
+    el.createEl("h2", { text: "Sync Studio" });
+    const nav = new import_obsidian12.Setting(el).setClass("sync-studio-nav");
+    for (const key of ["profiles", "places", "templates"])
+      nav.addButton(
+        (b) => b.setButtonText(t(key)).setDisabled(this.home === key).onClick(() => {
+          this.home = key;
+          this.display();
+        })
+      );
+    nav.addButton(
       (b) => b.setButtonText(t("history")).onClick(() => rs.openHistory())
     );
-    new import_obsidian8.Setting(el).addButton(
+    if (this.home !== "profiles") {
+      libraryPage(
+        el,
+        rs,
+        this.home,
+        () => this.display(),
+        (p) => {
+          this.home = "profiles";
+          this.editDraft(p);
+        }
+      );
+      return;
+    }
+    new import_obsidian12.Setting(el).addButton(
       (b) => b.setButtonText(t("accounts")).onClick(
         () => new AccountsView(this.app, rs, () => this.display()).open()
       )
     );
-    new import_obsidian8.Setting(el).setName(t("defaultMode")).addDropdown(
+    new import_obsidian12.Setting(el).setName(t("defaultMode")).addDropdown(
       (d) => d.addOption("plan", t("plan")).addOption("silent", t("silent")).setValue(rs.config.mode).onChange(async (v) => {
         await rs.save({
           ...rs.config,
@@ -21351,31 +22574,22 @@ var Editor = class extends import_obsidian8.PluginSettingTab {
         });
       })
     );
-    new import_obsidian8.Setting(el).setName(t("pause")).addToggle(
+    new import_obsidian12.Setting(el).setName(t("pause")).addToggle(
       (c) => c.setValue(rs.config.paused).onChange(async (paused) => {
         await rs.save({ ...rs.config, paused });
       })
     );
-    new import_obsidian8.Setting(el).addButton(
+    new import_obsidian12.Setting(el).addButton(
       (b) => b.setButtonText(t("add")).setCta().onClick(() => {
-        this.draft = rs.newProfile();
-        this.display();
+        this.editDraft(rs.newProfile());
       })
     ).addButton(
       (b) => b.setButtonText(t("syncAll")).onClick(() => rs.runAll())
     );
     rs.config.profiles.forEach((p, index2) => {
       const account = p.cloud ? rs.accounts.list().find((a) => a.id === p.cloud?.account) : void 0;
-      const sourceName = p.access === "oauth" && p.cloud ? [t(p.cloud.engine + "Private"), account?.label].filter(Boolean).join(" · ") : p.access === "public" && p.remote ? t(p.remote.engine) : "";
-      const reference = [sourceName, p.reference || "/"].filter(Boolean).join(" · ");
-      const local = p.scope === "settings" ? this.app.vault.configDir : p.local;
-      const row = new import_obsidian8.Setting(el).setName(p.name).setDesc(
-        [
-          t(p.scope),
-          p.role === "subscriber" ? reference + " → " + local : local + " → " + reference,
-          ...p.access === "oauth" && (!account || account.needsLogin) ? [t("loginRequired")] : [],
-          t(p.inheritMode ? rs.config.mode : p.mode)
-        ].join(" · ")
+      const row = new import_obsidian12.Setting(el).setName(p.name).setDesc(
+        this.summary(p) + (p.cloud && (!account || account.needsLogin) ? " · " + t("loginRequired") : "")
       );
       row.addToggle(
         (c) => c.setTooltip(t("enabled")).setValue(p.enabled).onChange(async (enabled) => {
@@ -21385,14 +22599,12 @@ var Editor = class extends import_obsidian8.PluginSettingTab {
       );
       row.addButton(
         (b) => b.setButtonText(t("edit")).onClick(() => {
-          this.draft = structuredClone(p);
-          this.display();
+          this.editDraft(structuredClone(p));
         })
       );
       row.addExtraButton(
         (b) => b.setIcon("copy").setTooltip(t("duplicate")).onClick(() => {
-          this.draft = rs.newProfile(p);
-          this.display();
+          this.editDraft(rs.newProfile(p));
         })
       );
       for (const [delta, icon] of [
@@ -21411,7 +22623,7 @@ var Editor = class extends import_obsidian8.PluginSettingTab {
               this.display();
             })
           );
-      new import_obsidian8.Setting(el).addButton(
+      new import_obsidian12.Setting(el).addButton(
         (b) => b.setButtonText(t(p.id === rs.config.current ? "current" : "select")).setDisabled(p.id === rs.config.current).onClick(async () => {
           await rs.save({ ...rs.config, current: p.id });
           this.display();
@@ -21426,21 +22638,43 @@ var Editor = class extends import_obsidian8.PluginSettingTab {
     });
   }
   edit(p) {
-    const rs = this.plugin, t = rs.t, el = this.containerEl;
-    el.createEl("h2", { text: t("edit") + " · " + p.name });
+    const rs = this.plugin, t = rs.t, root = this.containerEl;
+    root.createEl("h2", { text: p.name });
+    const summary = root.createEl("p", { cls: "sync-studio-summary" });
+    const nav = new import_obsidian12.Setting(root).setClass("sync-studio-nav"), panels = /* @__PURE__ */ new Map();
+    const section = (key) => {
+      const panel = root.createDiv();
+      panels.set(key, panel);
+      panel.hidden = key !== this.section;
+      nav.addButton(
+        (b) => b.setButtonText(t(key)).setDisabled(key === this.section).onClick(() => {
+          this.section = key;
+          this.display();
+        })
+      );
+      return panel;
+    };
+    let el = section("endpoints");
+    const fields = /* @__PURE__ */ new Map();
+    const fieldRow = (k) => {
+      const row = new import_obsidian12.Setting(el);
+      fields.set(k, row);
+      return row;
+    };
     const back = () => {
       this.draft = void 0;
       this.display();
     };
-    const text = (field, key) => new import_obsidian8.Setting(el).setName(t(key)).addText(
+    const text = (field, key) => fieldRow(field).setName(t(key)).addText(
       (c) => c.setValue(String(p[field])).onChange((v) => {
         Object.assign(p, {
           [field]: field === "reference" || field === "local" ? v.replace(/\\/g, "/") : v
         });
+        detachEdited(p, rs.config.library);
         validateForm();
       })
     );
-    const num2 = (field, key) => new import_obsidian8.Setting(el).setName(t(key)).addText((c) => {
+    const num2 = (field, key) => fieldRow(field).setName(t(key)).addText((c) => {
       c.inputEl.type = "number";
       c.inputEl.min = "0";
       c.setValue(String(p[field])).onChange((v) => {
@@ -21448,13 +22682,23 @@ var Editor = class extends import_obsidian8.PluginSettingTab {
         validateForm();
       });
     });
-    const toggle = (field, key, disabled = false) => new import_obsidian8.Setting(el).setName(t(key)).addToggle(
+    const toggle = (field, key, disabled = false) => fieldRow(field).setName(t(key)).addToggle(
       (c) => c.setDisabled(disabled).setValue(p[field] === true).onChange((v) => {
         Object.assign(p, { [field]: v });
+        if ([
+          "startup",
+          "fileEvents",
+          "onFocus",
+          "onOnline",
+          "silentDeletionSafeguard"
+        ].includes(field)) {
+          this.display();
+          return;
+        }
         validateForm();
       })
     );
-    const choice = (field, key, values, disabled = false) => new import_obsidian8.Setting(el).setName(t(key)).addDropdown((d) => {
+    const choice = (field, key, values, disabled = false) => fieldRow(field).setName(t(key)).addDropdown((d) => {
       for (const v of values)
         d.addOption(
           v,
@@ -21467,7 +22711,7 @@ var Editor = class extends import_obsidian8.PluginSettingTab {
           p.deletions = true;
         }
         if (p.scope === "settings") {
-          p.fileEvents = false;
+          p.fileEvents = p.onFocus = p.onOnline = false;
           if (field === "scope" && !p.config) {
             p.config = {
               ...legacyConfig(),
@@ -21475,150 +22719,41 @@ var Editor = class extends import_obsidian8.PluginSettingTab {
               legacyThemes: false,
               strategy: "batch"
             };
-            p.startup = true;
-            p.intervalMinutes = 60;
             p.onFocus = false;
             p.onOnline = false;
           }
           if (p.conflict === "both") p.conflict = "source";
         }
-        if (field === "role" && p.role === "publisher") {
-          p.conflict = "source";
-          p.deletions = p.mirror === "full";
-        }
         this.display();
       });
     });
-    if (p.config) p.config = structuredClone(p.config);
     text("name", "name");
     toggle("enabled", "enabled");
-    choice("scope", "scope", ["content", "settings"]);
-    new import_obsidian8.Setting(el).setName(t("engine")).addDropdown((d) => {
-      for (const k of [
-        "vaultSource",
-        "google",
-        "yandex",
-        "git",
-        "googlePrivate",
-        "yandexPrivate"
-      ])
-        d.addOption(k, t(k));
-      d.setValue(
-        p.access === "oauth" ? p.cloud?.engine + "Private" : p.remote?.engine ?? "vaultSource"
-      ).onChange((v) => {
-        delete p.cloud;
-        if (v.endsWith("Private")) {
-          const engine = v === "googlePrivate" ? "google" : "yandex";
-          const a = rs.accounts.list().find((a2) => a2.engine === engine && !a2.needsLogin);
-          delete p.remote;
-          p.cloud = {
-            engine,
-            account: a?.id ?? "",
-            root: engine === "google" ? "root" : a?.full ? "disk:/" : "app:/"
-          };
-          p.access = "oauth";
-          p.reference = "/";
-        } else if (v === "vaultSource") {
-          delete p.remote;
-          p.access = "local";
-          p.reference = "Sync Studio-reference";
-        } else {
-          p.access = "public";
-          p.role = "subscriber";
-          p.reference = "/";
-          p.remote = {
-            engine: v,
-            url: "",
-            branch: ""
-          };
-        }
-        this.display();
-      });
-    });
+    placeControl(el, rs, p, "reference", () => this.display());
+    connectionFields(
+      el,
+      rs,
+      p,
+      () => this.display(),
+      () => validateForm(),
+      fieldRow
+    );
     const remote = p.access === "public" ? p.remote : void 0;
     choice("role", "role", ["subscriber", "publisher"], !!remote);
-    if (remote) {
-      new import_obsidian8.Setting(el).setName(t("remote")).setDesc(t("readonly")).addText(
-        (c) => c.setValue(remote.url).onChange((v) => {
-          remote.url = v.trim();
-          validateForm();
-        })
-      );
-      if (remote.engine === "git")
-        new import_obsidian8.Setting(el).setName(t("branch")).addText(
-          (c) => c.setValue(remote.branch).onChange((v) => {
-            remote.branch = v.trim();
-            validateForm();
-          })
-        );
-      if (remote.engine === "google") {
-        let key = rs.googleKey();
-        new import_obsidian8.Setting(el).setName(t("deviceKey")).addText((c) => {
-          c.inputEl.type = "password";
-          c.setValue(key).onChange((v) => {
-            key = v;
-          });
-        }).addButton(
-          (b) => b.setButtonText(t("save")).onClick(() => {
-            rs.saveGoogleKey(key);
-            b.setButtonText(t("saved"));
-          })
-        );
-      }
-    }
-    if (p.access === "oauth" && p.cloud) {
-      const c = p.cloud;
-      new import_obsidian8.Setting(el).setName(t("accounts")).addDropdown((d) => {
-        d.addOption("", t("selectAccount"));
-        for (const a of rs.accounts.list().filter((a2) => a2.engine === c.engine))
-          d.addOption(
-            a.id,
-            a.label + " · " + t(a.full ? "fullAccess" : "appAccess") + (a.needsLogin ? " · " + t("loginRequired") : "")
-          );
-        d.setValue(c.account).onChange((id) => {
-          c.account = id;
-          if (c.engine === "yandex")
-            c.root = rs.accounts.list().find((a) => a.id === id)?.full ? "disk:/" : "app:/";
-          this.display();
-        });
-      }).addButton(
-        (b) => b.setButtonText(t("accounts")).onClick(
-          () => new AccountsView(this.app, rs, () => this.display()).open()
-        )
-      );
-      if (c.engine === "google")
-        new import_obsidian8.Setting(el).setName(t("driveRoot")).addText(
-          (v) => v.setValue(c.root).onChange((raw) => {
-            try {
-              c.root = location({
-                engine: "google",
-                url: raw.trim(),
-                branch: ""
-              }).root;
-            } catch {
-              c.root = "";
-            }
-            validateForm();
-          })
-        );
-    }
     text(
       "reference",
       remote || p.access === "oauth" ? "subfolder" : "reference"
     );
-    if (remote || p.access === "oauth")
-      new import_obsidian8.Setting(el).addButton(
-        (b) => b.setButtonText(t("history")).onClick(() => rs.openHistory())
-      );
-    new import_obsidian8.Setting(el).addButton(
-      (b) => b.setButtonText(t("browse")).onClick(() => {
+    const browse = (side) => new import_obsidian12.Setting(el).addButton(
+      (b) => b.setButtonText(t(side === "local" ? "browseLocal" : "browse")).onClick(() => {
         try {
           new RemoteFolderBrowser(
             this.app,
-            p.access === "oauth" ? rs.accountReference(p, "", true) : rs.publicReference(p, ""),
+            rs.browseStore(p, side),
             t,
             (path) => {
-              p.reference = path;
+              p[side] = path;
+              delete p[side === "local" ? "localPlace" : "referencePlace"];
               this.display();
             }
           ).open();
@@ -21627,51 +22762,38 @@ var Editor = class extends import_obsidian8.PluginSettingTab {
         }
       })
     );
+    browse("reference");
     if (p.scope === "settings")
-      new import_obsidian8.Setting(el).setName(t("target")).setDesc(this.app.vault.configDir);
-    else text("local", "target");
+      new import_obsidian12.Setting(el).setName(t("target")).setDesc(this.app.vault.configDir);
+    else {
+      placeControl(el, rs, p, "local", () => this.display());
+      text("local", "target");
+      browse("local");
+    }
+    templateControl(el, rs, p, () => this.display());
+    el = section("composition");
+    choice("scope", "scope", ["content", "settings"]);
+    el.createEl("p", {
+      text: t(
+        p.scope === "settings" ? "settingsProcessing" : "contentProcessing"
+      )
+    });
     if (p.scope === "settings")
       scopeEditor(
         el,
         p,
         t,
         () => this.display(),
-        () => validateForm()
+        () => validateForm(),
+        () => new PluginFilters(
+          this.app,
+          p.config,
+          () => rs.folderSources(p),
+          rs.manifest.id,
+          t,
+          () => this.display()
+        ).open()
       );
-    choice("mirror", "mirrorMode", ["preserve", "full"]);
-    if (p.role === "subscriber") {
-      toggle("deletions", "deletions", p.mirror === "full");
-      choice(
-        "conflict",
-        "conflict",
-        p.scope === "content" ? ["source", "target", "newer", "both"] : ["source", "target", "newer"],
-        p.mirror === "full"
-      );
-    }
-    num2("maxDeleteCount", "maxDeleteCount");
-    num2("maxDeletePercent", "maxDeletePercent");
-    num2("deleteGrace", "deleteGrace");
-    num2("shrinkPercent", "shrinkPercent");
-    choice("trash", "trash", ["plugin", "vault", "system", "permanent"]);
-    if (p.trash === "plugin") num2("trashDays", "trashDays");
-    new import_obsidian8.Setting(el).setName(t("mode")).addDropdown((d) => {
-      for (const k of ["inherit", "plan", "silent"]) d.addOption(k, t(k));
-      d.setValue(p.inheritMode ? "inherit" : p.mode).onChange((v) => {
-        p.inheritMode = v === "inherit";
-        if (v !== "inherit") p.mode = v === "silent" ? "silent" : "plan";
-        this.display();
-      });
-    });
-    toggle("silentDeletionSafeguard", "silentDeletionSafeguard").setDesc(
-      t("silentDeletionSafeguardHelp")
-    );
-    toggle("firstPlan", "firstPlan");
-    if (p.scope === "settings") {
-      toggle("strictDrift", "strictDrift");
-      toggle("startup", "startup");
-      num2("startupSeconds", "startupSeconds");
-      num2("intervalMinutes", "intervalMinutes");
-    }
     if (p.scope === "content") {
       contentEditor(
         el,
@@ -21682,63 +22804,176 @@ var Editor = class extends import_obsidian8.PluginSettingTab {
         () => rs.folderSources(p),
         () => this.display()
       );
+      const types = {
+        allTypes: "",
+        markdownType: "**/*.md",
+        imageType: ["png", "jpg", "jpeg", "gif", "webp", "svg"].map((ext) => "**/*." + ext).join(",")
+      };
+      new import_obsidian12.Setting(el).setName(t("fileType")).addDropdown((d) => {
+        for (const k of [...Object.keys(types), "customTypes"])
+          d.addOption(k, t(k));
+        d.setValue(
+          Object.entries(types).find(([, v]) => v === p.include)?.[0] ?? "customTypes"
+        ).onChange((k) => {
+          if (k === "customTypes") {
+            fields.get("include")?.settingEl.querySelector("input")?.focus();
+            return;
+          }
+          p.include = types[k];
+          this.display();
+        });
+      });
       text("include", "include");
       text("exclude", "exclude");
       num2("maxMiB", "maxMiB");
-      toggle("startup", "startup");
-      num2("startupSeconds", "startupSeconds");
-      num2("intervalMinutes", "intervalMinutes");
+    }
+    el = section("taskRules");
+    fieldRow("mirror").setName(t("mirrorMode")).addDropdown((d) => {
+      for (const key of ["copyOnly", "tracked", "full"])
+        d.addOption(key, t(key));
+      d.setValue(deletionPolicy(p)).onChange((v) => {
+        applyPolicy(p, v);
+        this.display();
+      });
+    });
+    if (p.mirror !== "full")
+      choice(
+        "conflict",
+        "conflict",
+        p.scope === "content" ? ["source", "target", "newer", "both"] : ["source", "target", "newer"]
+      );
+    if (p.deletions) {
+      toggle("silentDeletionSafeguard", "silentDeletionSafeguard").setDesc(
+        t("silentDeletionSafeguardHelp")
+      );
+      num2("maxDeleteCount", "maxDeleteCount");
+      num2("maxDeletePercent", "maxDeletePercent");
+      num2("deleteGrace", "deleteGrace");
+      num2("shrinkPercent", "shrinkPercent");
+      choice("trash", "trash", ["plugin", "vault", "system", "permanent"]);
+      if (p.trash === "plugin") num2("trashDays", "trashDays");
+    }
+    if (p.scope === "settings") toggle("strictDrift", "strictDrift");
+    el = section("schedule");
+    new import_obsidian12.Setting(el).setName(t("mode")).addDropdown((d) => {
+      for (const k of ["inherit", "plan", "silent"]) d.addOption(k, t(k));
+      d.setValue(p.inheritMode ? "inherit" : p.mode).onChange((v) => {
+        p.inheritMode = v === "inherit";
+        if (v !== "inherit") p.mode = v === "silent" ? "silent" : "plan";
+        this.display();
+      });
+    });
+    toggle("firstPlan", "firstPlan");
+    toggle("startup", "startup");
+    if (p.startup) num2("startupSeconds", "startupSeconds");
+    num2("intervalMinutes", "intervalMinutes");
+    if (p.scope === "content") {
       toggle("onFocus", "onFocus");
       toggle("onOnline", "onOnline");
       toggle("fileEvents", "fileEvents");
-      num2("debounceSeconds", "debounceSeconds");
-      num2("quietSeconds", "quietSeconds");
-      num2("maxDeferrals", "maxDeferrals");
+      if (p.onFocus || p.onOnline || p.fileEvents)
+        num2("debounceSeconds", "debounceSeconds");
+      if (p.role === "subscriber") {
+        num2("quietSeconds", "quietSeconds");
+        num2("maxDeferrals", "maxDeferrals");
+      }
     }
-    const error = el.createEl("p", { attr: { role: "status" } }), actions = new import_obsidian8.Setting(el);
+    el = section("diagnostics");
+    el.createEl("p", { text: t("diagnosisHelp") });
+    inspectPath(el, rs, p);
+    new import_obsidian12.Setting(el).setName(t("draftPreview")).addButton(
+      (b) => b.setButtonText(t("dry")).onClick(async () => {
+        if (!validateForm()) return;
+        b.setDisabled(true);
+        try {
+          await rs.previewDraft(p);
+        } catch (e) {
+          rs.report(e, p.id);
+        } finally {
+          b.setDisabled(false);
+        }
+      })
+    );
+    const error = root.createEl("p", { attr: { role: "status" } }), actions = new import_obsidian12.Setting(el);
     const validateForm = () => {
       const errors = validate(
         p,
-        import_obsidian8.Platform.isDesktopApp,
+        import_obsidian12.Platform.isDesktopApp,
         false,
         this.app.vault.configDir
       );
-      error.setText(
-        errors.map((e) => t(e.field) + " · " + t(e.code)).join("\n")
-      );
+      summary.setText(this.summary(p));
+      root.querySelectorAll(".sync-studio-field-error").forEach((n) => n.remove());
+      error.empty();
+      for (const err of errors) {
+        const row = fields.get(err.field) ?? fields.get(err.field === "config" ? "scope" : "access");
+        row?.settingEl.createEl("small", {
+          text: t(err.code),
+          cls: "sync-studio-field-error"
+        });
+        const panel = [...panels].find(
+          ([, el2]) => row && el2.contains(row.settingEl)
+        )?.[0] ?? "endpoints";
+        error.createEl("button", {
+          text: t(panel) + " · " + t(err.code)
+        }).onclick = () => {
+          this.section = panel;
+          this.display();
+        };
+      }
       return !errors.length;
     };
-    actions.addButton((b) => b.setButtonText(t("cancel")).onClick(back)).addButton(
+    actions.addButton(
       (b) => b.setButtonText(t("init")).onClick(async () => {
         if (!validateForm()) return;
         try {
-          if (p.access === "oauth" && p.role === "publisher" && p.reference && p.reference !== "/")
-            await rs.accountReference(p, "").mkdir(p.reference);
-          for (const dir of [
+          const missing = [];
+          const dirs = [
             p.access === "local" ? p.reference : "",
             p.scope === "content" ? p.local : this.app.vault.configDir
-          ])
+          ];
+          for (const dir of dirs)
             if (dir && dir !== "/" && !await this.app.vault.adapter.exists(dir))
-              await this.app.vault.createFolder(checked(dir));
+              missing.push(dir);
+          const cloud = p.access === "oauth" && p.role === "publisher" && p.reference && p.reference !== "/" && !await rs.accountReference(p, "", true).stat(p.reference);
+          if (!cloud && !missing.length) {
+            b.setButtonText(t("accessible"));
+            return;
+          }
+          rs.confirm(
+            t("createNow") + " · " + [
+              ...missing,
+              ...cloud ? [p.cloud?.engine + " / " + p.reference] : []
+            ].join(", "),
+            async () => {
+              if (cloud) await rs.accountReference(p, "").mkdir(p.reference);
+              for (const dir of missing)
+                if (!await this.app.vault.adapter.exists(dir))
+                  await this.app.vault.createFolder(checked(dir));
+            }
+          );
         } catch (e) {
           rs.report(e, p.id);
         }
       })
     );
-    actions.addButton((b) => {
+    const footer = new import_obsidian12.Setting(root).addButton(
+      (b) => b.setButtonText(t("cancel")).onClick(back)
+    );
+    footer.addButton((b) => {
       b.setButtonText(t("save")).setCta().onClick(async () => {
         if (validateForm()) {
           await rs.put({ ...p }, true);
           back();
         }
       });
-      el.addEventListener("input", () => b.setDisabled(!validateForm()), {
+      root.addEventListener("input", () => b.setDisabled(!validateForm()), {
         signal: this.formSignal()
       });
       b.setDisabled(!validateForm());
     });
     if (rs.config.profiles.some((x) => x.id === p.id))
-      actions.addButton(
+      footer.addButton(
         (b) => b.setButtonText(t("remove")).onClick(
           () => rs.confirm(t("removeText"), async () => {
             const profiles = rs.config.profiles.filter((x) => x.id !== p.id);
@@ -21763,7 +22998,7 @@ var Editor = class extends import_obsidian8.PluginSettingTab {
 // src/main.ts
 var send = async (url, method = "GET", headers = {}, body2) => {
   try {
-    const r = await (0, import_obsidian9.requestUrl)({
+    const r = await (0, import_obsidian13.requestUrl)({
       url,
       method,
       headers,
@@ -21788,7 +23023,7 @@ var icons = {
   partial: "shield-alert",
   error: "circle-alert"
 };
-var Confirmation = class extends import_obsidian9.Modal {
+var Confirmation = class extends import_obsidian13.Modal {
   constructor(app, message, tr, action) {
     super(app);
     this.message = message;
@@ -21797,7 +23032,7 @@ var Confirmation = class extends import_obsidian9.Modal {
   }
   onOpen() {
     this.contentEl.createEl("p", { text: this.message });
-    new import_obsidian9.Setting(this.contentEl).addButton(
+    new import_obsidian13.Setting(this.contentEl).addButton(
       (b) => b.setButtonText(this.tr("cancel")).onClick(() => this.close())
     ).addButton(
       (b) => b.setButtonText(this.tr("confirmAction")).onClick(() => {
@@ -21807,7 +23042,7 @@ var Confirmation = class extends import_obsidian9.Modal {
     );
   }
 };
-var SyncStudio = class extends import_obsidian9.Plugin {
+var SyncStudio = class extends import_obsidian13.Plugin {
   accounts;
   driveCursors = /* @__PURE__ */ new Map();
   oauthCancel;
@@ -21819,7 +23054,7 @@ var SyncStudio = class extends import_obsidian9.Plugin {
   logDir = "";
   scheduler;
   quiet = new QuietWindow();
-  notices = new NoticeCenter((m) => new import_obsidian9.Notice(m));
+  notices = new NoticeCenter((m) => new import_obsidian13.Notice(m));
   live = true;
   due = /* @__PURE__ */ new Map();
   own = /* @__PURE__ */ new Map();
@@ -21942,7 +23177,7 @@ var SyncStudio = class extends import_obsidian9.Plugin {
       status,
       this.app.vault.configDir,
       this.manifest.id,
-      import_obsidian9.Platform.isDesktopApp,
+      import_obsidian13.Platform.isDesktopApp,
       new DigestCache(db, state.device)
     );
     this.scheduler = new Scheduler(
@@ -21954,7 +23189,7 @@ var SyncStudio = class extends import_obsidian9.Plugin {
       "Sync Studio",
       (e) => this.menu(e)
     );
-    if (import_obsidian9.Platform.isDesktopApp) {
+    if (import_obsidian13.Platform.isDesktopApp) {
       this.bar = this.addStatusBarItem();
       this.bar.tabIndex = 0;
       this.bar.setAttribute("role", "button");
@@ -22043,14 +23278,14 @@ var SyncStudio = class extends import_obsidian9.Plugin {
   paint() {
     const phase = this.engine.status.phase, label = this.t(this.config.paused ? "paused" : phase);
     const text = ["Sync Studio", label, this.statusLabel].filter(Boolean).join(" · ");
-    (0, import_obsidian9.setIcon)(this.ribbon, this.config.paused ? "pause" : icons[phase]);
+    (0, import_obsidian13.setIcon)(this.ribbon, this.config.paused ? "pause" : icons[phase]);
     this.ribbon.setAttribute("aria-label", text);
     this.bar?.setText(
       this.pendingReload ? text + " · " + this.t("reloadNeeded") : text
     );
   }
   menu(e) {
-    const m = new import_obsidian9.Menu();
+    const m = new import_obsidian13.Menu();
     for (const p of this.config.profiles)
       m.addItem(
         (item) => item.setTitle(p.name).setChecked(p.id === this.config.current).onClick(() => this.save({ ...this.config, current: p.id }))
@@ -22092,6 +23327,8 @@ var SyncStudio = class extends import_obsidian9.Plugin {
     return newProfile(copy);
   }
   put(p, select = false) {
+    p = { ...p };
+    detachEdited(p, this.config.library);
     const old = this.config.profiles.some((q) => q.id === p.id);
     return this.save({
       ...this.config,
@@ -22134,7 +23371,7 @@ var SyncStudio = class extends import_obsidian9.Plugin {
     for (const event2 of ["focus", "online"])
       this.registerDomEvent(window, event2, () => {
         for (const p of contents())
-          if (event2 === "focus" ? p.onFocus : p.onOnline)
+          if (p.scope === "content" && (event2 === "focus" ? p.onFocus : p.onOnline))
             this.scheduler.schedule(p.id, p.debounceSeconds * 1e3);
       });
     this.registerEvent(
@@ -22259,6 +23496,42 @@ var SyncStudio = class extends import_obsidian9.Plugin {
   accountReference(p, prefix = p.reference, readOnly = p.role === "subscriber") {
     if (p.access !== "oauth" || !p.cloud) throw Error("cloudLocation");
     return this.cloudStore(p.cloud, prefix, readOnly);
+  }
+  browseStore(p, side) {
+    if (side === "local" || p.access === "local")
+      return new LocalProvider(
+        this.app.vault,
+        "",
+        this.manifest.id,
+        "content",
+        true
+      );
+    return p.access === "oauth" ? this.accountReference(p, "", true) : this.publicReference(p, "");
+  }
+  async previewDraft(draft) {
+    const p = structuredClone(draft);
+    await this.scheduler.serial(async () => {
+      await this.ready;
+      const s = this.stores(p), mode = (p.inheritMode ? this.config.mode : p.mode) === "silent" && !(p.firstPlan && !this.app.loadLocalStorage(this.firstKey(p))) ? "silent" : "plan";
+      const result = await this.engine.run(
+        p,
+        s.reference,
+        s.local,
+        true,
+        void 0,
+        { mode, active: () => this.live }
+      );
+      if (this.live)
+        new Review(
+          this.app,
+          p,
+          result.plan,
+          this.t,
+          () => p.role === "subscriber" ? [s.reference, s.local] : [s.local, s.reference],
+          () => {
+          }
+        ).open();
+    });
   }
   folderSources(p) {
     const s = this.stores(p);
@@ -22397,7 +23670,7 @@ var SyncStudio = class extends import_obsidian9.Plugin {
     if (!active()) return;
     const v = this.stores(p);
     const isOpen = (path) => this.app.workspace.getLeavesOfType("markdown").some(
-      (leaf) => leaf.view instanceof import_obsidian9.MarkdownView && leaf.view.file?.path === join(p.local, path)
+      (leaf) => leaf.view instanceof import_obsidian13.MarkdownView && leaf.view.file?.path === join(p.local, path)
     );
     const started = Date.now();
     const result = await this.engine.run(

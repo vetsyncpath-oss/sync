@@ -1,5 +1,5 @@
-import { contentPath, type ContentScope } from "./content-scope";
-import { inScope, legacyConfig, type ConfigScope } from "./config-scope";
+import { contentReason, type ContentScope } from "./content-scope";
+import { configReason, legacyConfig, type ConfigScope } from "./config-scope";
 import { fold, join, under, type Scope, type Volatility } from "./model";
 export function volatility(p: string, scope: Scope): Volatility {
   if (scope === "content") return "S";
@@ -13,7 +13,7 @@ export function volatility(p: string, scope: Scope): Volatility {
     return "V";
   return /^(?:[^/]+\.json|plugins\/[^/]+\/data\.json)$/.test(p) ? "H" : "S";
 }
-export function selected(
+export function selectionReason(
   p: string,
   scope: Scope,
   configDir: string,
@@ -21,7 +21,7 @@ export function selected(
   directory: boolean,
   config: ConfigScope = legacyConfig(),
   content?: ContentScope,
-): boolean {
+) {
   const f = fold(p);
   if (
     f
@@ -32,15 +32,18 @@ export function selected(
     (scope === "settings" && under(f, fold("plugins/" + self))) ||
     under(f, fold(join(configDir, "plugins/" + self)))
   )
-    return false;
+    return "protected";
   if (scope === "content")
-    return contentPath(p, configDir, self, directory, content);
+    return contentReason(p, configDir, self, directory, content);
   if (
     volatility(p, scope) === "V" ||
     p.split("/").some((s) => s.startsWith("."))
   )
-    return false;
-  return inScope(p, config, directory);
+    return "protected";
+  return configReason(p, config, directory);
+}
+export function selected(...args: Parameters<typeof selectionReason>) {
+  return selectionReason(...args) === "included";
 }
 export const priority = (p: string) =>
   p === "community-plugins.json"

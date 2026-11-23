@@ -17,7 +17,7 @@ def archive(suffix, files):
             dest.writestr(entry, file.read_bytes(), compress_type=ZIP_DEFLATED)
     print(path.name)
 
-install = [root / name for name in ("README.md", "main.js", "manifest.json","THIRD_PARTY.txt")]
+install = [root / name for name in ("README.md", "main.js", "manifest.json","styles.css","THIRD_PARTY.txt")]
 source = [root / name for name in ("package.json", "package-lock.json", "tsconfig.json", "esbuild.config.mjs")]
 source += list(root.glob("src/*.ts")) + list(root.glob("test/*.ts")) + list(root.glob("scripts/*.py"))
 archive("", install)

@@ -1,5 +1,5 @@
 import picomatch from "picomatch/posix";
-import { fold, type StorageProvider } from "./model";
+import { safe, fold, type StorageProvider } from "./model";
 import { RunBudget } from "./runtime";
 export const categories = [
   "core",
@@ -12,7 +12,10 @@ export const categories = [
   "extras",
 ] as const;
 export type Category = (typeof categories)[number];
+export const pluginParts = ["code", "data", "extras"] as const;
+export type PluginPart = (typeof pluginParts)[number];
 export interface ConfigScope {
+  pluginLimits?: { id: string; allow: PluginPart[] }[];
   categories: Category[];
   codeAllow: string;
   codeDeny: string;
@@ -90,38 +93,57 @@ const matches = (path: string, patterns: string) =>
   );
 export function emptyConfigDirectory(path: string, c: ConfigScope) {
   if (matches(path, c.exclude) || matches(path + "/", c.exclude)) return false;
-  if (matches(path, c.include)) return true;
   const [top, id] = fold(path).split("/");
+  const specific =
+    top === "plugins"
+      ? c.pluginLimits?.find((r) => fold(r.id) === id)
+      : undefined;
+  if (specific && !specific.allow.length) return false;
+  if (matches(path, c.include)) return true;
   if (top === "themes" || top === "snippets") return c.categories.includes(top);
   if (top !== "plugins") return false;
-  const allowed = (allow: string, deny: string) =>
-    !id || ((!allow.trim() || matches(id, allow)) && !matches(id, deny));
-  return (
-    ((c.categories.includes("code") || c.categories.includes("extras")) &&
-      allowed(c.codeAllow, c.codeDeny)) ||
-    (c.categories.includes("data") && allowed(c.dataAllow, c.dataDeny))
-  );
+  const allowed = (part: PluginPart) => {
+    if (
+      !c.categories.includes(part) ||
+      (specific && !specific.allow.includes(part))
+    )
+      return false;
+    const allow = part === "data" ? c.dataAllow : c.codeAllow,
+      deny = part === "data" ? c.dataDeny : c.codeDeny;
+    return !id || ((!allow.trim() || matches(id, allow)) && !matches(id, deny));
+  };
+  return pluginParts.some(allowed);
 }
-export function inScope(path: string, c: ConfigScope, directory: boolean) {
+export function configReason(path: string, c: ConfigScope, directory: boolean) {
   path = fold(path);
   if (directory)
-    return /^(themes|snippets|plugins)(\/|$)/.test(path) || !!c.include;
+    return /^(themes|snippets|plugins)(\/|$)/.test(path) || !!c.include
+      ? "included"
+      : "categoryRule";
   const cat = category(path),
     custom = matches(path, c.include);
-  if (!custom && (!cat || !c.categories.includes(cat))) return false;
+  if (!custom && (!cat || !c.categories.includes(cat))) return "categoryRule";
   if (
     c.legacyThemes &&
     cat === "themes" &&
     !custom &&
     !/^themes\/[^/]+\/(manifest\.json|theme\.css)$/.test(path)
   )
-    return false;
-  if (matches(path, c.exclude)) return false;
+    return "categoryRule";
+  if (matches(path, c.exclude)) return "maskRule";
   const id = path.startsWith("plugins/") ? path.split("/")[1] : undefined;
-  if (!id) return true;
+  if (!id) return "included";
+  const part: PluginPart = cat === "code" || cat === "data" ? cat : "extras";
+  const limit = c.pluginLimits?.find((r) => fold(r.id) === id);
+  if (limit && !limit.allow.includes(part)) return "pluginRule";
   const [allow, deny] =
-    cat === "data" ? [c.dataAllow, c.dataDeny] : [c.codeAllow, c.codeDeny];
-  return (!allow.trim() || matches(id, allow)) && !matches(id, deny);
+    part === "data" ? [c.dataAllow, c.dataDeny] : [c.codeAllow, c.codeDeny];
+  return (!allow.trim() || matches(id, allow)) && !matches(id, deny)
+    ? "included"
+    : "pluginRule";
+}
+export function inScope(path: string, c: ConfigScope, directory: boolean) {
+  return configReason(path, c, directory) === "included";
 }
 export async function mobileExcluded(
   source: StorageProvider,
@@ -147,6 +169,18 @@ export async function mobileExcluded(
 export function validConfig(c: ConfigScope): boolean {
   return (
     !!c &&
+    (c.pluginLimits === undefined ||
+      (Array.isArray(c.pluginLimits) &&
+        c.pluginLimits.every(
+          (r) =>
+            r &&
+            Object.keys(r).every((k) => k === "id" || k === "allow") &&
+            typeof r.id === "string" &&
+            safe(r.id) &&
+            !r.id.includes("/") &&
+            Array.isArray(r.allow) &&
+            r.allow.every((k) => pluginParts.includes(k)),
+        ))) &&
     Array.isArray(c.categories) &&
     c.categories.every((k) => categories.includes(k)) &&
     [

@@ -58,6 +58,7 @@ import {
 import { DeviceDatabase } from "./device-database";
 import { HistoryView, historyView } from "./history";
 import { DigestCache, PathIssue, type ScanStats } from "./scanner";
+import { detachEdited } from "./task-library";
 import { Editor } from "./editor";
 
 const send: Transport = async (url, method = "GET", headers = {}, body) => {
@@ -439,6 +440,8 @@ export default class SyncStudio extends Plugin {
     return newProfile(copy);
   }
   put(p: Profile, select = false) {
+    p = { ...p };
+    detachEdited(p, this.config.library);
     const old = this.config.profiles.some((q) => q.id === p.id);
     return this.save({
       ...this.config,
@@ -493,7 +496,10 @@ export default class SyncStudio extends Plugin {
     for (const event of ["focus", "online"] as const)
       this.registerDomEvent(window, event, () => {
         for (const p of contents())
-          if (event === "focus" ? p.onFocus : p.onOnline)
+          if (
+            p.scope === "content" &&
+            (event === "focus" ? p.onFocus : p.onOnline)
+          )
             this.scheduler.schedule(p.id, p.debounceSeconds * 1000);
       });
     this.registerEvent(
@@ -643,7 +649,52 @@ export default class SyncStudio extends Plugin {
     if (p.access !== "oauth" || !p.cloud) throw Error("cloudLocation");
     return this.cloudStore(p.cloud, prefix, readOnly);
   }
-  folderSources(p: Profile) {
+  browseStore(p: Profile, side: "reference" | "local") {
+    if (side === "local" || p.access === "local")
+      return new LocalProvider(
+        this.app.vault,
+        "",
+        this.manifest.id,
+        "content",
+        true,
+      );
+    return p.access === "oauth"
+      ? this.accountReference(p, "", true)
+      : this.publicReference(p, "");
+  }
+  async previewDraft(draft: Profile) {
+    const p = structuredClone(draft);
+    await this.scheduler.serial(async () => {
+      await this.ready;
+      const s = this.stores(p),
+        mode =
+          (p.inheritMode ? this.config.mode : p.mode) === "silent" &&
+          !(p.firstPlan && !this.app.loadLocalStorage(this.firstKey(p)))
+            ? "silent"
+            : "plan";
+      const result = await this.engine.run(
+        p,
+        s.reference,
+        s.local,
+        true,
+        undefined,
+        { mode, active: () => this.live },
+      );
+      if (this.live)
+        new Review(
+          this.app,
+          p,
+          result.plan,
+          this.t,
+          () =>
+            p.role === "subscriber"
+              ? [s.reference, s.local]
+              : [s.local, s.reference],
+          () => {},
+        ).open();
+    });
+  }
+  folderSources(p: Profile): StorageProvider[] {
     const s = this.stores(p);
     return [s.local, s.reference];
   }

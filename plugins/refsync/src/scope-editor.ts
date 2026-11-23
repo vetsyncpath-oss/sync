@@ -13,6 +13,7 @@ export function scopeEditor(
   t: Tr,
   redraw: () => void,
   validate: () => void,
+  plugins: () => void,
 ) {
   const c = (p.config ??= legacyConfig());
   el.createEl("h3", { text: t("settings") });
@@ -23,7 +24,22 @@ export function scopeEditor(
         preset(s).length === c.categories.length &&
         preset(s).every((k) => c.categories.includes(k)),
     ) ?? "custom";
-  new Setting(el).setName(t("scopePreset")).addDropdown((d) => {
+  const base = new Setting(el).setName(t("scopePreset"));
+  const note = () => {
+    const n =
+      [
+        c.codeAllow,
+        c.codeDeny,
+        c.dataAllow,
+        c.dataDeny,
+        c.include,
+        c.exclude,
+        c.overlay,
+      ].filter((v) => v.trim()).length + (c.pluginLimits?.length ?? 0);
+    base.setDesc(n ? t("modifiedSet") + " · " + n : "");
+  };
+  note();
+  base.addDropdown((d) => {
     for (const s of [...sets, "custom"]) d.addOption(s, t("preset_" + s));
     d.setValue(selected).onChange((v) => {
       if (v !== "custom") {
@@ -36,9 +52,7 @@ export function scopeEditor(
   for (const k of categories)
     new Setting(el)
       .setName(t("cat_" + k))
-      .setDesc(
-        ["core", "appearance", "data", "community"].includes(k) ? "H" : "S",
-      )
+
       .addToggle((x) =>
         x.setValue(c.categories.includes(k)).onChange((on) => {
           c.categories = on
@@ -53,6 +67,11 @@ export function scopeEditor(
     c.categories.some((k) => k === "data" || k === "community")
   )
     el.createEl("p", { text: t("existingCode") });
+  new Setting(el).addButton((b) =>
+    b.setButtonText(t("pluginFiles")).onClick(plugins),
+  );
+  const details = el.createEl("details");
+  details.createEl("summary", { text: t("advancedFilters") });
   const input = (
     k:
       | "codeAllow"
@@ -63,9 +82,10 @@ export function scopeEditor(
       | "exclude"
       | "overlay",
   ) =>
-    new Setting(el).setName(t("cfg_" + k)).addTextArea((a) =>
+    new Setting(details).setName(t("cfg_" + k)).addTextArea((a) =>
       a.setValue(c[k]).onChange((v) => {
         c[k] = v;
+        note();
         validate();
       }),
     );
@@ -95,13 +115,15 @@ export function scopeEditor(
       d.addOption(k, t("reload_" + k));
     d.setValue(c.reload).onChange((v) => {
       c.reload = v as ConfigScope["reload"];
+      redraw();
     });
   });
-  new Setting(el).setName(t("idleDelay")).addText((a) => {
-    a.inputEl.type = "number";
-    a.setValue(String(c.idleSeconds)).onChange((v) => {
-      c.idleSeconds = Number(v);
-      validate();
+  if (c.reload === "idle")
+    new Setting(el).setName(t("idleDelay")).addText((a) => {
+      a.inputEl.type = "number";
+      a.setValue(String(c.idleSeconds)).onChange((v) => {
+        c.idleSeconds = Number(v);
+        validate();
+      });
     });
-  });
 }

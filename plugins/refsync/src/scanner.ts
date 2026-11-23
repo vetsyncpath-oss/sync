@@ -5,6 +5,7 @@ import {
 } from "./config-scope";
 import { settingsHash, type Projection } from "./json-overlay";
 import { RunBudget, transient } from "./runtime";
+import { folderIncluded } from "./content-scope";
 import { selected, volatility } from "./classifier";
 import {
   safe,
@@ -137,8 +138,9 @@ export async function scan(
       !list.folders.length &&
       !list.skipped?.length &&
       accept(dir) &&
-      (scope === "content" ||
-        emptyConfigDirectory(dir, config ?? legacyConfig()))
+      (scope === "content"
+        ? !options.content || folderIncluded(dir, options.content)
+        : emptyConfigDirectory(dir, config ?? legacyConfig()))
     )
       managedDirectories.add(dir);
     for (const path of list.skipped ?? []) {

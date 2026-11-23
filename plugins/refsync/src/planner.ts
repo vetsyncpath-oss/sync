@@ -1,3 +1,4 @@
+import { folderIncluded } from "./content-scope";
 import { resolveConflict, type ConflictResolver } from "./conflict-resolver";
 import { priority } from "./classifier";
 import {
@@ -145,6 +146,9 @@ export function plan(
   for (const path of [...dst.directories].sort((a, b) => b.length - a.length)) {
     if (
       managedDst.has(path) &&
+      (p.scope !== "content" ||
+        !p.content ||
+        folderIncluded(path, p.content)) &&
       !occupied.has(path) &&
       !src.directories.has(path) &&
       !protectedPath(path) &&

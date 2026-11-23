@@ -1,8 +1,12 @@
+import { PluginFilters } from "./plugin-filters";
+import { placeControl, templateControl, libraryPage } from "./library-editor";
+import { deletionPolicy, applyPolicy, detachEdited } from "./task-library";
+import { inspectPath } from "./path-inspector";
 import { contentEditor } from "./content-editor";
 import { AccountsView } from "./oauth-ui";
-import { location } from "./public-location";
+import { connectionFields } from "./connection-fields";
 import { RemoteFolderBrowser } from "./remote-browser";
-import type { PublicSource } from "./public-location";
+
 import { scopeEditor } from "./scope-editor";
 import { legacyConfig } from "./config-scope";
 import { PluginSettingTab, Setting, Platform, type App } from "obsidian";
@@ -12,6 +16,83 @@ import { checked, type Profile } from "./model";
 import { validate } from "./validator";
 export class Editor extends PluginSettingTab {
   private draft?: Profile;
+  private home: "profiles" | "places" | "templates" = "profiles";
+  private section = "endpoints";
+  private editDraft(p: Profile) {
+    this.draft = p;
+    this.section = "endpoints";
+    this.display();
+  }
+  private summary(p: Profile) {
+    const rs = this.plugin,
+      t = rs.t,
+      local =
+        p.scope === "settings" ? this.app.vault.configDir : p.local || "/";
+    const account =
+      p.cloud && rs.accounts.list().find((a) => a.id === p.cloud!.account);
+    const remote = [
+      p.cloud
+        ? t(p.cloud.engine + "Private")
+        : p.remote
+          ? t(p.remote.engine)
+          : "",
+      account?.label,
+      p.cloud?.root ?? p.remote?.url,
+      p.reference || "/",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const [from, to] =
+      p.role === "publisher" ? [local, remote] : [remote, local];
+    const c = p.config ?? legacyConfig();
+    const limits =
+      [
+        c.codeAllow,
+        c.codeDeny,
+        c.dataAllow,
+        c.dataDeny,
+        c.include,
+        c.exclude,
+        c.overlay,
+      ].filter((x) => x.trim()).length + (c.pluginLimits?.length ?? 0);
+    const scope =
+      p.scope === "settings"
+        ? [
+            t("settings"),
+            ...c.categories.map((k) => t("cat_" + k)),
+            limits ? t("modifiedSet") + " · " + limits : "",
+          ]
+        : [
+            t(p.content?.base === "selected" ? "onlySelected" : "allExcept"),
+            ...(p.content?.rules ?? [])
+              .slice(0, 3)
+              .map((r) => (r.include ? "+ " : "− ") + r.path),
+            ...(p.content?.rules.length && p.content.rules.length > 3
+              ? ["…"]
+              : []),
+            p.content?.config ? this.app.vault.configDir : "",
+            p.content?.hidden ? t("otherHidden") : "",
+            p.include,
+            p.exclude ? "− " + p.exclude : "",
+            p.maxMiB ? p.maxMiB + " MiB" : "",
+          ];
+    return [
+      from + " → " + to,
+      scope.filter(Boolean).join(" · "),
+      t(deletionPolicy(p)) + (p.deletions ? " → " + to : ""),
+      t(p.inheritMode ? rs.config.mode : p.mode),
+      p.firstPlan ? t("firstPlan") : "",
+      p.startup ? t("startup") : "",
+      p.intervalMinutes ? p.intervalMinutes + " " + t("minutesUnit") : "",
+      p.scope === "content" && p.onFocus ? t("onFocus") : "",
+      p.scope === "content" && p.onOnline ? t("onOnline") : "",
+      p.scope === "content" && p.fileEvents ? t("fileEvents") : "",
+      !p.enabled ? t("inactive") : "",
+      rs.config.paused ? t("paused") : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
   constructor(
     app: App,
     private plugin: SyncStudio,
@@ -26,14 +107,39 @@ export class Editor extends PluginSettingTab {
       rs = this.plugin,
       t = rs.t;
     el.empty();
+    el.addClass("sync-studio-editor");
     if (this.draft) {
       this.edit(this.draft);
       return;
     }
-    el.createEl("h2", { text: t("profiles") });
-    new Setting(el).addButton((b) =>
+    el.createEl("h2", { text: "Sync Studio" });
+    const nav = new Setting(el).setClass("sync-studio-nav");
+    for (const key of ["profiles", "places", "templates"] as const)
+      nav.addButton((b) =>
+        b
+          .setButtonText(t(key))
+          .setDisabled(this.home === key)
+          .onClick(() => {
+            this.home = key;
+            this.display();
+          }),
+      );
+    nav.addButton((b) =>
       b.setButtonText(t("history")).onClick(() => rs.openHistory()),
     );
+    if (this.home !== "profiles") {
+      libraryPage(
+        el,
+        rs,
+        this.home,
+        () => this.display(),
+        (p) => {
+          this.home = "profiles";
+          this.editDraft(p);
+        },
+      );
+      return;
+    }
     new Setting(el).addButton((b) =>
       b
         .setButtonText(t("accounts"))
@@ -64,8 +170,7 @@ export class Editor extends PluginSettingTab {
           .setButtonText(t("add"))
           .setCta()
           .onClick(() => {
-            this.draft = rs.newProfile();
-            this.display();
+            this.editDraft(rs.newProfile());
           }),
       )
       .addButton((b) =>
@@ -75,31 +180,13 @@ export class Editor extends PluginSettingTab {
       const account = p.cloud
         ? rs.accounts.list().find((a) => a.id === p.cloud?.account)
         : undefined;
-      const sourceName =
-        p.access === "oauth" && p.cloud
-          ? [t(p.cloud.engine + "Private"), account?.label]
-              .filter(Boolean)
-              .join(" · ")
-          : p.access === "public" && p.remote
-            ? t(p.remote.engine)
-            : "";
-      const reference = [sourceName, p.reference || "/"]
-        .filter(Boolean)
-        .join(" · ");
-      const local = p.scope === "settings" ? this.app.vault.configDir : p.local;
       const row = new Setting(el)
         .setName(p.name)
         .setDesc(
-          [
-            t(p.scope),
-            p.role === "subscriber"
-              ? reference + " → " + local
-              : local + " → " + reference,
-            ...(p.access === "oauth" && (!account || account.needsLogin)
-              ? [t("loginRequired")]
-              : []),
-            t(p.inheritMode ? rs.config.mode : p.mode),
-          ].join(" · "),
+          this.summary(p) +
+            (p.cloud && (!account || account.needsLogin)
+              ? " · " + t("loginRequired")
+              : ""),
         );
       row.addToggle((c) =>
         c
@@ -112,8 +199,7 @@ export class Editor extends PluginSettingTab {
       );
       row.addButton((b) =>
         b.setButtonText(t("edit")).onClick(() => {
-          this.draft = structuredClone(p);
-          this.display();
+          this.editDraft(structuredClone(p));
         }),
       );
       row.addExtraButton((b) =>
@@ -121,8 +207,7 @@ export class Editor extends PluginSettingTab {
           .setIcon("copy")
           .setTooltip(t("duplicate"))
           .onClick(() => {
-            this.draft = rs.newProfile(p);
-            this.display();
+            this.editDraft(rs.newProfile(p));
           }),
       );
       for (const [delta, icon] of [
@@ -173,252 +258,183 @@ export class Editor extends PluginSettingTab {
   private edit(p: Profile) {
     const rs = this.plugin,
       t = rs.t,
-      el = this.containerEl;
-    el.createEl("h2", { text: t("edit") + " · " + p.name });
+      root = this.containerEl;
+    root.createEl("h2", { text: p.name });
+    const summary = root.createEl("p", { cls: "sync-studio-summary" });
+    const nav = new Setting(root).setClass("sync-studio-nav"),
+      panels = new Map<string, HTMLElement>();
+    const section = (key: string) => {
+      const panel = root.createDiv();
+      panels.set(key, panel);
+      panel.hidden = key !== this.section;
+      nav.addButton((b) =>
+        b
+          .setButtonText(t(key))
+          .setDisabled(key === this.section)
+          .onClick(() => {
+            this.section = key;
+            this.display();
+          }),
+      );
+      return panel;
+    };
+    let el = section("endpoints");
+    const fields = new Map<S, Setting>();
+    const fieldRow = (k: S) => {
+      const row = new Setting(el);
+      fields.set(k, row);
+      return row;
+    };
     const back = () => {
       this.draft = undefined;
       this.display();
     };
     type S = keyof Profile;
     const text = (field: S, key: string) =>
-      new Setting(el).setName(t(key)).addText((c) =>
-        c.setValue(String(p[field])).onChange((v) => {
-          Object.assign(p, {
-            [field]:
-              field === "reference" || field === "local"
-                ? v.replace(/\\/g, "/")
-                : v,
-          });
-          validateForm();
-        }),
-      );
-    const num = (field: S, key: string) =>
-      new Setting(el).setName(t(key)).addText((c) => {
-        c.inputEl.type = "number";
-        c.inputEl.min = "0";
-        c.setValue(String(p[field])).onChange((v) => {
-          Object.assign(p, { [field]: v.trim() === "" ? NaN : Number(v) });
-          validateForm();
-        });
-      });
-    const toggle = (field: S, key: string, disabled = false) =>
-      new Setting(el).setName(t(key)).addToggle((c) =>
-        c
-          .setDisabled(disabled)
-          .setValue(p[field] === true)
-          .onChange((v) => {
-            Object.assign(p, { [field]: v });
+      fieldRow(field)
+        .setName(t(key))
+        .addText((c) =>
+          c.setValue(String(p[field])).onChange((v) => {
+            Object.assign(p, {
+              [field]:
+                field === "reference" || field === "local"
+                  ? v.replace(/\\/g, "/")
+                  : v,
+            });
+            detachEdited(p, rs.config.library);
             validateForm();
           }),
-      );
+        );
+    const num = (field: S, key: string) =>
+      fieldRow(field)
+        .setName(t(key))
+        .addText((c) => {
+          c.inputEl.type = "number";
+          c.inputEl.min = "0";
+          c.setValue(String(p[field])).onChange((v) => {
+            Object.assign(p, { [field]: v.trim() === "" ? NaN : Number(v) });
+            validateForm();
+          });
+        });
+    const toggle = (field: S, key: string, disabled = false) =>
+      fieldRow(field)
+        .setName(t(key))
+        .addToggle((c) =>
+          c
+            .setDisabled(disabled)
+            .setValue(p[field] === true)
+            .onChange((v) => {
+              Object.assign(p, { [field]: v });
+              if (
+                [
+                  "startup",
+                  "fileEvents",
+                  "onFocus",
+                  "onOnline",
+                  "silentDeletionSafeguard",
+                ].includes(field)
+              ) {
+                this.display();
+                return;
+              }
+              validateForm();
+            }),
+        );
     const choice = (
       field: S,
       key: string,
       values: string[],
       disabled = false,
     ) =>
-      new Setting(el).setName(t(key)).addDropdown((d) => {
-        for (const v of values)
-          d.addOption(
-            v,
-            t(field === "conflict" && v === "target" ? "targetVersion" : v),
-          );
-        d.setValue(String(p[field]))
-          .setDisabled(disabled)
-          .onChange((v) => {
-            Object.assign(p, { [field]: v });
-            if (p.mirror === "full") {
-              p.conflict = "source";
-              p.deletions = true;
-            }
-            if (p.scope === "settings") {
-              p.fileEvents = false;
-              if (field === "scope" && !p.config) {
-                p.config = {
-                  ...legacyConfig(),
-                  categories: legacyConfig().categories,
-                  legacyThemes: false,
-                  strategy: "batch",
-                };
-                p.startup = true;
-                p.intervalMinutes = 60;
-                p.onFocus = false;
-                p.onOnline = false;
+      fieldRow(field)
+        .setName(t(key))
+        .addDropdown((d) => {
+          for (const v of values)
+            d.addOption(
+              v,
+              t(field === "conflict" && v === "target" ? "targetVersion" : v),
+            );
+          d.setValue(String(p[field]))
+            .setDisabled(disabled)
+            .onChange((v) => {
+              Object.assign(p, { [field]: v });
+              if (p.mirror === "full") {
+                p.conflict = "source";
+                p.deletions = true;
               }
-              if (p.conflict === "both") p.conflict = "source";
-            }
-            if (field === "role" && p.role === "publisher") {
-              p.conflict = "source";
-              p.deletions = p.mirror === "full";
-            }
-            this.display();
-          });
-      });
-    if (p.config) p.config = structuredClone(p.config);
+              if (p.scope === "settings") {
+                p.fileEvents = p.onFocus = p.onOnline = false;
+                if (field === "scope" && !p.config) {
+                  p.config = {
+                    ...legacyConfig(),
+                    categories: legacyConfig().categories,
+                    legacyThemes: false,
+                    strategy: "batch",
+                  };
+
+                  p.onFocus = false;
+                  p.onOnline = false;
+                }
+                if (p.conflict === "both") p.conflict = "source";
+              }
+              this.display();
+            });
+        });
+
     text("name", "name");
     toggle("enabled", "enabled");
-    choice("scope", "scope", ["content", "settings"]);
-    new Setting(el).setName(t("engine")).addDropdown((d) => {
-      for (const k of [
-        "vaultSource",
-        "google",
-        "yandex",
-        "git",
-        "googlePrivate",
-        "yandexPrivate",
-      ])
-        d.addOption(k, t(k));
-      d.setValue(
-        p.access === "oauth"
-          ? p.cloud?.engine + "Private"
-          : (p.remote?.engine ?? "vaultSource"),
-      ).onChange((v) => {
-        delete p.cloud;
-        if (v.endsWith("Private")) {
-          const engine = v === "googlePrivate" ? "google" : "yandex";
-          const a = rs.accounts
-            .list()
-            .find((a) => a.engine === engine && !a.needsLogin);
-          delete p.remote;
-          p.cloud = {
-            engine,
-            account: a?.id ?? "",
-            root: engine === "google" ? "root" : a?.full ? "disk:/" : "app:/",
-          };
-          p.access = "oauth";
-          p.reference = "/";
-        } else if (v === "vaultSource") {
-          delete p.remote;
-          p.access = "local";
-          p.reference = "Sync Studio-reference";
-        } else {
-          p.access = "public";
-          p.role = "subscriber";
-          p.reference = "/";
-          p.remote = {
-            engine: v as PublicSource["engine"],
-            url: "",
-            branch: "",
-          };
-        }
-        this.display();
-      });
-    });
+    placeControl(el, rs, p, "reference", () => this.display());
+    connectionFields(
+      el,
+      rs,
+      p,
+      () => this.display(),
+      () => validateForm(),
+      fieldRow,
+    );
     const remote = p.access === "public" ? p.remote : undefined;
     choice("role", "role", ["subscriber", "publisher"], !!remote);
-    if (remote) {
-      new Setting(el)
-        .setName(t("remote"))
-        .setDesc(t("readonly"))
-        .addText((c) =>
-          c.setValue(remote.url).onChange((v) => {
-            remote.url = v.trim();
-            validateForm();
-          }),
-        );
-      if (remote.engine === "git")
-        new Setting(el).setName(t("branch")).addText((c) =>
-          c.setValue(remote.branch).onChange((v) => {
-            remote.branch = v.trim();
-            validateForm();
-          }),
-        );
-      if (remote.engine === "google") {
-        let key = rs.googleKey();
-        new Setting(el)
-          .setName(t("deviceKey"))
-          .addText((c) => {
-            c.inputEl.type = "password";
-            c.setValue(key).onChange((v) => {
-              key = v;
-            });
-          })
-          .addButton((b) =>
-            b.setButtonText(t("save")).onClick(() => {
-              rs.saveGoogleKey(key);
-              b.setButtonText(t("saved"));
-            }),
-          );
-      }
-    }
-    if (p.access === "oauth" && p.cloud) {
-      const c = p.cloud;
-      new Setting(el)
-        .setName(t("accounts"))
-        .addDropdown((d) => {
-          d.addOption("", t("selectAccount"));
-          for (const a of rs.accounts
-            .list()
-            .filter((a) => a.engine === c.engine))
-            d.addOption(
-              a.id,
-              a.label +
-                " · " +
-                t(a.full ? "fullAccess" : "appAccess") +
-                (a.needsLogin ? " · " + t("loginRequired") : ""),
-            );
-          d.setValue(c.account).onChange((id) => {
-            c.account = id;
-            if (c.engine === "yandex")
-              c.root = rs.accounts.list().find((a) => a.id === id)?.full
-                ? "disk:/"
-                : "app:/";
-            this.display();
-          });
-        })
-        .addButton((b) =>
-          b
-            .setButtonText(t("accounts"))
-            .onClick(() =>
-              new AccountsView(this.app, rs, () => this.display()).open(),
-            ),
-        );
-      if (c.engine === "google")
-        new Setting(el).setName(t("driveRoot")).addText((v) =>
-          v.setValue(c.root).onChange((raw) => {
-            try {
-              c.root = location({
-                engine: "google",
-                url: raw.trim(),
-                branch: "",
-              }).root;
-            } catch {
-              c.root = "";
-            }
-            validateForm();
-          }),
-        );
-    }
     text(
       "reference",
       remote || p.access === "oauth" ? "subfolder" : "reference",
     );
-    if (remote || p.access === "oauth")
+    const browse = (side: "local" | "reference") =>
       new Setting(el).addButton((b) =>
-        b.setButtonText(t("history")).onClick(() => rs.openHistory()),
+        b
+          .setButtonText(t(side === "local" ? "browseLocal" : "browse"))
+          .onClick(() => {
+            try {
+              new RemoteFolderBrowser(
+                this.app,
+                rs.browseStore(p, side),
+                t,
+                (path) => {
+                  p[side] = path;
+                  delete p[side === "local" ? "localPlace" : "referencePlace"];
+                  this.display();
+                },
+              ).open();
+            } catch (e) {
+              rs.report(e, p.id);
+            }
+          }),
       );
-    new Setting(el).addButton((b) =>
-      b.setButtonText(t("browse")).onClick(() => {
-        try {
-          new RemoteFolderBrowser(
-            this.app,
-            p.access === "oauth"
-              ? rs.accountReference(p, "", true)
-              : rs.publicReference(p, ""),
-            t,
-            (path) => {
-              p.reference = path;
-              this.display();
-            },
-          ).open();
-        } catch (e) {
-          rs.report(e, p.id);
-        }
-      }),
-    );
+    browse("reference");
     if (p.scope === "settings")
       new Setting(el).setName(t("target")).setDesc(this.app.vault.configDir);
-    else text("local", "target");
+    else {
+      placeControl(el, rs, p, "local", () => this.display());
+      text("local", "target");
+      browse("local");
+    }
+    templateControl(el, rs, p, () => this.display());
+    el = section("composition");
+    choice("scope", "scope", ["content", "settings"]);
+    el.createEl("p", {
+      text: t(
+        p.scope === "settings" ? "settingsProcessing" : "contentProcessing",
+      ),
+    });
     if (p.scope === "settings")
       scopeEditor(
         el,
@@ -426,43 +442,16 @@ export class Editor extends PluginSettingTab {
         t,
         () => this.display(),
         () => validateForm(),
+        () =>
+          new PluginFilters(
+            this.app,
+            p.config!,
+            () => rs.folderSources(p),
+            rs.manifest.id,
+            t,
+            () => this.display(),
+          ).open(),
       );
-    choice("mirror", "mirrorMode", ["preserve", "full"]);
-    if (p.role === "subscriber") {
-      toggle("deletions", "deletions", p.mirror === "full");
-      choice(
-        "conflict",
-        "conflict",
-        p.scope === "content"
-          ? ["source", "target", "newer", "both"]
-          : ["source", "target", "newer"],
-        p.mirror === "full",
-      );
-    }
-    num("maxDeleteCount", "maxDeleteCount");
-    num("maxDeletePercent", "maxDeletePercent");
-    num("deleteGrace", "deleteGrace");
-    num("shrinkPercent", "shrinkPercent");
-    choice("trash", "trash", ["plugin", "vault", "system", "permanent"]);
-    if (p.trash === "plugin") num("trashDays", "trashDays");
-    new Setting(el).setName(t("mode")).addDropdown((d) => {
-      for (const k of ["inherit", "plan", "silent"]) d.addOption(k, t(k));
-      d.setValue(p.inheritMode ? "inherit" : p.mode).onChange((v) => {
-        p.inheritMode = v === "inherit";
-        if (v !== "inherit") p.mode = v === "silent" ? "silent" : "plan";
-        this.display();
-      });
-    });
-    toggle("silentDeletionSafeguard", "silentDeletionSafeguard").setDesc(
-      t("silentDeletionSafeguardHelp"),
-    );
-    toggle("firstPlan", "firstPlan");
-    if (p.scope === "settings") {
-      toggle("strictDrift", "strictDrift");
-      toggle("startup", "startup");
-      num("startupSeconds", "startupSeconds");
-      num("intervalMinutes", "intervalMinutes");
-    }
     if (p.scope === "content") {
       contentEditor(
         el,
@@ -473,20 +462,104 @@ export class Editor extends PluginSettingTab {
         () => rs.folderSources(p),
         () => this.display(),
       );
+      const types = {
+        allTypes: "",
+        markdownType: "**/*.md",
+        imageType: ["png", "jpg", "jpeg", "gif", "webp", "svg"]
+          .map((ext) => "**/*." + ext)
+          .join(","),
+      };
+      new Setting(el).setName(t("fileType")).addDropdown((d) => {
+        for (const k of [...Object.keys(types), "customTypes"])
+          d.addOption(k, t(k));
+        d.setValue(
+          Object.entries(types).find(([, v]) => v === p.include)?.[0] ??
+            "customTypes",
+        ).onChange((k) => {
+          if (k === "customTypes") {
+            fields.get("include")?.settingEl.querySelector("input")?.focus();
+            return;
+          }
+          p.include = types[k as keyof typeof types];
+          this.display();
+        });
+      });
       text("include", "include");
       text("exclude", "exclude");
       num("maxMiB", "maxMiB");
-      toggle("startup", "startup");
-      num("startupSeconds", "startupSeconds");
-      num("intervalMinutes", "intervalMinutes");
+    }
+    el = section("taskRules");
+    fieldRow("mirror")
+      .setName(t("mirrorMode"))
+      .addDropdown((d) => {
+        for (const key of ["copyOnly", "tracked", "full"])
+          d.addOption(key, t(key));
+        d.setValue(deletionPolicy(p)).onChange((v) => {
+          applyPolicy(p, v);
+          this.display();
+        });
+      });
+    if (p.mirror !== "full")
+      choice(
+        "conflict",
+        "conflict",
+        p.scope === "content"
+          ? ["source", "target", "newer", "both"]
+          : ["source", "target", "newer"],
+      );
+    if (p.deletions) {
+      toggle("silentDeletionSafeguard", "silentDeletionSafeguard").setDesc(
+        t("silentDeletionSafeguardHelp"),
+      );
+      num("maxDeleteCount", "maxDeleteCount");
+      num("maxDeletePercent", "maxDeletePercent");
+      num("deleteGrace", "deleteGrace");
+      num("shrinkPercent", "shrinkPercent");
+      choice("trash", "trash", ["plugin", "vault", "system", "permanent"]);
+      if (p.trash === "plugin") num("trashDays", "trashDays");
+    }
+    if (p.scope === "settings") toggle("strictDrift", "strictDrift");
+    el = section("schedule");
+    new Setting(el).setName(t("mode")).addDropdown((d) => {
+      for (const k of ["inherit", "plan", "silent"]) d.addOption(k, t(k));
+      d.setValue(p.inheritMode ? "inherit" : p.mode).onChange((v) => {
+        p.inheritMode = v === "inherit";
+        if (v !== "inherit") p.mode = v === "silent" ? "silent" : "plan";
+        this.display();
+      });
+    });
+    toggle("firstPlan", "firstPlan");
+    toggle("startup", "startup");
+    if (p.startup) num("startupSeconds", "startupSeconds");
+    num("intervalMinutes", "intervalMinutes");
+    if (p.scope === "content") {
       toggle("onFocus", "onFocus");
       toggle("onOnline", "onOnline");
       toggle("fileEvents", "fileEvents");
-      num("debounceSeconds", "debounceSeconds");
-      num("quietSeconds", "quietSeconds");
-      num("maxDeferrals", "maxDeferrals");
+      if (p.onFocus || p.onOnline || p.fileEvents)
+        num("debounceSeconds", "debounceSeconds");
+      if (p.role === "subscriber") {
+        num("quietSeconds", "quietSeconds");
+        num("maxDeferrals", "maxDeferrals");
+      }
     }
-    const error = el.createEl("p", { attr: { role: "status" } }),
+    el = section("diagnostics");
+    el.createEl("p", { text: t("diagnosisHelp") });
+    inspectPath(el, rs, p);
+    new Setting(el).setName(t("draftPreview")).addButton((b) =>
+      b.setButtonText(t("dry")).onClick(async () => {
+        if (!validateForm()) return;
+        b.setDisabled(true);
+        try {
+          await rs.previewDraft(p);
+        } catch (e) {
+          rs.report(e, p.id);
+        } finally {
+          b.setDisabled(false);
+        }
+      }),
+    );
+    const error = root.createEl("p", { attr: { role: "status" } }),
       actions = new Setting(el);
     const validateForm = () => {
       const errors = validate(
@@ -495,40 +568,81 @@ export class Editor extends PluginSettingTab {
         false,
         this.app.vault.configDir,
       );
-      error.setText(
-        errors.map((e) => t(e.field) + " · " + t(e.code)).join("\n"),
-      );
+      summary.setText(this.summary(p));
+      root
+        .querySelectorAll(".sync-studio-field-error")
+        .forEach((n) => n.remove());
+      error.empty();
+      for (const err of errors) {
+        const row =
+          fields.get(err.field) ??
+          fields.get(err.field === "config" ? "scope" : "access");
+        row?.settingEl.createEl("small", {
+          text: t(err.code),
+          cls: "sync-studio-field-error",
+        });
+        const panel =
+          [...panels].find(
+            ([, el]) => row && el.contains(row.settingEl),
+          )?.[0] ?? "endpoints";
+        error.createEl("button", {
+          text: t(panel) + " · " + t(err.code),
+        }).onclick = () => {
+          this.section = panel;
+          this.display();
+        };
+      }
       return !errors.length;
     };
-    actions
-      .addButton((b) => b.setButtonText(t("cancel")).onClick(back))
-      .addButton((b) =>
-        b.setButtonText(t("init")).onClick(async () => {
-          if (!validateForm()) return;
-          try {
+    actions.addButton((b) =>
+      b.setButtonText(t("init")).onClick(async () => {
+        if (!validateForm()) return;
+        try {
+          const missing: string[] = [];
+          const dirs = [
+            p.access === "local" ? p.reference : "",
+            p.scope === "content" ? p.local : this.app.vault.configDir,
+          ];
+          for (const dir of dirs)
             if (
-              p.access === "oauth" &&
-              p.role === "publisher" &&
-              p.reference &&
-              p.reference !== "/"
+              dir &&
+              dir !== "/" &&
+              !(await this.app.vault.adapter.exists(dir))
             )
-              await rs.accountReference(p, "").mkdir(p.reference);
-            for (const dir of [
-              p.access === "local" ? p.reference : "",
-              p.scope === "content" ? p.local : this.app.vault.configDir,
-            ])
-              if (
-                dir &&
-                dir !== "/" &&
-                !(await this.app.vault.adapter.exists(dir))
-              )
-                await this.app.vault.createFolder(checked(dir));
-          } catch (e) {
-            rs.report(e, p.id);
+              missing.push(dir);
+          const cloud =
+            p.access === "oauth" &&
+            p.role === "publisher" &&
+            p.reference &&
+            p.reference !== "/" &&
+            !(await rs.accountReference(p, "", true).stat(p.reference));
+          if (!cloud && !missing.length) {
+            b.setButtonText(t("accessible"));
+            return;
           }
-        }),
-      );
-    actions.addButton((b) => {
+          rs.confirm(
+            t("createNow") +
+              " · " +
+              [
+                ...missing,
+                ...(cloud ? [p.cloud?.engine + " / " + p.reference] : []),
+              ].join(", "),
+            async () => {
+              if (cloud) await rs.accountReference(p, "").mkdir(p.reference);
+              for (const dir of missing)
+                if (!(await this.app.vault.adapter.exists(dir)))
+                  await this.app.vault.createFolder(checked(dir));
+            },
+          );
+        } catch (e) {
+          rs.report(e, p.id);
+        }
+      }),
+    );
+    const footer = new Setting(root).addButton((b) =>
+      b.setButtonText(t("cancel")).onClick(back),
+    );
+    footer.addButton((b) => {
       b.setButtonText(t("save"))
         .setCta()
         .onClick(async () => {
@@ -537,13 +651,13 @@ export class Editor extends PluginSettingTab {
             back();
           }
         });
-      el.addEventListener("input", () => b.setDisabled(!validateForm()), {
+      root.addEventListener("input", () => b.setDisabled(!validateForm()), {
         signal: this.formSignal(),
       });
       b.setDisabled(!validateForm());
     });
     if (rs.config.profiles.some((x) => x.id === p.id))
-      actions.addButton((b) =>
+      footer.addButton((b) =>
         b.setButtonText(t("remove")).onClick(() =>
           rs.confirm(t("removeText"), async () => {
             const profiles = rs.config.profiles.filter((x) => x.id !== p.id);

@@ -25,6 +25,19 @@ export function contentEditor(
   refresh: () => void,
 ) {
   const c = p.content ?? plainContent();
+  new Setting(el)
+    .setName(t("baseScope"))
+    .setDesc(t(c.base === "selected" ? "onlyHelp" : "allHelp"))
+    .addDropdown((d) =>
+      d
+        .addOption("all", t("allExcept"))
+        .addOption("selected", t("onlySelected"))
+        .setValue(c.base ?? "all")
+        .onChange((v) => {
+          p.content = { ...c, base: v === "selected" ? "selected" : "all" };
+          refresh();
+        }),
+    );
   const toggle = (key: "config" | "hidden", label: string) =>
     new Setting(el).setName(label).addToggle((b) =>
       b.setValue(c[key]).onChange((v) => {
@@ -98,6 +111,7 @@ class FolderSelection extends Modal {
     const names = new Set(
       this.c.rules.map((r) => r.path).filter((p) => parent(p) === dir),
     );
+    const folders = new Set<string>();
     let failures = 0;
     try {
       const sides = this.stores();
@@ -105,9 +119,17 @@ class FolderSelection extends Modal {
         sides.map(async (s) => {
           try {
             const budget = new RunBudget(undefined, 30000, []);
-            if ((await budget.io(() => s.stat(dir)))?.type === "folder")
-              for (const p of (await budget.io(() => s.list(dir))).folders)
-                if (parent(p) === dir) names.add(p);
+            if ((await budget.io(() => s.stat(dir)))?.type === "folder") {
+              const list = await budget.io(() => s.list(dir));
+              for (const path of list.folders)
+                if (parent(path) === dir) {
+                  names.add(path);
+                  folders.add(path);
+                }
+              if (!this.plugins)
+                for (const path of list.files)
+                  if (parent(path) === dir) names.add(path);
+            }
           } catch {
             failures++;
           }
@@ -124,6 +146,7 @@ class FolderSelection extends Modal {
           safe(p) &&
           contentPath(p, this.app.vault.configDir, this.self, true, {
             ...this.c,
+            base: "all",
             rules: [],
           }),
       )
@@ -144,13 +167,18 @@ class FolderSelection extends Modal {
         const row = new Setting(list).setName(
           p.slice(dir ? dir.length + 1 : 0),
         );
+        if (
+          folders.has(p) &&
+          this.c.rules.some((r) => fold(r.path).startsWith(fold(p) + "/"))
+        )
+          row.setDesc(t("mixedRules"));
         row.addToggle((b) =>
           b.setValue(folderIncluded(p, this.c)).onChange((v) => {
             this.c = setFolders(this.c, [p], v);
             render();
           }),
         );
-        if (!this.plugins)
+        if (!this.plugins && folders.has(p))
           row.addExtraButton((b) =>
             b
               .setIcon("folder-open")

@@ -42,9 +42,6 @@ export function profileRules(
       invalid: p.fileEvents,
     });
   }
-  if (p.role === "publisher")
-    for (const field of ["deletions", "conflict"] as const)
-      rules.push({ field, visible: false, code: "publisher" });
   if (!desktop)
     rules.push({
       field: "watch",

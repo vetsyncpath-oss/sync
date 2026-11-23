@@ -159,6 +159,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
               const button=(el,label)=>[...el.querySelectorAll('button')].find(x=>x.textContent===rs.t(label));
               const rows=[...editor.containerEl.querySelectorAll('.setting-item')];
               button(rows.find(el=>el.querySelector('.setting-item-name')?.textContent==='Переезд'),'edit').click();
+              button(editor.containerEl,'composition').click();
               const row=[...editor.containerEl.querySelectorAll('.setting-item')].find(el=>el.querySelector('.setting-item-name')?.textContent===rs.t('everything'));
               row.querySelector('.checkbox-container').click();
               await new Promise(r=>setTimeout(r,50));
@@ -177,6 +178,8 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
               if(!await exists('.obsidian/plugins/reader/main.js')||!await exists('.hidden/entry')||await exists('.obsidian/plugins/personal/data.json')||await exists('.obsidian/plugins/refsync/main.js'))throw Error('scoped delivery');
               return 'Native settings: bulk checkbox selection, config and hidden folder delivery, excluded plugins and self protected';
             }"""))
+            import runpy
+            runpy.run_path(str(root/"scripts/overhaul-smoke.py"))["run"](page)
             # Deliver a harmless fixture plugin, then let Obsidian itself activate it at startup.
             page.evaluate("""async()=>{
               const rs=app.plugins.plugins.refsync,v=app.vault,a=v.adapter;

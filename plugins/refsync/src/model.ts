@@ -6,6 +6,8 @@ export type Policy = "source" | "target" | "newer" | "both";
 export type Mode = "plan" | "silent";
 export type Volatility = "H" | "S" | "V";
 export interface Profile {
+  localPlace?: string;
+  referencePlace?: string;
   cloud?: import("./private-cloud").CloudLocation;
   remote?: import("./public-location").PublicSource;
   content?: import("./content-scope").ContentScope;
@@ -122,9 +124,7 @@ export interface StorageProvider {
     dir: string,
   ): Promise<{ files: string[]; folders: string[]; skipped?: string[] }>;
   scanStat?: StorageProvider["stat"];
-  stat(
-    path: string,
-  ): Promise<
+  stat(path: string): Promise<
     | (FileMeta & {
         type: "file" | "folder";
         version?: string;

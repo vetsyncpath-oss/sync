@@ -1,4 +1,5 @@
 import { readManifest, buildManifest, verifyManifest } from "./cloud-manifest";
+import { folderIncluded } from "./content-scope";
 import { selected } from "./classifier";
 import {
   emptyConfigDirectory,
@@ -242,7 +243,9 @@ export class SyncEngine {
                 cfg,
                 p.content,
               ) &&
-              (p.scope === "content" || emptyConfigDirectory(pth, cfg)) &&
+              (p.scope === "content"
+                ? !p.content || folderIncluded(pth, p.content)
+                : emptyConfigDirectory(pth, cfg)) &&
               !(
                 pth.startsWith("plugins/") &&
                 projection?.blocked.includes(pth.split("/")[1].toLowerCase())

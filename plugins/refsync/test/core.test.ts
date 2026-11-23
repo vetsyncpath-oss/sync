@@ -193,7 +193,7 @@ test("validator shares the UI matrix and checks malformed saved profiles", () =>
     ).length,
   );
   assert.ok(
-    profileRules(
+    !profileRules(
       { ...defaults, role: "publisher", mode: "silent" },
       true,
       false,
@@ -1640,4 +1640,193 @@ test("manifest subscriptions verify the live listing without an account-wide cha
     /manifestMismatch/,
   );
   assert.equal(target.data.size, 0);
+});
+
+import {
+  applyPolicy,
+  bindPlace,
+  detachEdited,
+  emptyLibrary,
+  makeTemplate,
+  applyTemplate,
+  readTemplate,
+  serializeTemplate,
+  scenario,
+} from "../src/task-library";
+test("a selected-only full mirror handles files, future folders, scaffolding and deletion on both sides", async () => {
+  const { source, target, engine } = fixture();
+  for (const s of [source, target])
+    for (const d of [
+      "Parent",
+      "Parent/Projects",
+      "Parent/Else",
+      "Archive",
+      "Future",
+      "EmptyParent",
+    ])
+      s.folders.add(d);
+  source.data.set("Parent/Projects/new.md", bytes("deliver"));
+  source.data.set("root.md", bytes("root"));
+  for (const name of [
+    "Parent/Projects/old.md",
+    "Archive/private.md",
+    "other.md",
+    "Parent/Else/private.md",
+    "Future/later.md",
+  ])
+    target.data.set(name, bytes("preserve outside scope"));
+  source.data.set("Future/source.md", bytes("excluded"));
+  const content = setFolders(
+    { ...plainContent(), base: "selected" },
+    ["Parent/Projects", "root.md", "EmptyParent/missing"],
+    true,
+  );
+  const p: Profile = { ...defaults, content, silentDeletionSafeguard: false };
+  applyPolicy(p, "full");
+  const preview = await engine.run(p, source, target, true, undefined, {
+    mode: "silent",
+  });
+  assert.deepEqual(preview.plan.ops.map((o) => o.path).sort(), [
+    "Parent/Projects/new.md",
+    "Parent/Projects/old.md",
+    "root.md",
+  ]);
+  assert.ok(target.data.has("Parent/Projects/old.md"));
+  await engine.run(p, source, target, false, undefined, { mode: "silent" });
+  assert.ok(
+    !target.data.has("Parent/Projects/old.md") &&
+      !target.data.has("Future/source.md"),
+  );
+  for (const name of [
+    "Archive/private.md",
+    "other.md",
+    "Parent/Else/private.md",
+    "Future/later.md",
+    "root.md",
+  ])
+    assert.ok(target.data.has(name));
+  source.data.set("Parent/Projects/another.md", bytes("later"));
+  assert.equal((await engine.run(p, source, target, false)).changed, 1);
+  applyPolicy(p, "copyOnly");
+  assert.equal(p.deletions, false);
+  applyPolicy(p, "tracked");
+  assert.equal(p.deletions, true);
+  assert.equal(p.mirror, "preserve");
+});
+test("0.5.2 profile upgrade preserves broad content and clears hidden settings triggers", () => {
+  const cfg = loadProfiles({
+    version: 2,
+    profiles: [
+      {
+        ...defaults,
+        content: {
+          ...plainContent(),
+          rules: [{ path: "Private", include: false }],
+        },
+      },
+      {
+        ...defaults,
+        id: "settings",
+        scope: "settings",
+        config: legacyConfig(),
+        onFocus: true,
+        onOnline: true,
+        fileEvents: true,
+      },
+    ],
+    current: "settings",
+    paused: true,
+    mode: "silent",
+  });
+  assert.deepEqual(cfg.library, emptyLibrary());
+  assert.equal(cfg.current, "settings");
+  assert.equal(cfg.mode, "silent");
+  assert.ok(folderIncluded("Future/file", cfg.profiles[0].content!));
+  assert.ok(!folderIncluded("Private/file", cfg.profiles[0].content!));
+  const s = cfg.profiles[1];
+  assert.ok(!s.onFocus && !s.onOnline && !s.fileEvents);
+  assert.equal(s.intervalMinutes, defaults.intervalMinutes);
+});
+test("portable templates round-trip selected content without bindings or credentials", () => {
+  const p = newProfile();
+  p.local = "PrivateVault";
+  p.referencePlace = "shared";
+  p.access = "oauth";
+  p.cloud = { engine: "google", account: "a".repeat(64), root: "PrivateRoot" };
+  p.content = setFolders(
+    { ...plainContent(), base: "selected" },
+    ["Projects"],
+    true,
+  );
+  const t = makeTemplate(p, "Work", "task"),
+    json = serializeTemplate(t);
+  for (const secret of [
+    "PrivateVault",
+    "PrivateRoot",
+    "shared",
+    p.cloud.account,
+  ])
+    assert.ok(!json.includes(secret));
+  const copy = newProfile(),
+    before = copy.local;
+  applyTemplate(copy, readTemplate(json));
+  assert.deepEqual(copy.content, p.content);
+  assert.equal(copy.local, before);
+  assert.equal(copy.enabled, false);
+  const invalid = JSON.parse(json);
+  invalid.rules.access = "oauth";
+  assert.throws(() => readTemplate(JSON.stringify(invalid)));
+  delete invalid.rules.access;
+  invalid.rules.content.rules[0].token = "secret";
+  assert.throws(() => readTemplate(JSON.stringify(invalid)));
+  const s = newProfile();
+  scenario(s, "appearanceTask");
+  assert.equal(s.scope, "settings");
+  applyTemplate(
+    copy,
+    readTemplate(serializeTemplate(makeTemplate(s, "Look", "scope"))),
+  );
+  assert.ok(!copy.onFocus && !copy.fileEvents);
+  assert.deepEqual(copy.config?.categories, [
+    "appearance",
+    "themes",
+    "snippets",
+  ]);
+});
+test("locations link, detach on custom edits and leave unrelated endpoints intact", () => {
+  const p = newProfile(),
+    lib = emptyLibrary(),
+    place = {
+      id: "team",
+      name: "Team",
+      endpoint: { access: "local" as const, reference: "Team" },
+    };
+  lib.places.push(place);
+  bindPlace(p, "reference", place);
+  bindPlace(p, "local", {
+    ...place,
+    id: "copy",
+    endpoint: { access: "local", reference: "Copy" },
+  });
+  detachEdited(p, lib);
+  assert.equal(p.referencePlace, "team");
+  assert.equal(p.localPlace, undefined);
+  p.reference = "Manual";
+  detachEdited(p, lib);
+  assert.equal(p.referencePlace, undefined);
+  assert.equal(p.local, "Copy");
+});
+test("per-plugin file switches narrow config categories and survive template import", () => {
+  const p = newProfile();
+  scenario(p, "pluginDataTask");
+  p.config!.categories = ["data", "code", "extras"];
+  p.config!.pluginLimits = [{ id: "reader", allow: ["data"] }];
+  const parsed = readTemplate(
+    serializeTemplate(makeTemplate(p, "Settings", "task")),
+  );
+  const c = parsed.rules.config!;
+  assert.ok(inScope("plugins/Reader/data.json", c, false));
+  assert.ok(!inScope("plugins/reader/main.js", c, false));
+  assert.ok(!inScope("plugins/reader/icon.png", c, false));
+  assert.ok(inScope("plugins/other/main.js", c, false));
 });

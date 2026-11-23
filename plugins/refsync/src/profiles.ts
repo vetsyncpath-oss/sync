@@ -1,6 +1,8 @@
+import { loadLibrary } from "./task-library";
 import { legacyConfig } from "./config-scope";
 import { defaults, type Mode, type Profile } from "./model";
 export interface Configuration {
+  library: import("./task-library").Library;
   version: 2;
   profiles: Profile[];
   current: string;
@@ -41,6 +43,11 @@ export function loadProfiles(raw: unknown): Configuration {
     ];
   }
   for (const p of profiles) {
+    if (p.scope === "settings") {
+      p.fileEvents = false;
+      p.onFocus = false;
+      p.onOnline = false;
+    }
     if (p.scope === "settings" && p.config === undefined) {
       p.config = legacyConfig();
       p.startup = false;
@@ -50,6 +57,7 @@ export function loadProfiles(raw: unknown): Configuration {
     }
   }
   return {
+    library: loadLibrary(object(raw) ? raw.library : undefined),
     version: 2,
     profiles,
     current: profiles.some((p) => p.id === current)
