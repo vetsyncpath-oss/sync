@@ -10749,34 +10749,28 @@ function readScope(value) {
     return { tenantId: v.tenantId, bundleId: v.bundleId };
 }
 var VamGate = class {
-  constructor(context, scope, changed) {
+  constructor(context, changed) {
     this.context = context;
-    this.scope = scope;
     this.changed = changed;
   }
   manager;
   bridge;
   off;
+  observedScope;
   generation = 0;
   disposed = false;
   last = "vamMissing";
-  bind(scope) {
-    if (!sameScope(scope, this.context().scope)) throw Error("vamScope");
-    this.scope = { ...scope };
-    this.generation++;
-    this.refresh();
-  }
-  get binding() {
-    return this.scope;
-  }
-  get candidate() {
-    return this.context().scope;
-  }
   refresh() {
     if (this.disposed) return "vamMissing";
     let reason = "vamMissing";
     try {
-      const { manager, scope, bridge } = this.context();
+      const context = this.context();
+      const { manager, bridge } = context;
+      const scope = readScope(context.scope);
+      if (this.observedScope !== scope && !sameScope(scope, this.observedScope)) {
+        this.observedScope = scope;
+        this.generation++;
+      }
       if (this.manager !== manager || this.bridge !== bridge) {
         this.generation++;
         this.off?.();
@@ -10794,10 +10788,9 @@ var VamGate = class {
       if (manager) {
         if (!bridge || bridge.version !== "6" || !this.off)
           reason = "vamProtocol";
-        else if (!this.scope) reason = "vamUnbound";
-        else if (!sameScope(scope, this.scope)) reason = "vamScope";
+        else if (!scope) reason = "vamScope";
         else {
-          const d = bridge.access({ ...this.scope, capability: "use" });
+          const d = bridge.access({ ...scope, capability: "use" });
           if (d.status === "granted")
             reason = typeof d.validUntil === "number" && Number.isFinite(d.validUntil) && d.validUntil > Date.now() ? "vamGranted" : "vamExpired";
           else if (d.status === "pending")
@@ -11772,15 +11765,19 @@ var ru = {
   vamDevice: "Ожидается подтверждение устройства",
   vamMissing: "Включите Vault Access Manager в этом хранилище",
   vamProtocol: "Для синхронизации требуется VAM SDK 6",
-  vamUnbound: "Привяжите организацию и бандл этого хранилища",
-  vamScope: "Организация или бандл отличаются от привязки хранилища",
+  vamScope: "Manager не указал организацию или бандл для этого хранилища",
   vamExpired: "Срок подтверждённого доступа истёк",
   vamLogin: "Требуется вход в Vault Access Manager",
   vamOffline: "Нет действующего подтверждения доступа от Manager",
   vamBlocked: "Доступ заблокирован Vault Access Manager",
   vamSessionChanged: "Допуск изменился. Запустите операцию заново",
-  vamBind: "Привязать Manager",
-  vamBindHint: "Сверьте организацию и бандл с данными администратора перед привязкой",
+  vamDispatch: "Отчёты и обновления",
+  vamBind: "Привязать для отчётов и обновлений",
+  vamUnbind: "Отключить привязку",
+  vamDispatchOff: "Обмен выключен. Допуск к синхронизации проверяется автоматически.",
+  vamDispatchOn: "Обмен включён для",
+  vamManagerChanged: "Manager изменился. Проверьте привязку заново.",
+  vamBindHint: "Разрешить этому Manager запрашивать сводку о состоянии и передавать уведомления о версиях VAM и Sync Studio?",
   vamOpenLogin: "Открыть вход VAM",
   categoryRule: "Исключено категориями настроек",
   pluginRule: "Исключено правилами для этого плагина",
@@ -12160,15 +12157,19 @@ var en = {
   vamDevice: "Waiting for device approval",
   vamMissing: "Enable Vault Access Manager in this vault",
   vamProtocol: "Synchronization requires VAM SDK 6",
-  vamUnbound: "Bind the organization and bundle for this vault",
-  vamScope: "Organization or bundle differs from this vault binding",
+  vamScope: "Manager has no valid organization or bundle for this vault",
   vamExpired: "Access has expired",
   vamLogin: "Sign in to Vault Access Manager",
   vamOffline: "Manager has no current authorization",
   vamBlocked: "Vault Access Manager blocked access",
   vamSessionChanged: "Authorization changed. Start the operation again",
-  vamBind: "Bind Manager",
-  vamBindHint: "Verify the organization and bundle with your administrator before binding",
+  vamDispatch: "Reports and updates",
+  vamBind: "Pair for reports and updates",
+  vamUnbind: "Unpair",
+  vamDispatchOff: "Exchange is off. Sync authorization is checked automatically.",
+  vamDispatchOn: "Exchange enabled for",
+  vamManagerChanged: "Manager changed. Review the pairing again.",
+  vamBindHint: "Allow this Manager to request a status report and send version notices for VAM and Sync Studio?",
   vamOpenLogin: "Open VAM login",
   categoryRule: "Excluded by settings categories",
   pluginRule: "Excluded by rules for this plugin",
@@ -23937,17 +23938,24 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
     }
     el.createEl("h2", { text: "Sync Studio" });
     const access = new import_obsidian12.Setting(el).setName(t("vamTitle")).setClass("sync-studio-vam");
-    const scope = rs.gate.binding;
-    access.setDesc(
-      [t(rs.gate.refresh()), scope?.tenantId, scope?.bundleId].filter(Boolean).join(" · ")
-    );
+    access.setDesc(t(rs.gate.refresh()));
     rs.gateDescription = access.descEl;
-    access.addButton(
-      (b) => b.setButtonText(t("vamBind")).onClick(() => rs.confirmManagerBinding(() => this.display()))
-    );
     access.addButton(
       (b) => b.setButtonText(t("vamOpenLogin")).onClick(() => rs.managerLogin())
     );
+    const dispatch = new import_obsidian12.Setting(el).setName(t("vamDispatch"));
+    rs.renderDispatch(dispatch.descEl);
+    dispatch.addButton((b) => {
+      if (rs.dispatchPaired)
+        b.setButtonText(t("vamUnbind")).onClick(() => {
+          rs.unpairManager();
+          this.display();
+        });
+      else
+        b.setButtonText(t("vamBind")).onClick(
+          () => rs.confirmManagerBinding(() => this.display())
+        );
+    });
     const nav = new import_obsidian12.Setting(el).setClass("sync-studio-nav");
     for (const key of ["profiles", "places", "templates"])
       nav.addButton(
@@ -24507,6 +24515,54 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   gate;
   gateDescription;
   bindingKey = "";
+  dispatchScope;
+  updateSignals = /* @__PURE__ */ new Map();
+  dispatchDescription;
+  dispatchText() {
+    if (!this.dispatchScope) return this.t("vamDispatchOff");
+    const { tenantId, bundleId } = this.dispatchScope;
+    const signals = Array.from(
+      this.updateSignals,
+      ([id, version]) => (id === managerId ? "VAM" : "Sync Studio") + " " + version
+    );
+    return [this.t("vamDispatchOn"), tenantId, bundleId, ...signals].join(
+      " · "
+    );
+  }
+  renderDispatch(el) {
+    this.dispatchDescription = el;
+    el.setText(this.dispatchText());
+  }
+  get dispatchPaired() {
+    return !!this.dispatchScope;
+  }
+  allowDispatch(caller) {
+    const { manager, scope } = this.managerContext();
+    return this.live && !!manager && manager === caller && sameScope(this.dispatchScope, scope);
+  }
+  // Optional local interface for a dispatcher installed in this vault.
+  getDispatchStatus(caller) {
+    if (!this.allowDispatch(caller)) return null;
+    return {
+      protocol: 1,
+      version: this.manifest.version,
+      access: this.gate.refresh(),
+      phase: this.engine?.status.phase ?? "idle"
+    };
+  }
+  receiveUpdateSignal(caller, signal) {
+    if (!this.allowDispatch(caller) || !signal || typeof signal !== "object")
+      return false;
+    const { protocol, component, version } = signal;
+    if (protocol !== 1 || component !== managerId && component !== this.manifest.id || typeof version !== "string" || version.length > 80 || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/.test(
+      version
+    ))
+      return false;
+    this.updateSignals.set(component, version);
+    if (this.dispatchDescription?.isConnected)
+      this.renderDispatch(this.dispatchDescription);
+    return true;
+  }
   managerContext() {
     const registry = this.app.plugins;
     const manager = registry?.plugins?.[managerId];
@@ -24519,9 +24575,9 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     };
   }
   confirmManagerBinding(after) {
-    const candidate = this.gate.candidate;
+    const { manager, scope: candidate } = this.managerContext();
     if (!candidate) {
-      this.report(Error("vamMissing"));
+      this.report(Error(manager ? "vamScope" : "vamMissing"));
       return;
     }
     this.confirm(
@@ -24529,14 +24585,25 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         " · "
       ),
       () => {
-        this.bindManager(candidate);
+        const current = this.managerContext();
+        if (manager !== current.manager || !sameScope(candidate, current.scope)) {
+          this.report(Error("vamManagerChanged"));
+          return;
+        }
+        this.setDispatchBinding(candidate);
         after?.();
       }
     );
   }
-  bindManager(scope) {
-    this.gate.bind(scope);
-    this.app.saveLocalStorage(this.bindingKey, scope);
+  setDispatchBinding(scope) {
+    this.app.saveLocalStorage(this.bindingKey, scope ?? null);
+    this.dispatchScope = scope;
+    this.updateSignals.clear();
+    if (this.dispatchDescription?.isConnected)
+      this.renderDispatch(this.dispatchDescription);
+  }
+  unpairManager() {
+    this.setDispatchBinding();
   }
   managerLogin() {
     const commands2 = this.app.commands;
@@ -24631,16 +24698,16 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   async onload() {
     const adapter = this.app.vault.adapter;
     const vaultIdentity = adapter.getBasePath?.() || this.app.appId || crypto.randomUUID();
-    this.bindingKey = "refsync:vam:" + bytesToHex(
+    this.bindingKey = "refsync:dispatch:" + bytesToHex(
       sha2562(
         new TextEncoder().encode(
           JSON.stringify([vaultIdentity, this.app.vault.configDir])
         )
       )
     );
+    this.dispatchScope = readScope(this.app.loadLocalStorage(this.bindingKey));
     this.gate = new VamGate(
       () => this.managerContext(),
-      readScope(this.app.loadLocalStorage(this.bindingKey)),
       () => {
         if (this.gate.label !== "vamGranted") {
           this.reviewQueue = [];
@@ -24659,14 +24726,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         }
         if (this.ribbon) this.paint();
         const desc = this.gateDescription;
-        if (desc?.isConnected)
-          desc.setText(
-            [
-              this.t(this.gate.label),
-              this.gate.binding?.tenantId,
-              this.gate.binding?.bundleId
-            ].filter(Boolean).join(" · ")
-          );
+        if (desc?.isConnected) desc.setText(this.t(this.gate.label));
       }
     );
     this.gate.refresh();

@@ -3,6 +3,7 @@ import {
   guardedStore,
   managerId,
   readScope,
+  sameScope,
   type VamBridge,
   type Scope,
 } from "./vam-gate";
@@ -130,6 +131,66 @@ export default class SyncStudio extends Plugin {
   gate!: VamGate;
   gateDescription?: HTMLElement;
   private bindingKey = "";
+  private dispatchScope?: Scope;
+  private updateSignals = new Map<string, string>();
+  dispatchDescription?: HTMLElement;
+  private dispatchText() {
+    if (!this.dispatchScope) return this.t("vamDispatchOff");
+    const { tenantId, bundleId } = this.dispatchScope;
+    const signals = Array.from(
+      this.updateSignals,
+      ([id, version]) =>
+        (id === managerId ? "VAM" : "Sync Studio") + " " + version,
+    );
+    return [this.t("vamDispatchOn"), tenantId, bundleId, ...signals].join(
+      " · ",
+    );
+  }
+  renderDispatch(el: HTMLElement) {
+    this.dispatchDescription = el;
+    el.setText(this.dispatchText());
+  }
+  get dispatchPaired() {
+    return !!this.dispatchScope;
+  }
+  private allowDispatch(caller: unknown) {
+    const { manager, scope } = this.managerContext();
+    return (
+      this.live &&
+      !!manager &&
+      manager === caller &&
+      sameScope(this.dispatchScope, scope)
+    );
+  }
+  // Optional local interface for a dispatcher installed in this vault.
+  getDispatchStatus(caller: unknown) {
+    if (!this.allowDispatch(caller)) return null;
+    return {
+      protocol: 1,
+      version: this.manifest.version,
+      access: this.gate.refresh(),
+      phase: this.engine?.status.phase ?? "idle",
+    };
+  }
+  receiveUpdateSignal(caller: unknown, signal: unknown) {
+    if (!this.allowDispatch(caller) || !signal || typeof signal !== "object")
+      return false;
+    const { protocol, component, version } = signal as Record<string, unknown>;
+    if (
+      protocol !== 1 ||
+      (component !== managerId && component !== this.manifest.id) ||
+      typeof version !== "string" ||
+      version.length > 80 ||
+      !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/.test(
+        version,
+      )
+    )
+      return false;
+    this.updateSignals.set(component, version);
+    if (this.dispatchDescription?.isConnected)
+      this.renderDispatch(this.dispatchDescription);
+    return true;
+  }
   private managerContext() {
     const registry = (
       this.app as App & {
@@ -157,9 +218,9 @@ export default class SyncStudio extends Plugin {
     };
   }
   confirmManagerBinding(after?: () => void) {
-    const candidate = this.gate.candidate;
+    const { manager, scope: candidate } = this.managerContext();
     if (!candidate) {
-      this.report(Error("vamMissing"));
+      this.report(Error(manager ? "vamScope" : "vamMissing"));
       return;
     }
     this.confirm(
@@ -167,14 +228,28 @@ export default class SyncStudio extends Plugin {
         " · ",
       ),
       () => {
-        this.bindManager(candidate);
+        const current = this.managerContext();
+        if (
+          manager !== current.manager ||
+          !sameScope(candidate, current.scope)
+        ) {
+          this.report(Error("vamManagerChanged"));
+          return;
+        }
+        this.setDispatchBinding(candidate);
         after?.();
       },
     );
   }
-  bindManager(scope: Scope) {
-    this.gate.bind(scope);
-    this.app.saveLocalStorage(this.bindingKey, scope);
+  private setDispatchBinding(scope?: Scope) {
+    this.app.saveLocalStorage(this.bindingKey, scope ?? null);
+    this.dispatchScope = scope;
+    this.updateSignals.clear();
+    if (this.dispatchDescription?.isConnected)
+      this.renderDispatch(this.dispatchDescription);
+  }
+  unpairManager() {
+    this.setDispatchBinding();
   }
   managerLogin() {
     const commands = (
@@ -312,7 +387,7 @@ export default class SyncStudio extends Plugin {
       (this.app as App & { appId?: string }).appId ||
       crypto.randomUUID();
     this.bindingKey =
-      "refsync:vam:" +
+      "refsync:dispatch:" +
       bytesToHex(
         sha256(
           new TextEncoder().encode(
@@ -320,9 +395,9 @@ export default class SyncStudio extends Plugin {
           ),
         ),
       );
+    this.dispatchScope = readScope(this.app.loadLocalStorage(this.bindingKey));
     this.gate = new VamGate(
       () => this.managerContext(),
-      readScope(this.app.loadLocalStorage(this.bindingKey)),
       () => {
         if (this.gate.label !== "vamGranted") {
           this.reviewQueue = [];
@@ -346,16 +421,7 @@ export default class SyncStudio extends Plugin {
         }
         if (this.ribbon) this.paint();
         const desc = this.gateDescription;
-        if (desc?.isConnected)
-          desc.setText(
-            [
-              this.t(this.gate.label),
-              this.gate.binding?.tenantId,
-              this.gate.binding?.bundleId,
-            ]
-              .filter(Boolean)
-              .join(" · "),
-          );
+        if (desc?.isConnected) desc.setText(this.t(this.gate.label));
       },
     );
     this.gate.refresh();

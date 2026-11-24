@@ -33,31 +33,28 @@ export class VamGate {
   private manager?: object;
   private bridge?: VamBridge;
   private off?: () => void;
+  private observedScope?: Scope;
   private generation = 0;
   private disposed = false;
   private last = "vamMissing";
   constructor(
     private context: () => ManagerContext,
-    private scope: Scope | undefined,
     private changed: () => void,
   ) {}
-  bind(scope: Scope) {
-    if (!sameScope(scope, this.context().scope)) throw Error("vamScope");
-    this.scope = { ...scope };
-    this.generation++;
-    this.refresh();
-  }
-  get binding() {
-    return this.scope;
-  }
-  get candidate() {
-    return this.context().scope;
-  }
   refresh() {
     if (this.disposed) return "vamMissing";
     let reason = "vamMissing";
     try {
-      const { manager, scope, bridge } = this.context();
+      const context = this.context();
+      const { manager, bridge } = context;
+      const scope = readScope(context.scope);
+      if (
+        this.observedScope !== scope &&
+        !sameScope(scope, this.observedScope)
+      ) {
+        this.observedScope = scope;
+        this.generation++;
+      }
       if (this.manager !== manager || this.bridge !== bridge) {
         this.generation++;
         this.off?.();
@@ -76,10 +73,9 @@ export class VamGate {
       if (manager) {
         if (!bridge || bridge.version !== "6" || !this.off)
           reason = "vamProtocol";
-        else if (!this.scope) reason = "vamUnbound";
-        else if (!sameScope(scope, this.scope)) reason = "vamScope";
+        else if (!scope) reason = "vamScope";
         else {
-          const d = bridge.access({ ...this.scope, capability: "use" });
+          const d = bridge.access({ ...scope, capability: "use" });
           if (d.status === "granted")
             reason =
               typeof d.validUntil === "number" &&

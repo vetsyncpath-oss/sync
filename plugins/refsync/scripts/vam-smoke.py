@@ -30,7 +30,11 @@ module.exports=class extends Plugin {
 
 def run(page):
     print(page.evaluate("""async()=>{
-      const rs=app.plugins.plugins.refsync;await rs.ready;
+      let rs=app.plugins.plugins.refsync;await rs.ready;
+      // Consent to sync in 0.8.0 did not include reports.
+      app.saveLocalStorage(rs.bindingKey.replace('refsync:dispatch:', 'refsync:vam:'), {tenantId:'ci-org',bundleId:'ci-bundle'});
+      await app.plugins.disablePlugin('refsync');await app.plugins.enablePlugin('refsync');
+      rs=app.plugins.plugins.refsync;await rs.ready;
       const api=app.plugins,v=app.vault,a=v.adapter;
       const src='VAM smoke source',dst='VAM smoke target',id='vam-gate-smoke';
       await v.createFolder(src);await v.createFolder(dst);await v.create(src+'/note.md','allowed');
@@ -45,24 +49,45 @@ def run(page):
       if(await a.exists(dst+'/note.md'))throw Error('delivery without manager');
       await api.enablePluginAndSave('vault-access-manager');
       const manager=api.plugins['vault-access-manager'];
-      await denied(()=>rs.execute(id,'run'),'vamUnbound');
+      await denied(()=>rs.execute(id,'run'),'vamLogin');
+      const signal={protocol:1,component:'refsync',version:'1.2.3'};
+      if(rs.dispatchPaired||rs.getDispatchStatus(manager)!==null||rs.receiveUpdateSignal(manager,signal))throw Error('exchange without pairing');
+      manager.set('pending');await denied(()=>rs.previewDraft(p),'vamDevice');
+      manager.set('granted');await rs.execute(id,'run');
+      if(await a.read(dst+'/note.md')!=='allowed'||manager.consumer!=='refsync')throw Error('delivery without pairing');
+      manager.set('blocked');await denied(()=>rs.execute(id,'run'),'vamLogin');
+      manager.set('granted');
       app.setting.open();app.setting.openTabById('refsync');
       const el=app.setting.pluginTabs.find(x=>x.id==='refsync').containerEl;
       const button=(area,key)=>[...area.querySelectorAll('button')].find(b=>b.textContent===rs.t(key));
+      const lease=rs.gate.lease();
       button(el,'vamBind').click();
       let confirm;for(let n=0;n<100&&!confirm;n++){await new Promise(r=>setTimeout(r,20));confirm=[...el.ownerDocument.querySelectorAll('.modal'),...document.querySelectorAll('.modal')].find(m=>button(m,'confirmAction'));}
       if(!confirm?.textContent.includes('ci-org'))throw Error('missing vault scope confirmation '+rs.gate.label+' '+[...el.ownerDocument.querySelectorAll('.modal')].map(m=>m.textContent.slice(0,90)));
-      button(confirm,'confirmAction').click();await Promise.resolve();app.setting.close();
+      button(confirm,'confirmAction').click();await Promise.resolve();lease();
+      if(rs.getDispatchStatus(manager)?.version!==rs.manifest.version||rs.getDispatchStatus({})!==null)throw Error('report caller');
+      for(const component of ['refsync','vault-access-manager']){
+        if(!rs.receiveUpdateSignal(manager,{...signal,component})||!el.textContent.includes('1.2.3'))throw Error('update notice '+component);
+      }
+      if(rs.receiveUpdateSignal({},signal)||rs.receiveUpdateSignal(manager,{...signal,component:'other'})||
+        rs.receiveUpdateSignal(manager,{...signal,version:'https://invalid.test'})||rs.receiveUpdateSignal(manager,{...signal,protocol:2}))throw Error('invalid update notice');
+      const scope=manager.accessV4.build;manager.accessV4.build={...scope,bundleId:'other'};
+      if(rs.getDispatchStatus(manager)!==null||rs.receiveUpdateSignal(manager,signal))throw Error('cross-scope exchange');
+      manager.accessV4.build=scope;
+      manager.set('blocked');
       await denied(()=>rs.execute(id,'run'),'vamLogin');
-      manager.set('pending');await denied(()=>rs.previewDraft(p),'vamDevice');
-      manager.set('granted');const plan={...p,mode:'plan'};await rs.put(plan,true);await rs.execute(id,'run');
+      manager.set('granted');const beforeUnpair=rs.gate.lease();
+      button(el,'vamUnbind').click();beforeUnpair();
+      if(rs.getDispatchStatus(manager)!==null||rs.receiveUpdateSignal(manager,signal)||el.textContent.includes('1.2.3'))throw Error('exchange after unpair');
+      app.setting.close();await v.create(src+'/stale.md','stale');
+      const plan={...p,mode:'plan'};await rs.put(plan,true);await rs.execute(id,'run');
       const review=rs.activeReview;if(!review?.apply)throw Error('expected executable plan');
       const store=rs.browseStore(p,'reference');
       manager.set('blocked');
       if(rs.activeReview)throw Error('revoked plan still open');
       await denied(()=>store.list(''),'vamLogin');
       manager.set('granted');review.apply(new Map(),new Set());await rs.scheduler.serial(async()=>{});
-      if(await a.exists(dst+'/note.md'))throw Error('stale plan applied after relogin');
+      if(await a.exists(dst+'/stale.md'))throw Error('stale plan applied after relogin');
       await rs.put(p,true);await rs.execute(id,'run');
       if(await a.read(dst+'/note.md')!=='allowed'||manager.consumer!=='refsync')throw Error('valid SDK 6 delivery');
       await api.disablePlugin('vault-access-manager');await denied(()=>rs.execute(id,'run'),'vamMissing');
@@ -90,5 +115,5 @@ def run(page):
       await reopened.scheduler.serial(async()=>{});
       if(!await a.exists(dst+'/three.md'))throw Error('startup with late manager');
       await reopened.save({...reopened.config,profiles:[],current:''});
-      return 'VAM: missing, vault binding via UI, denied, pending, granted, stale plan, unload and reload passed';
+      return 'VAM: missing/denied/pending, unpaired sync, optional reports and update notices, revocation, stale plan and restart passed';
     }"""))

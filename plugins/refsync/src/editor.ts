@@ -105,21 +105,24 @@ export class Editor extends PluginSettingTab {
     const access = new Setting(el)
       .setName(t("vamTitle"))
       .setClass("sync-studio-vam");
-    const scope = rs.gate.binding;
-    access.setDesc(
-      [t(rs.gate.refresh()), scope?.tenantId, scope?.bundleId]
-        .filter(Boolean)
-        .join(" · "),
-    );
+    access.setDesc(t(rs.gate.refresh()));
     rs.gateDescription = access.descEl;
-    access.addButton((b) =>
-      b
-        .setButtonText(t("vamBind"))
-        .onClick(() => rs.confirmManagerBinding(() => this.display())),
-    );
     access.addButton((b) =>
       b.setButtonText(t("vamOpenLogin")).onClick(() => rs.managerLogin()),
     );
+    const dispatch = new Setting(el).setName(t("vamDispatch"));
+    rs.renderDispatch(dispatch.descEl);
+    dispatch.addButton((b) => {
+      if (rs.dispatchPaired)
+        b.setButtonText(t("vamUnbind")).onClick(() => {
+          rs.unpairManager();
+          this.display();
+        });
+      else
+        b.setButtonText(t("vamBind")).onClick(() =>
+          rs.confirmManagerBinding(() => this.display()),
+        );
+    });
     const nav = new Setting(el).setClass("sync-studio-nav");
     for (const key of ["profiles", "places", "templates"] as const)
       nav.addButton((b) =>

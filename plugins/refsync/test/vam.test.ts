@@ -10,7 +10,7 @@ import {
 import { selectionReason } from "../src/classifier";
 import { deliveryBytes } from "../src/json-overlay";
 
-test("SDK 6 leases require same vault manager, pinned bundle and live unexpired grant", () => {
+test("SDK 6 leases require same vault manager, current bundle and live unexpired grant", () => {
   const scope = { tenantId: "org", bundleId: "notes" };
   let until = Date.now() + 60000,
     granted = true,
@@ -19,7 +19,7 @@ test("SDK 6 leases require same vault manager, pinned bundle and live unexpired 
   const api: VamBridge = {
     version: "6",
     access(q) {
-      assert.deepEqual(q, { ...scope, capability: "use" });
+      assert.deepEqual(q, { ...context.scope, capability: "use" });
       return {
         status: granted ? "granted" : "pending",
         validUntil: until,
@@ -39,13 +39,11 @@ test("SDK 6 leases require same vault manager, pinned bundle and live unexpired 
   let context: ManagerContext = {};
   const g = new VamGate(
     () => context,
-    undefined,
     () => {},
   );
   assert.throws(() => g.lease(), /vamMissing/);
   context = { manager: {}, scope, bridge: api };
-  assert.throws(() => g.require(), /vamUnbound/);
-  g.bind(scope);
+
   const lease = g.lease();
   lease();
   assert.equal(registrations, 1);
@@ -58,7 +56,14 @@ test("SDK 6 leases require same vault manager, pinned bundle and live unexpired 
   until = Date.now() - 1;
   assert.throws(next, /vamExpired/);
   until = Date.now() + 60000;
+  const formerScopeLease = g.lease();
   context.scope = { ...scope, tenantId: "another" };
+  g.require();
+  assert.throws(formerScopeLease, /vamSessionChanged/);
+  const otherScopeLease = g.lease();
+  context.scope = undefined;
+  assert.throws(otherScopeLease, /vamScope/);
+  context.scope = { ...scope, bundleId: "" };
   assert.throws(() => g.require(), /vamScope/);
   context.scope = scope;
   context.bridge = { ...api, version: "5" };
