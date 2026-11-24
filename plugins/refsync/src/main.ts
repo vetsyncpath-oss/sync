@@ -1,3 +1,4 @@
+import { DispatchDiagnostics } from "./dispatch-diagnostics";
 import {
   VamGate,
   guardedStore,
@@ -162,14 +163,61 @@ export default class SyncStudio extends Plugin {
       sameScope(this.dispatchScope, scope)
     );
   }
+  private diagnostics = new DispatchDiagnostics(() => this.signalDiagnostics());
+  private diagnosticListeners = new Set<{
+    caller: object;
+    notify: () => void;
+  }>();
+  private diagnosticsQueued = false;
+  private signalDiagnostics() {
+    if (!this.diagnosticListeners.size || this.diagnosticsQueued) return;
+    this.diagnosticsQueued = true;
+    queueMicrotask(() => {
+      this.diagnosticsQueued = false;
+      for (const sub of [...this.diagnosticListeners]) {
+        if (!this.diagnosticListeners.has(sub)) continue;
+        if (!this.allowDispatch(sub.caller)) {
+          this.diagnosticListeners.delete(sub);
+          continue;
+        }
+        try {
+          sub.notify();
+        } catch {
+          this.diagnosticListeners.delete(sub);
+        }
+      }
+    });
+  }
+  subscribeDiagnostics(caller: object, notify: () => void) {
+    if (!this.allowDispatch(caller) || typeof notify !== "function")
+      return null;
+    const sub = { caller, notify };
+    this.diagnosticListeners.add(sub);
+    return () => this.diagnosticListeners.delete(sub);
+  }
   // Optional local interface for a dispatcher installed in this vault.
   getDispatchStatus(caller: unknown) {
     if (!this.allowDispatch(caller)) return null;
+    const access = this.gate.refresh();
+    const phase = this.engine?.status.phase ?? "idle";
+    const applier = this.engine?.applier;
     return {
       protocol: 1,
+      pluginId: "refsync",
       version: this.manifest.version,
-      access: this.gate.refresh(),
-      phase: this.engine?.status.phase ?? "idle",
+      access,
+      phase,
+      gate:
+        access === "vamGranted"
+          ? "granted"
+          : ["vamPending", "vamDevice"].includes(access)
+            ? "pending"
+            : "blocked",
+      running: phase === "scan" || phase === "apply" || phase === "recover",
+      recoveryPending: !!(
+        applier?.needsRecovery || applier?.pendingTargets.size
+      ),
+      ...this.diagnostics.snapshot(this.config?.profiles ?? []),
     };
   }
   receiveUpdateSignal(caller: unknown, signal: unknown) {
@@ -243,6 +291,8 @@ export default class SyncStudio extends Plugin {
   }
   private setDispatchBinding(scope?: Scope) {
     this.app.saveLocalStorage(this.bindingKey, scope ?? null);
+    this.diagnosticListeners.clear();
+    this.diagnostics = new DispatchDiagnostics(() => this.signalDiagnostics());
     this.dispatchScope = scope;
     this.updateSignals.clear();
     if (this.dispatchDescription?.isConnected)
@@ -399,6 +449,7 @@ export default class SyncStudio extends Plugin {
     this.gate = new VamGate(
       () => this.managerContext(),
       () => {
+        this.signalDiagnostics();
         if (this.gate.label !== "vamGranted") {
           this.reviewQueue = [];
           this.activeReview?.close();
@@ -524,7 +575,12 @@ export default class SyncStudio extends Plugin {
         }
       };
     }
-    this.register(status.subscribe(() => this.paint()));
+    this.register(
+      status.subscribe(() => {
+        this.paint();
+        this.signalDiagnostics();
+      }),
+    );
     this.registerView(historyView, (leaf) => new HistoryView(leaf, this));
     this.addSettingTab(new Editor(this.app, this));
     const current = (intent: Intent) =>
@@ -592,6 +648,7 @@ export default class SyncStudio extends Plugin {
   }
   onunload() {
     this.live = false;
+    this.diagnosticListeners.clear();
     this.gate.dispose();
     this.oauthCancel?.();
     // A newly enabled instance must finish this instance's rollback before recovery.
@@ -1267,6 +1324,40 @@ export default class SyncStudio extends Plugin {
       );
     };
     if (!active()) return;
+    const { manager } = this.managerContext();
+    const session = this.allowDispatch(manager) ? this.diagnostics : undefined;
+    session?.start();
+    try {
+      const partial = await this.applyDelivery(
+        p,
+        active,
+        approved,
+        choices,
+        release,
+      );
+      if (
+        session &&
+        session === this.diagnostics &&
+        this.allowDispatch(manager)
+      )
+        session.finish(p.id, partial);
+    } catch (error) {
+      if (
+        session &&
+        session === this.diagnostics &&
+        this.allowDispatch(manager)
+      )
+        session.fail(p.id, error);
+      throw error;
+    }
+  }
+  private async applyDelivery(
+    p: Profile,
+    active: () => boolean,
+    approved?: Plan,
+    choices?: Choices,
+    release?: Set<string>,
+  ) {
     const v = this.stores(p);
     const isOpen = (path: string) =>
       this.app.workspace
@@ -1391,6 +1482,7 @@ export default class SyncStudio extends Plugin {
           p.name + " · " + this.t("deferred"),
         );
     }
+    return !!(held.length || deferred.length);
   }
   confirm(message: string, fn: () => void | Promise<void>) {
     new Confirmation(

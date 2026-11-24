@@ -10738,6 +10738,78 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 init_git_buffer();
 
+// src/dispatch-diagnostics.ts
+init_git_buffer();
+var errorCodes = /* @__PURE__ */ new Set([
+  "stopped",
+  "busy",
+  "invalid",
+  "invalidConfig",
+  "overlap",
+  "readonly",
+  "cloudRecovery",
+  "incomplete",
+  "collision",
+  "referenceChanged",
+  "vamSessionChanged",
+  "vamExpired",
+  "vamLogin",
+  "vamBlocked",
+  "vamMissing",
+  "vamPending",
+  "vamDevice",
+  "vamOffline",
+  "vamScope",
+  "vamProtocol"
+]);
+var DispatchDiagnostics = class {
+  constructor(changed) {
+    this.changed = changed;
+  }
+  events = [];
+  failed = /* @__PURE__ */ new Set();
+  lastAttemptAt;
+  lastSuccessAt;
+  lastErrorCode;
+  record(code, errorCode) {
+    const at = Date.now();
+    this.events.push({
+      eventId: crypto.randomUUID(),
+      at,
+      code,
+      ...errorCode && { errorCode }
+    });
+    if (this.events.length > 32) this.events.shift();
+    this.changed();
+    return at;
+  }
+  start() {
+    this.lastAttemptAt = this.record("started");
+  }
+  finish(profile, partial) {
+    this.failed.delete(profile);
+    const at = this.record(partial ? "partial" : "completed");
+    if (!partial) this.lastSuccessAt = at;
+  }
+  fail(profile, cause) {
+    this.failed.add(profile);
+    this.lastErrorCode = cause instanceof Error && errorCodes.has(cause.message) ? cause.message : "failed";
+    this.record("failed", this.lastErrorCode);
+  }
+  snapshot(profiles) {
+    return {
+      lastAttemptAt: this.lastAttemptAt,
+      lastSuccessAt: this.lastSuccessAt,
+      lastErrorCode: this.lastErrorCode,
+      failedProfiles: profiles.reduce(
+        (n, p) => n + Number(this.failed.has(p.id)),
+        0
+      ),
+      events: this.events.map((e) => ({ ...e }))
+    };
+  }
+};
+
 // src/vam-gate.ts
 init_git_buffer();
 var managerId = "vault-access-manager";
@@ -24540,14 +24612,51 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     const { manager, scope } = this.managerContext();
     return this.live && !!manager && manager === caller && sameScope(this.dispatchScope, scope);
   }
+  diagnostics = new DispatchDiagnostics(() => this.signalDiagnostics());
+  diagnosticListeners = /* @__PURE__ */ new Set();
+  diagnosticsQueued = false;
+  signalDiagnostics() {
+    if (!this.diagnosticListeners.size || this.diagnosticsQueued) return;
+    this.diagnosticsQueued = true;
+    queueMicrotask(() => {
+      this.diagnosticsQueued = false;
+      for (const sub of [...this.diagnosticListeners]) {
+        if (!this.diagnosticListeners.has(sub)) continue;
+        if (!this.allowDispatch(sub.caller)) {
+          this.diagnosticListeners.delete(sub);
+          continue;
+        }
+        try {
+          sub.notify();
+        } catch {
+          this.diagnosticListeners.delete(sub);
+        }
+      }
+    });
+  }
+  subscribeDiagnostics(caller, notify) {
+    if (!this.allowDispatch(caller) || typeof notify !== "function")
+      return null;
+    const sub = { caller, notify };
+    this.diagnosticListeners.add(sub);
+    return () => this.diagnosticListeners.delete(sub);
+  }
   // Optional local interface for a dispatcher installed in this vault.
   getDispatchStatus(caller) {
     if (!this.allowDispatch(caller)) return null;
+    const access = this.gate.refresh();
+    const phase = this.engine?.status.phase ?? "idle";
+    const applier = this.engine?.applier;
     return {
       protocol: 1,
+      pluginId: "refsync",
       version: this.manifest.version,
-      access: this.gate.refresh(),
-      phase: this.engine?.status.phase ?? "idle"
+      access,
+      phase,
+      gate: access === "vamGranted" ? "granted" : ["vamPending", "vamDevice"].includes(access) ? "pending" : "blocked",
+      running: phase === "scan" || phase === "apply" || phase === "recover",
+      recoveryPending: !!(applier?.needsRecovery || applier?.pendingTargets.size),
+      ...this.diagnostics.snapshot(this.config?.profiles ?? [])
     };
   }
   receiveUpdateSignal(caller, signal) {
@@ -24597,6 +24706,8 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   }
   setDispatchBinding(scope) {
     this.app.saveLocalStorage(this.bindingKey, scope ?? null);
+    this.diagnosticListeners.clear();
+    this.diagnostics = new DispatchDiagnostics(() => this.signalDiagnostics());
     this.dispatchScope = scope;
     this.updateSignals.clear();
     if (this.dispatchDescription?.isConnected)
@@ -24709,6 +24820,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     this.gate = new VamGate(
       () => this.managerContext(),
       () => {
+        this.signalDiagnostics();
         if (this.gate.label !== "vamGranted") {
           this.reviewQueue = [];
           this.activeReview?.close();
@@ -24825,7 +24937,12 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         }
       };
     }
-    this.register(status.subscribe(() => this.paint()));
+    this.register(
+      status.subscribe(() => {
+        this.paint();
+        this.signalDiagnostics();
+      })
+    );
     this.registerView(historyView, (leaf) => new HistoryView(leaf, this));
     this.addSettingTab(new Editor(this.app, this));
     const current = (intent) => this.request(this.config.current, intent);
@@ -24885,6 +25002,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   }
   onunload() {
     this.live = false;
+    this.diagnosticListeners.clear();
     this.gate.dispose();
     this.oauthCancel?.();
     const fence = MutationFence.forVault(this.app.vault);
@@ -25421,6 +25539,26 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       );
     };
     if (!active()) return;
+    const { manager } = this.managerContext();
+    const session = this.allowDispatch(manager) ? this.diagnostics : void 0;
+    session?.start();
+    try {
+      const partial = await this.applyDelivery(
+        p,
+        active,
+        approved,
+        choices,
+        release
+      );
+      if (session && session === this.diagnostics && this.allowDispatch(manager))
+        session.finish(p.id, partial);
+    } catch (error) {
+      if (session && session === this.diagnostics && this.allowDispatch(manager))
+        session.fail(p.id, error);
+      throw error;
+    }
+  }
+  async applyDelivery(p, active, approved, choices, release) {
     const v = this.stores(p);
     const isOpen = (path) => this.app.workspace.getLeavesOfType("markdown").some(
       (leaf) => leaf.view instanceof import_obsidian13.MarkdownView && leaf.view.file?.path === join(p.local, path)
@@ -25526,6 +25664,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
           p.name + " · " + this.t("deferred")
         );
     }
+    return !!(held.length || deferred.length);
   }
   confirm(message, fn) {
     new Confirmation(

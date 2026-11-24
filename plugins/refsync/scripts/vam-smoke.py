@@ -66,6 +66,15 @@ def run(page):
       if(!confirm?.textContent.includes('ci-org'))throw Error('missing vault scope confirmation '+rs.gate.label+' '+[...el.ownerDocument.querySelectorAll('.modal')].map(m=>m.textContent.slice(0,90)));
       button(confirm,'confirmAction').click();await Promise.resolve();lease();
       if(rs.getDispatchStatus(manager)?.version!==rs.manifest.version||rs.getDispatchStatus({})!==null)throw Error('report caller');
+      const before=rs.getDispatchStatus(manager);
+      if(before.events.length||before.lastSuccessAt||before.gate!=='granted')throw Error('historical data crossed pairing boundary');
+      let notifications=0;const off=rs.subscribeDiagnostics(manager,()=>{notifications++;});
+      if(typeof off!=='function'||rs.subscribeDiagnostics({},()=>{})!==null)throw Error('diagnostics listener');
+      await rs.execute(id,'run');await Promise.resolve();
+      const summary=rs.getDispatchStatus(manager);
+      if(summary.pluginId!=='refsync'||summary.events.map(e=>e.code).join()!=='started,completed'||
+        summary.failedProfiles!==0||!summary.lastSuccessAt||!notifications||summary.recoveryPending||
+        [src,dst,id,'note.md'].some(x=>JSON.stringify(summary).includes(x)))throw Error('paired diagnostic report');
       for(const component of ['refsync','vault-access-manager']){
         if(!rs.receiveUpdateSignal(manager,{...signal,component})||!el.textContent.includes('1.2.3'))throw Error('update notice '+component);
       }
@@ -79,6 +88,8 @@ def run(page):
       manager.set('granted');const beforeUnpair=rs.gate.lease();
       button(el,'vamUnbind').click();beforeUnpair();
       if(rs.getDispatchStatus(manager)!==null||rs.receiveUpdateSignal(manager,signal)||el.textContent.includes('1.2.3'))throw Error('exchange after unpair');
+      const countAfterUnpair=notifications;await rs.execute(id,'run');await Promise.resolve();off();
+      if(countAfterUnpair!==notifications)throw Error('diagnostic notification after unpair');
       app.setting.close();await v.create(src+'/stale.md','stale');
       const plan={...p,mode:'plan'};await rs.put(plan,true);await rs.execute(id,'run');
       const review=rs.activeReview;if(!review?.apply)throw Error('expected executable plan');
