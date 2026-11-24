@@ -108,7 +108,8 @@ export class Applier {
             return;
           if (stat) await budget.io(() => target.delete(p), false);
         } else {
-          let bytes = await this.journal.disk.read(t.id + "/backup/" + i);
+          const backup = await this.journal.disk.read(t.id + "/backup/" + i);
+          let bytes = backup;
           if ((await hash(bytes)) !== saved) throw Error("backup");
           if (p.toLowerCase() === membership) {
             const ids: unknown = JSON.parse(new TextDecoder().decode(bytes));
@@ -126,7 +127,7 @@ export class Applier {
             !stat ||
             (await hash(
               await budget.io((progress) => target.download(p, progress)),
-            )) !== (await hash(bytes))
+            )) !== (bytes === backup ? saved : await hash(bytes))
           )
             await budget.io(
               (progress) => target.upload(p, bytes, undefined, progress),

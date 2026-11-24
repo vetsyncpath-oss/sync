@@ -66,11 +66,16 @@ export class VamGate {
         this.bridge = bridge;
         if (manager && bridge?.version === "6") {
           bridge.register("refsync");
-          this.off = bridge.subscribe(() => this.refresh());
+          // Subscriptions may notify synchronously while being attached.
+          const off = bridge.subscribe(() => {
+            if (this.off) this.refresh();
+          });
+          if (typeof off === "function") this.off = off;
         }
       }
       if (manager) {
-        if (!bridge || bridge.version !== "6") reason = "vamProtocol";
+        if (!bridge || bridge.version !== "6" || !this.off)
+          reason = "vamProtocol";
         else if (!this.scope) reason = "vamUnbound";
         else if (!sameScope(scope, this.scope)) reason = "vamScope";
         else {

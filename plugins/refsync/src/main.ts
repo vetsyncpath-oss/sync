@@ -632,10 +632,24 @@ export default class SyncStudio extends Plugin {
       this.registerDomEvent(document, e, () => {
         this.lastInput = Date.now();
       });
-    for (const p of contents())
-      if (p.startup) this.scheduler.schedule(p.id, p.startupSeconds * 1000);
+    // Keep only startup triggers that existed when this vault opened. A late
+    // Manager can authorize them without replaying arbitrary blocked requests.
+    const startup = new Set(
+      this.config.profiles
+        .filter((p) => p.enabled && p.startup && !this.config.paused)
+        .map((p) => p.id),
+    );
+    const startWhenReady = () => {
+      if (!startup.size || this.gate.refresh() !== "vamGranted") return;
+      for (const p of contents())
+        if (startup.has(p.id) && p.startup)
+          this.scheduler.schedule(p.id, p.startupSeconds * 1000);
+      startup.clear();
+    };
+    startWhenReady();
     this.registerInterval(
       window.setInterval(() => {
+        startWhenReady();
         const now = Date.now();
         if (
           this.pendingReload?.policy === "idle" &&
@@ -1051,6 +1065,7 @@ export default class SyncStudio extends Plugin {
       await this.engine.exclusive(() =>
         this.engine.applier.recover((t) => this.recoveryTarget(t)),
       );
+    check();
     this.lastScan = undefined;
     this.statusLabel = p.name;
     const v = this.stores(p);
@@ -1061,6 +1076,7 @@ export default class SyncStudio extends Plugin {
       if (this.engine.applier.pendingTargets.has(v.reference.id))
         throw Error("cloudRecovery");
     }
+    check();
     const firstKey = this.firstKey(p),
       first = p.firstPlan && !this.app.loadLocalStorage(firstKey),
       silent =

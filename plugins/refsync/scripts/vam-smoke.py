@@ -80,6 +80,15 @@ def run(page):
       await rs.scheduler.serial(async()=>{});
       if(touched.length!==1||await a.exists(dst+'/two.md')||await a.exists(dst+'/three.md'))throw Error('in-flight revoke or local rollback');
       app.plugins.plugins['vault-access-manager'].set('granted');
-      await rs.save({...rs.config,profiles:[],current:''});
+      await rs.put({...p,startup:true,startupSeconds:0},true);
+      await api.disablePlugin('vault-access-manager');
+      await api.disablePlugin('refsync');await api.enablePlugin('refsync');
+      const reopened=api.plugins.refsync;await reopened.ready;
+      if(await a.exists(dst+'/two.md'))throw Error('startup without manager');
+      await api.enablePlugin('vault-access-manager');
+      for(let i=0;i<200 && !await a.exists(dst+'/two.md');i++)await new Promise(r=>setTimeout(r,30));
+      await reopened.scheduler.serial(async()=>{});
+      if(!await a.exists(dst+'/three.md'))throw Error('startup with late manager');
+      await reopened.save({...reopened.config,profiles:[],current:''});
       return 'VAM: missing, vault binding via UI, denied, pending, granted, stale plan, unload and reload passed';
     }"""))

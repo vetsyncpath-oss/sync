@@ -10785,11 +10785,15 @@ var VamGate = class {
         this.bridge = bridge;
         if (manager && bridge?.version === "6") {
           bridge.register("refsync");
-          this.off = bridge.subscribe(() => this.refresh());
+          const off = bridge.subscribe(() => {
+            if (this.off) this.refresh();
+          });
+          if (typeof off === "function") this.off = off;
         }
       }
       if (manager) {
-        if (!bridge || bridge.version !== "6") reason = "vamProtocol";
+        if (!bridge || bridge.version !== "6" || !this.off)
+          reason = "vamProtocol";
         else if (!this.scope) reason = "vamUnbound";
         else if (!sameScope(scope, this.scope)) reason = "vamScope";
         else {
@@ -14824,7 +14828,8 @@ var Applier = class {
             return;
           if (stat) await budget.io(() => target.delete(p), false);
         } else {
-          let bytes = await this.journal.disk.read(t.id + "/backup/" + i);
+          const backup = await this.journal.disk.read(t.id + "/backup/" + i);
+          let bytes = backup;
           if (await hash(bytes) !== saved) throw Error("backup");
           if (p.toLowerCase() === membership) {
             const ids = JSON.parse(new TextDecoder().decode(bytes));
@@ -14837,7 +14842,7 @@ var Applier = class {
           }
           if (!stat || await hash(
             await budget.io((progress) => target.download(p, progress))
-          ) !== await hash(bytes))
+          ) !== (bytes === backup ? saved : await hash(bytes)))
             await budget.io(
               (progress) => target.upload(p, bytes, void 0, progress),
               false
@@ -24908,10 +24913,20 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       this.registerDomEvent(document, e, () => {
         this.lastInput = Date.now();
       });
-    for (const p of contents())
-      if (p.startup) this.scheduler.schedule(p.id, p.startupSeconds * 1e3);
+    const startup = new Set(
+      this.config.profiles.filter((p) => p.enabled && p.startup && !this.config.paused).map((p) => p.id)
+    );
+    const startWhenReady = () => {
+      if (!startup.size || this.gate.refresh() !== "vamGranted") return;
+      for (const p of contents())
+        if (startup.has(p.id) && p.startup)
+          this.scheduler.schedule(p.id, p.startupSeconds * 1e3);
+      startup.clear();
+    };
+    startWhenReady();
     this.registerInterval(
       window.setInterval(() => {
+        startWhenReady();
         const now = Date.now();
         if (this.pendingReload?.policy === "idle" && !this.config.paused && now - this.lastInput >= this.pendingReload.idleSeconds * 1e3)
           this.queueReload();
@@ -25249,6 +25264,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       await this.engine.exclusive(
         () => this.engine.applier.recover((t) => this.recoveryTarget(t))
       );
+    check2();
     this.lastScan = void 0;
     this.statusLabel = p.name;
     const v = this.stores(p);
@@ -25259,6 +25275,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       if (this.engine.applier.pendingTargets.has(v.reference.id))
         throw Error("cloudRecovery");
     }
+    check2();
     const firstKey = this.firstKey(p), first = p.firstPlan && !this.app.loadLocalStorage(firstKey), silent = (p.inheritMode ? this.config.mode : p.mode) === "silent" && !first;
     if ((intent === "run" || intent === "auto") && silent) {
       await this.deliver(p);
