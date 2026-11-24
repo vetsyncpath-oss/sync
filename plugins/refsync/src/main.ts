@@ -1,3 +1,11 @@
+import {
+  VamGate,
+  guardedStore,
+  managerId,
+  readScope,
+  type VamBridge,
+  type Scope,
+} from "./vam-gate";
 import { byteCount } from "./transfer";
 import { DavStore, davId, davRoot, type DavLocation } from "./webdav";
 import { testAccess } from "./access-check";
@@ -119,6 +127,71 @@ class Confirmation extends Modal {
 }
 export default class SyncStudio extends Plugin {
   accounts!: Accounts;
+  gate!: VamGate;
+  gateDescription?: HTMLElement;
+  private bindingKey = "";
+  private managerContext() {
+    const registry = (
+      this.app as App & {
+        plugins?: {
+          plugins?: Record<
+            string,
+            { app: App; auth?: object; accessV4?: { build?: Scope } }
+          >;
+        };
+      }
+    ).plugins;
+    const manager = registry?.plugins?.[managerId];
+    if (!manager || manager.app !== this.app) return {};
+    const host = globalThis as typeof globalThis & {
+      __VAM__?: VamBridge;
+      vaultSyncAuth?: object;
+    };
+    return {
+      manager,
+      scope: readScope(manager.accessV4?.build),
+      bridge:
+        manager.auth && manager.auth === host.vaultSyncAuth
+          ? host.__VAM__
+          : undefined,
+    };
+  }
+  confirmManagerBinding(after?: () => void) {
+    const candidate = this.gate.candidate;
+    if (!candidate) {
+      this.report(Error("vamMissing"));
+      return;
+    }
+    this.confirm(
+      [this.t("vamBindHint"), candidate.tenantId, candidate.bundleId].join(
+        " · ",
+      ),
+      () => {
+        this.bindManager(candidate);
+        after?.();
+      },
+    );
+  }
+  bindManager(scope: Scope) {
+    this.gate.bind(scope);
+    this.app.saveLocalStorage(this.bindingKey, scope);
+  }
+  managerLogin() {
+    const commands = (
+      this.app as App & {
+        commands?: { executeCommandById: (s: string) => boolean };
+      }
+    ).commands;
+    if (!commands?.executeCommandById(managerId + ":vam-login"))
+      this.notices.send("vamMissing", this.t("vamMissing"));
+  }
+  private gatedSend(check: () => void): Transport {
+    return (...args) => {
+      check();
+      return send(...args);
+    };
+  }
+
   private driveCursors = new Map<string, DriveCursor>();
   oauthCancel?: () => void;
   oauthCallback?: (url: string) => void;
@@ -193,7 +266,12 @@ export default class SyncStudio extends Plugin {
     );
   }
   private queueReload(manual = false) {
-    if (this.reloadQueued || !this.pendingReload) return;
+    if (
+      this.gate.refresh() !== "vamGranted" ||
+      this.reloadQueued ||
+      !this.pendingReload
+    )
+      return;
     this.reloadQueued = true;
     void this.scheduler
       .serial(async () => {
@@ -204,6 +282,7 @@ export default class SyncStudio extends Plugin {
             : [];
         if (
           !this.live ||
+          this.gate.refresh() !== "vamGranted" ||
           !this.pendingReload ||
           (this.config.paused && !manual)
         )
@@ -225,6 +304,62 @@ export default class SyncStudio extends Plugin {
   }
   private startupRecovery?: Promise<void>;
   async onload() {
+    const adapter = this.app.vault.adapter as typeof this.app.vault.adapter & {
+      getBasePath?: () => string;
+    };
+    const vaultIdentity =
+      adapter.getBasePath?.() ||
+      (this.app as App & { appId?: string }).appId ||
+      crypto.randomUUID();
+    this.bindingKey =
+      "refsync:vam:" +
+      bytesToHex(
+        sha256(
+          new TextEncoder().encode(
+            JSON.stringify([vaultIdentity, this.app.vault.configDir]),
+          ),
+        ),
+      );
+    this.gate = new VamGate(
+      () => this.managerContext(),
+      readScope(this.app.loadLocalStorage(this.bindingKey)),
+      () => {
+        if (this.gate.label !== "vamGranted") {
+          this.reviewQueue = [];
+          this.activeReview?.close();
+          this.openIds.clear();
+          for (const p of this.config?.profiles ?? [])
+            this.scheduler?.cancel(p.id);
+          if (this.scheduler)
+            void this.scheduler
+              .serial(async () => {
+                await this.ready;
+                if (
+                  this.engine.applier.needsRecovery &&
+                  !this.engine.applier.fence.pending
+                )
+                  await this.engine.exclusive(() =>
+                    this.engine.applier.recover((t) => this.recoveryTarget(t)),
+                  );
+              })
+              .catch((e) => this.report(e));
+        }
+        if (this.ribbon) this.paint();
+        const desc = this.gateDescription;
+        if (desc?.isConnected)
+          desc.setText(
+            [
+              this.t(this.gate.label),
+              this.gate.binding?.tenantId,
+              this.gate.binding?.bundleId,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          );
+      },
+    );
+    this.gate.refresh();
+    this.registerInterval(window.setInterval(() => this.gate.refresh(), 1000));
     const fence = MutationFence.forVault(this.app.vault);
     await fence.previousInstance;
     this.config = loadProfiles(await this.loadData());
@@ -282,7 +417,7 @@ export default class SyncStudio extends Plugin {
     );
     const status = new StatusStore();
     this.engine = new SyncEngine(
-      new Applier(journal, state, fence),
+      new Applier(journal, state, fence, this.app.vault.configDir),
       status,
       this.app.vault.configDir,
       this.manifest.id,
@@ -292,6 +427,21 @@ export default class SyncStudio extends Plugin {
     this.scheduler = new Scheduler(
       (id) => this.execute(id, "auto").catch((e) => this.report(e, id)),
       (e) => this.report(e),
+      () => {
+        try {
+          const check = this.gate.lease();
+          return () => {
+            try {
+              check();
+              return true;
+            } catch {
+              return false;
+            }
+          };
+        } catch {
+          return () => false;
+        }
+      },
     );
     this.ribbon = this.addRibbonIcon("refresh-cw", "Sync Studio", (e) =>
       this.menu(e),
@@ -315,6 +465,8 @@ export default class SyncStudio extends Plugin {
       this.request(this.config.current, intent);
     const cmd = (id: string, label: string, fn: () => void) =>
       this.addCommand({ id, name: this.t(label), callback: fn });
+    cmd("bind-manager", "vamBind", () => this.confirmManagerBinding());
+    cmd("manager-login", "vamOpenLogin", () => this.managerLogin());
     cmd("history", "history", () => void this.openHistory());
     cmd("full-check", "fullCheck", () => current("diagnose"));
     cmd("dry-run", "dry", () => current("dry"));
@@ -353,7 +505,10 @@ export default class SyncStudio extends Plugin {
         this.startupRecovery = this.engine
           .exclusive(async () => {
             await this.engine.applier.recover((t) => this.recoveryTarget(t));
-            if (this.engine.applier.pendingTargets.size)
+            if (
+              this.gate.refresh() === "vamGranted" &&
+              this.engine.applier.pendingTargets.size
+            )
               this.notices.send("cloudRecovery", this.t("cloudRecovery"));
             if (!this.config.paused)
               await this.verify().catch((e) => this.report(e));
@@ -371,6 +526,7 @@ export default class SyncStudio extends Plugin {
   }
   onunload() {
     this.live = false;
+    this.gate.dispose();
     this.oauthCancel?.();
     // A newly enabled instance must finish this instance's rollback before recovery.
     const fence = MutationFence.forVault(this.app.vault);
@@ -389,7 +545,13 @@ export default class SyncStudio extends Plugin {
   }
   private paint() {
     const phase = this.engine.status.phase,
-      label = this.t(this.config.paused ? "paused" : phase);
+      label = this.t(
+        this.gate.label !== "vamGranted"
+          ? this.gate.label
+          : this.config.paused
+            ? "paused"
+            : phase,
+      );
     const text = ["Sync Studio", label, this.statusLabel]
       .filter(Boolean)
       .join(" · ");
@@ -458,12 +620,14 @@ export default class SyncStudio extends Plugin {
   }
   private listen() {
     const contents = () =>
-      this.config.profiles.filter(
-        (p) =>
-          p.enabled &&
-          (p.scope === "content" || !!p.config) &&
-          !this.config.paused,
-      );
+      this.gate.refresh() !== "vamGranted"
+        ? []
+        : this.config.profiles.filter(
+            (p) =>
+              p.enabled &&
+              (p.scope === "content" || !!p.config) &&
+              !this.config.paused,
+          );
     for (const e of ["keydown", "pointerdown"] as const)
       this.registerDomEvent(document, e, () => {
         this.lastInput = Date.now();
@@ -600,6 +764,8 @@ export default class SyncStudio extends Plugin {
     this.app.saveLocalStorage("refsync:google-public-key", value.trim());
   }
   publicReference(p: Profile, prefix = p.reference) {
+    const check = this.gate.lease();
+    const send = this.gatedSend(check);
     if (p.access !== "public" || p.role !== "subscriber" || !p.remote)
       throw Error("readonly");
     const { root, resourceKey } = location(p.remote);
@@ -623,7 +789,10 @@ export default class SyncStudio extends Plugin {
         this.app.vault.getName() + ":" + identity,
       );
     }
-    return new PublicStore(referenceId(p), tree, prefix === "/" ? "" : prefix);
+    return guardedStore(
+      new PublicStore(referenceId(p), tree, prefix === "/" ? "" : prefix),
+      check,
+    );
   }
   private cloudStore(c: CloudLocation, prefix: string, ro: boolean) {
     const id = cloudId(c, prefix),
@@ -633,7 +802,8 @@ export default class SyncStudio extends Plugin {
     if (!a || a.needsLogin) throw Error("loginRequired");
     if (c.engine === "yandex" && c.root !== (a.full ? "disk:/" : "app:/"))
       throw Error("cloudLocation");
-    const transport = this.accounts.transport(c.account, c.engine);
+    const check = this.gate.lease();
+    const transport = this.accounts.transport(c.account, c.engine, check);
     let tree;
     if (c.engine === "google") {
       const cursor = this.driveCursors.get(id) ?? { token: "", revision: "" };
@@ -649,7 +819,7 @@ export default class SyncStudio extends Plugin {
         get: (path) => this.driveSessions.get(sessionKey(path)),
         set: (path, value) => this.driveSessions.set(sessionKey(path), value),
       });
-    } else tree = new DiskTree(transport, send, c.root);
+    } else tree = new DiskTree(transport, this.gatedSend(check), c.root);
     const store = new CloudStore(
       id,
       tree,
@@ -658,7 +828,7 @@ export default class SyncStudio extends Plugin {
       c.engine !== "google" || a.full,
     );
     store.capabilities.supportsChangesFeed = c.engine === "google";
-    return store;
+    return guardedStore(store, check);
   }
   private davSecretKey(d: DavLocation) {
     return (
@@ -688,13 +858,18 @@ export default class SyncStudio extends Plugin {
   private davStore(d: DavLocation, prefix: string, ro: boolean) {
     if (!Platform.isDesktopApp) throw Error("davDesktop");
     const key = this.davSecretKey(d);
-    return new DavStore(
-      d,
-      prefix,
-      ro,
-      async () =>
-        this.app.secretStorage?.getSecret(key) ||
-        (await this.driveSessions.get(key)),
+    const check = this.gate.lease();
+    return guardedStore(
+      new DavStore(
+        d,
+        prefix,
+        ro,
+        async () =>
+          this.app.secretStorage?.getSecret(key) ||
+          (await this.driveSessions.get(key)),
+        check,
+      ),
+      check,
     );
   }
   accountReference(
@@ -708,6 +883,7 @@ export default class SyncStudio extends Plugin {
     return this.cloudStore(p.cloud, prefix, readOnly);
   }
   async probeConnection(p: Profile, write: boolean) {
+    const check = this.gate.lease();
     return this.scheduler.serial(async () => {
       const store =
         p.access === "local"
@@ -722,26 +898,31 @@ export default class SyncStudio extends Plugin {
           : p.access === "public"
             ? this.publicReference({ ...p, role: "subscriber" })
             : this.accountReference(p, p.reference, !write);
-      return testAccess(store, write);
+      return testAccess(guardedStore(store, check), write);
     });
   }
   browseStore(p: Profile, side: "reference" | "local") {
     if (side === "local" || p.access === "local")
-      return new LocalProvider(
-        this.app.vault,
-        "",
-        this.manifest.id,
-        "content",
-        true,
+      return guardedStore(
+        new LocalProvider(
+          this.app.vault,
+          "",
+          this.manifest.id,
+          "content",
+          true,
+        ),
+        this.gate.lease(),
       );
     return p.access === "oauth" || p.access === "webdav"
       ? this.accountReference(p, "", true)
       : this.publicReference(p, "");
   }
   async previewDraft(draft: Profile) {
+    const check = this.gate.lease();
     const p = structuredClone(draft);
     await this.scheduler.serial(async () => {
       await this.ready;
+      check();
       const s = this.stores(p),
         mode =
           (p.inheritMode ? this.config.mode : p.mode) === "silent" &&
@@ -756,6 +937,7 @@ export default class SyncStudio extends Plugin {
         undefined,
         { mode, active: () => this.live },
       );
+      check();
       if (this.live)
         new Review(
           this.app,
@@ -780,27 +962,31 @@ export default class SyncStudio extends Plugin {
   private stores(p: Profile) {
     if (!["local", "public", "oauth", "webdav"].includes(p.access))
       throw Error("invalid");
+    const check = this.gate.lease();
     const make = (path: string, ro: boolean) =>
-      new LocalProvider(
-        this.app.vault,
-        path === "/" ? "" : path,
-        this.manifest.id,
-        p.scope,
-        ro,
-        p,
-        ro
-          ? undefined
-          : (file, digest) =>
-              this.own.set(JSON.stringify([p.id, file]), {
-                digest,
-                expires: Date.now() + 10000,
-              }),
-        p.config,
-        !ro && p.scope === "settings" && path === this.app.vault.configDir
-          ? (file, write) =>
-              withPluginData(this.app, this.manifest.id, file, write)
-          : undefined,
-        p.content,
+      guardedStore(
+        new LocalProvider(
+          this.app.vault,
+          path === "/" ? "" : path,
+          this.manifest.id,
+          p.scope,
+          ro,
+          p,
+          ro
+            ? undefined
+            : (file, digest) =>
+                this.own.set(JSON.stringify([p.id, file]), {
+                  digest,
+                  expires: Date.now() + 10000,
+                }),
+          p.config,
+          !ro && p.scope === "settings" && path === this.app.vault.configDir
+            ? (file, write) =>
+                withPluginData(this.app, this.manifest.id, file, write)
+            : undefined,
+          p.content,
+        ),
+        check,
       );
     return {
       reference:
@@ -816,16 +1002,34 @@ export default class SyncStudio extends Plugin {
     };
   }
   request(id: string, intent: Intent) {
+    let check;
+    try {
+      check = this.gate.lease();
+    } catch (e) {
+      this.report(e, id);
+      return;
+    }
     void this.scheduler
-      .serial(() => this.execute(id, intent))
+      .serial(() => {
+        check();
+        return this.execute(id, intent);
+      })
       .catch((e) => this.report(e, id));
   }
   runAll() {
+    try {
+      this.gate.require();
+    } catch (e) {
+      this.report(e);
+      return;
+    }
     for (const p of this.config.profiles)
       if (p.enabled) this.request(p.id, "run");
   }
   private async execute(id: string, intent: Intent) {
     await this.ready;
+    if (intent === "auto" && this.gate.refresh() !== "vamGranted") return;
+    const check = this.gate.lease();
     const p = this.config.profiles.find((x) => x.id === id);
     if (!p || !this.live) return;
     if (
@@ -884,6 +1088,7 @@ export default class SyncStudio extends Plugin {
         scanning: (s) => this.scanProgress(p, s),
       },
     );
+    check();
     if (!this.live) return;
     this.statusLabel = p.name;
     this.paint();
@@ -926,7 +1131,10 @@ export default class SyncStudio extends Plugin {
                   ? new Map(plan.ops.map((o) => [o.path, "skip" as const]))
                   : choices;
               void this.scheduler
-                .serial(() => this.deliver(p, plan, picked, release))
+                .serial(() => {
+                  check();
+                  return this.deliver(p, plan, picked, release);
+                })
                 .catch((e) => this.report(e, p.id));
             },
         intent === "release",
@@ -960,17 +1168,22 @@ export default class SyncStudio extends Plugin {
     choices?: Choices,
     release?: Set<string>,
   ) {
-    const active = () =>
-      this.live &&
-      !this.config.paused &&
-      p.enabled &&
-      this.config.profiles.some(
-        (q) =>
-          q.id === p.id &&
-          q.enabled &&
-          (q === p ||
-            JSON.stringify({ ...q, name: p.name }) === JSON.stringify(p)),
+    const check = this.gate.lease();
+    const active = () => {
+      check();
+      return (
+        this.live &&
+        !this.config.paused &&
+        p.enabled &&
+        this.config.profiles.some(
+          (q) =>
+            q.id === p.id &&
+            q.enabled &&
+            (q === p ||
+              JSON.stringify({ ...q, name: p.name }) === JSON.stringify(p)),
+        )
       );
+    };
     if (!active()) return;
     const v = this.stores(p);
     const isOpen = (path: string) =>
@@ -1111,11 +1324,19 @@ export default class SyncStudio extends Plugin {
   private confirmUndo() {
     const p = this.config.profiles.find((p) => p.id === this.config.current);
     if (!p) return;
+    let check;
+    try {
+      check = this.gate.lease();
+    } catch (e) {
+      this.report(e);
+      return;
+    }
     this.confirm(
       this.t("undoText") + " · " + p.name + " · " + this.t("undoPause"),
       () =>
         this.scheduler.serial(async () => {
           await this.ready;
+          check();
           const local =
             "vault:" +
             (p.scope === "settings"
@@ -1129,7 +1350,7 @@ export default class SyncStudio extends Plugin {
             this.engine.applier.undo(
               JSON.stringify([p.id, p.scope, ...ends]),
               undefined,
-              (t) => this.recoveryTarget(t),
+              (t) => guardedStore(this.recoveryTarget(t), check),
             ),
           );
           await this.put({ ...p, enabled: false });

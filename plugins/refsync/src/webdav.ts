@@ -208,6 +208,7 @@ export class DavStore implements StorageProvider {
     prefix: string,
     readOnly: boolean,
     private password: () => Promise<string | null>,
+    private checkAccess?: () => void,
   ) {
     this.id = davId(location, prefix);
     this.base = new URL(davRoot(location));
@@ -262,6 +263,7 @@ export class DavStore implements StorageProvider {
       digest?: string;
     }>((resolve, reject) => {
       let replied = false;
+      this.checkAccess?.();
       const req = http.request(u, { method, headers }, async (res) => {
         replied = true;
         try {
@@ -307,6 +309,7 @@ export class DavStore implements StorageProvider {
           for (let offset = 0; offset < body.size; offset += chunkSize) {
             const n = Math.min(chunkSize, body.size - offset),
               bytes = await body.read(offset, n);
+            this.checkAccess?.();
             if (replied || req.destroyed) break;
             if (bytes.byteLength !== n) throw Error("referenceChanged");
             await new Promise<void>((ok, fail) =>

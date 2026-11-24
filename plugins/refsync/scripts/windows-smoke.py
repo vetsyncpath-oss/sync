@@ -18,6 +18,9 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
     (vault / ".obsidian").mkdir(parents=True)
     with ZipFile(root / f"releases/sync-studio-{version}.zip") as archive:
         archive.extractall(vault / ".obsidian/plugins")
+    import runpy
+    vam=runpy.run_path(str(root / "scripts/vam-smoke.py"))
+    vam["install"](vault)
     settings = home / "config"
     settings.mkdir()
     (settings / "obsidian.json").write_text(json.dumps({"vaults":{"aa85e42ab56da909":{"path":str(vault),"ts":int(time.time()*1000),"open":True}}}))
@@ -50,6 +53,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp:
             # Enable community plugins explicitly for this fresh, test-owned vault.
             page.evaluate("""async()=>{if(!app.plugins.isEnabled())await app.plugins.setEnable(true);await app.plugins.loadManifests();await app.plugins.enablePluginAndSave('refsync');}""")
             page.wait_for_function("!!app.plugins.plugins.refsync")
+            vam["run"](page)
             print(page.evaluate("""async()=>{
               const rs=app.plugins.plugins.refsync;await rs.ready;
               const v=app.vault,a=v.adapter,reference='Эталон с пробелом',local='Копия',name='тест.md';

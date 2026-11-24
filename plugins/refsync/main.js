@@ -10738,6 +10738,129 @@ __export(main_exports, {
 module.exports = __toCommonJS(main_exports);
 init_git_buffer();
 
+// src/vam-gate.ts
+init_git_buffer();
+var managerId = "vault-access-manager";
+var sameScope = (a, b) => !!a && !!b && a.tenantId === b.tenantId && a.bundleId === b.bundleId;
+function readScope(value) {
+  const v = value;
+  const valid = (s) => typeof s === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(s);
+  if (v && valid(v.tenantId) && valid(v.bundleId))
+    return { tenantId: v.tenantId, bundleId: v.bundleId };
+}
+var VamGate = class {
+  constructor(context, scope, changed) {
+    this.context = context;
+    this.scope = scope;
+    this.changed = changed;
+  }
+  manager;
+  bridge;
+  off;
+  generation = 0;
+  disposed = false;
+  last = "vamMissing";
+  bind(scope) {
+    if (!sameScope(scope, this.context().scope)) throw Error("vamScope");
+    this.scope = { ...scope };
+    this.generation++;
+    this.refresh();
+  }
+  get binding() {
+    return this.scope;
+  }
+  get candidate() {
+    return this.context().scope;
+  }
+  refresh() {
+    if (this.disposed) return "vamMissing";
+    let reason = "vamMissing";
+    try {
+      const { manager, scope, bridge } = this.context();
+      if (this.manager !== manager || this.bridge !== bridge) {
+        this.generation++;
+        this.off?.();
+        this.off = void 0;
+        this.manager = manager;
+        this.bridge = bridge;
+        if (manager && bridge?.version === "6") {
+          bridge.register("refsync");
+          this.off = bridge.subscribe(() => this.refresh());
+        }
+      }
+      if (manager) {
+        if (!bridge || bridge.version !== "6") reason = "vamProtocol";
+        else if (!this.scope) reason = "vamUnbound";
+        else if (!sameScope(scope, this.scope)) reason = "vamScope";
+        else {
+          const d = bridge.access({ ...this.scope, capability: "use" });
+          if (d.status === "granted")
+            reason = typeof d.validUntil === "number" && Number.isFinite(d.validUntil) && d.validUntil > Date.now() ? "vamGranted" : "vamExpired";
+          else if (d.status === "pending")
+            reason = d.reason === "device-not-approved" || d.reason === "device-limit" ? "vamDevice" : "vamPending";
+          else
+            reason = d.reason === "signed-out" ? "vamLogin" : d.reason === "connection-unavailable" ? "vamOffline" : "vamBlocked";
+        }
+      }
+    } catch {
+      reason = "vamBlocked";
+    }
+    if (reason !== this.last) {
+      if (this.last === "vamGranted") this.generation++;
+      this.last = reason;
+      this.changed();
+    }
+    return reason;
+  }
+  get label() {
+    return this.last;
+  }
+  require() {
+    const reason = this.refresh();
+    if (reason !== "vamGranted") throw Error(reason);
+  }
+  lease() {
+    this.require();
+    const generation = this.generation;
+    return () => {
+      this.require();
+      if (generation !== this.generation) throw Error("vamSessionChanged");
+    };
+  }
+  dispose() {
+    this.disposed = true;
+    this.generation++;
+    this.off?.();
+    this.off = void 0;
+    this.bridge = void 0;
+    this.manager = void 0;
+  }
+};
+function guardedStore(store, check2) {
+  return new Proxy(store, {
+    get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver);
+      if (typeof value !== "function") return value;
+      if (key === "chunkSource")
+        return (p, size) => {
+          check2();
+          const file = target.chunkSource?.(p, size);
+          return file && {
+            size: file.size,
+            read: (offset, length) => {
+              check2();
+              return file.read(offset, length);
+            }
+          };
+        };
+      return (...args) => {
+        check2();
+        return Reflect.apply(value, target, args);
+      };
+    }
+  });
+}
+
 // src/transfer.ts
 init_git_buffer();
 
@@ -11310,9 +11433,10 @@ function success(status, allowed) {
   throw Error("remoteHttp");
 }
 var DavStore = class {
-  constructor(location2, prefix, readOnly, password) {
+  constructor(location2, prefix, readOnly, password, checkAccess) {
     this.location = location2;
     this.password = password;
+    this.checkAccess = checkAccess;
     this.id = davId(location2, prefix);
     this.base = new URL(davRoot(location2));
     if (prefix && prefix !== "/")
@@ -11351,6 +11475,7 @@ var DavStore = class {
       headers["Content-Length"] = String(body2?.size ?? 0);
     return new Promise((resolve, reject) => {
       let replied = false;
+      this.checkAccess?.();
       const req = http.request(u, { method, headers }, async (res) => {
         replied = true;
         try {
@@ -11388,6 +11513,7 @@ var DavStore = class {
         if (body2)
           for (let offset = 0; offset < body2.size; offset += chunkSize) {
             const n = Math.min(chunkSize, body2.size - offset), bytes = await body2.read(offset, n);
+            this.checkAccess?.();
             if (replied || req.destroyed) break;
             if (bytes.byteLength !== n) throw Error("referenceChanged");
             await new Promise(
@@ -11634,6 +11760,24 @@ init_git_buffer();
 // src/i18n.ts
 init_git_buffer();
 var ru = {
+  vamFileRules: "Правила для файла",
+  vamFolderRules: "Правила для папки",
+  vamTitle: "Допуск Vault Access Manager",
+  vamGranted: "Доступ подтверждён",
+  vamPending: "Manager проверяет допуск",
+  vamDevice: "Ожидается подтверждение устройства",
+  vamMissing: "Включите Vault Access Manager в этом хранилище",
+  vamProtocol: "Для синхронизации требуется VAM SDK 6",
+  vamUnbound: "Привяжите организацию и бандл этого хранилища",
+  vamScope: "Организация или бандл отличаются от привязки хранилища",
+  vamExpired: "Срок подтверждённого доступа истёк",
+  vamLogin: "Требуется вход в Vault Access Manager",
+  vamOffline: "Нет действующего подтверждения доступа от Manager",
+  vamBlocked: "Доступ заблокирован Vault Access Manager",
+  vamSessionChanged: "Допуск изменился. Запустите операцию заново",
+  vamBind: "Привязать Manager",
+  vamBindHint: "Сверьте организацию и бандл с данными администратора перед привязкой",
+  vamOpenLogin: "Открыть вход VAM",
   categoryRule: "Исключено категориями настроек",
   pluginRule: "Исключено правилами для этого плагина",
   baseScope: "Исходный охват",
@@ -12004,6 +12148,24 @@ var ru = {
   unknown: "Неизвестное состояние"
 };
 var en = {
+  vamFileRules: "File rules",
+  vamFolderRules: "Folder rules",
+  vamTitle: "Vault Access Manager authorization",
+  vamGranted: "Access granted",
+  vamPending: "Manager is checking access",
+  vamDevice: "Waiting for device approval",
+  vamMissing: "Enable Vault Access Manager in this vault",
+  vamProtocol: "Synchronization requires VAM SDK 6",
+  vamUnbound: "Bind the organization and bundle for this vault",
+  vamScope: "Organization or bundle differs from this vault binding",
+  vamExpired: "Access has expired",
+  vamLogin: "Sign in to Vault Access Manager",
+  vamOffline: "Manager has no current authorization",
+  vamBlocked: "Vault Access Manager blocked access",
+  vamSessionChanged: "Authorization changed. Start the operation again",
+  vamBind: "Bind Manager",
+  vamBindHint: "Verify the organization and bundle with your administrator before binding",
+  vamOpenLogin: "Open VAM login",
   categoryRule: "Excluded by settings categories",
   pluginRule: "Excluded by rules for this plugin",
   baseScope: "Starting selection",
@@ -12687,7 +12849,7 @@ init_git_buffer();
 async function withPluginData(app, self, path, write) {
   const id = /^plugins\/([^/]+)\/data\.json$/.exec(path)?.[1];
   const host = app.plugins;
-  if (!id || id === self || !host?.plugins?.[id] || typeof host.disablePlugin !== "function" || typeof host.enablePlugin !== "function" || host.isEnabled?.() === false) {
+  if (!id || id === self || id.toLowerCase() === managerId || !host?.plugins?.[id] || typeof host.disablePlugin !== "function" || typeof host.enablePlugin !== "function" || host.isEnabled?.() === false) {
     await write();
     return;
   }
@@ -12758,9 +12920,10 @@ function project(path, bytes, policy, local, keepSelf = false) {
     if (!Array.isArray(src) || src.some((id) => typeof id !== "string"))
       throw Error("invalidConfig");
     const ids = src.filter(
-      (id) => fold(id) !== fold(policy.self) && !policy.blocked.includes(fold(id))
+      (id) => fold(id) !== managerId && fold(id) !== fold(policy.self) && !policy.blocked.includes(fold(id))
     );
     const old2 = local ? decode(local) : null;
+    if (Array.isArray(old2) && old2.includes(managerId)) ids.push(managerId);
     if (keepSelf || Array.isArray(old2) && old2.includes(policy.self))
       ids.push(policy.self);
     return encode([...new Set(ids)].sort());
@@ -12825,7 +12988,7 @@ function contentReason(path, configDir, self, directory, c) {
       "node_modules",
       ".sync-manifest.json"
     ].includes(x)
-  ) || /(?:\.tmp$|(?:^|\/)(?:thumbs\.db|desktop\.ini)$)/i.test(f) || under(f, cfg + "/plugins/" + fold(self)))
+  ) || /(?:\.tmp$|(?:^|\/)(?:thumbs\.db|desktop\.ini)$)/i.test(f) || under(f, cfg + "/plugins/" + managerId) || under(f, cfg + "/plugins/" + fold(self)))
     return "protected";
   const settings = under(f, cfg);
   if (settings && !c?.config) return "configOff";
@@ -12980,9 +13143,10 @@ var NoticeCenter = class {
   }
 };
 var Scheduler = class {
-  constructor(run, failed) {
+  constructor(run, failed, allowed) {
     this.run = run;
     this.failed = failed;
+    this.allowed = allowed;
   }
   tail = Promise.resolve();
   pending = /* @__PURE__ */ new Map();
@@ -13003,6 +13167,7 @@ var Scheduler = class {
   }
   schedule(id, ms = 0) {
     if (this.stopped) return;
+    const authorized = this.allowed?.();
     clearTimeout(this.pending.get(id));
     this.pending.set(
       id,
@@ -13012,7 +13177,7 @@ var Scheduler = class {
         this.queued.add(id);
         void this.serial(async () => {
           this.queued.delete(id);
-          await this.run(id);
+          if (!authorized || authorized()) await this.run(id);
         }).catch((e) => {
           if (!this.stopped) this.failed(e);
         });
@@ -14607,10 +14772,11 @@ function verifyManifest(m, snap, accept, acceptDir = (p) => true) {
 // src/applier.ts
 var decoder2 = new TextDecoder();
 var Applier = class {
-  constructor(journal, state, fence = new MutationFence()) {
+  constructor(journal, state, fence = new MutationFence(), configDirectory = ".obsidian") {
     this.journal = journal;
     this.state = state;
     this.fence = fence;
+    this.configDirectory = configDirectory;
   }
   needsRecovery = false;
   pendingTargets = /* @__PURE__ */ new Set();
@@ -14619,6 +14785,9 @@ var Applier = class {
     for (let i = end - 1; i >= start; i--) {
       const p = t.steps[i].path, armed = t.id + "/armed/" + i;
       if ((t.cloud || t.dav) && await this.journal.disk.has(t.id + "/restored/" + i) || !await this.journal.disk.has(armed) || await this.journal.disk.has(t.id + "/skipped/" + i))
+        continue;
+      const managerRoot = (t.scope === "settings" ? "" : this.configDirectory.toLowerCase() + "/") + "plugins/" + managerId;
+      if (p.toLowerCase() === managerRoot || p.toLowerCase().startsWith(managerRoot + "/"))
         continue;
       const perform = async () => {
         const saved = await this.journal.json(armed);
@@ -14643,14 +14812,32 @@ var Applier = class {
           if (current !== await this.journal.json(expected))
             throw Error("cloudRecovery");
         }
+        const membership = t.scope === "settings" ? "community-plugins.json" : this.configDirectory.toLowerCase() + "/community-plugins.json";
+        const keepManager = p.toLowerCase() === membership && stat && stat.type === "file";
+        const currentList = keepManager ? JSON.parse(
+          new TextDecoder().decode(
+            await budget.io(() => target.download(p))
+          )
+        ) : null;
         if (saved === null) {
+          if (Array.isArray(currentList) && currentList.includes(managerId))
+            return;
           if (stat) await budget.io(() => target.delete(p), false);
         } else {
-          const bytes = await this.journal.disk.read(t.id + "/backup/" + i);
+          let bytes = await this.journal.disk.read(t.id + "/backup/" + i);
           if (await hash(bytes) !== saved) throw Error("backup");
+          if (p.toLowerCase() === membership) {
+            const ids = JSON.parse(new TextDecoder().decode(bytes));
+            if (!Array.isArray(ids)) throw Error("backup");
+            const wanted = Array.isArray(currentList) && currentList.includes(managerId);
+            if (wanted !== ids.includes(managerId))
+              bytes = manifestBytes(
+                wanted ? [...ids, managerId] : ids.filter((id) => id !== managerId)
+              );
+          }
           if (!stat || await hash(
             await budget.io((progress) => target.download(p, progress))
-          ) !== saved)
+          ) !== await hash(bytes))
             await budget.io(
               (progress) => target.upload(p, bytes, void 0, progress),
               false
@@ -15219,7 +15406,7 @@ function selectionReason(p, scope, configDir, self, directory, config = legacyCo
   const f = fold(p);
   if (f.split("/").some(
     (s) => [".git", ".trash", ".sync-trash", "node_modules"].includes(s)
-  ) || scope === "settings" && under(f, fold("plugins/" + self)) || under(f, fold(join(configDir, "plugins/" + self))))
+  ) || scope === "settings" && (under(f, "plugins/" + managerId) || under(f, fold("plugins/" + self))) || under(f, fold(join(configDir, "plugins/" + self))))
     return "protected";
   if (scope === "content")
     return contentReason(p, configDir, self, directory, content);
@@ -15361,7 +15548,9 @@ var LocalProvider = class {
     this.withFilePaused = withFilePaused;
     this.content = content;
     if (root) checked(root);
-    if (under(fold(root), fold(join(vault.configDir, "plugins/" + self))))
+    if ([managerId, self].some(
+      (id) => under(fold(root), fold(join(vault.configDir, "plugins/" + id)))
+    ))
       throw Error("protected");
     this.id = "vault:" + root;
     this.capabilities = {
@@ -15375,7 +15564,13 @@ var LocalProvider = class {
   id;
   capabilities;
   path(p) {
-    return p ? join(this.root, checked(p)) : this.root;
+    const full = p ? join(this.root, checked(p)) : this.root;
+    if (under(
+      fold(full),
+      fold(join(this.vault.configDir, "plugins/" + managerId))
+    ))
+      throw Error("protected");
+    return full;
   }
   indexed(path) {
     return !under(fold(path), fold(this.vault.configDir)) && !path.split("/").some((s) => s.startsWith("."));
@@ -22019,25 +22214,30 @@ var Accounts = class {
     this.refreshing.set(id, work);
     return work;
   }
-  transport(id, engine) {
+  transport(id, engine, check2) {
     return async (url, method, headers, body2) => {
       const u = new URL(url), google = engine === "google";
       if (u.origin !== (google ? "https://www.googleapis.com" : "https://cloud-api.yandex.net") || !(google ? /^\/(upload\/)?drive\/v3\// : /^\/v1\/disk(?:\/|$)/).test(
         u.pathname
       ))
         throw Error("publicUrl");
-      const send2 = (access) => this.http(
-        url,
-        method,
-        {
-          ...headers,
-          Authorization: (google ? "Bearer " : "OAuth ") + access
-        },
-        body2
-      );
+      const send2 = (access) => {
+        check2?.();
+        return this.http(
+          url,
+          method,
+          {
+            ...headers,
+            Authorization: (google ? "Bearer " : "OAuth ") + access
+          },
+          body2
+        );
+      };
+      check2?.();
       const first = await this.access(id, engine);
       let r = await send2(first);
       if (r.status === 401) {
+        check2?.();
         const refreshed = await this.access(id, engine, first);
         r = await send2(refreshed);
         if (r.status === 401) {
@@ -22247,7 +22447,7 @@ var PluginFilters = class extends import_obsidian4.Modal {
             if ((await b.io(() => s.stat("plugins")))?.type === "folder")
               for (const p of (await b.io(() => s.list("plugins"))).folders) {
                 const id = p.split("/")[1];
-                if (id && p === "plugins/" + id && safe(id) && fold(id) !== fold(this.self))
+                if (id && p === "plugins/" + id && safe(id) && fold(id) !== managerId && fold(id) !== fold(this.self))
                   names.add(fold(id));
               }
           } catch {
@@ -23318,7 +23518,45 @@ function inspectPath(el, rs, p) {
       b.setDisabled(true);
       result.setText(t("scan"));
       try {
-        const sides = rs.folderSources(p), budget = new RunBudget(void 0, 3e4, []), cfg = p.config ?? legacyConfig(), filter = pathFilter(p);
+        const cfg = p.config ?? legacyConfig(), filter = pathFilter(p);
+        const classify = (folder) => {
+          let reason = selectionReason(
+            key,
+            p.scope,
+            rs.app.vault.configDir,
+            rs.manifest.id,
+            folder,
+            cfg,
+            p.content
+          );
+          for (let d = parent(key); reason === "included" && d; d = parent(d))
+            reason = selectionReason(
+              d,
+              p.scope,
+              rs.app.vault.configDir,
+              rs.manifest.id,
+              true,
+              cfg,
+              p.content
+            );
+          if (reason === "included" && p.scope === "content" && !(folder ? filter.directory(key) : filter(key)))
+            return "maskRule";
+          return reason;
+        };
+        const access = rs.gate.refresh();
+        if (access !== "vamGranted") {
+          result.setText(
+            [
+              t("vamFileRules"),
+              t(classify(false)),
+              t("vamFolderRules"),
+              t(classify(true)),
+              t(access)
+            ].join(" · ")
+          );
+          return;
+        }
+        const sides = rs.folderSources(p), budget = new RunBudget(void 0, 3e4, []);
         const blocked = p.scope === "settings" && !import_obsidian9.Platform.isDesktopApp && cfg.platformFilter ? await mobileExcluded(sides[0], sides[1], budget) : [];
         const findings = await Promise.all(
           sides.map(async (s, i) => {
@@ -23326,27 +23564,7 @@ function inspectPath(el, rs, p) {
             try {
               const stat = await budget.io(() => s.stat(key));
               if (!stat) return label + " · " + t("pathAbsent");
-              let reason = selectionReason(
-                key,
-                p.scope,
-                rs.app.vault.configDir,
-                rs.manifest.id,
-                stat.type === "folder",
-                cfg,
-                p.content
-              );
-              for (let d = parent(key); reason === "included" && d; d = parent(d))
-                reason = selectionReason(
-                  d,
-                  p.scope,
-                  rs.app.vault.configDir,
-                  rs.manifest.id,
-                  true,
-                  cfg,
-                  p.content
-                );
-              if (reason === "included" && p.scope === "content" && !(stat.type === "folder" ? filter.directory(key) : filter(key)))
-                return label + " · " + t("maskRule");
+              const reason = classify(stat.type === "folder");
               if (reason === "included" && p.scope === "content" && stat.type === "file" && p.maxMiB > 0 && stat.size > p.maxMiB * 1048576)
                 return label + " · " + t("sizeRule");
               if (reason === "included" && fold(key).startsWith("plugins/") && blocked.includes(fold(key).split("/")[1]))
@@ -23713,6 +23931,18 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
       return;
     }
     el.createEl("h2", { text: "Sync Studio" });
+    const access = new import_obsidian12.Setting(el).setName(t("vamTitle")).setClass("sync-studio-vam");
+    const scope = rs.gate.binding;
+    access.setDesc(
+      [t(rs.gate.refresh()), scope?.tenantId, scope?.bundleId].filter(Boolean).join(" · ")
+    );
+    rs.gateDescription = access.descEl;
+    access.addButton(
+      (b) => b.setButtonText(t("vamBind")).onClick(() => rs.confirmManagerBinding(() => this.display()))
+    );
+    access.addButton(
+      (b) => b.setButtonText(t("vamOpenLogin")).onClick(() => rs.managerLogin())
+    );
     const nav = new import_obsidian12.Setting(el).setClass("sync-studio-nav");
     for (const key of ["profiles", "places", "templates"])
       nav.addButton(
@@ -24147,6 +24377,7 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
       (b) => b.setButtonText(t("init")).onClick(async () => {
         if (!validateForm()) return;
         try {
+          const check2 = rs.gate.lease();
           const missing = [];
           const dirs = [
             p.access === "local" ? p.reference : "",
@@ -24166,10 +24397,14 @@ var Editor = class extends import_obsidian12.PluginSettingTab {
               ...cloud ? [(p.dav?.url ?? p.cloud?.engine) + " / " + p.reference] : []
             ].join(", "),
             async () => {
+              check2();
               if (cloud) await rs.accountReference(p, "").mkdir(p.reference);
-              for (const dir of missing)
-                if (!await this.app.vault.adapter.exists(dir))
+              for (const dir of missing) {
+                if (!await this.app.vault.adapter.exists(dir)) {
+                  check2();
                   await this.app.vault.createFolder(checked(dir));
+                }
+              }
             }
           );
         } catch (e) {
@@ -24264,6 +24499,51 @@ var Confirmation = class extends import_obsidian13.Modal {
 };
 var SyncStudio = class extends import_obsidian13.Plugin {
   accounts;
+  gate;
+  gateDescription;
+  bindingKey = "";
+  managerContext() {
+    const registry = this.app.plugins;
+    const manager = registry?.plugins?.[managerId];
+    if (!manager || manager.app !== this.app) return {};
+    const host = globalThis;
+    return {
+      manager,
+      scope: readScope(manager.accessV4?.build),
+      bridge: manager.auth && manager.auth === host.vaultSyncAuth ? host.__VAM__ : void 0
+    };
+  }
+  confirmManagerBinding(after) {
+    const candidate = this.gate.candidate;
+    if (!candidate) {
+      this.report(Error("vamMissing"));
+      return;
+    }
+    this.confirm(
+      [this.t("vamBindHint"), candidate.tenantId, candidate.bundleId].join(
+        " · "
+      ),
+      () => {
+        this.bindManager(candidate);
+        after?.();
+      }
+    );
+  }
+  bindManager(scope) {
+    this.gate.bind(scope);
+    this.app.saveLocalStorage(this.bindingKey, scope);
+  }
+  managerLogin() {
+    const commands2 = this.app.commands;
+    if (!commands2?.executeCommandById(managerId + ":vam-login"))
+      this.notices.send("vamMissing", this.t("vamMissing"));
+  }
+  gatedSend(check2) {
+    return (...args) => {
+      check2();
+      return send(...args);
+    };
+  }
   driveCursors = /* @__PURE__ */ new Map();
   oauthCancel;
   oauthCallback;
@@ -24327,11 +24607,12 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     );
   }
   queueReload(manual = false) {
-    if (this.reloadQueued || !this.pendingReload) return;
+    if (this.gate.refresh() !== "vamGranted" || this.reloadQueued || !this.pendingReload)
+      return;
     this.reloadQueued = true;
     void this.scheduler.serial(async () => {
       const now = Date.now(), raw = this.app.loadLocalStorage("refsync:reloadHistory"), history = Array.isArray(raw) ? raw.filter((x) => typeof x === "number" && x > now - 36e5) : [];
-      if (!this.live || !this.pendingReload || this.config.paused && !manual)
+      if (!this.live || this.gate.refresh() !== "vamGranted" || !this.pendingReload || this.config.paused && !manual)
         return;
       if (!manual && (!canAutoReload(history, now) || this.pendingReload.policy === "idle" && now - this.lastInput < this.pendingReload.idleSeconds * 1e3))
         return;
@@ -24343,6 +24624,48 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   }
   startupRecovery;
   async onload() {
+    const adapter = this.app.vault.adapter;
+    const vaultIdentity = adapter.getBasePath?.() || this.app.appId || crypto.randomUUID();
+    this.bindingKey = "refsync:vam:" + bytesToHex(
+      sha2562(
+        new TextEncoder().encode(
+          JSON.stringify([vaultIdentity, this.app.vault.configDir])
+        )
+      )
+    );
+    this.gate = new VamGate(
+      () => this.managerContext(),
+      readScope(this.app.loadLocalStorage(this.bindingKey)),
+      () => {
+        if (this.gate.label !== "vamGranted") {
+          this.reviewQueue = [];
+          this.activeReview?.close();
+          this.openIds.clear();
+          for (const p of this.config?.profiles ?? [])
+            this.scheduler?.cancel(p.id);
+          if (this.scheduler)
+            void this.scheduler.serial(async () => {
+              await this.ready;
+              if (this.engine.applier.needsRecovery && !this.engine.applier.fence.pending)
+                await this.engine.exclusive(
+                  () => this.engine.applier.recover((t) => this.recoveryTarget(t))
+                );
+            }).catch((e) => this.report(e));
+        }
+        if (this.ribbon) this.paint();
+        const desc = this.gateDescription;
+        if (desc?.isConnected)
+          desc.setText(
+            [
+              this.t(this.gate.label),
+              this.gate.binding?.tenantId,
+              this.gate.binding?.bundleId
+            ].filter(Boolean).join(" · ")
+          );
+      }
+    );
+    this.gate.refresh();
+    this.registerInterval(window.setInterval(() => this.gate.refresh(), 1e3));
     const fence = MutationFence.forVault(this.app.vault);
     await fence.previousInstance;
     this.config = loadProfiles(await this.loadData());
@@ -24394,7 +24717,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     );
     const status = new StatusStore();
     this.engine = new SyncEngine(
-      new Applier(journal, state, fence),
+      new Applier(journal, state, fence, this.app.vault.configDir),
       status,
       this.app.vault.configDir,
       this.manifest.id,
@@ -24403,7 +24726,22 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     );
     this.scheduler = new Scheduler(
       (id) => this.execute(id, "auto").catch((e) => this.report(e, id)),
-      (e) => this.report(e)
+      (e) => this.report(e),
+      () => {
+        try {
+          const check2 = this.gate.lease();
+          return () => {
+            try {
+              check2();
+              return true;
+            } catch {
+              return false;
+            }
+          };
+        } catch {
+          return () => false;
+        }
+      }
     );
     this.ribbon = this.addRibbonIcon(
       "refresh-cw",
@@ -24427,6 +24765,8 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     this.addSettingTab(new Editor(this.app, this));
     const current = (intent) => this.request(this.config.current, intent);
     const cmd = (id, label, fn) => this.addCommand({ id, name: this.t(label), callback: fn });
+    cmd("bind-manager", "vamBind", () => this.confirmManagerBinding());
+    cmd("manager-login", "vamOpenLogin", () => this.managerLogin());
     cmd("history", "history", () => void this.openHistory());
     cmd("full-check", "fullCheck", () => current("diagnose"));
     cmd("dry-run", "dry", () => current("dry"));
@@ -24463,7 +24803,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         }
         this.startupRecovery = this.engine.exclusive(async () => {
           await this.engine.applier.recover((t) => this.recoveryTarget(t));
-          if (this.engine.applier.pendingTargets.size)
+          if (this.gate.refresh() === "vamGranted" && this.engine.applier.pendingTargets.size)
             this.notices.send("cloudRecovery", this.t("cloudRecovery"));
           if (!this.config.paused)
             await this.verify().catch((e) => this.report(e));
@@ -24480,6 +24820,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   }
   onunload() {
     this.live = false;
+    this.gate.dispose();
     this.oauthCancel?.();
     const fence = MutationFence.forVault(this.app.vault);
     const previous = fence.previousInstance;
@@ -24497,7 +24838,9 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     this.activeReview?.close();
   }
   paint() {
-    const phase = this.engine.status.phase, label = this.t(this.config.paused ? "paused" : phase);
+    const phase = this.engine.status.phase, label = this.t(
+      this.gate.label !== "vamGranted" ? this.gate.label : this.config.paused ? "paused" : phase
+    );
     const text = ["Sync Studio", label, this.statusLabel].filter(Boolean).join(" · ");
     (0, import_obsidian13.setIcon)(this.ribbon, this.config.paused ? "pause" : icons[phase]);
     this.ribbon.setAttribute("aria-label", text);
@@ -24558,7 +24901,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     });
   }
   listen() {
-    const contents = () => this.config.profiles.filter(
+    const contents = () => this.gate.refresh() !== "vamGranted" ? [] : this.config.profiles.filter(
       (p) => p.enabled && (p.scope === "content" || !!p.config) && !this.config.paused
     );
     for (const e of ["keydown", "pointerdown"])
@@ -24673,13 +25016,15 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     this.app.saveLocalStorage("refsync:google-public-key", value.trim());
   }
   publicReference(p, prefix = p.reference) {
+    const check2 = this.gate.lease();
+    const send2 = this.gatedSend(check2);
     if (p.access !== "public" || p.role !== "subscriber" || !p.remote)
       throw Error("readonly");
     const { root, resourceKey } = location(p.remote);
     let tree;
     if (p.remote.engine === "google")
-      tree = new GoogleTree(send, root, this.googleKey(), resourceKey);
-    else if (p.remote.engine === "yandex") tree = new YandexTree(send, root);
+      tree = new GoogleTree(send2, root, this.googleKey(), resourceKey);
+    else if (p.remote.engine === "yandex") tree = new YandexTree(send2, root);
     else {
       const identity = JSON.stringify([root, p.remote.branch]), adapter = this.app.vault.adapter;
       tree = new GitTree2(
@@ -24688,20 +25033,24 @@ var SyncStudio = class extends import_obsidian13.Plugin {
           await ensure(adapter, dir);
           return gitFs(adapter, dir);
         },
-        send,
+        send2,
         root,
         p.remote.branch,
         this.app.vault.getName() + ":" + identity
       );
     }
-    return new PublicStore(referenceId(p), tree, prefix === "/" ? "" : prefix);
+    return guardedStore(
+      new PublicStore(referenceId(p), tree, prefix === "/" ? "" : prefix),
+      check2
+    );
   }
   cloudStore(c, prefix, ro) {
     const id = cloudId(c, prefix), a = this.accounts.list().find((a2) => a2.id === c.account && a2.engine === c.engine);
     if (!a || a.needsLogin) throw Error("loginRequired");
     if (c.engine === "yandex" && c.root !== (a.full ? "disk:/" : "app:/"))
       throw Error("cloudLocation");
-    const transport = this.accounts.transport(c.account, c.engine);
+    const check2 = this.gate.lease();
+    const transport = this.accounts.transport(c.account, c.engine, check2);
     let tree;
     if (c.engine === "google") {
       const cursor = this.driveCursors.get(id) ?? { token: "", revision: "" };
@@ -24716,7 +25065,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         get: (path) => this.driveSessions.get(sessionKey(path)),
         set: (path, value) => this.driveSessions.set(sessionKey(path), value)
       });
-    } else tree = new DiskTree(transport, send, c.root);
+    } else tree = new DiskTree(transport, this.gatedSend(check2), c.root);
     const store = new CloudStore(
       id,
       tree,
@@ -24725,7 +25074,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       c.engine !== "google" || a.full
     );
     store.capabilities.supportsChangesFeed = c.engine === "google";
-    return store;
+    return guardedStore(store, check2);
   }
   davSecretKey(d) {
     return "refsync-dav-" + bytesToHex(
@@ -24752,11 +25101,16 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   davStore(d, prefix, ro) {
     if (!import_obsidian13.Platform.isDesktopApp) throw Error("davDesktop");
     const key = this.davSecretKey(d);
-    return new DavStore(
-      d,
-      prefix,
-      ro,
-      async () => this.app.secretStorage?.getSecret(key) || await this.driveSessions.get(key)
+    const check2 = this.gate.lease();
+    return guardedStore(
+      new DavStore(
+        d,
+        prefix,
+        ro,
+        async () => this.app.secretStorage?.getSecret(key) || await this.driveSessions.get(key),
+        check2
+      ),
+      check2
     );
   }
   accountReference(p, prefix = p.reference, readOnly = p.role === "subscriber") {
@@ -24766,6 +25120,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     return this.cloudStore(p.cloud, prefix, readOnly);
   }
   async probeConnection(p, write) {
+    const check2 = this.gate.lease();
     return this.scheduler.serial(async () => {
       const store = p.access === "local" ? new LocalProvider(
         this.app.vault,
@@ -24775,24 +25130,29 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         !write,
         { trash: "permanent", trashDays: 0 }
       ) : p.access === "public" ? this.publicReference({ ...p, role: "subscriber" }) : this.accountReference(p, p.reference, !write);
-      return testAccess(store, write);
+      return testAccess(guardedStore(store, check2), write);
     });
   }
   browseStore(p, side) {
     if (side === "local" || p.access === "local")
-      return new LocalProvider(
-        this.app.vault,
-        "",
-        this.manifest.id,
-        "content",
-        true
+      return guardedStore(
+        new LocalProvider(
+          this.app.vault,
+          "",
+          this.manifest.id,
+          "content",
+          true
+        ),
+        this.gate.lease()
       );
     return p.access === "oauth" || p.access === "webdav" ? this.accountReference(p, "", true) : this.publicReference(p, "");
   }
   async previewDraft(draft) {
+    const check2 = this.gate.lease();
     const p = structuredClone(draft);
     await this.scheduler.serial(async () => {
       await this.ready;
+      check2();
       const s = this.stores(p), mode = (p.inheritMode ? this.config.mode : p.mode) === "silent" && !(p.firstPlan && !this.app.loadLocalStorage(this.firstKey(p))) ? "silent" : "plan";
       const result = await this.engine.run(
         p,
@@ -24802,6 +25162,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         void 0,
         { mode, active: () => this.live }
       );
+      check2();
       if (this.live)
         new Review(
           this.app,
@@ -24824,20 +25185,24 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   stores(p) {
     if (!["local", "public", "oauth", "webdav"].includes(p.access))
       throw Error("invalid");
-    const make = (path, ro) => new LocalProvider(
-      this.app.vault,
-      path === "/" ? "" : path,
-      this.manifest.id,
-      p.scope,
-      ro,
-      p,
-      ro ? void 0 : (file, digest2) => this.own.set(JSON.stringify([p.id, file]), {
-        digest: digest2,
-        expires: Date.now() + 1e4
-      }),
-      p.config,
-      !ro && p.scope === "settings" && path === this.app.vault.configDir ? (file, write) => withPluginData(this.app, this.manifest.id, file, write) : void 0,
-      p.content
+    const check2 = this.gate.lease();
+    const make = (path, ro) => guardedStore(
+      new LocalProvider(
+        this.app.vault,
+        path === "/" ? "" : path,
+        this.manifest.id,
+        p.scope,
+        ro,
+        p,
+        ro ? void 0 : (file, digest2) => this.own.set(JSON.stringify([p.id, file]), {
+          digest: digest2,
+          expires: Date.now() + 1e4
+        }),
+        p.config,
+        !ro && p.scope === "settings" && path === this.app.vault.configDir ? (file, write) => withPluginData(this.app, this.manifest.id, file, write) : void 0,
+        p.content
+      ),
+      check2
     );
     return {
       reference: p.access === "oauth" || p.access === "webdav" ? this.accountReference(p) : p.access === "public" ? this.publicReference(p) : make(p.reference, p.role === "subscriber"),
@@ -24848,14 +25213,32 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     };
   }
   request(id, intent) {
-    void this.scheduler.serial(() => this.execute(id, intent)).catch((e) => this.report(e, id));
+    let check2;
+    try {
+      check2 = this.gate.lease();
+    } catch (e) {
+      this.report(e, id);
+      return;
+    }
+    void this.scheduler.serial(() => {
+      check2();
+      return this.execute(id, intent);
+    }).catch((e) => this.report(e, id));
   }
   runAll() {
+    try {
+      this.gate.require();
+    } catch (e) {
+      this.report(e);
+      return;
+    }
     for (const p of this.config.profiles)
       if (p.enabled) this.request(p.id, "run");
   }
   async execute(id, intent) {
     await this.ready;
+    if (intent === "auto" && this.gate.refresh() !== "vamGranted") return;
+    const check2 = this.gate.lease();
     const p = this.config.profiles.find((x) => x.id === id);
     if (!p || !this.live) return;
     if (intent !== "dry" && intent !== "diagnose" && (!p.enabled || this.config.paused))
@@ -24895,6 +25278,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         scanning: (s) => this.scanProgress(p, s)
       }
     );
+    check2();
     if (!this.live) return;
     this.statusLabel = p.name;
     this.paint();
@@ -24925,7 +25309,10 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         close,
         intent === "dry" || intent === "diagnose" ? void 0 : (choices, release) => {
           const picked = intent === "release" ? new Map(plan2.ops.map((o) => [o.path, "skip"])) : choices;
-          void this.scheduler.serial(() => this.deliver(p, plan2, picked, release)).catch((e) => this.report(e, p.id));
+          void this.scheduler.serial(() => {
+            check2();
+            return this.deliver(p, plan2, picked, release);
+          }).catch((e) => this.report(e, p.id));
         },
         intent === "release",
         this.accounts.list().find((a) => a.id === p.cloud?.account)?.label
@@ -24949,9 +25336,13 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     ]);
   }
   async deliver(p, approved, choices, release) {
-    const active = () => this.live && !this.config.paused && p.enabled && this.config.profiles.some(
-      (q) => q.id === p.id && q.enabled && (q === p || JSON.stringify({ ...q, name: p.name }) === JSON.stringify(p))
-    );
+    const check2 = this.gate.lease();
+    const active = () => {
+      check2();
+      return this.live && !this.config.paused && p.enabled && this.config.profiles.some(
+        (q) => q.id === p.id && q.enabled && (q === p || JSON.stringify({ ...q, name: p.name }) === JSON.stringify(p))
+      );
+    };
     if (!active()) return;
     const v = this.stores(p);
     const isOpen = (path) => this.app.workspace.getLeavesOfType("markdown").some(
@@ -25070,17 +25461,25 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   confirmUndo() {
     const p = this.config.profiles.find((p2) => p2.id === this.config.current);
     if (!p) return;
+    let check2;
+    try {
+      check2 = this.gate.lease();
+    } catch (e) {
+      this.report(e);
+      return;
+    }
     this.confirm(
       this.t("undoText") + " · " + p.name + " · " + this.t("undoPause"),
       () => this.scheduler.serial(async () => {
         await this.ready;
+        check2();
         const local = "vault:" + (p.scope === "settings" ? this.app.vault.configDir : p.local === "/" ? "" : p.local);
         const remote = referenceId(p), ends = p.role === "subscriber" ? [remote, local] : [local, remote];
         await this.engine.exclusive(
           () => this.engine.applier.undo(
             JSON.stringify([p.id, p.scope, ...ends]),
             void 0,
-            (t) => this.recoveryTarget(t)
+            (t) => guardedStore(this.recoveryTarget(t), check2)
           )
         );
         await this.put({ ...p, enabled: false });

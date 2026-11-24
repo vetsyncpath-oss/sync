@@ -1,3 +1,4 @@
+import { managerId } from "./vam-gate";
 import { Modal, Setting, type App } from "obsidian";
 import { type ConfigScope, type PluginPart, pluginParts } from "./config-scope";
 import { fold, safe, type StorageProvider } from "./model";
@@ -42,6 +43,7 @@ export class PluginFilters extends Modal {
                   id &&
                   p === "plugins/" + id &&
                   safe(id) &&
+                  fold(id) !== managerId &&
                   fold(id) !== fold(this.self)
                 )
                   names.add(fold(id));

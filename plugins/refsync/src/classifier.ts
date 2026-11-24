@@ -1,3 +1,4 @@
+import { managerId } from "./vam-gate";
 import { contentReason, type ContentScope } from "./content-scope";
 import { configReason, legacyConfig, type ConfigScope } from "./config-scope";
 import { fold, join, under, type Scope, type Volatility } from "./model";
@@ -29,7 +30,9 @@ export function selectionReason(
       .some((s) =>
         [".git", ".trash", ".sync-trash", "node_modules"].includes(s),
       ) ||
-    (scope === "settings" && under(f, fold("plugins/" + self))) ||
+    (scope === "settings" &&
+      (under(f, "plugins/" + managerId) ||
+        under(f, fold("plugins/" + self)))) ||
     under(f, fold(join(configDir, "plugins/" + self)))
   )
     return "protected";

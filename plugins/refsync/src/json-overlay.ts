@@ -1,3 +1,4 @@
+import { managerId } from "./vam-gate";
 import picomatch from "picomatch/posix";
 import { fold, hash, type Bytes } from "./model";
 type Json = null | boolean | string | number | Json[] | { [key: string]: Json };
@@ -98,9 +99,12 @@ export function project(
       throw Error("invalidConfig");
     const ids = (src as string[]).filter(
       (id) =>
-        fold(id) !== fold(policy.self) && !policy.blocked.includes(fold(id)),
+        fold(id) !== managerId &&
+        fold(id) !== fold(policy.self) &&
+        !policy.blocked.includes(fold(id)),
     );
     const old = local ? decode(local) : null;
+    if (Array.isArray(old) && old.includes(managerId)) ids.push(managerId);
     if (keepSelf || (Array.isArray(old) && old.includes(policy.self)))
       ids.push(policy.self);
     return encode([...new Set(ids)].sort());

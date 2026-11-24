@@ -28,10 +28,51 @@ export function inspectPath(el: HTMLElement, rs: Studio, p: Profile) {
       b.setDisabled(true);
       result.setText(t("scan"));
       try {
-        const sides = rs.folderSources(p),
-          budget = new RunBudget(undefined, 30000, []),
-          cfg = p.config ?? legacyConfig(),
+        const cfg = p.config ?? legacyConfig(),
           filter = pathFilter(p);
+        const classify = (folder: boolean) => {
+          let reason = selectionReason(
+            key,
+            p.scope,
+            rs.app.vault.configDir,
+            rs.manifest.id,
+            folder,
+            cfg,
+            p.content,
+          );
+          for (let d = parent(key); reason === "included" && d; d = parent(d))
+            reason = selectionReason(
+              d,
+              p.scope,
+              rs.app.vault.configDir,
+              rs.manifest.id,
+              true,
+              cfg,
+              p.content,
+            );
+          if (
+            reason === "included" &&
+            p.scope === "content" &&
+            !(folder ? filter.directory(key) : filter(key))
+          )
+            return "maskRule";
+          return reason;
+        };
+        const access = rs.gate.refresh();
+        if (access !== "vamGranted") {
+          result.setText(
+            [
+              t("vamFileRules"),
+              t(classify(false)),
+              t("vamFolderRules"),
+              t(classify(true)),
+              t(access),
+            ].join(" · "),
+          );
+          return;
+        }
+        const sides = rs.folderSources(p),
+          budget = new RunBudget(undefined, 30000, []);
         const blocked =
           p.scope === "settings" && !Platform.isDesktopApp && cfg.platformFilter
             ? await mobileExcluded(sides[0], sides[1], budget)
@@ -42,35 +83,7 @@ export function inspectPath(el: HTMLElement, rs: Studio, p: Profile) {
             try {
               const stat = await budget.io(() => s.stat(key));
               if (!stat) return label + " · " + t("pathAbsent");
-              let reason = selectionReason(
-                key,
-                p.scope,
-                rs.app.vault.configDir,
-                rs.manifest.id,
-                stat.type === "folder",
-                cfg,
-                p.content,
-              );
-              for (
-                let d = parent(key);
-                reason === "included" && d;
-                d = parent(d)
-              )
-                reason = selectionReason(
-                  d,
-                  p.scope,
-                  rs.app.vault.configDir,
-                  rs.manifest.id,
-                  true,
-                  cfg,
-                  p.content,
-                );
-              if (
-                reason === "included" &&
-                p.scope === "content" &&
-                !(stat.type === "folder" ? filter.directory(key) : filter(key))
-              )
-                return label + " · " + t("maskRule");
+              const reason = classify(stat.type === "folder");
               if (
                 reason === "included" &&
                 p.scope === "content" &&

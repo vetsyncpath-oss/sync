@@ -1,3 +1,4 @@
+import { managerId } from "./vam-gate";
 import { chunkSize, processChunks } from "./transfer";
 import {
   manifestBytes,
@@ -32,6 +33,7 @@ export class Applier {
     readonly journal: ApplyJournal,
     readonly state: StateStore,
     readonly fence = new MutationFence(),
+    private configDirectory = ".obsidian",
   ) {}
   private async restore(
     t: Transaction,
@@ -48,6 +50,18 @@ export class Applier {
           (await this.journal.disk.has(t.id + "/restored/" + i))) ||
         !(await this.journal.disk.has(armed)) ||
         (await this.journal.disk.has(t.id + "/skipped/" + i))
+      )
+        continue;
+      // A pre-gate transaction may contain Manager files. These belong to the installed Manager.
+      const managerRoot =
+        (t.scope === "settings"
+          ? ""
+          : this.configDirectory.toLowerCase() + "/") +
+        "plugins/" +
+        managerId;
+      if (
+        p.toLowerCase() === managerRoot ||
+        p.toLowerCase().startsWith(managerRoot + "/")
       )
         continue;
       const perform = async () => {
@@ -76,16 +90,43 @@ export class Applier {
           if (current !== (await this.journal.json<string | null>(expected)))
             throw Error("cloudRecovery");
         }
+        const membership =
+          t.scope === "settings"
+            ? "community-plugins.json"
+            : this.configDirectory.toLowerCase() + "/community-plugins.json";
+        const keepManager =
+          p.toLowerCase() === membership && stat && stat.type === "file";
+        const currentList = keepManager
+          ? JSON.parse(
+              new TextDecoder().decode(
+                await budget.io(() => target.download(p)),
+              ),
+            )
+          : null;
         if (saved === null) {
+          if (Array.isArray(currentList) && currentList.includes(managerId))
+            return;
           if (stat) await budget.io(() => target.delete(p), false);
         } else {
-          const bytes = await this.journal.disk.read(t.id + "/backup/" + i);
+          let bytes = await this.journal.disk.read(t.id + "/backup/" + i);
           if ((await hash(bytes)) !== saved) throw Error("backup");
+          if (p.toLowerCase() === membership) {
+            const ids: unknown = JSON.parse(new TextDecoder().decode(bytes));
+            if (!Array.isArray(ids)) throw Error("backup");
+            const wanted =
+              Array.isArray(currentList) && currentList.includes(managerId);
+            if (wanted !== ids.includes(managerId))
+              bytes = manifestBytes(
+                wanted
+                  ? [...ids, managerId]
+                  : ids.filter((id) => id !== managerId),
+              );
+          }
           if (
             !stat ||
             (await hash(
               await budget.io((progress) => target.download(p, progress)),
-            )) !== saved
+            )) !== (await hash(bytes))
           )
             await budget.io(
               (progress) => target.upload(p, bytes, undefined, progress),

@@ -1,3 +1,4 @@
+import { managerId } from "./vam-gate";
 import type { App } from "obsidian";
 // Obsidian exposes these operations on desktop and mobile. Feature detection
 // leaves startup verification available if a host has no transient toggles.
@@ -18,6 +19,7 @@ export async function withPluginData(
   if (
     !id ||
     id === self ||
+    id.toLowerCase() === managerId ||
     !host?.plugins?.[id] ||
     typeof host.disablePlugin !== "function" ||
     typeof host.enablePlugin !== "function" ||

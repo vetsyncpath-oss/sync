@@ -305,7 +305,7 @@ export class Accounts {
     this.refreshing.set(id, work);
     return work;
   }
-  transport(id: string, engine: CloudEngine): Transport {
+  transport(id: string, engine: CloudEngine, check?: () => void): Transport {
     return async (url, method, headers, body) => {
       const u = new URL(url),
         google = engine === "google";
@@ -319,8 +319,9 @@ export class Accounts {
         )
       )
         throw Error("publicUrl");
-      const send = (access: string) =>
-        this.http(
+      const send = (access: string) => {
+        check?.();
+        return this.http(
           url,
           method,
           {
@@ -329,9 +330,12 @@ export class Accounts {
           },
           body,
         );
+      };
+      check?.();
       const first = await this.access(id, engine);
       let r = await send(first);
       if (r.status === 401) {
+        check?.();
         const refreshed = await this.access(id, engine, first);
         r = await send(refreshed);
         if (r.status === 401) {

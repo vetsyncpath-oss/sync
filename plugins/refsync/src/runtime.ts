@@ -137,6 +137,7 @@ export class Scheduler {
   constructor(
     private run: (id: string) => Promise<void>,
     private failed: (e: unknown) => void,
+    private allowed?: () => () => boolean,
   ) {}
   serial<T>(job: () => Promise<T>): Promise<T> {
     const next = this.tail.then(() => {
@@ -151,6 +152,7 @@ export class Scheduler {
   }
   schedule(id: string, ms = 0) {
     if (this.stopped) return;
+    const authorized = this.allowed?.();
     clearTimeout(this.pending.get(id));
     this.pending.set(
       id,
@@ -160,7 +162,7 @@ export class Scheduler {
         this.queued.add(id);
         void this.serial(async () => {
           this.queued.delete(id);
-          await this.run(id);
+          if (!authorized || authorized()) await this.run(id);
         }).catch((e) => {
           if (!this.stopped) this.failed(e);
         });

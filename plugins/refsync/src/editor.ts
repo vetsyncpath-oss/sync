@@ -102,6 +102,24 @@ export class Editor extends PluginSettingTab {
       return;
     }
     el.createEl("h2", { text: "Sync Studio" });
+    const access = new Setting(el)
+      .setName(t("vamTitle"))
+      .setClass("sync-studio-vam");
+    const scope = rs.gate.binding;
+    access.setDesc(
+      [t(rs.gate.refresh()), scope?.tenantId, scope?.bundleId]
+        .filter(Boolean)
+        .join(" · "),
+    );
+    rs.gateDescription = access.descEl;
+    access.addButton((b) =>
+      b
+        .setButtonText(t("vamBind"))
+        .onClick(() => rs.confirmManagerBinding(() => this.display())),
+    );
+    access.addButton((b) =>
+      b.setButtonText(t("vamOpenLogin")).onClick(() => rs.managerLogin()),
+    );
     const nav = new Setting(el).setClass("sync-studio-nav");
     for (const key of ["profiles", "places", "templates"] as const)
       nav.addButton((b) =>
@@ -643,6 +661,7 @@ export class Editor extends PluginSettingTab {
       b.setButtonText(t("init")).onClick(async () => {
         if (!validateForm()) return;
         try {
+          const check = rs.gate.lease();
           const missing: string[] = [];
           const dirs = [
             p.access === "local" ? p.reference : "",
@@ -675,10 +694,14 @@ export class Editor extends PluginSettingTab {
                   : []),
               ].join(", "),
             async () => {
+              check();
               if (cloud) await rs.accountReference(p, "").mkdir(p.reference);
-              for (const dir of missing)
-                if (!(await this.app.vault.adapter.exists(dir)))
+              for (const dir of missing) {
+                if (!(await this.app.vault.adapter.exists(dir))) {
+                  check();
                   await this.app.vault.createFolder(checked(dir));
+                }
+              }
             },
           );
         } catch (e) {

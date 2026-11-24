@@ -1,3 +1,4 @@
+import { managerId } from "./vam-gate";
 import { processChunks, type ChunkSource } from "./transfer";
 import type { ConfigScope } from "./config-scope";
 import { selected } from "./classifier";
@@ -156,7 +157,11 @@ export class LocalProvider implements StorageProvider {
     private content?: Profile["content"],
   ) {
     if (root) checked(root);
-    if (under(fold(root), fold(join(vault.configDir, "plugins/" + self))))
+    if (
+      [managerId, self].some((id) =>
+        under(fold(root), fold(join(vault.configDir, "plugins/" + id))),
+      )
+    )
       throw Error("protected");
     this.id = "vault:" + root;
     this.capabilities = {
@@ -168,7 +173,15 @@ export class LocalProvider implements StorageProvider {
     };
   }
   private path(p: string) {
-    return p ? join(this.root, checked(p)) : this.root;
+    const full = p ? join(this.root, checked(p)) : this.root;
+    if (
+      under(
+        fold(full),
+        fold(join(this.vault.configDir, "plugins/" + managerId)),
+      )
+    )
+      throw Error("protected");
+    return full;
   }
   private indexed(path: string) {
     return (

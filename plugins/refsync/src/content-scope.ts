@@ -1,3 +1,4 @@
+import { managerId } from "./vam-gate";
 import { fold, parent, safe, under } from "./model";
 export interface ContentScope {
   base?: "all" | "selected";
@@ -74,6 +75,7 @@ export function contentReason(
         ].includes(x),
       ) ||
     /(?:\.tmp$|(?:^|\/)(?:thumbs\.db|desktop\.ini)$)/i.test(f) ||
+    under(f, cfg + "/plugins/" + managerId) ||
     under(f, cfg + "/plugins/" + fold(self))
   )
     return "protected";
