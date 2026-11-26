@@ -220,6 +220,14 @@ export default class SyncStudio extends Plugin {
       ...this.diagnostics.snapshot(this.config?.profiles ?? []),
     };
   }
+  async withUpdateWindow(caller:unknown, install:()=>Promise<void>) {
+    if (!this.allowDispatch(caller)) throw Error("vamBlocked");
+    await this.ready;
+    await this.scheduler.serial(() => this.engine.exclusive(async () => {
+      if (!this.allowDispatch(caller) || this.engine.applier.needsRecovery || this.engine.applier.pendingTargets.size) throw Error("busy");
+      await install();
+    }));
+  }
   receiveUpdateSignal(caller: unknown, signal: unknown) {
     if (!this.allowDispatch(caller) || !signal || typeof signal !== "object")
       return false;
@@ -866,8 +874,20 @@ export default class SyncStudio extends Plugin {
         await a.rmdir(dir, true);
     }
   }
+  private systemWrites(publish:boolean) {
+    return (method:string,args:unknown[]) => {
+      if(publish)this.gate.requirePublish();else this.gate.require();
+      const runtime=(this.managerContext().manager as any)?.accessV4;
+      return runtime?.studioVaultCall ? runtime.studioVaultCall(this,method,args,publish) : Reflect.apply((this.app.vault as any)[method],this.app.vault,args);
+    };
+  }
   private recoveryTarget(t: Transaction): StorageProvider {
-    const dest = JSON.parse(t.key)[3];
+    const [profileId,, source, dest] = JSON.parse(t.key);
+    const profile = this.config.profiles.find(p => p.id === profileId);
+    // Old journals have no role. Only a matching subscription endpoint pair proves a local destination.
+    const subscription = profile?.role === "subscriber" && source === referenceId(profile) &&
+      dest === "vault:" + (profile.scope === "settings" ? this.app.vault.configDir : profile.local === "/" ? "" : profile.local);
+    const check = this.gate.lease(!subscription);
     if (t.dav) {
       if (dest !== davId(t.dav, t.target)) throw Error("journal");
       return this.davStore(t.dav, t.target, false);
@@ -878,7 +898,7 @@ export default class SyncStudio extends Plugin {
     }
     if (dest !== "vault:" + (t.target === "/" ? "" : t.target))
       throw Error("journal");
-    return new LocalProvider(
+    return guardedStore(new LocalProvider(
       this.app.vault,
       t.target === "/" ? "" : t.target,
       this.manifest.id,
@@ -891,8 +911,8 @@ export default class SyncStudio extends Plugin {
         ? (path, write) =>
             withPluginData(this.app, this.manifest.id, path, write)
         : undefined,
-      t.content,
-    );
+      t.content,this.systemWrites(!subscription),
+    ), check);
   }
   googleKey() {
     return String(this.app.loadLocalStorage("refsync:google-public-key") ?? "");
@@ -939,7 +959,7 @@ export default class SyncStudio extends Plugin {
     if (!a || a.needsLogin) throw Error("loginRequired");
     if (c.engine === "yandex" && c.root !== (a.full ? "disk:/" : "app:/"))
       throw Error("cloudLocation");
-    const check = this.gate.lease();
+    const check = this.gate.lease(!ro);
     const transport = this.accounts.transport(c.account, c.engine, check);
     let tree;
     if (c.engine === "google") {
@@ -995,7 +1015,7 @@ export default class SyncStudio extends Plugin {
   private davStore(d: DavLocation, prefix: string, ro: boolean) {
     if (!Platform.isDesktopApp) throw Error("davDesktop");
     const key = this.davSecretKey(d);
-    const check = this.gate.lease();
+    const check = this.gate.lease(!ro);
     return guardedStore(
       new DavStore(
         d,
@@ -1020,7 +1040,7 @@ export default class SyncStudio extends Plugin {
     return this.cloudStore(p.cloud, prefix, readOnly);
   }
   async probeConnection(p: Profile, write: boolean) {
-    const check = this.gate.lease();
+    const check = this.gate.lease(write);
     return this.scheduler.serial(async () => {
       const store =
         p.access === "local"
@@ -1030,7 +1050,7 @@ export default class SyncStudio extends Plugin {
               this.manifest.id,
               "content",
               !write,
-              { trash: "permanent", trashDays: 0 },
+              { trash: "permanent", trashDays: 0 },undefined,undefined,undefined,undefined,this.systemWrites(write),
             )
           : p.access === "public"
             ? this.publicReference({ ...p, role: "subscriber" })
@@ -1099,7 +1119,7 @@ export default class SyncStudio extends Plugin {
   private stores(p: Profile) {
     if (!["local", "public", "oauth", "webdav"].includes(p.access))
       throw Error("invalid");
-    const check = this.gate.lease();
+    const check = this.gate.lease(p.role === "publisher");
     const make = (path: string, ro: boolean) =>
       guardedStore(
         new LocalProvider(
@@ -1121,7 +1141,7 @@ export default class SyncStudio extends Plugin {
             ? (file, write) =>
                 withPluginData(this.app, this.manifest.id, file, write)
             : undefined,
-          p.content,
+          p.content,this.systemWrites(p.role === "publisher"),
         ),
         check,
       );
@@ -1307,7 +1327,7 @@ export default class SyncStudio extends Plugin {
     choices?: Choices,
     release?: Set<string>,
   ) {
-    const check = this.gate.lease();
+    const check = this.gate.lease(p.role === "publisher");
     const active = () => {
       check();
       return (

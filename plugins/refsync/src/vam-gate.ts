@@ -11,7 +11,7 @@ interface Decision {
 }
 export interface VamBridge {
   version: string;
-  access(query: Scope & { capability: "use" }): Decision;
+  access(query: Scope & { capability: "sync.run" | "sync.publish" }): Decision;
   register(id: string): void;
   subscribe(listener: () => void): () => void;
 }
@@ -75,7 +75,7 @@ export class VamGate {
           reason = "vamProtocol";
         else if (!scope) reason = "vamScope";
         else {
-          const d = bridge.access({ ...scope, capability: "use" });
+          const d = bridge.access({ ...scope, capability: "sync.run" });
           if (d.status === "granted")
             reason =
               typeof d.validUntil === "number" &&
@@ -114,11 +114,19 @@ export class VamGate {
     const reason = this.refresh();
     if (reason !== "vamGranted") throw Error(reason);
   }
-  lease() {
+  requirePublish() {
     this.require();
+    const scope = this.observedScope;
+    if (!scope || !this.bridge) throw Error("vamBlocked");
+    const decision = this.bridge.access({...scope,capability:"sync.publish"});
+    if (decision.status !== "granted" || !Number.isFinite(decision.validUntil) || (decision.validUntil ?? 0) <= Date.now())
+      throw Error("vamPublishBlocked");
+  }
+  lease(publish = false) {
+    if (publish) this.requirePublish(); else this.require();
     const generation = this.generation;
     return () => {
-      this.require();
+      if (publish) this.requirePublish(); else this.require();
       if (generation !== this.generation) throw Error("vamSessionChanged");
     };
   }

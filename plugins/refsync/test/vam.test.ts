@@ -19,7 +19,7 @@ test("SDK 6 leases require same vault manager, current bundle and live unexpired
   const api: VamBridge = {
     version: "6",
     access(q) {
-      assert.deepEqual(q, { ...context.scope, capability: "use" });
+      assert.deepEqual(q, { ...context.scope, capability: "sync.run" });
       return {
         status: granted ? "granted" : "pending",
         validUntil: until,
@@ -132,4 +132,18 @@ test("managed plugin is protected in both scopes and retains destination members
     );
   assert.deepEqual(project([], [id]), ["refsync", id]);
   assert.deepEqual(project([id], []), ["refsync"]);
+});
+
+test("publish permission is scoped and rechecked after a review stays open", () => {
+  let publish = true;
+  const gate = new VamGate(() => ({
+    manager, scope: {tenantId:"org",bundleId:"notes"}, bridge
+  }), () => {});
+  const manager = {}, bridge: VamBridge = {version:"6",register(){},subscribe(){return () => {};},
+    access(q){ return {status:q.capability === "sync.publish" && !publish ? "blocked" : "granted", reason:null, validUntil:Date.now()+10000}; }};
+  const apply = gate.lease(true);
+  publish = false;
+  gate.require();
+  assert.throws(apply,/vamPublishBlocked/);
+  gate.dispose();
 });

@@ -155,6 +155,7 @@ export class LocalProvider implements StorageProvider {
     private config?: ConfigScope,
     readonly withFilePaused?: StorageProvider["withFilePaused"],
     private content?: Profile["content"],
+    private systemCall?: (method:string,args:unknown[])=>Promise<unknown>,
   ) {
     if (root) checked(root);
     if (
@@ -213,6 +214,9 @@ export class LocalProvider implements StorageProvider {
       throw Error("protected");
     return path;
   }
+  private call(method:"createFolder"|"modifyBinary"|"createBinary"|"rename"|"delete"|"trash", ...args:unknown[]) {
+    return this.systemCall ? this.systemCall(method,args) : Reflect.apply(this.vault[method],this.vault,args);
+  }
   async list(p: string) {
     const data = await this.vault.adapter.list(this.path(p) || "/");
     const rel = (f: string) => {
@@ -254,7 +258,7 @@ export class LocalProvider implements StorageProvider {
       if (stat?.type === "folder") return;
       if (stat) throw Error("collision");
       if (this.vault.getAbstractFileByPath(path)) throw Error("indexPending");
-      await this.vault.createFolder(path);
+      await this.call("createFolder",path);
     } else await ensure(this.vault.adapter, path);
   }
   async upload(p: string, b: Bytes, mtime?: number) {
@@ -270,12 +274,12 @@ export class LocalProvider implements StorageProvider {
       }
       const file = this.vault.getAbstractFileByPath(path);
       if (file instanceof TFile) {
-        await this.vault.modifyBinary(file, b, options);
+        await this.call("modifyBinary",file, b, options);
         return;
       }
       if (file || (await this.vault.adapter.exists(path)))
         throw Error("indexPending");
-      await this.vault.createBinary(path, b, options);
+      await this.call("createBinary",path, b, options);
       return;
     }
     await ensure(this.vault.adapter, parent(path));
@@ -317,19 +321,19 @@ export class LocalProvider implements StorageProvider {
           expires + "-" + crypto.randomUUID() + "/" + path,
         );
         await ensure(a, parent(dest));
-        if (file) await this.vault.rename(file, dest);
+        if (file) await this.call("rename",file, dest);
         else await a.rename(path, dest);
         break;
       }
       case "permanent":
-        if (file) await this.vault.delete(file);
+        if (file) await this.call("delete",file);
         else await a.remove(path);
         break;
       case "system":
         if (!(await a.trashSystem(path))) throw Error("trashUnavailable");
         break;
       case "vault":
-        if (file) await this.vault.trash(file, false);
+        if (file) await this.call("trash",file, false);
         else await a.trashLocal(path);
         break;
     }
@@ -375,7 +379,7 @@ export class LocalProvider implements StorageProvider {
     if (this.indexed(a)) {
       const f = this.vault.getAbstractFileByPath(a);
       if (!(f instanceof TFile)) throw Error("indexPending");
-      await this.vault.rename(f, b);
+      await this.call("rename",f, b);
     } else await this.vault.adapter.rename(a, b);
   }
   async getRevision() {

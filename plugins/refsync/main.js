@@ -10862,7 +10862,7 @@ var VamGate = class {
           reason = "vamProtocol";
         else if (!scope) reason = "vamScope";
         else {
-          const d = bridge.access({ ...scope, capability: "use" });
+          const d = bridge.access({ ...scope, capability: "sync.run" });
           if (d.status === "granted")
             reason = typeof d.validUntil === "number" && Number.isFinite(d.validUntil) && d.validUntil > Date.now() ? "vamGranted" : "vamExpired";
           else if (d.status === "pending")
@@ -10888,11 +10888,21 @@ var VamGate = class {
     const reason = this.refresh();
     if (reason !== "vamGranted") throw Error(reason);
   }
-  lease() {
+  requirePublish() {
     this.require();
+    const scope = this.observedScope;
+    if (!scope || !this.bridge) throw Error("vamBlocked");
+    const decision = this.bridge.access({ ...scope, capability: "sync.publish" });
+    if (decision.status !== "granted" || !Number.isFinite(decision.validUntil) || (decision.validUntil ?? 0) <= Date.now())
+      throw Error("vamPublishBlocked");
+  }
+  lease(publish = false) {
+    if (publish) this.requirePublish();
+    else this.require();
     const generation = this.generation;
     return () => {
-      this.require();
+      if (publish) this.requirePublish();
+      else this.require();
       if (generation !== this.generation) throw Error("vamSessionChanged");
     };
   }
@@ -11841,6 +11851,7 @@ var ru = {
   vamExpired: "Срок подтверждённого доступа истёк",
   vamLogin: "Требуется вход в Vault Access Manager",
   vamOffline: "Нет действующего подтверждения доступа от Manager",
+  vamPublishBlocked: "Manager запретил публикацию",
   vamBlocked: "Доступ заблокирован Vault Access Manager",
   vamSessionChanged: "Допуск изменился. Запустите операцию заново",
   vamDispatch: "Отчёты и обновления",
@@ -12233,6 +12244,7 @@ var en = {
   vamExpired: "Access has expired",
   vamLogin: "Sign in to Vault Access Manager",
   vamOffline: "Manager has no current authorization",
+  vamPublishBlocked: "Manager denied publication",
   vamBlocked: "Vault Access Manager blocked access",
   vamSessionChanged: "Authorization changed. Start the operation again",
   vamDispatch: "Reports and updates",
@@ -15615,7 +15627,7 @@ var LocalProvider = class {
   constructor(vault, root, self, scope, readOnly = false, policy = {
     trash: "vault",
     trashDays: 30
-  }, ownWrite, config, withFilePaused, content) {
+  }, ownWrite, config, withFilePaused, content, systemCall) {
     this.vault = vault;
     this.root = root;
     this.self = self;
@@ -15625,6 +15637,7 @@ var LocalProvider = class {
     this.config = config;
     this.withFilePaused = withFilePaused;
     this.content = content;
+    this.systemCall = systemCall;
     if (root) checked(root);
     if ([managerId, self].some(
       (id) => under(fold(root), fold(join(vault.configDir, "plugins/" + id)))
@@ -15672,6 +15685,9 @@ var LocalProvider = class {
       throw Error("protected");
     return path;
   }
+  call(method, ...args) {
+    return this.systemCall ? this.systemCall(method, args) : Reflect.apply(this.vault[method], this.vault, args);
+  }
   async list(p) {
     const data = await this.vault.adapter.list(this.path(p) || "/");
     const rel = (f) => {
@@ -15710,7 +15726,7 @@ var LocalProvider = class {
       if (stat?.type === "folder") return;
       if (stat) throw Error("collision");
       if (this.vault.getAbstractFileByPath(path)) throw Error("indexPending");
-      await this.vault.createFolder(path);
+      await this.call("createFolder", path);
     } else await ensure(this.vault.adapter, path);
   }
   async upload(p, b, mtime) {
@@ -15725,12 +15741,12 @@ var LocalProvider = class {
       }
       const file = this.vault.getAbstractFileByPath(path);
       if (file instanceof import_obsidian.TFile) {
-        await this.vault.modifyBinary(file, b, options);
+        await this.call("modifyBinary", file, b, options);
         return;
       }
       if (file || await this.vault.adapter.exists(path))
         throw Error("indexPending");
-      await this.vault.createBinary(path, b, options);
+      await this.call("createBinary", path, b, options);
       return;
     }
     await ensure(this.vault.adapter, parent(path));
@@ -15768,19 +15784,19 @@ var LocalProvider = class {
           expires + "-" + crypto.randomUUID() + "/" + path
         );
         await ensure(a, parent(dest));
-        if (file) await this.vault.rename(file, dest);
+        if (file) await this.call("rename", file, dest);
         else await a.rename(path, dest);
         break;
       }
       case "permanent":
-        if (file) await this.vault.delete(file);
+        if (file) await this.call("delete", file);
         else await a.remove(path);
         break;
       case "system":
         if (!await a.trashSystem(path)) throw Error("trashUnavailable");
         break;
       case "vault":
-        if (file) await this.vault.trash(file, false);
+        if (file) await this.call("trash", file, false);
         else await a.trashLocal(path);
         break;
     }
@@ -15819,7 +15835,7 @@ var LocalProvider = class {
     if (this.indexed(a)) {
       const f = this.vault.getAbstractFileByPath(a);
       if (!(f instanceof import_obsidian.TFile)) throw Error("indexPending");
-      await this.vault.rename(f, b);
+      await this.call("rename", f, b);
     } else await this.vault.adapter.rename(a, b);
   }
   async getRevision() {
@@ -24659,6 +24675,14 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       ...this.diagnostics.snapshot(this.config?.profiles ?? [])
     };
   }
+  async withUpdateWindow(caller, install) {
+    if (!this.allowDispatch(caller)) throw Error("vamBlocked");
+    await this.ready;
+    await this.scheduler.serial(() => this.engine.exclusive(async () => {
+      if (!this.allowDispatch(caller) || this.engine.applier.needsRecovery || this.engine.applier.pendingTargets.size) throw Error("busy");
+      await install();
+    }));
+  }
   receiveUpdateSignal(caller, signal) {
     if (!this.allowDispatch(caller) || !signal || typeof signal !== "object")
       return false;
@@ -25177,8 +25201,19 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         await a.rmdir(dir, true);
     }
   }
+  systemWrites(publish) {
+    return (method, args) => {
+      if (publish) this.gate.requirePublish();
+      else this.gate.require();
+      const runtime = this.managerContext().manager?.accessV4;
+      return runtime?.studioVaultCall ? runtime.studioVaultCall(this, method, args, publish) : Reflect.apply(this.app.vault[method], this.app.vault, args);
+    };
+  }
   recoveryTarget(t) {
-    const dest = JSON.parse(t.key)[3];
+    const [profileId, , source, dest] = JSON.parse(t.key);
+    const profile = this.config.profiles.find((p) => p.id === profileId);
+    const subscription = profile?.role === "subscriber" && source === referenceId(profile) && dest === "vault:" + (profile.scope === "settings" ? this.app.vault.configDir : profile.local === "/" ? "" : profile.local);
+    const check2 = this.gate.lease(!subscription);
     if (t.dav) {
       if (dest !== davId(t.dav, t.target)) throw Error("journal");
       return this.davStore(t.dav, t.target, false);
@@ -25189,7 +25224,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     }
     if (dest !== "vault:" + (t.target === "/" ? "" : t.target))
       throw Error("journal");
-    return new LocalProvider(
+    return guardedStore(new LocalProvider(
       this.app.vault,
       t.target === "/" ? "" : t.target,
       this.manifest.id,
@@ -25199,8 +25234,9 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       void 0,
       t.settings?.config,
       t.target === this.app.vault.configDir ? (path, write) => withPluginData(this.app, this.manifest.id, path, write) : void 0,
-      t.content
-    );
+      t.content,
+      this.systemWrites(!subscription)
+    ), check2);
   }
   googleKey() {
     return String(this.app.loadLocalStorage("refsync:google-public-key") ?? "");
@@ -25242,7 +25278,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     if (!a || a.needsLogin) throw Error("loginRequired");
     if (c.engine === "yandex" && c.root !== (a.full ? "disk:/" : "app:/"))
       throw Error("cloudLocation");
-    const check2 = this.gate.lease();
+    const check2 = this.gate.lease(!ro);
     const transport = this.accounts.transport(c.account, c.engine, check2);
     let tree;
     if (c.engine === "google") {
@@ -25294,7 +25330,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   davStore(d, prefix, ro) {
     if (!import_obsidian13.Platform.isDesktopApp) throw Error("davDesktop");
     const key = this.davSecretKey(d);
-    const check2 = this.gate.lease();
+    const check2 = this.gate.lease(!ro);
     return guardedStore(
       new DavStore(
         d,
@@ -25313,7 +25349,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     return this.cloudStore(p.cloud, prefix, readOnly);
   }
   async probeConnection(p, write) {
-    const check2 = this.gate.lease();
+    const check2 = this.gate.lease(write);
     return this.scheduler.serial(async () => {
       const store = p.access === "local" ? new LocalProvider(
         this.app.vault,
@@ -25321,7 +25357,12 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         this.manifest.id,
         "content",
         !write,
-        { trash: "permanent", trashDays: 0 }
+        { trash: "permanent", trashDays: 0 },
+        void 0,
+        void 0,
+        void 0,
+        void 0,
+        this.systemWrites(write)
       ) : p.access === "public" ? this.publicReference({ ...p, role: "subscriber" }) : this.accountReference(p, p.reference, !write);
       return testAccess(guardedStore(store, check2), write);
     });
@@ -25378,7 +25419,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   stores(p) {
     if (!["local", "public", "oauth", "webdav"].includes(p.access))
       throw Error("invalid");
-    const check2 = this.gate.lease();
+    const check2 = this.gate.lease(p.role === "publisher");
     const make = (path, ro) => guardedStore(
       new LocalProvider(
         this.app.vault,
@@ -25393,7 +25434,8 @@ var SyncStudio = class extends import_obsidian13.Plugin {
         }),
         p.config,
         !ro && p.scope === "settings" && path === this.app.vault.configDir ? (file, write) => withPluginData(this.app, this.manifest.id, file, write) : void 0,
-        p.content
+        p.content,
+        this.systemWrites(p.role === "publisher")
       ),
       check2
     );
@@ -25531,7 +25573,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     ]);
   }
   async deliver(p, approved, choices, release) {
-    const check2 = this.gate.lease();
+    const check2 = this.gate.lease(p.role === "publisher");
     const active = () => {
       check2();
       return this.live && !this.config.paused && p.enabled && this.config.profiles.some(

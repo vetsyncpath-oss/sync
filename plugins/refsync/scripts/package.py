@@ -19,6 +19,6 @@ def archive(suffix, files):
 
 install = [root / name for name in ("README.md", "main.js", "manifest.json","styles.css","THIRD_PARTY.txt")]
 source = [root / name for name in ("package.json", "package-lock.json", "tsconfig.json", "esbuild.config.mjs")]
-source += list(root.glob("src/*.ts")) + list(root.glob("test/*.ts")) + list(root.glob("scripts/*.py"))
+source += list(root.glob("src/*.ts")) + list(root.glob("test/*.ts")) + list(root.glob("scripts/*.py")) + list(root.glob("scripts/*.mjs"))
 archive("", install)
 archive("-source", install + source)
