@@ -1,0 +1,55 @@
+name: VAM Publisher
+on:
+  pull_request:
+    paths:
+      - 'plugins/vam-publisher/**'
+      - '.github/workflows/vam-publisher.yml'
+permissions:
+  contents: read
+jobs:
+  vault-isolation:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      VERSION: 0.2.0-alpha.6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Extract release sources
+        run: |
+          $releases = "plugins/vam-publisher/releases"
+          Expand-Archive "$releases/vam-publisher-source-$env:VERSION.zip" .
+          Expand-Archive "$releases/vam-publisher-$env:VERSION.zip" shipped
+      - name: Verify build and session tests
+        run: |
+          Set-Location "vam-publisher-source-$env:VERSION"
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run typecheck
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($file in 'main.js','manifest.json','styles.css') {
+            if ((Get-FileHash "../shipped/vam-publisher/$file").Hash -ne (Get-FileHash "dist/vam-publisher/$file").Hash) { throw "Archive mismatch for $file" }
+          }
+          npm test
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node scripts/smoke-release.mjs
+      - name: Verify login in two Windows Obsidian vaults
+        run: |
+          python -m pip install playwright==1.56.0
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $installer = "$env:RUNNER_TEMP/Obsidian.exe"
+          Invoke-WebRequest "https://github.com/obsidianmd/obsidian-releases/releases/download/v1.15.1/Obsidian-1.15.1.exe" -OutFile $installer
+          if ((Get-FileHash $installer).Hash -ne '218c7d30acc065355ce94719dd996d5e2a2347cde3811ea5dc29380583f02b58') { throw 'Invalid installer' }
+          7z x $installer "-o$env:RUNNER_TEMP/obs-installer" -y | Out-Null
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $payload = (Get-ChildItem "$env:RUNNER_TEMP/obs-installer" -Recurse -Filter 'app-64.7z' | Select-Object -First 1).FullName
+          7z x $payload "-o$env:RUNNER_TEMP/obs-app" -y | Out-Null
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python "vam-publisher-source-$env:VERSION/scripts/smoke-vault-isolation.py" --obsidian "$env:RUNNER_TEMP/obs-app/Obsidian.exe" --sync-zip plugins/refsync/releases/sync-studio-0.8.2.zip
