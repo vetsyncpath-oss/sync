@@ -34,6 +34,7 @@ export class Applier {
     readonly state: StateStore,
     readonly fence = new MutationFence(),
     private configDirectory = ".obsidian",
+    private rollbackLocal?: (transaction: Transaction) => StorageProvider,
   ) {}
   private async restore(
     t: Transaction,
@@ -676,7 +677,12 @@ export class Applier {
     } catch (e) {
       budget.fence.check();
       this.fence.check();
-      await this.restore(t, target);
+      // Finish compensating only the armed steps of this live transaction, even if
+      // the grant expired between writes. Deferred recovery still needs a new lease.
+      const rollback = !t.cloud && !t.dav && this.rollbackLocal
+        ? this.rollbackLocal(t)
+        : target;
+      await this.restore(t, rollback);
       await this.journal.mark(id + "/rolled-back");
       this.needsRecovery = false;
       throw e;

@@ -14861,11 +14861,12 @@ function verifyManifest(m, snap, accept, acceptDir = (p) => true) {
 // src/applier.ts
 var decoder2 = new TextDecoder();
 var Applier = class {
-  constructor(journal, state, fence = new MutationFence(), configDirectory = ".obsidian") {
+  constructor(journal, state, fence = new MutationFence(), configDirectory = ".obsidian", rollbackLocal) {
     this.journal = journal;
     this.state = state;
     this.fence = fence;
     this.configDirectory = configDirectory;
+    this.rollbackLocal = rollbackLocal;
   }
   needsRecovery = false;
   pendingTargets = /* @__PURE__ */ new Set();
@@ -15347,7 +15348,8 @@ var Applier = class {
     } catch (e) {
       budget.fence.check();
       this.fence.check();
-      await this.restore(t, target);
+      const rollback = !t.cloud && !t.dav && this.rollbackLocal ? this.rollbackLocal(t) : target;
+      await this.restore(t, rollback);
       await this.journal.mark(id + "/rolled-back");
       this.needsRecovery = false;
       throw e;
@@ -24918,7 +24920,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     );
     const status = new StatusStore();
     this.engine = new SyncEngine(
-      new Applier(journal, state, fence, this.app.vault.configDir),
+      new Applier(journal, state, fence, this.app.vault.configDir, (t) => this.localJournalTarget(t)),
       status,
       this.app.vault.configDir,
       this.manifest.id,
@@ -25222,9 +25224,13 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       if (dest !== cloudId(t.cloud, t.target)) throw Error("journal");
       return this.cloudStore(t.cloud, t.target, false);
     }
+    return guardedStore(this.localJournalTarget(t, this.systemWrites(!subscription)), check2);
+  }
+  localJournalTarget(t, systemCall) {
+    const dest = JSON.parse(t.key)[3];
     if (dest !== "vault:" + (t.target === "/" ? "" : t.target))
       throw Error("journal");
-    return guardedStore(new LocalProvider(
+    return new LocalProvider(
       this.app.vault,
       t.target === "/" ? "" : t.target,
       this.manifest.id,
@@ -25235,8 +25241,8 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       t.settings?.config,
       t.target === this.app.vault.configDir ? (path, write) => withPluginData(this.app, this.manifest.id, path, write) : void 0,
       t.content,
-      this.systemWrites(!subscription)
-    ), check2);
+      systemCall
+    );
   }
   googleKey() {
     return String(this.app.loadLocalStorage("refsync:google-public-key") ?? "");

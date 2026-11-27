@@ -542,7 +542,7 @@ export default class SyncStudio extends Plugin {
     );
     const status = new StatusStore();
     this.engine = new SyncEngine(
-      new Applier(journal, state, fence, this.app.vault.configDir),
+      new Applier(journal, state, fence, this.app.vault.configDir, t => this.localJournalTarget(t)),
       status,
       this.app.vault.configDir,
       this.manifest.id,
@@ -896,9 +896,13 @@ export default class SyncStudio extends Plugin {
       if (dest !== cloudId(t.cloud, t.target)) throw Error("journal");
       return this.cloudStore(t.cloud, t.target, false);
     }
+    return guardedStore(this.localJournalTarget(t,this.systemWrites(!subscription)),check);
+  }
+  private localJournalTarget(t: Transaction, systemCall?: (method:string,args:unknown[])=>Promise<unknown>) {
+    const dest = JSON.parse(t.key)[3];
     if (dest !== "vault:" + (t.target === "/" ? "" : t.target))
       throw Error("journal");
-    return guardedStore(new LocalProvider(
+    return new LocalProvider(
       this.app.vault,
       t.target === "/" ? "" : t.target,
       this.manifest.id,
@@ -911,8 +915,8 @@ export default class SyncStudio extends Plugin {
         ? (path, write) =>
             withPluginData(this.app, this.manifest.id, path, write)
         : undefined,
-      t.content,this.systemWrites(!subscription),
-    ), check);
+      t.content,systemCall,
+    );
   }
   googleKey() {
     return String(this.app.loadLocalStorage("refsync:google-public-key") ?? "");
