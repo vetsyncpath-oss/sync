@@ -11,7 +11,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     env:
-      VERSION: 0.2.0-alpha.9
+      VERSION: 0.2.0-alpha.10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
