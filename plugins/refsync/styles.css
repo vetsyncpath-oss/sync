@@ -1,0 +1,27 @@
+.sync-studio-summary {
+  white-space: pre-line;
+  padding: 0.7em 1em;
+  border-inline-start: 3px solid var(--interactive-accent);
+  background: var(--background-secondary);
+}
+.sync-studio-editor .setting-item-description {
+  white-space: pre-line;
+}
+.sync-studio-nav .setting-item-control {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+.sync-studio-nav .setting-item-info:empty {
+  display: none;
+}
+.sync-studio-nav button:disabled {
+  color: var(--text-normal);
+  opacity: 1;
+  font-weight: 600;
+}
+.sync-studio-field-error {
+  color: var(--text-error);
+}
+.sync-studio-editor [hidden] {
+  display: none !important;
+}
