@@ -11,7 +11,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     env:
-      VERSION: 0.2.0-alpha.8
+      VERSION: 0.2.0-alpha.9
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -53,3 +53,5 @@ jobs:
           7z x $payload "-o$env:RUNNER_TEMP/obs-app" -y | Out-Null
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python "vam-publisher-source-$env:VERSION/scripts/smoke-vault-isolation.py" --obsidian "$env:RUNNER_TEMP/obs-app/Obsidian.exe" --sync-zip plugins/refsync/releases/sync-studio-0.8.4.zip
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python "vam-publisher-source-$env:VERSION/scripts/smoke-vault-isolation.py" --obsidian "$env:RUNNER_TEMP/obs-app/Obsidian.exe" --sync-zip plugins/refsync/releases/sync-studio-0.8.4.zip --upgrade-from plugins/vam-publisher/releases/vam-publisher-0.2.0-alpha.5.zip
