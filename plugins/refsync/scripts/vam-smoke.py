@@ -18,7 +18,7 @@ module.exports=class extends Plugin {
     this.listeners=new Set();this.accessV4={build:{tenantId:'ci-org',bundleId:'ci-bundle'}};
     this.auth={};globalThis.vaultSyncAuth=this.auth;
     globalThis.__VAM__={version:'6',register:id=>{this.consumer=id;},
-      access:q=>({status:q.tenantId==='ci-org' && q.bundleId==='ci-bundle'?this.state:'blocked',
+      access:q=>({status:q.tenantId==='ci-org' && q.bundleId==='ci-bundle' && q.capability!==this.deniedCapability?this.state:'blocked',
         validUntil:Date.now()+60000,reason:this.state==='pending'?'device-not-approved':'signed-out'}),
       subscribe:fn=>{this.listeners.add(fn);fn();return ()=>this.listeners.delete(fn);}};
   }
@@ -99,7 +99,15 @@ def run(page):
       await denied(()=>store.list(''),'vamLogin');
       manager.set('granted');review.apply(new Map(),new Set());await rs.scheduler.serial(async()=>{});
       if(await a.exists(dst+'/stale.md'))throw Error('stale plan applied after relogin');
-      await rs.put(p,true);await rs.execute(id,'run');
+      await rs.put(p,true);
+      manager.deniedCapability='sync.automatic';
+      await rs.execute(id,'auto');
+      if(await a.exists(dst+'/stale.md'))throw Error('denied automatic run touched the destination');
+      manager.deniedCapability='sync.manual';
+      await denied(()=>rs.execute(id,'run'),'vamManualBlocked');
+      manager.deniedCapability='sync.automatic';
+      await rs.execute(id,'run');
+      delete manager.deniedCapability;
       if(await a.read(dst+'/note.md')!=='allowed'||manager.consumer!=='refsync')throw Error('valid SDK 6 delivery');
       await api.disablePlugin('vault-access-manager');await denied(()=>rs.execute(id,'run'),'vamMissing');
       await api.enablePlugin('vault-access-manager');await rs.execute(id,'run');

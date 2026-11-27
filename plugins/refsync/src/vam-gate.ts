@@ -9,9 +9,10 @@ interface Decision {
   reason: string | null;
   validUntil: number | null;
 }
+export type RunPermission = "sync.manual" | "sync.automatic";
 export interface VamBridge {
   version: string;
-  access(query: Scope & { capability: "sync.run" | "sync.publish" }): Decision;
+  access(query: Scope & { capability: "sync.run" | "sync.publish" | RunPermission }): Decision;
   register(id: string): void;
   subscribe(listener: () => void): () => void;
 }
@@ -114,19 +115,29 @@ export class VamGate {
     const reason = this.refresh();
     if (reason !== "vamGranted") throw Error(reason);
   }
-  requirePublish() {
-    this.require();
+  private requireAdditional(capability: "sync.publish" | RunPermission) {
     const scope = this.observedScope;
     if (!scope || !this.bridge) throw Error("vamBlocked");
-    const decision = this.bridge.access({...scope,capability:"sync.publish"});
-    if (decision.status !== "granted" || !Number.isFinite(decision.validUntil) || (decision.validUntil ?? 0) <= Date.now())
-      throw Error("vamPublishBlocked");
+    const decision = this.bridge.access({ ...scope, capability });
+    if (decision.status === "granted" && Number.isFinite(decision.validUntil) &&
+        (decision.validUntil ?? 0) > Date.now()) return;
+    const reasons = { "sync.publish": "vamPublishBlocked", "sync.manual": "vamManualBlocked", "sync.automatic": "vamAutomaticBlocked" };
+    throw Error(reasons[capability]);
   }
-  lease(publish = false) {
-    if (publish) this.requirePublish(); else this.require();
+  requirePublish() {
+    this.require();
+    this.requireAdditional("sync.publish");
+  }
+  lease(publish = false, mode?: RunPermission) {
+    const authorize = () => {
+      this.require();
+      if (publish) this.requireAdditional("sync.publish");
+      if (mode) this.requireAdditional(mode);
+    };
+    authorize();
     const generation = this.generation;
     return () => {
-      if (publish) this.requirePublish(); else this.require();
+      authorize();
       if (generation !== this.generation) throw Error("vamSessionChanged");
     };
   }

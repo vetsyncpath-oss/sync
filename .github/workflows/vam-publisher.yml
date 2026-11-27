@@ -11,7 +11,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     env:
-      VERSION: 0.2.0-alpha.7
+      VERSION: 0.2.0-alpha.8
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -52,4 +52,4 @@ jobs:
           $payload = (Get-ChildItem "$env:RUNNER_TEMP/obs-installer" -Recurse -Filter 'app-64.7z' | Select-Object -First 1).FullName
           7z x $payload "-o$env:RUNNER_TEMP/obs-app" -y | Out-Null
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          python "vam-publisher-source-$env:VERSION/scripts/smoke-vault-isolation.py" --obsidian "$env:RUNNER_TEMP/obs-app/Obsidian.exe" --sync-zip plugins/refsync/releases/sync-studio-0.8.3.zip
+          python "vam-publisher-source-$env:VERSION/scripts/smoke-vault-isolation.py" --obsidian "$env:RUNNER_TEMP/obs-app/Obsidian.exe" --sync-zip plugins/refsync/releases/sync-studio-0.8.4.zip

@@ -147,3 +147,27 @@ test("publish permission is scoped and rechecked after a review stays open", () 
   assert.throws(apply,/vamPublishBlocked/);
   gate.dispose();
 });
+
+test("manual and scheduled runs retain their own live policy during an operation", () => {
+  const permissions = new Set(["sync.run","sync.manual","sync.publish"]);
+  const manager = {};
+  const bridge: VamBridge = {
+    version:"6",register(){},subscribe(){return () => {};},
+    access({capability}) {
+      return {status: permissions.has(capability) ? "granted" : "blocked",
+        validUntil:Date.now()+60_000,reason:null};
+    },
+  };
+  const gate = new VamGate(() => ({manager,bridge,scope:{tenantId:"org",bundleId:"notes"}}), () => {});
+  const manual = gate.lease(false,"sync.manual");
+  assert.throws(() => gate.lease(false,"sync.automatic"),/vamAutomaticBlocked/);
+  permissions.add("sync.automatic");
+  const automatic = gate.lease(true,"sync.automatic");
+  permissions.delete("sync.manual");
+  assert.throws(manual,/vamManualBlocked/);
+  automatic();
+  permissions.delete("sync.publish");
+  assert.throws(automatic,/vamPublishBlocked/);
+  gate.lease(false,"sync.automatic")();
+  gate.dispose();
+});

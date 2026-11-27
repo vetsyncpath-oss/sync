@@ -10888,21 +10888,28 @@ var VamGate = class {
     const reason = this.refresh();
     if (reason !== "vamGranted") throw Error(reason);
   }
-  requirePublish() {
-    this.require();
+  requireAdditional(capability) {
     const scope = this.observedScope;
     if (!scope || !this.bridge) throw Error("vamBlocked");
-    const decision = this.bridge.access({ ...scope, capability: "sync.publish" });
-    if (decision.status !== "granted" || !Number.isFinite(decision.validUntil) || (decision.validUntil ?? 0) <= Date.now())
-      throw Error("vamPublishBlocked");
+    const decision = this.bridge.access({ ...scope, capability });
+    if (decision.status === "granted" && Number.isFinite(decision.validUntil) && (decision.validUntil ?? 0) > Date.now()) return;
+    const reasons = { "sync.publish": "vamPublishBlocked", "sync.manual": "vamManualBlocked", "sync.automatic": "vamAutomaticBlocked" };
+    throw Error(reasons[capability]);
   }
-  lease(publish = false) {
-    if (publish) this.requirePublish();
-    else this.require();
+  requirePublish() {
+    this.require();
+    this.requireAdditional("sync.publish");
+  }
+  lease(publish = false, mode) {
+    const authorize2 = () => {
+      this.require();
+      if (publish) this.requireAdditional("sync.publish");
+      if (mode) this.requireAdditional(mode);
+    };
+    authorize2();
     const generation = this.generation;
     return () => {
-      if (publish) this.requirePublish();
-      else this.require();
+      authorize2();
       if (generation !== this.generation) throw Error("vamSessionChanged");
     };
   }
@@ -11851,6 +11858,8 @@ var ru = {
   vamExpired: "Срок подтверждённого доступа истёк",
   vamLogin: "Требуется вход в Vault Access Manager",
   vamOffline: "Нет действующего подтверждения доступа от Manager",
+  vamManualBlocked: "Manager запретил ручной запуск",
+  vamAutomaticBlocked: "Manager запретил автосинхронизацию",
   vamPublishBlocked: "Manager запретил публикацию",
   vamBlocked: "Доступ заблокирован Vault Access Manager",
   vamSessionChanged: "Допуск изменился. Запустите операцию заново",
@@ -12244,6 +12253,8 @@ var en = {
   vamExpired: "Access has expired",
   vamLogin: "Sign in to Vault Access Manager",
   vamOffline: "Manager has no current authorization",
+  vamManualBlocked: "Manager denied manual sync",
+  vamAutomaticBlocked: "Manager denied automatic sync",
   vamPublishBlocked: "Manager denied publication",
   vamBlocked: "Vault Access Manager blocked access",
   vamSessionChanged: "Authorization changed. Start the operation again",
@@ -24932,7 +24943,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       (e) => this.report(e),
       () => {
         try {
-          const check2 = this.gate.lease();
+          const check2 = this.gate.lease(false, "sync.automatic");
           return () => {
             try {
               check2();
@@ -25250,8 +25261,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   saveGoogleKey(value) {
     this.app.saveLocalStorage("refsync:google-public-key", value.trim());
   }
-  publicReference(p, prefix = p.reference) {
-    const check2 = this.gate.lease();
+  publicReference(p, prefix = p.reference, check2 = this.gate.lease()) {
     const send2 = this.gatedSend(check2);
     if (p.access !== "public" || p.role !== "subscriber" || !p.remote)
       throw Error("readonly");
@@ -25279,12 +25289,11 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       check2
     );
   }
-  cloudStore(c, prefix, ro) {
+  cloudStore(c, prefix, ro, check2 = this.gate.lease(!ro)) {
     const id = cloudId(c, prefix), a = this.accounts.list().find((a2) => a2.id === c.account && a2.engine === c.engine);
     if (!a || a.needsLogin) throw Error("loginRequired");
     if (c.engine === "yandex" && c.root !== (a.full ? "disk:/" : "app:/"))
       throw Error("cloudLocation");
-    const check2 = this.gate.lease(!ro);
     const transport = this.accounts.transport(c.account, c.engine, check2);
     let tree;
     if (c.engine === "google") {
@@ -25333,10 +25342,9 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       Number.MAX_SAFE_INTEGER
     );
   }
-  davStore(d, prefix, ro) {
+  davStore(d, prefix, ro, check2 = this.gate.lease(!ro)) {
     if (!import_obsidian13.Platform.isDesktopApp) throw Error("davDesktop");
     const key = this.davSecretKey(d);
-    const check2 = this.gate.lease(!ro);
     return guardedStore(
       new DavStore(
         d,
@@ -25348,11 +25356,11 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       check2
     );
   }
-  accountReference(p, prefix = p.reference, readOnly = p.role === "subscriber") {
+  accountReference(p, prefix = p.reference, readOnly = p.role === "subscriber", check2 = this.gate.lease(!readOnly)) {
     if (p.access === "webdav" && p.dav)
-      return this.davStore(p.dav, prefix, readOnly);
+      return this.davStore(p.dav, prefix, readOnly, check2);
     if (p.access !== "oauth" || !p.cloud) throw Error("cloudLocation");
-    return this.cloudStore(p.cloud, prefix, readOnly);
+    return this.cloudStore(p.cloud, prefix, readOnly, check2);
   }
   async probeConnection(p, write) {
     const check2 = this.gate.lease(write);
@@ -25388,12 +25396,12 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     return p.access === "oauth" || p.access === "webdav" ? this.accountReference(p, "", true) : this.publicReference(p, "");
   }
   async previewDraft(draft) {
-    const check2 = this.gate.lease();
+    const check2 = this.gate.lease(draft.role === "publisher", "sync.manual");
     const p = structuredClone(draft);
     await this.scheduler.serial(async () => {
       await this.ready;
       check2();
-      const s = this.stores(p), mode = (p.inheritMode ? this.config.mode : p.mode) === "silent" && !(p.firstPlan && !this.app.loadLocalStorage(this.firstKey(p))) ? "silent" : "plan";
+      const s = this.stores(p, check2), mode = (p.inheritMode ? this.config.mode : p.mode) === "silent" && !(p.firstPlan && !this.app.loadLocalStorage(this.firstKey(p))) ? "silent" : "plan";
       const result = await this.engine.run(
         p,
         s.reference,
@@ -25422,10 +25430,9 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     const s = this.stores(p);
     return [s.local, s.reference];
   }
-  stores(p) {
+  stores(p, check2 = this.gate.lease(p.role === "publisher")) {
     if (!["local", "public", "oauth", "webdav"].includes(p.access))
       throw Error("invalid");
-    const check2 = this.gate.lease(p.role === "publisher");
     const make = (path, ro) => guardedStore(
       new LocalProvider(
         this.app.vault,
@@ -25446,7 +25453,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       check2
     );
     return {
-      reference: p.access === "oauth" || p.access === "webdav" ? this.accountReference(p) : p.access === "public" ? this.publicReference(p) : make(p.reference, p.role === "subscriber"),
+      reference: p.access === "oauth" || p.access === "webdav" ? this.accountReference(p, p.reference, p.role === "subscriber", check2) : p.access === "public" ? this.publicReference(p, p.reference, check2) : make(p.reference, p.role === "subscriber"),
       local: make(
         p.scope === "settings" ? this.app.vault.configDir : p.local,
         p.role === "publisher"
@@ -25456,7 +25463,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   request(id, intent) {
     let check2;
     try {
-      check2 = this.gate.lease();
+      check2 = this.gate.lease(false, intent === "auto" ? "sync.automatic" : "sync.manual");
     } catch (e) {
       this.report(e, id);
       return;
@@ -25479,9 +25486,15 @@ var SyncStudio = class extends import_obsidian13.Plugin {
   async execute(id, intent) {
     await this.ready;
     if (intent === "auto" && this.gate.refresh() !== "vamGranted") return;
-    const check2 = this.gate.lease();
     const p = this.config.profiles.find((x) => x.id === id);
     if (!p || !this.live) return;
+    let check2;
+    try {
+      check2 = this.gate.lease(p.role === "publisher", intent === "auto" ? "sync.automatic" : "sync.manual");
+    } catch (e) {
+      if (intent === "auto" && e instanceof Error && e.message === "vamAutomaticBlocked") return;
+      throw e;
+    }
     if (intent !== "dry" && intent !== "diagnose" && (!p.enabled || this.config.paused))
       return;
     if (intent === "auto" && (this.openIds.has(id) || p.access === "oauth" && !this.accounts.list().some((a) => a.id === p.cloud?.account && !a.needsLogin)))
@@ -25493,7 +25506,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     check2();
     this.lastScan = void 0;
     this.statusLabel = p.name;
-    const v = this.stores(p);
+    const v = this.stores(p, check2);
     if (this.engine.applier.pendingTargets.has(v.reference.id)) {
       await this.engine.exclusive(
         () => this.engine.applier.recover((t) => this.recoveryTarget(t))
@@ -25504,7 +25517,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
     check2();
     const firstKey = this.firstKey(p), first = p.firstPlan && !this.app.loadLocalStorage(firstKey), silent = (p.inheritMode ? this.config.mode : p.mode) === "silent" && !first;
     if ((intent === "run" || intent === "auto") && silent) {
-      await this.deliver(p);
+      await this.deliver(p, check2);
       return;
     }
     const started = Date.now();
@@ -25554,7 +25567,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
           const picked = intent === "release" ? new Map(plan2.ops.map((o) => [o.path, "skip"])) : choices;
           void this.scheduler.serial(() => {
             check2();
-            return this.deliver(p, plan2, picked, release);
+            return this.deliver(p, check2, plan2, picked, release);
           }).catch((e) => this.report(e, p.id));
         },
         intent === "release",
@@ -25578,8 +25591,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       p.access === "local" ? p.reference : referenceId(p)
     ]);
   }
-  async deliver(p, approved, choices, release) {
-    const check2 = this.gate.lease(p.role === "publisher");
+  async deliver(p, check2, approved, choices, release) {
     const active = () => {
       check2();
       return this.live && !this.config.paused && p.enabled && this.config.profiles.some(
@@ -25594,6 +25606,7 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       const partial = await this.applyDelivery(
         p,
         active,
+        check2,
         approved,
         choices,
         release
@@ -25606,8 +25619,8 @@ var SyncStudio = class extends import_obsidian13.Plugin {
       throw error;
     }
   }
-  async applyDelivery(p, active, approved, choices, release) {
-    const v = this.stores(p);
+  async applyDelivery(p, active, check2, approved, choices, release) {
+    const v = this.stores(p, check2);
     const isOpen = (path) => this.app.workspace.getLeavesOfType("markdown").some(
       (leaf) => leaf.view instanceof import_obsidian13.MarkdownView && leaf.view.file?.path === join(p.local, path)
     );

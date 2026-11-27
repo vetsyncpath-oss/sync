@@ -554,7 +554,7 @@ export default class SyncStudio extends Plugin {
       (e) => this.report(e),
       () => {
         try {
-          const check = this.gate.lease();
+          const check = this.gate.lease(false, "sync.automatic");
           return () => {
             try {
               check();
@@ -924,8 +924,7 @@ export default class SyncStudio extends Plugin {
   saveGoogleKey(value: string) {
     this.app.saveLocalStorage("refsync:google-public-key", value.trim());
   }
-  publicReference(p: Profile, prefix = p.reference) {
-    const check = this.gate.lease();
+  publicReference(p: Profile, prefix = p.reference, check = this.gate.lease()) {
     const send = this.gatedSend(check);
     if (p.access !== "public" || p.role !== "subscriber" || !p.remote)
       throw Error("readonly");
@@ -955,7 +954,7 @@ export default class SyncStudio extends Plugin {
       check,
     );
   }
-  private cloudStore(c: CloudLocation, prefix: string, ro: boolean) {
+  private cloudStore(c: CloudLocation, prefix: string, ro: boolean, check = this.gate.lease(!ro)) {
     const id = cloudId(c, prefix),
       a = this.accounts
         .list()
@@ -963,7 +962,6 @@ export default class SyncStudio extends Plugin {
     if (!a || a.needsLogin) throw Error("loginRequired");
     if (c.engine === "yandex" && c.root !== (a.full ? "disk:/" : "app:/"))
       throw Error("cloudLocation");
-    const check = this.gate.lease(!ro);
     const transport = this.accounts.transport(c.account, c.engine, check);
     let tree;
     if (c.engine === "google") {
@@ -1016,10 +1014,9 @@ export default class SyncStudio extends Plugin {
       Number.MAX_SAFE_INTEGER,
     );
   }
-  private davStore(d: DavLocation, prefix: string, ro: boolean) {
+  private davStore(d: DavLocation, prefix: string, ro: boolean, check = this.gate.lease(!ro)) {
     if (!Platform.isDesktopApp) throw Error("davDesktop");
     const key = this.davSecretKey(d);
-    const check = this.gate.lease(!ro);
     return guardedStore(
       new DavStore(
         d,
@@ -1037,11 +1034,12 @@ export default class SyncStudio extends Plugin {
     p: Profile,
     prefix = p.reference,
     readOnly = p.role === "subscriber",
+    check = this.gate.lease(!readOnly),
   ) {
     if (p.access === "webdav" && p.dav)
-      return this.davStore(p.dav, prefix, readOnly);
+      return this.davStore(p.dav, prefix, readOnly, check);
     if (p.access !== "oauth" || !p.cloud) throw Error("cloudLocation");
-    return this.cloudStore(p.cloud, prefix, readOnly);
+    return this.cloudStore(p.cloud, prefix, readOnly, check);
   }
   async probeConnection(p: Profile, write: boolean) {
     const check = this.gate.lease(write);
@@ -1079,12 +1077,12 @@ export default class SyncStudio extends Plugin {
       : this.publicReference(p, "");
   }
   async previewDraft(draft: Profile) {
-    const check = this.gate.lease();
+    const check = this.gate.lease(draft.role === "publisher", "sync.manual");
     const p = structuredClone(draft);
     await this.scheduler.serial(async () => {
       await this.ready;
       check();
-      const s = this.stores(p),
+      const s = this.stores(p, check),
         mode =
           (p.inheritMode ? this.config.mode : p.mode) === "silent" &&
           !(p.firstPlan && !this.app.loadLocalStorage(this.firstKey(p)))
@@ -1120,10 +1118,9 @@ export default class SyncStudio extends Plugin {
     const s = this.stores(p);
     return [s.local, s.reference];
   }
-  private stores(p: Profile) {
+  private stores(p: Profile, check = this.gate.lease(p.role === "publisher")) {
     if (!["local", "public", "oauth", "webdav"].includes(p.access))
       throw Error("invalid");
-    const check = this.gate.lease(p.role === "publisher");
     const make = (path: string, ro: boolean) =>
       guardedStore(
         new LocalProvider(
@@ -1152,9 +1149,9 @@ export default class SyncStudio extends Plugin {
     return {
       reference:
         p.access === "oauth" || p.access === "webdav"
-          ? this.accountReference(p)
+          ? this.accountReference(p, p.reference, p.role === "subscriber", check)
           : p.access === "public"
-            ? this.publicReference(p)
+            ? this.publicReference(p, p.reference, check)
             : make(p.reference, p.role === "subscriber"),
       local: make(
         p.scope === "settings" ? this.app.vault.configDir : p.local,
@@ -1165,7 +1162,7 @@ export default class SyncStudio extends Plugin {
   request(id: string, intent: Intent) {
     let check;
     try {
-      check = this.gate.lease();
+      check = this.gate.lease(false, intent === "auto" ? "sync.automatic" : "sync.manual");
     } catch (e) {
       this.report(e, id);
       return;
@@ -1190,9 +1187,15 @@ export default class SyncStudio extends Plugin {
   private async execute(id: string, intent: Intent) {
     await this.ready;
     if (intent === "auto" && this.gate.refresh() !== "vamGranted") return;
-    const check = this.gate.lease();
     const p = this.config.profiles.find((x) => x.id === id);
     if (!p || !this.live) return;
+    let check: () => void;
+    try {
+      check = this.gate.lease(p.role === "publisher", intent === "auto" ? "sync.automatic" : "sync.manual");
+    } catch (e) {
+      if (intent === "auto" && e instanceof Error && e.message === "vamAutomaticBlocked") return;
+      throw e;
+    }
     if (
       intent !== "dry" &&
       intent !== "diagnose" &&
@@ -1215,7 +1218,7 @@ export default class SyncStudio extends Plugin {
     check();
     this.lastScan = undefined;
     this.statusLabel = p.name;
-    const v = this.stores(p);
+    const v = this.stores(p,check);
     if (this.engine.applier.pendingTargets.has(v.reference.id)) {
       await this.engine.exclusive(() =>
         this.engine.applier.recover((t) => this.recoveryTarget(t)),
@@ -1229,7 +1232,7 @@ export default class SyncStudio extends Plugin {
       silent =
         (p.inheritMode ? this.config.mode : p.mode) === "silent" && !first;
     if ((intent === "run" || intent === "auto") && silent) {
-      await this.deliver(p);
+      await this.deliver(p,check);
       return;
     }
     const started = Date.now();
@@ -1296,7 +1299,7 @@ export default class SyncStudio extends Plugin {
               void this.scheduler
                 .serial(() => {
                   check();
-                  return this.deliver(p, plan, picked, release);
+                  return this.deliver(p, check, plan, picked, release);
                 })
                 .catch((e) => this.report(e, p.id));
             },
@@ -1327,11 +1330,11 @@ export default class SyncStudio extends Plugin {
   }
   private async deliver(
     p: Profile,
+    check: () => void,
     approved?: Plan,
     choices?: Choices,
     release?: Set<string>,
   ) {
-    const check = this.gate.lease(p.role === "publisher");
     const active = () => {
       check();
       return (
@@ -1355,6 +1358,7 @@ export default class SyncStudio extends Plugin {
       const partial = await this.applyDelivery(
         p,
         active,
+        check,
         approved,
         choices,
         release,
@@ -1378,11 +1382,12 @@ export default class SyncStudio extends Plugin {
   private async applyDelivery(
     p: Profile,
     active: () => boolean,
+    check: () => void,
     approved?: Plan,
     choices?: Choices,
     release?: Set<string>,
   ) {
-    const v = this.stores(p);
+    const v = this.stores(p,check);
     const isOpen = (path: string) =>
       this.app.workspace
         .getLeavesOfType("markdown")
